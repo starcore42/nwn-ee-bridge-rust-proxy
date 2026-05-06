@@ -1,0 +1,609 @@
+//! Strict post-translation packet validation.
+//!
+//! A packet is allowed only after it has been structurally classified and its
+//! direction-specific shape is understood. This module is deliberately
+//! conservative: when a new packet appears, we quarantine it, inspect the
+//! decompiles, add the translator/validator, and only then allow it.
+
+use crate::packet::{
+    Direction, Packet,
+    bn::{BnPacket, BnTag},
+    hex_prefix,
+    m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Allow,
+    Quarantine,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrictDecision {
+    pub verdict: Verdict,
+    pub family: &'static str,
+    pub name: &'static str,
+    pub reason: &'static str,
+}
+
+impl StrictDecision {
+    pub fn allow(family: &'static str, name: &'static str, reason: &'static str) -> Self {
+        Self {
+            verdict: Verdict::Allow,
+            family,
+            name,
+            reason,
+        }
+    }
+
+    pub fn quarantine(family: &'static str, name: &'static str, reason: &'static str) -> Self {
+        Self {
+            verdict: Verdict::Quarantine,
+            family,
+            name,
+            reason,
+        }
+    }
+
+    pub fn allowed(&self) -> bool {
+        self.verdict == Verdict::Allow
+    }
+}
+
+pub fn decide(direction: Direction, bytes: &[u8]) -> StrictDecision {
+    match Packet::classify(bytes) {
+        Packet::Bn(packet) => decide_bn(direction, &packet),
+        Packet::M(frame) => {
+            let Some(view) = &frame.parsed else {
+                return StrictDecision::quarantine("M", "invalid M frame", "parse-failed");
+            };
+            if !view.crc_valid {
+                return StrictDecision::quarantine("M", "invalid M frame", "crc-mismatch");
+            }
+            if view.declared_payload_length != 0
+                && view.declared_payload_length > view.available_payload_length
+            {
+                return StrictDecision::quarantine(
+                    "M",
+                    "invalid M frame",
+                    "declared-payload-overflow",
+                );
+            }
+            let has_trailing = view.trailing_payload_length != 0;
+            if has_trailing {
+                let trailing_offset = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+                if let Err(decision) = validate_packetized_trailing(bytes, trailing_offset) {
+                    return decision;
+                }
+            }
+            if matches!(direction, Direction::ServerToClient)
+                && view.payload_length != 0
+                && view.declared_payload_length == 0
+                && view.packetized_sequence == 0
+                && (view.flags & 0x08) != 0
+            {
+                // Decompile/C++ parity for the reliable-window compressor:
+                // the first compressed frame carries the deflate envelope; the
+                // following high-priority frames are opaque compressed bytes
+                // with a zero packetized length field. They are not high-level
+                // CNW messages until the EE window layer reassembles/inflates
+                // them, even if the compressed byte stream happens to begin
+                // with 0x70 / `p`.
+                return StrictDecision::allow(
+                    "M/window",
+                    "deflated reliable-window continuation",
+                    "known-deflated-window-continuation",
+                );
+            }
+            if let Some(high) = view.high {
+                if high.is_known() {
+                    return StrictDecision::allow(
+                        "M/high",
+                        high.name(),
+                        if has_trailing {
+                            "known-high-level-payload-with-window-spans"
+                        } else {
+                            "known-high-level-payload"
+                        },
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/high",
+                    high.name(),
+                    "unknown-high-level-payload",
+                );
+            }
+            if let Some(deflated) = &view.deflated {
+                if deflated.plausible {
+                    return StrictDecision::allow(
+                        "M/deflated",
+                        "validated deflated envelope",
+                        if has_trailing {
+                            "known-deflated-envelope-with-window-spans"
+                        } else {
+                            "known-deflated-envelope"
+                        },
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/deflated",
+                    "invalid deflated envelope",
+                    "invalid-deflated-envelope",
+                );
+            }
+            if view.payload_length == 0 {
+                return StrictDecision::allow(
+                    "M/control",
+                    "empty ack/control",
+                    if has_trailing {
+                        "empty-M-frame-with-window-spans"
+                    } else {
+                        "empty-M-frame"
+                    },
+                );
+            }
+            if view.packetized_sequence != 0 {
+                return StrictDecision::allow(
+                    "M/fragment",
+                    "packetized continuation",
+                    if has_trailing {
+                        "known-fragment-continuation-with-window-spans"
+                    } else {
+                        "known-fragment-continuation"
+                    },
+                );
+            }
+            StrictDecision::quarantine("M", "unknown M payload", "unclassified-M-payload")
+        }
+        Packet::UnknownTopLevel(_) => {
+            StrictDecision::quarantine("top-level", "unknown top-level packet", "unknown-top-level")
+        }
+    }
+}
+
+pub fn decide_verified_translated(direction: Direction, bytes: &[u8]) -> StrictDecision {
+    match Packet::classify(bytes) {
+        Packet::M(frame) => {
+            let Some(view) = &frame.parsed else {
+                return StrictDecision::quarantine("M", "invalid translated M frame", "parse-failed");
+            };
+            if !view.crc_valid {
+                return StrictDecision::quarantine(
+                    "M",
+                    "invalid translated M frame",
+                    "crc-mismatch",
+                );
+            }
+            if view.declared_payload_length != 0
+                && view.declared_payload_length > view.available_payload_length
+            {
+                return StrictDecision::quarantine(
+                    "M",
+                    "invalid translated M frame",
+                    "declared-payload-overflow",
+                );
+            }
+            StrictDecision::allow(
+                "M/translated-deflated",
+                "verified translated deflated frame",
+                match direction {
+                    Direction::ServerToClient => "semantic-module-info-rewrite",
+                    Direction::ServerToClientSynthetic => "synthetic-semantic-module-info-rewrite",
+                    Direction::ClientToServer => "unexpected-client-verified-translation",
+                },
+            )
+        }
+        Packet::Bn(_) => StrictDecision::quarantine(
+            "BN",
+            "invalid verified translation",
+            "verified-translation-not-M",
+        ),
+        Packet::UnknownTopLevel(_) => StrictDecision::quarantine(
+            "top-level",
+            "invalid verified translation",
+            "unknown-top-level",
+        ),
+    }
+}
+
+fn validate_packetized_trailing(bytes: &[u8], offset: usize) -> Result<(), StrictDecision> {
+    let Some(spans) = parse_packetized_spans(bytes, offset) else {
+        return Err(StrictDecision::quarantine(
+            "M/window",
+            "invalid packetized span",
+            "packetized-span-parse-failed",
+        ));
+    };
+    if spans.is_empty() {
+        return Err(StrictDecision::quarantine(
+            "M/window",
+            "invalid packetized span",
+            "packetized-span-empty-trailing",
+        ));
+    }
+
+    for span in spans {
+        if let Some(high) = span.high {
+            if high.is_known() {
+                continue;
+            }
+            return Err(StrictDecision::quarantine(
+                "M/high",
+                high.name(),
+                "unknown-window-high-level-payload",
+            ));
+        }
+        if let Some(deflated) = &span.deflated {
+            if deflated.plausible {
+                continue;
+            }
+            return Err(StrictDecision::quarantine(
+                "M/deflated",
+                "invalid window deflated envelope",
+                "invalid-window-deflated-envelope",
+            ));
+        }
+        if span.payload_length == 0 {
+            continue;
+        }
+        if span.packetized_sequence != 0 {
+            continue;
+        }
+        return Err(StrictDecision::quarantine(
+            "M/window",
+            "unknown packetized span payload",
+            "unclassified-window-span-payload",
+        ));
+    }
+
+    Ok(())
+}
+
+fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
+    match (direction, packet.tag) {
+        (Direction::ClientToServer, BnTag::Bncs) => validate_bncs(packet),
+        (Direction::ClientToServer, BnTag::Bnvs) => validate_bnvs(packet),
+        (Direction::ClientToServer, BnTag::Bnds) => {
+            StrictDecision::allow("BN", packet.tag.name(), "known-legacy-client-control")
+        }
+        (Direction::ClientToServer, BnTag::Bnes) => require_len(
+            packet,
+            7,
+            "known-ee-client-enumerate",
+            "decompile SendBNESDirectMessageToAddress",
+        ),
+        (Direction::ClientToServer, BnTag::Bnlm) => require_len(
+            packet,
+            11,
+            "known-ee-client-latency-request",
+            "decompile SendBNLMMessage",
+        ),
+        (Direction::ClientToServer, BnTag::Bnxi) => validate_bnxi(packet),
+        (Direction::ServerToClient, BnTag::Bncr | BnTag::Bnvr | BnTag::Bnds | BnTag::Bnxr) => {
+            StrictDecision::allow("BN", packet.tag.name(), "known-legacy-server-control")
+        }
+        (Direction::ServerToClient, BnTag::Bndp) => validate_bndp(packet),
+        (Direction::ServerToClient, BnTag::Bner) => validate_bner(packet),
+        (Direction::ServerToClient, BnTag::Bnlr) => require_len(
+            packet,
+            11,
+            "known-ee-server-latency-response",
+            "decompile HandleBNLRMessage",
+        ),
+        (_, BnTag::Bnk0 | BnTag::Bnk1 | BnTag::Bnk2 | BnTag::Bnk3 | BnTag::Bnk4) => {
+            StrictDecision::quarantine(
+                "BN/EE-crypto",
+                packet.tag.name(),
+                "crypto-handshake-not-implemented-in-proxy2",
+            )
+        }
+        (_, BnTag::EeDirectCollision) => StrictDecision::quarantine(
+            "BN/EE-direct",
+            packet.tag.name(),
+            "ee-direct-control-collision",
+        ),
+        (_, BnTag::Unknown) => {
+            StrictDecision::quarantine("BN", packet.tag.name(), "unknown-bn-control")
+        }
+        _ => StrictDecision::quarantine("BN", packet.tag.name(), "known-tag-wrong-direction"),
+    }
+}
+
+fn require_len(
+    packet: &BnPacket<'_>,
+    expected: usize,
+    allow_reason: &'static str,
+    source: &'static str,
+) -> StrictDecision {
+    if packet.bytes.len() == expected {
+        StrictDecision::allow("BN", packet.tag.name(), allow_reason)
+    } else {
+        tracing::warn!(
+            tag = packet.tag.name(),
+            len = packet.bytes.len(),
+            expected,
+            source,
+            "strict BN length validation failed"
+        );
+        StrictDecision::quarantine("BN", packet.tag.name(), "known-bn-invalid-length")
+    }
+}
+
+fn validate_bncs(packet: &BnPacket<'_>) -> StrictDecision {
+    // Diamond `sub_5F6630` emits exactly two counted strings after the fixed
+    // 18-byte header: player name and public CD key. If anything remains after
+    // those two segments, the EE tail was not translated and must not pass.
+    let bytes = packet.bytes;
+    if bytes.len() < 20 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNCS-too-short");
+    }
+    let mut cursor = 18;
+    for _ in 0..2 {
+        if cursor >= bytes.len() {
+            return StrictDecision::quarantine("BN", packet.tag.name(), "BNCS-segment-overflow");
+        }
+        let len = bytes[cursor] as usize;
+        cursor += 1;
+        if cursor + len > bytes.len() {
+            return StrictDecision::quarantine("BN", packet.tag.name(), "BNCS-segment-overflow");
+        }
+        cursor += len;
+    }
+    if cursor != bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNCS-untranslated-ee-tail");
+    }
+    StrictDecision::allow("BN", packet.tag.name(), "known-diamond-client-control")
+}
+
+fn validate_bnvs(packet: &BnPacket<'_>) -> StrictDecision {
+    // Diamond `sub_5F8460` reads status, verifier count, verifier counted
+    // strings, one mandatory response string, then an optional password
+    // response when status is `P`. HG account login expects the three-key
+    // Diamond verifier list rather than EE's one-key response.
+    let bytes = packet.bytes;
+    if bytes.len() < 6 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNVS-too-short");
+    }
+    let status = bytes[4];
+    let count = bytes[5] as usize;
+    if status != b'V' && status != b'P' {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNVS-invalid-status");
+    }
+    if count < 3 {
+        return StrictDecision::quarantine(
+            "BN",
+            packet.tag.name(),
+            "BNVS-verifier-count-too-small",
+        );
+    }
+
+    let mut cursor = 6;
+    for _ in 0..count {
+        if !consume_counted(bytes, &mut cursor) {
+            return StrictDecision::quarantine("BN", packet.tag.name(), "BNVS-verifier-overflow");
+        }
+    }
+    if !consume_counted(bytes, &mut cursor) {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNVS-response-overflow");
+    }
+    if status == b'P' && !consume_counted(bytes, &mut cursor) {
+        return StrictDecision::quarantine(
+            "BN",
+            packet.tag.name(),
+            "BNVS-password-response-overflow",
+        );
+    }
+    if cursor != bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNVS-trailing-bytes");
+    }
+    StrictDecision::allow("BN", packet.tag.name(), "known-diamond-verifier-control")
+}
+
+fn validate_bner(packet: &BnPacket<'_>) -> StrictDecision {
+    // EE `HandleBNERMessage` requires at least 9 bytes, reads section at offset
+    // 7, reads a one-byte session-name length at offset 8, and rejects section
+    // values >= 6 or names that run beyond the datagram.
+    let bytes = packet.bytes;
+    if bytes.len() < 9 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNER-too-short");
+    }
+    let section = bytes[7];
+    let name_len = bytes[8] as usize;
+    if section >= 6 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNER-invalid-section");
+    }
+    if 9 + name_len > bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNER-name-overflow");
+    }
+    StrictDecision::allow(
+        "BN",
+        packet.tag.name(),
+        "known-ee-server-enumerate-response",
+    )
+}
+
+fn validate_bndp(packet: &BnPacket<'_>) -> StrictDecision {
+    // EE `CNetLayerInternal::HandleBNDPMessage` accepts the 8-byte no-string
+    // disconnect form (`BNDP` + u32 reason) and optionally reads a u16 string
+    // length plus a sub-0x400 byte reason string. We require exact cursor
+    // consumption so a malformed or overlong legacy disconnect cannot slide
+    // through as arbitrary EE direct-control data.
+    let bytes = packet.bytes;
+    if bytes.len() == 8 {
+        return StrictDecision::allow(
+            "BN",
+            packet.tag.name(),
+            "known-ee-disconnect-with-reason-code",
+        );
+    }
+    if bytes.len() < 10 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNDP-string-header-overflow");
+    }
+    let reason_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+    if reason_len >= 0x400 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNDP-string-too-long");
+    }
+    if 10 + reason_len != bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNDP-string-overflow");
+    }
+    StrictDecision::allow(
+        "BN",
+        packet.tag.name(),
+        "known-ee-disconnect-with-reason-string",
+    )
+}
+
+fn consume_counted(bytes: &[u8], cursor: &mut usize) -> bool {
+    if *cursor >= bytes.len() {
+        return false;
+    }
+    let len = bytes[*cursor] as usize;
+    *cursor += 1;
+    if *cursor + len > bytes.len() {
+        return false;
+    }
+    *cursor += len;
+    true
+}
+
+fn validate_bnxi(packet: &BnPacket<'_>) -> StrictDecision {
+    // EE `RequestExtendedServerInfo` serializes:
+    // BNXI, UDP port, three counted strings, four build header bytes where the
+    // fourth byte is the build-number length, then three more counted build
+    // strings. This exact cursor walk catches both overflow and trailing data.
+    let bytes = packet.bytes;
+    if bytes.len() < 16 {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-too-short");
+    }
+    let mut cursor = 6;
+    for _ in 0..3 {
+        if cursor >= bytes.len() {
+            return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-string-overflow");
+        }
+        let len = bytes[cursor] as usize;
+        cursor += 1;
+        if cursor + len > bytes.len() {
+            return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-string-overflow");
+        }
+        cursor += len;
+    }
+    if cursor + 4 > bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-build-header-overflow");
+    }
+    let build_number_len = bytes[cursor + 3] as usize;
+    cursor += 4;
+    if cursor + build_number_len > bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-build-string-overflow");
+    }
+    cursor += build_number_len;
+    for _ in 0..3 {
+        if cursor >= bytes.len() {
+            return StrictDecision::quarantine(
+                "BN",
+                packet.tag.name(),
+                "BNXI-build-string-overflow",
+            );
+        }
+        let len = bytes[cursor] as usize;
+        cursor += 1;
+        if cursor + len > bytes.len() {
+            return StrictDecision::quarantine(
+                "BN",
+                packet.tag.name(),
+                "BNXI-build-string-overflow",
+            );
+        }
+        cursor += len;
+    }
+    if cursor != bytes.len() {
+        return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-trailing-bytes");
+    }
+    StrictDecision::allow("BN", packet.tag.name(), "known-ee-extended-info-request")
+}
+
+pub fn log_decision(direction: Direction, bytes: &[u8], decision: &StrictDecision, strict: bool) {
+    let action = if !strict || decision.allowed() {
+        "allow"
+    } else {
+        "quarantine"
+    };
+    let m_diagnostic = if action == "quarantine" {
+        m_window_diagnostic(bytes).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    tracing::info!(
+        direction = direction.as_str(),
+        action,
+        family = decision.family,
+        name = decision.name,
+        reason = decision.reason,
+        len = bytes.len(),
+        prefix = %hex_prefix(bytes, 96),
+        m = %m_diagnostic,
+        "strict translation decision"
+    );
+}
+
+fn m_window_diagnostic(bytes: &[u8]) -> Option<String> {
+    let Packet::M(frame) = Packet::classify(bytes) else {
+        return None;
+    };
+    let view = frame.parsed?;
+    let primary = view
+        .high
+        .map(|high| format!("{:02X}/{:02X} {}", high.major, high.minor, high.name()))
+        .unwrap_or_else(|| "-".to_string());
+    let mut parts = vec![format!(
+        "seq={} ack={} flags=0x{:02X} pktseq={} decl={} payload={} avail={} trail={} primary={}",
+        view.sequence,
+        view.ack_sequence,
+        view.flags,
+        view.packetized_sequence,
+        view.declared_payload_length,
+        view.payload_length,
+        view.available_payload_length,
+        view.trailing_payload_length,
+        primary,
+    )];
+
+    if view.trailing_payload_length != 0 {
+        let trailing_offset = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+        match parse_packetized_spans(bytes, trailing_offset) {
+            Some(spans) => {
+                for span in spans {
+                    let high = span
+                        .high
+                        .map(|high| {
+                            format!("{:02X}/{:02X} {}", high.major, high.minor, high.name())
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+                    let deflated = span
+                        .deflated
+                        .as_ref()
+                        .map(|deflated| {
+                            format!(
+                                "deflated(inflated={} plausible={})",
+                                deflated.inflated_length, deflated.plausible
+                            )
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+                    parts.push(format!(
+                        "span@{} flags=0x{:02X} pktseq={} decl={} payload={} record={} high={} {}",
+                        span.offset,
+                        span.flags,
+                        span.packetized_sequence,
+                        span.declared_payload_length,
+                        span.payload_length,
+                        span.record_length,
+                        high,
+                        deflated,
+                    ));
+                }
+            }
+            None => parts.push(format!("span-parse-failed@{}", trailing_offset)),
+        }
+    }
+
+    Some(parts.join(" | "))
+}

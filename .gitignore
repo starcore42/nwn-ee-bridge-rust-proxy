@@ -1,0 +1,25 @@
+# Rust build output.
+/target/
+
+# Local secrets and machine-specific paths.
+.env
+*.env
+hg-bridge-*.env
+nwncdkey.ini
+*.nwncdkey.ini
+
+# Runtime logs and dumps.
+/logs/
+*.log
+*.jsonl
+
+# Local game assets and generated content.
+/hg-bridge-assets/
+/nwsync/
+
+# OS/editor noise.
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
+*.swp

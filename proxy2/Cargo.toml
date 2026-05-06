@@ -1,0 +1,23 @@
+[package]
+name = "hgbridge-proxy2"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "hgbridge_proxy2"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.0"
+md5 = "0.7"
+rand = "0.9"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "local-offset"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "time"] }
+
+[build-dependencies]
+cc = "1.2"
