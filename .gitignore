@@ -16,6 +16,10 @@ nwncdkey.ini
 # Local game assets and generated content.
 /hg-bridge-assets/
 /nwsync/
+/assets/sources/
+/assets/staged/
+/assets/builds/
+/assets/fixes/
 
 # OS/editor noise.
 Thumbs.db

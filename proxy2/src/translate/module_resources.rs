@@ -24,6 +24,8 @@ const RESREF_BYTES: usize = 16;
 const MAX_SERVER_STATUS_STRING: usize = 4096;
 const MAX_MODULE_RESOURCES_PAYLOAD: usize = 4096;
 
+use crate::nwsync::Advertisement;
+
 use super::profiles::{self, ModuleResourceProfile};
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,38 @@ pub struct ModuleResourcesRewriteSummary {
     pub profile_name: &'static str,
     pub hak_count: usize,
     pub nwsync_advertised: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleResourceRuntime {
+    profile_name: String,
+    nwsync_advertisement: Option<Advertisement>,
+}
+
+impl ModuleResourceRuntime {
+    pub fn new(profile_name: String, nwsync_advertisement: Option<Advertisement>) -> Self {
+        Self {
+            profile_name,
+            nwsync_advertisement,
+        }
+    }
+
+    pub fn profile_name(&self) -> &str {
+        &self.profile_name
+    }
+
+    pub fn nwsync_advertisement(&self) -> Option<&Advertisement> {
+        self.nwsync_advertisement.as_ref()
+    }
+}
+
+impl Default for ModuleResourceRuntime {
+    fn default() -> Self {
+        Self {
+            profile_name: "higher-ground".to_string(),
+            nwsync_advertisement: None,
+        }
+    }
 }
 
 struct ModuleResourceWriter {
@@ -76,6 +110,19 @@ impl ModuleResourceWriter {
         Some(())
     }
 
+    fn write_nwsync_advertisement(&mut self, advertisement: &Advertisement) -> Option<()> {
+        self.write_string(advertisement.root_hash())?;
+        self.write_byte(1);
+        self.write_string(advertisement.url())?;
+        self.write_byte(u8::try_from(advertisement.manifests().len()).ok()?);
+        for manifest in advertisement.manifests() {
+            self.write_string(&manifest.hash)?;
+            self.write_byte(manifest.flags);
+            self.write_byte(manifest.language);
+        }
+        Some(())
+    }
+
     fn finish(mut self) -> Option<(Vec<u8>, Vec<u8>, u32)> {
         let declared = u32::try_from(self.read_buffer.len().checked_add(HIGH_LEVEL_HEADER_BYTES)?).ok()?;
         self.read_buffer[..CNW_LENGTH_BYTES].copy_from_slice(&declared.to_le_bytes());
@@ -86,6 +133,7 @@ impl ModuleResourceWriter {
 
 pub fn rewrite_server_status_module_resources_payload(
     payload: &mut Vec<u8>,
+    runtime: &ModuleResourceRuntime,
 ) -> Option<ModuleResourcesRewriteSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || !is_high_level_envelope(payload[0])
@@ -95,13 +143,14 @@ pub fn rewrite_server_status_module_resources_payload(
         return None;
     }
 
-    let profile = profiles::module_resources_profile("higher-ground");
-    rewrite_payload_for_profile(payload, profile)
+    let profile = profiles::module_resources_profile(runtime.profile_name());
+    rewrite_payload_for_profile(payload, profile, runtime.nwsync_advertisement())
 }
 
 fn rewrite_payload_for_profile(
     payload: &mut Vec<u8>,
     profile: ModuleResourceProfile,
+    nwsync_advertisement: Option<&Advertisement>,
 ) -> Option<ModuleResourcesRewriteSummary> {
     let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     let declared = usize::try_from(old_declared).ok()?;
@@ -116,9 +165,12 @@ fn rewrite_payload_for_profile(
     let mut writer = ModuleResourceWriter::new();
     writer.write_string(&status_module_name)?;
 
-    // The local EE user folder already has the HAKs installed by the harness.
-    // Advertise no NWSync repository here and provide the explicit HAK list.
-    writer.write_bit(profile.advertise_nwsync);
+    if let Some(advertisement) = nwsync_advertisement {
+        writer.write_bit(true);
+        writer.write_nwsync_advertisement(advertisement)?;
+    } else {
+        writer.write_bit(false);
+    }
 
     writer.write_string("")?;
     writer.write_string("")?;
@@ -148,7 +200,7 @@ fn rewrite_payload_for_profile(
         status_module_name,
         profile_name: profile.name,
         hak_count: profile.hak_order_top_first.len(),
-        nwsync_advertised: profile.advertise_nwsync,
+        nwsync_advertised: nwsync_advertisement.is_some(),
     };
     *payload = rewritten;
     Some(summary)

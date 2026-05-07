@@ -6,14 +6,21 @@
 //! the parent M-frame transport layer.
 
 use crate::{
+    crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        area, cnw_message, custom_token, live_object, module, module_resources, player_list,
-        quickbar,
+        area, char_list, chat, client_side_message, cnw_message, custom_token, game_obj_update,
+        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
+        party, player_list, quickbar,
     },
 };
 
 use super::{live_update, parse_window};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum SemanticScope {
@@ -26,10 +33,12 @@ pub(super) struct InflatedPayloadRewrite {
     family_names: Vec<&'static str>,
     pub(super) area_rewrite: Option<area::AreaRewriteSummary>,
     pub(super) module_info_candidate_offset: Option<usize>,
+    pub(super) quarantine_reason: Option<&'static str>,
 }
 
 impl InflatedPayloadRewrite {
     pub(super) fn note_rewrite(&mut self, family_name: &'static str) {
+        self.quarantine_reason = None;
         if !self.family_names.contains(&family_name) {
             self.family_names.push(family_name);
         }
@@ -37,6 +46,10 @@ impl InflatedPayloadRewrite {
 
     pub(super) fn any_rewrite(&self) -> bool {
         !self.family_names.is_empty()
+    }
+
+    pub(super) fn should_quarantine(&self) -> bool {
+        self.quarantine_reason.is_some()
     }
 }
 
@@ -60,24 +73,65 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
+    preclaimed_family: Option<&'static str>,
 ) -> InflatedPayloadRewrite {
     let mut rewrite = InflatedPayloadRewrite::default();
 
-    if custom_token::rewrite_payload_if_possible(payload).is_some() {
+    if let Some(family_name) = preclaimed_family {
+        rewrite.note_rewrite(family_name);
+    }
+    if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() {
         rewrite.note_rewrite("SetCustomToken");
     }
-    if quickbar::normalize_quickbar_payload_if_needed(payload).is_some() {
-        rewrite.note_rewrite("GuiQuickbarPrefixedFragments");
+    if login::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Login");
     }
-    if quickbar::rewrite_simple_quickbar_payload_if_possible(payload).is_some() {
+    if module_time::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Module_Time");
+    }
+    if loadbar::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("LoadBar");
+    }
+    if client_side_message::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("ClientSideMessage");
+    }
+    if journal::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Journal");
+    }
+    if chat::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Chat");
+    }
+    if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Inventory");
+    }
+    if game_obj_update::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("GameObjUpdate");
+    }
+    if party::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("Party");
+    }
+    if quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload).is_some()
+        || quickbar::rewrite_simple_quickbar_payload_if_possible(payload).is_some()
+    {
         rewrite.note_rewrite("GuiQuickbar");
     }
-    if cnw_message::normalize_prefixed_fragments_payload_if_needed(payload).is_some() {
-        rewrite.note_rewrite("CNWMessagePrefixedFragments");
+    // Generic CNW prefixed-fragment repair is transport normalization only.
+    // It must never count as semantic ownership: even byte-identical packets
+    // need a decompile-backed family translator to claim them. If no later
+    // translator recognizes the repaired high-level shape, the strict layer
+    // quarantines the payload instead of leaking it to the EE client.
+    let _ = cnw_message::normalize_prefixed_fragments_payload_if_needed(payload);
+    if char_list::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("CharList");
     }
     if player_list::rewrite_player_list_payload_if_possible(payload).is_some() {
         rewrite.note_rewrite("PlayerList");
     }
+    // Live-object `P 05 01` packets are not safe to repair by CNW envelope
+    // shape alone. EE and Diamond both dispatch the read-buffer as a stream of
+    // typed live-object submessages, so the prefixed-fragment path must prove
+    // a record boundary before it can claim the packet; otherwise strict mode
+    // quarantines the chunk for decompile-backed stream/reassembly work.
     if live_object::normalize_prefixed_fragments_payload_if_needed(payload).is_some() {
         rewrite.note_rewrite("GameObjUpdate_LiveObjectPrefixedFragments");
     }
@@ -91,6 +145,9 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     }
     if live_update::rewrite_payload_if_needed(payload).is_some() {
         rewrite.note_rewrite("GameObjUpdate_LiveObjectUpdateRecords");
+    }
+    if live_update::claim_payload_if_verified(payload).is_some() {
+        rewrite.note_rewrite("GameObjUpdate_LiveObjectClaimedRecords");
     }
 
     if matches!(scope, SemanticScope::DeflatedReassembly) {
@@ -106,7 +163,77 @@ pub(super) fn rewrite_inflated_payload_for_ee(
         }
     }
 
+    if !rewrite.any_rewrite() {
+        mark_untranslated_semantic_quarantine(payload, scope, &mut rewrite);
+    }
+
     rewrite
+}
+
+fn mark_untranslated_semantic_quarantine(
+    payload: &[u8],
+    scope: SemanticScope,
+    rewrite: &mut InflatedPayloadRewrite,
+) {
+    let Some(high) = HighLevel::parse(payload) else {
+        return;
+    };
+    let reason = untranslated_semantic_quarantine_reason(high);
+
+    rewrite.quarantine_reason = Some(reason);
+    let dump_path = dump_unrewritten_semantic_payload(payload, reason);
+    let prefix = hex_prefix(payload, 128);
+    tracing::warn!(
+        scope = ?scope,
+        reason,
+        family = high.name(),
+        major = high.major,
+        minor = high.minor,
+        payload_length = payload.len(),
+        dump_path = dump_path.as_deref().unwrap_or(""),
+        prefix = %prefix,
+        "server high-level payload quarantined: semantic translator did not claim required family"
+    );
+}
+
+fn untranslated_semantic_quarantine_reason(high: HighLevel) -> &'static str {
+    // Strict bridge discipline: `HighLevel::is_known()` is only a classifier,
+    // never an allow decision. A server-to-client gameplay payload may be
+    // emitted only after a focused semantic translator has claimed it. Packets
+    // whose opcode we have never seen are quarantined by the same rule instead
+    // of getting a hidden "unknown passthrough" path.
+    if high.is_known() {
+        "unclaimed-known-high-level"
+    } else {
+        "unclaimed-unknown-high-level"
+    }
+}
+
+fn dump_unrewritten_semantic_payload(payload: &[u8], reason: &str) -> Option<String> {
+    let dir = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR").ok()?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    let mut path = PathBuf::from(dir);
+    fs::create_dir_all(&path).ok()?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    path.push(format!("{reason}-{nanos}.bin"));
+    fs::write(&path, payload).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn hex_prefix(bytes: &[u8], limit: usize) -> String {
+    let mut out = String::new();
+    for (index, byte) in bytes.iter().take(limit).enumerate() {
+        if index != 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:02X}"));
+    }
+    out
 }
 
 pub(super) fn log_deflated_semantic_rewrite(
@@ -144,6 +271,10 @@ pub(super) fn inflated_cnw_fragment_offset_valid_or_normalizable(inflated: &[u8]
         return true;
     }
     let mut probe = inflated.to_vec();
+    if client_side_message::claim_or_rewrite_payload_if_verified(&mut probe).is_some() {
+        return true;
+    }
+    let mut probe = inflated.to_vec();
     if custom_token::rewrite_payload_if_possible(&mut probe).is_some() {
         return true;
     }
@@ -152,15 +283,9 @@ pub(super) fn inflated_cnw_fragment_offset_valid_or_normalizable(inflated: &[u8]
         return true;
     }
     let mut probe = inflated.to_vec();
-    if quickbar::normalize_quickbar_payload_if_needed(&mut probe).is_some() {
-        return true;
-    }
-    let mut probe = inflated.to_vec();
-    if quickbar::rewrite_simple_quickbar_payload_if_possible(&mut probe).is_some() {
-        return true;
-    }
-    let mut probe = inflated.to_vec();
-    if cnw_message::normalize_prefixed_fragments_payload_if_needed(&mut probe).is_some() {
+    if quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe).is_some()
+        || quickbar::rewrite_simple_quickbar_payload_if_possible(&mut probe).is_some()
+    {
         return true;
     }
     let mut probe = inflated.to_vec();
@@ -170,16 +295,109 @@ pub(super) fn inflated_cnw_fragment_offset_valid_or_normalizable(inflated: &[u8]
 pub(super) fn rewrite_direct_frame_if_needed(
     bytes: &[u8],
     view: &MFrameView,
+    module_resource_runtime: &module_resources::ModuleResourceRuntime,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    if let Some(rewritten) = rewrite_server_status_module_resources_frame_if_needed(bytes, view)? {
+    if let Some(rewritten) =
+        rewrite_server_status_module_resources_frame_if_needed(bytes, view, module_resource_runtime)?
+    {
         return Ok(Some(rewritten));
     }
-    live_update::rewrite_direct_frame_if_needed(bytes, view)
+    if let Some(rewritten) = live_update::rewrite_direct_frame_if_needed(bytes, view)? {
+        return Ok(Some(rewritten));
+    }
+    if let Some(high) = view.high {
+        if let Some(rewritten) = rewrite_direct_semantic_frame_if_claimed(bytes, view, high)? {
+            return Ok(Some(rewritten));
+        }
+        let reason = untranslated_semantic_quarantine_reason(high);
+        return consume_untranslated_direct_frame(bytes, view, high, reason).map(Some);
+    }
+    Ok(None)
+}
+
+fn rewrite_direct_semantic_frame_if_claimed(
+    bytes: &[u8],
+    view: &MFrameView,
+    high: HighLevel,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(payload) = parse_window::primary_payload(bytes, view) else {
+        return Ok(None);
+    };
+    let mut rewritten_payload = payload.to_vec();
+    let semantic_rewrite_summary = rewrite_inflated_payload_for_ee(
+        &mut rewritten_payload,
+        None,
+        SemanticScope::CoalescedSpan,
+        None,
+    );
+    if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
+        return Ok(None);
+    }
+
+    let rewritten = parse_window::replace_primary_payload_and_repair(
+        bytes,
+        view,
+        &rewritten_payload,
+        "direct semantic high-level payload",
+    )?;
+    tracing::info!(
+        family = high.name(),
+        major = high.major,
+        minor = high.minor,
+        sequence = view.sequence,
+        old_payload_length = payload.len(),
+        new_payload_length = rewritten_payload.len(),
+        "server direct M high-level payload semantically claimed for EE"
+    );
+    Ok(Some(rewritten))
+}
+
+fn consume_untranslated_direct_frame(
+    bytes: &[u8],
+    view: &MFrameView,
+    high: HighLevel,
+    reason: &'static str,
+) -> anyhow::Result<Vec<u8>> {
+    if view.uses_extended_packet_length {
+        anyhow::bail!("cannot consume untranslated extended-length direct M frame yet");
+    }
+
+    let mut rewritten = bytes.to_vec();
+    rewritten.truncate(crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
+    if rewritten.len() > 7 {
+        // This is a semantic quarantine shell, not a packetized payload. Keep
+        // the sequence/ack bytes intact, but clear stream/packetized/deflate
+        // delivery bits before setting the payload length to zero.
+        rewritten[7] &= !0x07;
+    }
+    write_be_u16(&mut rewritten, 10, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear untranslated direct M payload length"))?;
+    encode_legacy_m_crc(&mut rewritten)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair untranslated direct M CRC"))?;
+
+    tracing::warn!(
+        reason,
+        family = high.name(),
+        major = high.major,
+        minor = high.minor,
+        old_len = bytes.len(),
+        new_len = rewritten.len(),
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        flags = view.flags,
+        packetized_sequence = view.packetized_sequence,
+        "server direct M frame quarantined: semantic translator did not claim required family"
+    );
+
+    Ok(rewritten)
 }
 
 fn rewrite_server_status_module_resources_frame_if_needed(
     bytes: &[u8],
     view: &MFrameView,
+    module_resource_runtime: &module_resources::ModuleResourceRuntime,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(high) = view.high else {
         return Ok(None);
@@ -192,8 +410,10 @@ fn rewrite_server_status_module_resources_frame_if_needed(
         return Ok(None);
     };
     let mut rewritten_payload = payload.to_vec();
-    let Some(summary) =
-        module_resources::rewrite_server_status_module_resources_payload(&mut rewritten_payload)
+    let Some(summary) = module_resources::rewrite_server_status_module_resources_payload(
+        &mut rewritten_payload,
+        module_resource_runtime,
+    )
     else {
         return Ok(None);
     };

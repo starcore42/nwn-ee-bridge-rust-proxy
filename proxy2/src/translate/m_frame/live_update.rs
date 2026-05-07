@@ -10,9 +10,14 @@ use crate::translate::live_object_update;
 use super::{parse_window, MFrameView};
 
 pub type RewriteSummary = live_object_update::LiveObjectUpdateRewriteSummary;
+pub type ClaimSummary = live_object_update::LiveObjectUpdateClaimSummary;
 
 pub fn rewrite_payload_if_needed(payload: &mut Vec<u8>) -> Option<RewriteSummary> {
     live_object_update::rewrite_update_records_payload_if_possible(payload)
+}
+
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClaimSummary> {
+    live_object_update::claim_payload_if_verified(payload)
 }
 
 pub fn rewrite_direct_frame_if_needed(

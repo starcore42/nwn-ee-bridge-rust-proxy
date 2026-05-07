@@ -14,8 +14,8 @@ use crate::{
 
 use super::{
     deflate::{inflate_with_server_stream, inflate_with_window, looks_like_zlib_wrapped_deflate},
-    hex_prefix, server_dispatch::inflated_cnw_fragment_offset_valid_or_normalizable, SessionState,
-    MAX_INTERLEAVED_PACKETS, MAX_REASSEMBLY_FRAMES,
+    server_dispatch, transport_identity, SessionState, MAX_INTERLEAVED_PACKETS,
+    MAX_REASSEMBLY_FRAMES,
 };
 
 #[derive(Debug, Clone)]
@@ -88,7 +88,13 @@ pub(super) fn start_server_deflated_reassembly(
         1
     };
     if expected_frames == 0 || expected_frames > MAX_REASSEMBLY_FRAMES {
-        return Ok(Emit::Packet(bytes.to_vec()));
+        tracing::warn!(
+            expected_frames,
+            sequence = view.sequence,
+            packetized_sequence = view.packetized_sequence,
+            "server deflated M reassembly quarantined: implausible expected frame count"
+        );
+        return Ok(Emit::Drop);
     }
 
     let frame = buffered_frame_from_view(bytes, view, true)?;
@@ -116,7 +122,7 @@ pub(super) fn start_server_deflated_reassembly(
     if expected_frames == 1 {
         super::emit_completed_server_deflated_reassembly(state)
     } else {
-        Ok(Emit::Drop)
+        Ok(Emit::Consumed)
     }
 }
 
@@ -125,12 +131,26 @@ pub(super) fn continue_server_deflated_reassembly(
     view: &MFrameView,
     state: &mut SessionState,
 ) -> anyhow::Result<Emit> {
-    let Some(reassembly) = state.server_deflated.as_mut() else {
-        return Ok(Emit::Packet(bytes.to_vec()));
+    let Some(snapshot) = state.server_deflated.as_ref() else {
+        tracing::warn!(
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            "server deflated M continuation quarantined: no active reassembly owner"
+        );
+        return Ok(Emit::Drop);
     };
 
-    let distance = view.sequence.wrapping_sub(reassembly.first_sequence) as usize;
-    if distance >= reassembly.expected_frames {
+    let first_sequence = snapshot.first_sequence;
+    let expected_frames = snapshot.expected_frames;
+    let distance = view.sequence.wrapping_sub(first_sequence) as usize;
+    if distance >= expected_frames {
+        let interleaved_packet = claim_or_consume_interleaved_server_packet(bytes, view, state)?;
+        let Some(reassembly) = state.server_deflated.as_mut() else {
+            return Ok(Emit::Drop);
+        };
         if reassembly.interleaved_packets.len() >= MAX_INTERLEAVED_PACKETS {
             tracing::warn!(
                 sequence = view.sequence,
@@ -141,9 +161,13 @@ pub(super) fn continue_server_deflated_reassembly(
             state.server_deflated = None;
             return Ok(Emit::Drop);
         }
-        reassembly.interleaved_packets.push(bytes.to_vec());
-        return Ok(Emit::Drop);
+        reassembly.interleaved_packets.push(interleaved_packet);
+        return Ok(Emit::Consumed);
     }
+
+    let Some(reassembly) = state.server_deflated.as_mut() else {
+        return Ok(Emit::Drop);
+    };
 
     if reassembly
         .frames
@@ -155,7 +179,7 @@ pub(super) fn continue_server_deflated_reassembly(
             first_sequence = reassembly.first_sequence,
             "duplicate server deflated M frame dropped"
         );
-        return Ok(Emit::Drop);
+        return Ok(Emit::Consumed);
     }
 
     let frame = buffered_frame_from_view(bytes, view, false)?;
@@ -169,10 +193,72 @@ pub(super) fn continue_server_deflated_reassembly(
     reassembly.frames.insert(insert_index, frame);
 
     if reassembly.frames.len() < reassembly.expected_frames {
-        return Ok(Emit::Drop);
+        return Ok(Emit::Consumed);
     }
 
     super::emit_completed_server_deflated_reassembly(state)
+}
+
+fn claim_or_consume_interleaved_server_packet(
+    bytes: &[u8],
+    view: &MFrameView,
+    state: &mut SessionState,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(rewritten) =
+        server_dispatch::rewrite_direct_frame_if_needed(bytes, view, &state.module_resources)?
+    {
+        tracing::info!(
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            "interleaved server M packet semantically claimed while deflated reassembly is pending"
+        );
+        return Ok(rewritten);
+    }
+
+    if let Some(summary) = transport_identity::claim_server_frame_if_verified(view) {
+        tracing::info!(
+            packet = summary.packet_name,
+            reason = summary.reason,
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            "interleaved server M transport-only packet claimed as verified no-op"
+        );
+        return Ok(bytes.to_vec());
+    }
+
+    tracing::warn!(
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        flags = view.flags,
+        packetized_sequence = view.packetized_sequence,
+        payload_len = view.payload_length,
+        "interleaved server M packet consumed: no semantic translator or transport identity owner"
+    );
+    consume_interleaved_unclaimed_server_packet(bytes)
+}
+
+fn consume_interleaved_unclaimed_server_packet(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut out_packet = bytes.to_vec();
+    out_packet.truncate(LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
+    if out_packet.len() > 7 {
+        out_packet[7] &= !0x07;
+    }
+    write_be_u16(&mut out_packet, 8, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear interleaved M packetized sequence"))?;
+    write_be_u16(&mut out_packet, 10, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear interleaved M packetized length"))?;
+    encode_legacy_m_crc(&mut out_packet)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair interleaved M CRC"))?;
+    Ok(out_packet)
 }
 
 fn buffered_frame_from_view(
@@ -284,10 +370,11 @@ pub(super) fn build_consumed_server_deflated_frames(
         out_packet.truncate(LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
         if out_packet.len() > 7 {
             // Keep the reliable-window sequence/ack shell so the client can
-            // acknowledge progress, but clear deflate/stream delivery bits and
-            // packetized count/length so no unsafe high-level CNWMessage reaches
-            // EE's guarded reader.
-            out_packet[7] &= !0x05;
+            // acknowledge progress, but clear stream, packetized, and deflate
+            // delivery bits before zeroing packetized count/length. Leaving
+            // bit 0x02 set on an empty shell advertises a packetized payload
+            // that no longer exists and can stall reliable-window progress.
+            out_packet[7] &= !0x07;
         }
         write_be_u16(&mut out_packet, 8, 0)
             .then_some(())
@@ -316,32 +403,6 @@ pub(super) fn inflate_gameplay_payload(
     if zlib_stream && !looks_like_zlib_wrapped_deflate(compressed) {
         match inflate_with_server_stream(compressed, inflated_length, server_stream)? {
             Some(bytes) => {
-                if !inflated_cnw_fragment_offset_valid_or_normalizable(&bytes) {
-                    tracing::warn!(
-                        inflated_length = bytes.len(),
-                        prefix = %hex_prefix(&bytes, 32),
-                        "server zlib-stream candidate failed CNW fragment-offset validation/normalization; trying independent raw-deflate window"
-                    );
-                    if let Some(independent) = inflate_with_window(
-                        compressed,
-                        inflated_length,
-                        false,
-                        FlushDecompress::Sync,
-                    )? {
-                        if inflated_cnw_fragment_offset_valid_or_normalizable(&independent) {
-                            tracing::info!(
-                                inflated_length = independent.len(),
-                                prefix = %hex_prefix(&independent, 32),
-                                "server deflated M window accepted as independent raw-deflate after stream reset/normalization"
-                            );
-                            *server_stream = None;
-                            return Ok(InflatedGameplayPayload {
-                                bytes: independent,
-                                used_server_stream: false,
-                            });
-                        }
-                    }
-                }
                 return Ok(InflatedGameplayPayload {
                     bytes,
                     used_server_stream: true,

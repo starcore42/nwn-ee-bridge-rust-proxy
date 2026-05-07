@@ -38,6 +38,9 @@ Expect to debug it.
   Tools with the C++ workload.
 - NWN:EE for local client testing.
 - A local Diamond-format `nwncdkey.ini` when testing against HG authentication.
+- `nwsync_write.exe` or `nwn_nwsync_write.exe` if generating a local NWSync
+  repository.
+- 7-Zip if using the asset profile helper to extract archives.
 
 The proxy builds a vendored legacy `libhydrogen` compatibility copy from
 `third_party/libhydrogen-legacy-nwn`.
@@ -69,6 +72,7 @@ For local testing, start the proxy on the same machine as the NWN:EE client:
   --listen 127.0.0.1:5121 `
   --server 213 `
   --diamond-cdkey C:\path\to\nwncdkey.ini `
+  --nwsync-env .\hg-bridge-nwsync.env `
   --strict-translate
 ```
 
@@ -88,6 +92,13 @@ Useful options:
 --server <SERVER>               HG shortcut or explicit upstream host:port.
 --diamond-cdkey <PATH>          Diamond nwncdkey.ini used for legacy auth.
 --strict-translate              Drop packets that are not classified as known.
+--strict-profile <PROFILE>      developer, alpha, or player validation profile.
+--asset-profile <PROFILE>       Compatibility profile. Defaults to higher-ground.
+--nwsync-env <PATH>             Env file from the asset/NWSync build helper.
+--nwsync-root <PATH>            Local NWSync repository root to serve.
+--nwsync-hash <HASH>            NWSync root manifest hash to advertise.
+--nwsync-url <URL>              Public NWSync URL to advertise.
+--disable-nwsync                Disable NWSync advertisement and local serving.
 --packet-dump                   Emit more packet logging.
 --log <PATH>                    Write logs to a file.
 --allow-remote-clients          Accept non-loopback clients.
@@ -110,14 +121,30 @@ inside this repo.
 
 ## Assets And NWSync
 
-No asset bundle is included here. Keep local HAK, TLK, override, and generated
-NWSync content outside the repo, for example under `hg-bridge-assets`.
+No asset bundle is included here. Keep local HAK, TLK, override, extracted
+archives, generated fixes, and NWSync repositories outside Git.
 
-The Rust proxy does not currently provide a complete public NWSync/content
-solution. Treat asset setup as part of local test environment preparation.
+The included asset profile is a developer helper for staging Higher Ground
+client content and producing a local NWSync repository:
+
+```powershell
+.\tools\build-asset-profile.ps1 `
+  -ProfilePath .\assets\profiles\higher-ground.json `
+  -RequiredRoot C:\path\to\required\archives `
+  -NwsyncTool C:\path\to\nwsync_write.exe `
+  -Apply -Force
+```
+
+The helper writes `hg-bridge-nwsync.env` with the repository root, root hash, and
+URL expected by the proxy. That env file is intentionally ignored by Git.
+
+The proxy can advertise that repository and, for local `http://127.0.0.1` or
+`http://localhost` URLs, serve it with the built-in static HTTP server. This is
+still experimental, not a finished public content pipeline.
 
 ## Progress Log
 
 - Initial public Rust proxy snapshot: strict translation structure, EE crypto handling, Diamond CD-key derivation, module/area/live-object/quickbar translation experiments.
 - Expanded proxy2 translation work: module resources, quickbar payloads, area context, live-object updates, and M-frame sequencing/reassembly helpers.
 - Split proxy2 translation internals into focused M-frame, live-object update, custom token, and profile modules while preserving the experimental proxy build.
+- Added runtime NWSync advertisement/serving, asset profile tooling, stricter validation profiles, and broader BN/high-level packet validators.

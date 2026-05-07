@@ -1,9 +1,15 @@
 //! Synthetic area-load fallback routing for reliable `M` frames.
 //!
 //! This is intentionally a transport-side compatibility shim, not an area
-//! semantic parser. Native client `Area_AreaLoaded` always wins; the synthetic
-//! packet is armed only after the bridge has inserted the paired synthetic
-//! loadbar frames for a verified translated `Area_ClientArea` window.
+//! semantic parser. Native client `Area_AreaLoaded` always wins.
+//!
+//! The old in-client driver hook had a stronger signal than the proxy: it
+//! could see the EE `Area_ClientArea` dispatch return successfully and then
+//! synthesize `Area_AreaLoaded` only when no native client packet appeared.
+//! The Rust proxy cannot observe that return value, so it uses the narrower
+//! transport-safe version: arm a delayed fallback only when a named, audited
+//! area compatibility transform ran, and cancel it immediately if the client
+//! sends the native `Area_AreaLoaded` first.
 
 use std::time::{Duration, Instant};
 
@@ -58,10 +64,17 @@ impl AreaLoadedFallbackReason {
 pub(super) fn fallback_reason_for_area_rewrite(
     summary: &area::AreaRewriteSummary,
 ) -> Option<AreaLoadedFallbackReason> {
-    summary
+    if summary
         .rewrite_kinds
         .contains(&area::AreaRewriteKind::LegacyHgMissingHeightRepair)
-        .then_some(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair)
+    {
+        tracing::info!(
+            area_resref = %summary.area_resref,
+            "client synthetic Area_AreaLoaded fallback armed candidate: named HG missing-height compatibility transform ran"
+        );
+        return Some(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair);
+    }
+    None
 }
 
 pub(super) fn is_native_area_loaded(high: Option<HighLevel>) -> bool {

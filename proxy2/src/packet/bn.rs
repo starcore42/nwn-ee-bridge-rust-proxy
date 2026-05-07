@@ -24,8 +24,10 @@ impl<'a> BnPacket<'a> {
 pub enum BnTag {
     Bncs,
     Bncr,
+    Bndr,
     Bnvs,
     Bnvr,
+    Bndm,
     Bndp,
     Bnds,
     Bnk0,
@@ -48,8 +50,10 @@ impl BnTag {
         match bytes.get(..4) {
             Some(b"BNCS") => Self::Bncs,
             Some(b"BNCR") => Self::Bncr,
+            Some(b"BNDR") => Self::Bndr,
             Some(b"BNVS") => Self::Bnvs,
             Some(b"BNVR") => Self::Bnvr,
+            Some(b"BNDM") => Self::Bndm,
             Some(b"BNDP") => Self::Bndp,
             Some(b"BNDS") => Self::Bnds,
             Some(b"BNK0") => Self::Bnk0,
@@ -63,7 +67,6 @@ impl BnTag {
             Some(b"BNLR") => Self::Bnlr,
             Some(b"BNXI") => Self::Bnxi,
             Some(b"BNXR") => Self::Bnxr,
-            Some(b"BNDM" | b"BNDR") => Self::EeDirectCollision,
             _ => Self::Unknown,
         }
     }
@@ -72,8 +75,10 @@ impl BnTag {
         match self {
             Self::Bncs => "BNCS legacy connect start",
             Self::Bncr => "BNCR legacy verifier challenge",
+            Self::Bndr => "BNDR EE extended server info response",
             Self::Bnvs => "BNVS legacy verifier response",
             Self::Bnvr => "BNVR legacy verifier result",
+            Self::Bndm => "BNDM EE direct disconnect",
             Self::Bndp => "BNDP disconnect reason",
             Self::Bnds => "BNDS disconnect",
             Self::Bnk0 => "BNK0 EE key reset",
@@ -91,4 +96,57 @@ impl BnTag {
             Self::Unknown => "unknown BN control",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BndrExtendedServerInfo<'a> {
+    pub header_word: u16,
+    pub details: &'a [u8],
+    pub module_description: &'a [u8],
+    pub build: &'a [u8],
+    pub trailing_word: u16,
+}
+
+pub fn parse_bndr_extended_server_info(bytes: &[u8]) -> Option<BndrExtendedServerInfo<'_>> {
+    // Decompile-backed shape:
+    // EE `CNetLayerInternal::HandleBNDRMessage` rejects packets shorter than
+    // 0x0A, then reads three little-endian DWORD-length `CExoString` payloads
+    // beginning at offset 6. A final WORD follows the third string. Requiring
+    // exact cursor consumption here keeps BNDR from becoming generic BN
+    // pass-through while still allowing the EE-valid extended-info response.
+    if bytes.get(..4)? != b"BNDR" || bytes.len() < 0x0A {
+        return None;
+    }
+
+    let header_word = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let mut cursor = 6;
+    let details = consume_le_u32_string(bytes, &mut cursor)?;
+    let module_description = consume_le_u32_string(bytes, &mut cursor)?;
+    let build = consume_le_u32_string(bytes, &mut cursor)?;
+    let trailing_end = cursor.checked_add(2)?;
+    let trailing = bytes.get(cursor..trailing_end)?;
+    let trailing_word = u16::from_le_bytes([trailing[0], trailing[1]]);
+    if trailing_end != bytes.len() {
+        return None;
+    }
+
+    Some(BndrExtendedServerInfo {
+        header_word,
+        details,
+        module_description,
+        build,
+        trailing_word,
+    })
+}
+
+fn consume_le_u32_string<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    let len_end = cursor.checked_add(4)?;
+    let len_bytes = bytes.get(*cursor..len_end)?;
+    let len = u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let len = usize::try_from(len).ok()?;
+    let value_start = len_end;
+    let value_end = value_start.checked_add(len)?;
+    let value = bytes.get(value_start..value_end)?;
+    *cursor = value_end;
+    Some(value)
 }

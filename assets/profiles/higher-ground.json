@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "id": "higher-ground",
+  "displayName": "Higher Ground",
+  "description": "Higher Ground required assets staged for the NWN EE bridge.",
+  "requiredSourcePath": "HG REQUIRED FILES",
+  "localBuildRoot": "C:/nwnbridge/assets",
+  "stagingSubdir": "higher-ground",
+  "legacyAssetRoots": [
+    "hg-bridge-assets"
+  ],
+  "sourceArchives": [
+    {
+      "pattern": "hghak_std-beta28*.rar",
+      "required": true,
+      "description": "Higher Ground standard hak/tlk archive."
+    },
+    {
+      "pattern": "cep_23_full_c*.7z",
+      "required": true,
+      "allowExistingStaged": true,
+      "description": "CEP 2.3 full archive. Existing staged CEP may be used when this archive is a zero-byte placeholder."
+    }
+  ],
+  "hakOrderTopFirst": [
+    "cep2_custom",
+    "cep2_top_v23",
+    "cep2_add_phenos5",
+    "cep2_add_phenos4",
+    "cep2_add_phenos3",
+    "cep2_add_phenos2",
+    "cep2_add_phenos1",
+    "cep2_add_loads",
+    "cep2_add_rules",
+    "cep2_add_sb_v1",
+    "cep2_core6",
+    "cep2_core5",
+    "cep2_core4",
+    "cep2_core3",
+    "cep2_core2",
+    "cep2_core1",
+    "cep2_core0",
+    "cep2_add_doors",
+    "cep2_add_tiles3",
+    "cep2_add_tiles2",
+    "cep2_add_tiles1",
+    "cep2_ext_tiles",
+    "cep2_add_skies",
+    "cep2_crp"
+  ],
+  "tlkFiles": [
+    "cep22_v1.tlk",
+    "cep23_v1.tlk",
+    "dialog.tlk"
+  ],
+  "overrideRoots": [
+    "hg-override/override",
+    "hg-overlay/override"
+  ],
+  "compatibilityFixes": [
+    {
+      "id": "hg-ee-ttr01-orientation",
+      "kind": "erfTextResourcePatch",
+      "sourceHak": "cep2_ext_tiles.hak",
+      "resource": "ttr01.set",
+      "tile": "TILE625",
+      "insertAfterPrefix": "WalkMesh=",
+      "line": "Orientation=0",
+      "evidence": "EE tileset loader requires Orientation in each TILE block; CEP legacy ttr01.set TILE625 omits it."
+    }
+  ],
+  "nwsyncSanitizers": [
+    {
+      "id": "cep2-add-tiles3-drop-type0",
+      "kind": "dropErfResourceTypes",
+      "hak": "cep2_add_tiles3.hak",
+      "dropResourceTypes": [
+        0
+      ],
+      "reason": "NWSync cannot expose resource type 0 entries such as tfa01.0; type 0 is not a valid NWN resource type for EE mounting."
+    }
+  ],
+  "nwsync": {
+    "name": "HG Bridge Required Assets",
+    "description": "Higher Ground required assets plus EE compatibility resources for the NWN EE bridge.",
+    "groupId": 213,
+    "url": "http://127.0.0.1:5122/",
+    "repositoryPath": "C:/nwnbridge/nwsync/higher-ground/repository",
+    "limitFileSizeMB": 1024,
+    "compression": "none",
+    "writeOrigins": true
+  }
+}

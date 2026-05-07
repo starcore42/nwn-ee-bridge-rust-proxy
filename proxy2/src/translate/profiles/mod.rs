@@ -18,6 +18,6 @@ pub(crate) fn module_resources_profile(name: &str) -> ModuleResourceProfile {
     match name {
         "generic-169" => generic_169::module_resources_profile(),
         "higher-ground" => higher_ground::module_resources_profile(),
-        _ => higher_ground::module_resources_profile(),
+        _ => generic_169::module_resources_profile(),
     }
 }

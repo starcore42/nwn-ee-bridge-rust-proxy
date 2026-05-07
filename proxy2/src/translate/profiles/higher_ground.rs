@@ -6,7 +6,7 @@
 
 use super::ModuleResourceProfile;
 
-const HAK_ORDER_TOP_FIRST: [&str; 23] = [
+const HAK_ORDER_TOP_FIRST: [&str; 24] = [
     "cep2_custom",
     "cep2_top_v23",
     "cep2_add_phenos5",
@@ -25,6 +25,7 @@ const HAK_ORDER_TOP_FIRST: [&str; 23] = [
     "cep2_core1",
     "cep2_core0",
     "cep2_add_doors",
+    "cep2_add_tiles3",
     "cep2_add_tiles2",
     "cep2_add_tiles1",
     "cep2_ext_tiles",

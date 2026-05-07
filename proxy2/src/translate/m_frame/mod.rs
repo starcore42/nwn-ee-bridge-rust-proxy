@@ -23,7 +23,7 @@ use flate2::Decompress;
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
-    translate::{Emit, area},
+    translate::{Emit, area, module_resources},
 };
 
 mod client_filters;
@@ -37,6 +37,7 @@ mod reassembly;
 mod sequence;
 mod server_dispatch;
 mod synthetic_area;
+mod transport_identity;
 
 use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
 use sequence::{
@@ -66,11 +67,21 @@ pub struct SessionState {
     pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
     pending_synthetic_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
     latest_area_placeables: area::AreaPlaceableContext,
+    module_resources: module_resources::ModuleResourceRuntime,
+}
+
+impl SessionState {
+    pub fn new(module_resources: module_resources::ModuleResourceRuntime) -> Self {
+        Self {
+            module_resources,
+            ..Self::default()
+        }
+    }
 }
 
 pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
-        return Ok(Emit::Packet(bytes.to_vec()));
+        anyhow::bail!("client M frame failed reliable-window parse");
     };
     observe_client_window_state(state, &view);
 
@@ -92,6 +103,9 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
 
     let packet = translate_client_to_server_packet(outbound, &shifted_view)?;
     if let Some(synthetic) = synthetic_area_loaded {
+        let synthetic_view = MFrameView::parse(&synthetic)
+            .ok_or_else(|| anyhow::anyhow!("synthetic Area_AreaLoaded M frame failed to parse"))?;
+        let synthetic = translate_client_to_server_packet(synthetic, &synthetic_view)?;
         return Ok(Emit::Packets(vec![packet, synthetic]));
     }
 
@@ -107,7 +121,7 @@ fn translate_client_to_server_packet(
 
 pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
-        return Ok(Emit::Packet(bytes.to_vec()));
+        anyhow::bail!("server M frame failed reliable-window parse");
     };
     let pending_count_before = state.pending_server_to_client_packets.len();
     let mut inbound = bytes.to_vec();
@@ -126,10 +140,32 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         reassembly::continue_server_deflated_reassembly(&inbound, &view, state)?
     } else if reassembly::should_start_server_deflated_reassembly(&view) {
         reassembly::start_server_deflated_reassembly(&inbound, &view, state)?
-    } else if let Some(rewritten) = server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view)? {
+    } else if let Some(rewritten) =
+        server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
+    {
         Emit::VerifiedPackets(vec![rewritten])
-    } else {
+    } else if let Some(summary) = transport_identity::claim_server_frame_if_verified(&view) {
+        tracing::info!(
+            packet = summary.packet_name,
+            reason = summary.reason,
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            "server M transport-only frame semantically claimed as verified no-op"
+        );
         Emit::Packet(inbound)
+    } else {
+        tracing::warn!(
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            "server M frame quarantined: no high-level translator or transport identity owner"
+        );
+        Emit::Drop
     };
 
     finalize_server_to_client_emit(state, emit, pending_count_before)
@@ -320,6 +356,14 @@ fn finalize_server_to_client_emit(
     state.pending_server_to_client_packets = kept;
 
     match emit {
+        Emit::Consumed => {
+            prefix.extend(suffix);
+            if prefix.is_empty() {
+                Ok(Emit::Consumed)
+            } else {
+                Ok(Emit::Packets(prefix))
+            }
+        }
         Emit::Drop => {
             prefix.extend(suffix);
             if prefix.is_empty() {
@@ -359,10 +403,10 @@ fn finalize_server_to_client_emit(
 
 fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(reassembly) = state.server_deflated.take() else {
-        return Ok(Emit::Drop);
+        return Ok(Emit::Consumed);
     };
     if reassembly.frames.is_empty() || reassembly.frames.len() < reassembly.expected_frames {
-        return Ok(Emit::Drop);
+        return Ok(Emit::Consumed);
     }
 
     let compressed = reassembly
@@ -470,13 +514,37 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         return Ok(Emit::VerifiedPackets(outputs));
     }
 
-    let mut semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
+    let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
         &mut bytes,
         Some(&state.latest_area_placeables),
         server_dispatch::SemanticScope::DeflatedReassembly,
+        live_object_continuation_wrapped.then_some("GameObjUpdate_LiveObjectContinuation"),
     );
-    if live_object_continuation_wrapped {
-        semantic_rewrite_summary.note_rewrite("GameObjUpdate_LiveObjectContinuation");
+    if semantic_rewrite_summary.should_quarantine() {
+        let reason = semantic_rewrite_summary
+            .quarantine_reason
+            .unwrap_or("untranslated-required-semantic-family");
+        dump_invalid_inflated_payload(&bytes, &reassembly, reason);
+        let mut outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
+        if used_server_stream {
+            reassembly::remember_completed_server_stream_window(
+                state,
+                &reassembly,
+                source_compressed_length,
+                CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
+            );
+        }
+        outputs.extend(reassembly.interleaved_packets);
+        tracing::warn!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            packetized_sequence = reassembly.packetized_sequence,
+            inflated = old_inflated_length,
+            reason,
+            prefix = %hex_prefix(&bytes, 32),
+            "server deflated high-level payload consumed because required semantic translation is missing"
+        );
+        return Ok(Emit::VerifiedPackets(outputs));
     }
     if !inflated_cnw_fragment_offset_valid(&bytes) {
         dump_invalid_inflated_payload(&bytes, &reassembly, "invalid-cnw-fragment-offset");

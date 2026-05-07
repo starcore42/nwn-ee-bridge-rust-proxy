@@ -41,10 +41,17 @@ const LEGACY_PREFIXED_FRAGMENT_BYTES: usize = 4;
 const LEGACY_LIVE_BYTES_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + LEGACY_PREFIXED_FRAGMENT_BYTES;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES: usize = 2048;
-const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = 32;
+// Zlib-stream chunks can start in the middle of a legacy live-object record.
+// The safe resync rule is not "small dropped lead-in"; it is "drop only until
+// a decompile-legal live-object submessage is proven by the focused boundary
+// classifier below." Keep the byte cap tied to the scan cap so a late `W`
+// world-status record is still claimable without reintroducing envelope-only
+// pass-through.
+const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES;
 const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_1000;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
+const TRIGGER_OBJECT_TYPE: u8 = 0x07;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const DOOR_OBJECT_TYPE: u8 = 0x0A;
 const CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET: usize = 32;
@@ -108,6 +115,22 @@ pub struct LiveObjectContinuationWrapSummary {
 pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
     payload: &mut Vec<u8>,
 ) -> Option<LiveObjectContinuationWrapSummary> {
+    // Strict-mode discipline: a zlib-inflated blob without a high-level packet
+    // header is not, by itself, a packet. Earlier development builds wrapped
+    // any plausible live-object-looking continuation into `P 05 01` with a
+    // synthetic one-byte fragment tail, but live driver-only runs still showed
+    // EE `Unknown Update sub-message` after those deliveries. That means this
+    // was acting as a fallback classifier, not a decompile-proven semantic
+    // translator.
+    //
+    // Keep the old implementation below for focused fixture work, but leave it
+    // disabled unless a future exact continuation translator can prove record
+    // boundaries and fragment-bit ownership for the entire synthesized payload.
+    if std::env::var_os("HGBRIDGE_PROXY2_ENABLE_RAW_LIVE_CONTINUATION_WRAP").is_none() {
+        let _ = payload;
+        return None;
+    }
+
     if payload.len() < 16 || payload.first().copied() == Some(HIGH_LEVEL_ENVELOPE) {
         return None;
     }
@@ -178,10 +201,6 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
     {
         return None;
     }
-    if old_wire_declared == 0 {
-        return None;
-    }
-
     let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] = payload
         [HIGH_LEVEL_HEADER_BYTES..LEGACY_LIVE_BYTES_OFFSET]
         .try_into()
@@ -202,6 +221,9 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
         first_record_end = salvaged.1;
         salvaged_partial_leadin = true;
     } else {
+        if old_wire_declared == 0 {
+            return None;
+        }
         first_record_end = find_next_legacy_live_object_sub_message_boundary_after(
             payload,
             live_bytes_offset,
@@ -460,6 +482,9 @@ fn looks_like_salvageable_legacy_live_object_record_at(
         b'A' if object_type == CREATURE_OBJECT_TYPE => {
             looks_like_legacy_creature_add_transform_fields(bytes, record_offset, record_end)
         }
+        b'A' if object_type == TRIGGER_OBJECT_TYPE => {
+            record_end - record_offset >= minimum_legacy_live_object_record_length_at(bytes, record_offset)
+        }
         b'A' if object_type == 0x09 || object_type == 0x0A => {
             record_end - record_offset >= minimum_legacy_live_object_record_length_at(bytes, record_offset)
         }
@@ -513,6 +538,7 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
     let marker = bytes[offset + 1];
     match (opcode, marker) {
         (b'A', 0x05) => CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET,
+        (b'A', TRIGGER_OBJECT_TYPE) => 18,
         (b'A', PLACEABLE_OBJECT_TYPE) => {
             let name_offset = offset + 6;
             if let Some(inline_end) = inline_cexo_string_end(bytes, name_offset) {
@@ -539,10 +565,68 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
 }
 
 fn legacy_live_object_continuation_boundary_offset(bytes: &[u8]) -> Option<usize> {
-    let max_scan = bytes.len().saturating_sub(2).min(96);
+    let max_scan = bytes
+        .len()
+        .saturating_sub(2)
+        .min(MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES);
+    let salvage_scan_end = bytes.len().min(MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES);
     (0..=max_scan).find(|&offset| {
-        looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
+        looks_like_salvageable_legacy_live_object_record_at(bytes, offset, salvage_scan_end)
+            || looks_like_hg_low_compact_placeable_continuation_at(bytes, offset, salvage_scan_end)
     })
+}
+
+fn looks_like_hg_low_compact_placeable_continuation_at(
+    bytes: &[u8],
+    record_offset: usize,
+    scan_end: usize,
+) -> bool {
+    let Some(record_header_end) = record_offset.checked_add(6) else {
+        return false;
+    };
+    if record_header_end >= bytes.len()
+        || record_header_end >= scan_end
+        || bytes[record_offset] != b'A'
+        || bytes[record_offset + 1] != PLACEABLE_OBJECT_TYPE
+    {
+        return false;
+    }
+
+    let Some(object_id) = read_u32_le(bytes, record_offset + 2) else {
+        return false;
+    };
+    if object_id == 0 || object_id >= MIN_COMPACT_LEGACY_LIVE_OBJECT_ID {
+        return false;
+    }
+
+    // Decompile evidence keeps this local rather than global:
+    // EE `CNWMessage::SetReadMessage` gives `HandleGameObjUpdate` a raw byte
+    // window, and EE live-object handlers read object ids as DWORDs. The
+    // high-byte/min-compact checks in this file are scanner guards, not engine
+    // validity rules. HG Docks captures include a raw zlib continuation with a
+    // one-byte lead-in followed by `A 09 <low DWORD id>` and an immediate item
+    // read-buffer span. Accept only that continuation shape, with the adjacent
+    // item token repeated in the short local window, so shifted text or
+    // appearance bytes cannot lower the global object-id threshold.
+    if bytes[record_header_end] != b'I' {
+        return false;
+    }
+    let Some(item_token) = bytes.get(record_header_end + 1..record_header_end + 5) else {
+        return false;
+    };
+    if item_token.iter().all(|byte| *byte == 0) || item_token.iter().all(|byte| *byte == 0xFF) {
+        return false;
+    }
+
+    let repeat_start = record_header_end + 5;
+    let repeat_end = bytes
+        .len()
+        .min(scan_end)
+        .min(record_header_end.saturating_add(40));
+    repeat_start < repeat_end
+        && bytes[repeat_start..repeat_end]
+            .windows(item_token.len())
+            .any(|window| window == item_token)
 }
 
 fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usize) -> bool {
@@ -1369,14 +1453,24 @@ fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
         return false;
     }
 
-    // Match the mature C++ proxy's bounded object-id classifier. Accepting any
-    // nonzero high byte makes shifted ASCII/name/appearance bytes look like
-    // live-object ids, which in turn causes false record boundaries and shifted
-    // door/placeable transforms.
+    // Decompile-backed boundary rule:
+    // EE reads the live-object id as an opaque DWORD; the high-byte filtering
+    // below is only our false-positive guard while scanning legacy read bytes.
+    // HG captures for Docks of Ascension door/placeable add records use
+    // 0x08xxxxxx and 0x35xxxxxx static-object namespaces. Accept those
+    // namespaces explicitly instead of broadening to every nonzero high byte,
+    // because shifted ASCII/name/appearance bytes can otherwise look like
+    // record boundaries and corrupt door/placeable transforms.
     let high_byte = object_id & 0xFF00_0000;
     matches!(
         high_byte,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
+        0x8000_0000
+            | 0x8800_0000
+            | 0xFF00_0000
+            | 0x0100_0000
+            | 0x0500_0000
+            | 0x0800_0000
+            | 0x3500_0000
     ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
         .contains(&object_id)
 }

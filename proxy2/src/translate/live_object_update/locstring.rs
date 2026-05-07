@@ -5,7 +5,7 @@
 //! cursor heuristics.
 
 use super::{
-    door_placeable_update_name_cursor, read_u32_le, LEGACY_UPDATE_HEADER_BYTES,
+    record::door_placeable_update_name_cursor, read_u32_le, LEGACY_UPDATE_HEADER_BYTES,
     MAX_LIVE_OBJECT_NAME_BYTES,
 };
 

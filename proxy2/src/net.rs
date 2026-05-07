@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use crate::{
     config::Config,
     ee_crypto::{ClientPacket, EeCrypto},
+    nwsync,
     packet::Direction,
     translate::{Emit, SessionTranslator, Translator},
 };
@@ -27,14 +28,15 @@ struct Session {
     last_seen: Instant,
 }
 
-pub fn run(config: Config) -> Result<()> {
+pub fn run(config: Config, nwsync_runtime: Option<nwsync::Runtime>) -> Result<()> {
     let listen = UdpSocket::bind(config.listen)
         .with_context(|| format!("binding listen socket {}", config.listen))?;
     listen
         .set_nonblocking(true)
         .context("setting listen socket nonblocking")?;
 
-    let translator_template = Translator::new(&config)?;
+    let _nwsync_http = nwsync::start_http_server_if_needed(&config, nwsync_runtime.as_ref())?;
+    let translator_template = Translator::new(&config, nwsync_runtime)?;
     let mut sessions: HashMap<SocketAddr, Session> = HashMap::new();
     let mut recv_buf = vec![0_u8; MAX_DATAGRAM];
 
@@ -111,7 +113,7 @@ fn drain_client_socket(
                                 })?;
                         }
                     }
-                    Emit::Drop => {}
+                    Emit::Consumed | Emit::Drop => {}
                 }
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(()),
@@ -159,6 +161,7 @@ fn drain_server_sockets(
                                 })?;
                             }
                         }
+                        Emit::Consumed => {}
                         Emit::Drop => {
                             tracing::warn!(%server, client = %session.client, "server datagram quarantined");
                         }

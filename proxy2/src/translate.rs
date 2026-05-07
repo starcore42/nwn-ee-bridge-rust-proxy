@@ -12,22 +12,39 @@
 
 mod bn;
 mod area;
+mod char_list;
+mod client_area;
+mod client_char_list;
+mod client_high;
+mod client_login;
+mod client_module;
+mod client_server_status;
+mod chat;
+mod client_side_message;
 mod cnw_message;
 mod custom_token;
+mod game_obj_update;
+mod inventory;
+mod journal;
 mod loadbar;
 mod m_frame;
 mod module;
+mod module_time;
 mod module_resources;
+mod login;
 mod live_object;
 mod live_object_update;
+mod party;
 mod player_list;
+mod play_module_character_list;
 mod profiles;
 mod quickbar;
 
 use crate::{
-    config::Config,
+    config::{Config, StrictProfile},
     identity::DiamondIdentity,
-    packet::Direction,
+    nwsync,
+    packet::{Direction, Packet},
     strict::{self, Verdict},
 };
 
@@ -36,15 +53,18 @@ pub enum Emit {
     Packet(Vec<u8>),
     Packets(Vec<Vec<u8>>),
     VerifiedPackets(Vec<Vec<u8>>),
+    Consumed,
     Drop,
 }
 
 #[derive(Debug, Clone)]
 pub struct Translator {
     strict_translate: bool,
+    strict_profile: StrictProfile,
     diamond_identity: DiamondIdentity,
     bncs_private_build: u32,
     bncs_build_field: u16,
+    module_resources: module_resources::ModuleResourceRuntime,
 }
 
 #[derive(Debug)]
@@ -55,12 +75,20 @@ pub struct SessionTranslator {
 }
 
 impl Translator {
-    pub fn new(config: &Config) -> anyhow::Result<Self> {
+    pub fn new(config: &Config, nwsync_runtime: Option<nwsync::Runtime>) -> anyhow::Result<Self> {
+        let module_resource_runtime = module_resources::ModuleResourceRuntime::new(
+            config.asset_profile.clone(),
+            nwsync_runtime
+                .as_ref()
+                .map(|runtime| runtime.advertisement().clone()),
+        );
         Ok(Self {
             strict_translate: config.strict_translate,
+            strict_profile: config.strict_profile,
             diamond_identity: DiamondIdentity::load(config),
             bncs_private_build: config.bncs_private_build,
             bncs_build_field: config.bncs_build_field,
+            module_resources: module_resource_runtime,
         })
     }
 
@@ -68,7 +96,7 @@ impl Translator {
         SessionTranslator {
             template: self.clone(),
             bn_state: bn::SessionState::default(),
-            m_state: m_frame::SessionState::default(),
+            m_state: m_frame::SessionState::new(self.module_resources.clone()),
         }
     }
 }
@@ -94,8 +122,8 @@ impl SessionTranslator {
     }
 
     fn translate_known(&mut self, direction: Direction, bytes: &[u8]) -> anyhow::Result<Emit> {
-        match direction {
-            Direction::ClientToServer => {
+        match (direction, Packet::classify(bytes)) {
+            (Direction::ClientToServer, Packet::Bn(_)) => {
                 let translated = bn::translate_client_to_server(
                     bytes,
                     &self.template.diamond_identity,
@@ -103,13 +131,30 @@ impl SessionTranslator {
                     self.template.bncs_build_field,
                     &mut self.bn_state,
                 )?;
-                m_frame::translate_client_to_server(&translated, &mut self.m_state)
+                Ok(Emit::Packet(translated))
             }
-            Direction::ServerToClient => {
-                let translated = bn::translate_server_to_client(bytes, &mut self.bn_state)?;
-                m_frame::translate_server_to_client(&translated, &mut self.m_state)
+            (Direction::ServerToClient, Packet::Bn(_)) => {
+                let translated = bn::translate_server_to_client(
+                    bytes,
+                    &mut self.bn_state,
+                    self.template.module_resources.nwsync_advertisement(),
+                )?;
+                Ok(Emit::Packet(translated))
             }
-            Direction::ServerToClientSynthetic => Ok(Emit::Packet(bytes.to_vec())),
+            (Direction::ClientToServer, Packet::M(_)) => {
+                m_frame::translate_client_to_server(bytes, &mut self.m_state)
+            }
+            (Direction::ServerToClient, Packet::M(_)) => {
+                m_frame::translate_server_to_client(bytes, &mut self.m_state)
+            }
+            (Direction::ServerToClientSynthetic, Packet::Bn(_))
+            | (Direction::ServerToClientSynthetic, Packet::M(_)) => Ok(Emit::Packet(bytes.to_vec())),
+            (_, Packet::UnknownTopLevel(_)) => {
+                anyhow::bail!(
+                    "unclassified top-level packet in {} direction",
+                    direction.as_str()
+                )
+            }
         }
     }
 
@@ -125,7 +170,7 @@ impl SessionTranslator {
                 for packet in packets {
                     match self.validate_packet(direction, packet) {
                         Emit::Packet(packet) => validated.push(packet),
-                        Emit::Drop | Emit::Packets(_) | Emit::VerifiedPackets(_) => {
+                        Emit::Consumed | Emit::Drop | Emit::Packets(_) | Emit::VerifiedPackets(_) => {
                             return Emit::Drop;
                         }
                     }
@@ -153,12 +198,13 @@ impl SessionTranslator {
                 }
                 Emit::Packets(validated)
             }
+            Emit::Consumed => Emit::Consumed,
             Emit::Drop => Emit::Drop,
         }
     }
 
     fn validate_packet(&self, direction: Direction, packet: Vec<u8>) -> Emit {
-        let decision = strict::decide(direction, &packet);
+        let decision = strict::decide(direction, &packet, self.template.strict_profile);
         strict::log_decision(
             direction,
             &packet,

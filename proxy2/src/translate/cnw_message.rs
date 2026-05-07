@@ -16,7 +16,10 @@
 //!
 //! `P major minor [u32 declared] [read bytes...] [four fragment bytes]`
 //!
-//! Message-body semantics remain in focused modules such as `player_list`.
+//! Message-body semantics remain in focused modules such as `player_list` and
+//! `client_side_message`. Do not add whole high-level families here: even a
+//! byte-identical packet needs a semantic owner that documents the decompile
+//! evidence for that packet type.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -103,10 +106,6 @@ fn is_known_prefixed_fragment_family(high: HighLevel) -> bool {
         // Observed from the 1.69 server during module entry. Player-list
         // semantic augmentation, if needed, remains in `player_list`.
         (0x0A, 0x01)
-            // EE decompile: `CNWSCreature::SendFeedbackMessage` calls
-            // `CNWSMessage::SendServerToPlayerCCMessage`, which writes
-            // high-level family 0x12 and the supplied CCMessage subtype.
-            | (0x12, 0x01..=0x17)
     )
 }
 

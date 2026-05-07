@@ -17,14 +17,19 @@
 //!   focused here instead of folding it into `m_frame`.
 
 mod bits;
+mod boundary;
 mod creature;
+mod cursor;
 mod door;
+mod gui;
 mod inventory;
 mod item;
 mod locstring;
 mod placeable;
 mod reader;
+mod record;
 mod writer;
+mod world_status;
 #[cfg(test)]
 mod tests;
 
@@ -79,14 +84,126 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub world_status_records_normalized: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct RecordRewrite {
-    rewritten: bool,
-    mask_changed: bool,
-    bytes_inserted: u32,
-    bytes_removed: u32,
-    bits_inserted: u32,
-    bits_removed: u32,
+#[derive(Debug, Clone, Default)]
+pub struct LiveObjectUpdateClaimSummary {
+    pub declared: usize,
+    pub live_bytes_length: usize,
+    pub fragment_bytes: usize,
+    pub records_examined: u32,
+    pub inventory_records: u32,
+    pub inventory_fragment_bits: u32,
+    pub live_gui_read_buffer_records: u32,
+    pub read_buffer_only_records: u32,
+    pub creature_update_records: u32,
+    pub delete_records: u32,
+}
+
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaimSummary> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
+        || payload[2] != LIVE_OBJECT_MINOR
+    {
+        return None;
+    }
+
+    let declared = usize::try_from(read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || declared > payload.len()
+        || declared > MAX_REASONABLE_LIVE_PAYLOAD_BYTES
+    {
+        return None;
+    }
+    let fragment = &payload[declared..];
+    let fragment_bits = bits::decode_msb_valid_bits(fragment, CNW_FRAGMENT_HEADER_BITS)?;
+
+    let live_bytes = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared];
+    if live_bytes.is_empty() {
+        return None;
+    }
+
+    let mut summary = LiveObjectUpdateClaimSummary {
+        declared,
+        live_bytes_length: live_bytes.len(),
+        fragment_bytes: fragment.len(),
+        ..LiveObjectUpdateClaimSummary::default()
+    };
+    let mut offset = 0usize;
+    let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    while offset + 2 <= live_bytes.len() {
+        if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset) {
+            return None;
+        }
+
+        let record_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            live_bytes,
+            offset,
+            live_bytes.len(),
+        )
+        .min(live_bytes.len());
+        if record_end <= offset {
+            return None;
+        }
+
+        summary.records_examined = summary.records_examined.saturating_add(1);
+        if let Some(inventory_claim) = inventory::advance_verified_inventory_record(
+            live_bytes,
+            offset,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ) {
+            summary.inventory_records = summary.inventory_records.saturating_add(1);
+            summary.inventory_fragment_bits = summary.inventory_fragment_bits.saturating_add(
+                u32::try_from(inventory_claim.fragment_bits).unwrap_or(u32::MAX),
+            );
+            offset = record_end;
+            continue;
+        }
+        if gui::is_verified_live_gui_read_buffer_record(live_bytes, offset, record_end) {
+            summary.live_gui_read_buffer_records =
+                summary.live_gui_read_buffer_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+        if is_verified_read_buffer_only_record(live_bytes, offset, record_end) {
+            summary.read_buffer_only_records =
+                summary.read_buffer_only_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+        if creature::advance_verified_noop_creature_update_record(
+            live_bytes,
+            offset,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ) {
+            summary.creature_update_records =
+                summary.creature_update_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+        if let Some(delete_bits) =
+            cursor::legacy_live_delete_fragment_bit_count(live_bytes, offset, record_end)
+        {
+            if delete_bits > fragment_bits.len().saturating_sub(bit_cursor) {
+                return None;
+            }
+            bit_cursor = bit_cursor.saturating_add(delete_bits);
+            summary.delete_records = summary.delete_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+
+        return None;
+    }
+
+    if offset != live_bytes.len() || summary.records_examined == 0 {
+        return None;
+    }
+
+    Some(summary)
 }
 
 pub fn rewrite_update_records_payload_if_possible(
@@ -128,7 +245,7 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut bit_cursor_reliable = true;
     let mut offset = 0usize;
     while offset + 2 <= live_bytes.len() {
-        if !looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset) {
+        if !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset) {
             offset += 1;
             continue;
         }
@@ -136,24 +253,21 @@ pub fn rewrite_update_records_payload_if_possible(
         summary.records_examined = summary.records_examined.saturating_add(1);
         let opcode = live_bytes[offset];
         let object_type = live_bytes[offset + 1];
-        let mut record_end =
-            find_next_legacy_live_object_sub_message_boundary_after(&live_bytes, offset, live_bytes.len())
-                .min(live_bytes.len());
+        let mut record_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live_bytes,
+            offset,
+            live_bytes.len(),
+        )
+        .min(live_bytes.len());
         if record_end <= offset {
             offset += 1;
             continue;
         }
 
-        if opcode == b'W'
-            && record_end >= offset + 3
-            && object_type <= 0x0F
-            && live_bytes[offset + 2] == 0x0E
+        if let Some(removed) =
+            world_status::normalize_record_for_ee(&mut live_bytes, offset, &mut record_end)
         {
-            let legal_end = offset + 3;
-            if record_end > legal_end {
-                let removed = record_end - legal_end;
-                live_bytes.drain(legal_end..record_end);
-                record_end = legal_end;
+            if removed != 0 {
                 changed = true;
                 summary.world_status_records_normalized =
                     summary.world_status_records_normalized.saturating_add(1);
@@ -165,7 +279,7 @@ pub fn rewrite_update_records_payload_if_possible(
 
         if opcode == b'A' {
             if bit_cursor_reliable
-                && !advance_live_add_record_bit_cursor(
+                && !cursor::advance_live_add_record_bit_cursor(
                     &live_bytes,
                     &fragment_bits,
                     offset,
@@ -182,7 +296,7 @@ pub fn rewrite_update_records_payload_if_possible(
         if opcode == b'D' {
             if bit_cursor_reliable {
                 if let Some(delete_bits) =
-                    legacy_live_delete_fragment_bit_count(&live_bytes, offset, record_end)
+                    cursor::legacy_live_delete_fragment_bit_count(&live_bytes, offset, record_end)
                 {
                     if fragment_bits.len().saturating_sub(bit_cursor) >= delete_bits {
                         bit_cursor += delete_bits;
@@ -217,7 +331,7 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
-        let Some(record_rewrite) = rewrite_update_record_for_ee(
+        let Some(record_rewrite) = record::rewrite_update_record_for_ee(
             &mut live_bytes,
             &mut record_end,
             &mut fragment_bits,
@@ -282,522 +396,33 @@ pub fn rewrite_update_records_payload_if_possible(
     Some(summary)
 }
 
-fn rewrite_update_record_for_ee(
-    live_bytes: &mut Vec<u8>,
-    record_end: &mut usize,
-    bits: &mut Vec<bool>,
-    bit_cursor: &mut usize,
-    bit_cursor_reliable: &mut bool,
-    record_offset: usize,
-) -> Option<RecordRewrite> {
-    if record_offset + LEGACY_UPDATE_HEADER_BYTES > *record_end || *record_end > live_bytes.len() {
-        return None;
+fn is_verified_read_buffer_only_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+    if offset >= record_end || record_end > bytes.len() {
+        return false;
     }
 
-    let object_type = live_bytes[record_offset + 1];
-    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
-    let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
-    let mut translated_mask = translate_legacy_live_object_update_mask(object_type, raw_mask);
-    let exact_empty_object_update = *record_end == record_offset + LEGACY_UPDATE_HEADER_BYTES;
-    let mut rewrite = RecordRewrite::default();
-    let mut can_translate_read_buffer = translated_mask == raw_mask;
-    let mut orientation_scalar12 = 0u16;
-    let mut tail_ready = false;
-    let mut tail_needs_empty_name = false;
-
-    if exact_empty_object_update && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-        translated_mask = LEGACY_UPDATE_STATE_MASK;
-        can_translate_read_buffer = true;
-    } else if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
-    {
-        let legacy_tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-        let raw_has_legacy_generic_tail =
-            (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
-        if legacy_tail_offset <= *record_end && *record_end - legacy_tail_offset >= 9 {
-            if let Some(tail) =
-                reader::read_legacy_named_update_tail9(live_bytes, legacy_tail_offset, false)
-            {
-                let following_payload_ready =
-                    reader::legacy_named_update_tail_following_payload_ready(
-                        live_bytes,
-                        legacy_tail_offset,
-                        *record_end,
-                    );
-                if following_payload_ready || raw_has_legacy_generic_tail {
-                    tail_ready = true;
-                    tail_needs_empty_name = !following_payload_ready;
-                    if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-                        translated_mask |= LEGACY_UPDATE_ORIENTATION_MASK;
-                        orientation_scalar12 = writer::encode_ee_scalar_orientation_from_legacy_facing(
-                            tail.facing,
-                        );
-                    }
-                    if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-                        translated_mask |= LEGACY_UPDATE_SCALE_STATE_MASK;
-                    }
-                }
-            }
-        }
-    }
-
-    let name_payload_ready = (translated_mask & LEGACY_UPDATE_NAME_MASK) == 0
-        || tail_ready
-        || locstring::legacy_live_update_name_payload_ready(live_bytes, record_offset, *record_end);
-    if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 && !name_payload_ready {
-        if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-            translated_mask = LEGACY_UPDATE_STATE_MASK;
-            let erase_begin = record_offset + LEGACY_UPDATE_HEADER_BYTES;
-            if *record_end > erase_begin {
-                let removed = *record_end - erase_begin;
-                live_bytes.drain(erase_begin..*record_end);
-                *record_end = erase_begin;
-                rewrite.bytes_removed = rewrite.bytes_removed.saturating_add(removed as u32);
-            }
-            can_translate_read_buffer = true;
-        } else {
-            can_translate_read_buffer = false;
-        }
-    }
-
-    if !can_translate_read_buffer && translated_mask != raw_mask {
-        return None;
-    }
-
-    let update_bits_present =
-        (object_type == TRIGGER_OBJECT_TYPE
-            && (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0)
-            || (matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-                && (translated_mask
-                    & (LEGACY_UPDATE_POSITION_MASK
-                        | LEGACY_UPDATE_ORIENTATION_MASK
-                        | LEGACY_UPDATE_SCALE_STATE_MASK
-                        | LEGACY_UPDATE_STATE_MASK
-                        | LEGACY_UPDATE_NAME_MASK))
-                    != 0);
-    if update_bits_present
-        && (!*bit_cursor_reliable
-            || !can_rewrite_legacy_live_object_update_bits(
-                object_type,
-                translated_mask,
-                bits,
-                *bit_cursor,
-                name_payload_ready || (translated_mask & LEGACY_UPDATE_NAME_MASK) == 0,
-            ))
-    {
-        *bit_cursor_reliable = false;
-        return None;
-    }
-
-    if tail_ready && (translated_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0 {
-        let tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-        if let Some(tail) =
-            reader::read_legacy_named_update_tail9(live_bytes, tail_offset, false)
-        {
-            let ee_tail = writer::build_ee_door_placeable_generic_update_bytes(
-                tail,
-                translated_mask,
-            );
-            live_bytes.splice(tail_offset..tail_offset + 9, ee_tail.iter().copied());
-            if ee_tail.len() >= 9 {
-                rewrite.bytes_inserted =
-                    rewrite.bytes_inserted.saturating_add((ee_tail.len() - 9) as u32);
-            } else {
-                rewrite.bytes_removed =
-                    rewrite.bytes_removed.saturating_add((9 - ee_tail.len()) as u32);
-            }
-            *record_end = *record_end - 9 + ee_tail.len();
-            can_translate_read_buffer = true;
-        }
-    }
-
-    if tail_needs_empty_name && (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        let empty_name_offset = door_placeable_ee_update_name_cursor(record_offset, translated_mask);
-        if empty_name_offset <= *record_end {
-            let removed = (*record_end).saturating_sub(empty_name_offset);
-            live_bytes.drain(empty_name_offset..*record_end);
-            live_bytes.splice(empty_name_offset..empty_name_offset, [0u8, 0, 0, 0]);
-            *record_end = empty_name_offset + 4;
-            if removed > 4 {
-                rewrite.bytes_removed = rewrite.bytes_removed.saturating_add((removed - 4) as u32);
-            } else {
-                rewrite.bytes_inserted =
-                    rewrite.bytes_inserted.saturating_add((4 - removed) as u32);
-            }
-            can_translate_read_buffer = true;
-        }
-    }
-
-    if !can_translate_read_buffer && translated_mask != raw_mask {
-        return None;
-    }
-
-    if update_bits_present {
-        let removed = erase_dropped_legacy_live_object_position_bits(
-            object_type,
-            raw_mask,
-            translated_mask,
-            bits,
-            *bit_cursor,
-        )?;
-        rewrite.bits_removed = rewrite.bits_removed.saturating_add(removed);
-        let inserted = insert_legacy_live_object_update_bits(
-            object_type,
-            object_id,
-            translated_mask,
-            orientation_scalar12,
-            bits,
-            bit_cursor,
-        )?;
-        rewrite.bits_inserted = rewrite.bits_inserted.saturating_add(inserted);
-    }
-
-    if translated_mask != raw_mask {
-        write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
-        rewrite.mask_changed = true;
-    }
-
-    rewrite.rewritten = rewrite.mask_changed
-        || rewrite.bytes_inserted != 0
-        || rewrite.bytes_removed != 0
-        || rewrite.bits_inserted != 0
-        || rewrite.bits_removed != 0;
-
-    tracing::info!(
-        object_type,
-        object_id = format_args!("0x{object_id:08X}"),
-        raw_mask = format_args!("0x{raw_mask:08X}"),
-        translated_mask = format_args!("0x{translated_mask:08X}"),
-        record_offset,
-        record_end = *record_end,
-        bits_inserted = rewrite.bits_inserted,
-        bits_removed = rewrite.bits_removed,
-        bytes_inserted = rewrite.bytes_inserted,
-        bytes_removed = rewrite.bytes_removed,
-        "server->client live-object update record translated for EE"
-    );
-    Some(rewrite)
-}
-
-fn translate_legacy_live_object_update_mask(object_type: u8, raw_mask: u32) -> u32 {
-    match object_type {
-        PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
-        DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
-        TRIGGER_OBJECT_TYPE => raw_mask & LEGACY_UPDATE_POSITION_MASK,
-        _ => raw_mask,
-    }
-}
-
-fn door_placeable_update_name_cursor(record_start: usize, mask: u32) -> usize {
-    record_start
-        + LEGACY_UPDATE_HEADER_BYTES
-        + if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-            LEGACY_UPDATE_POSITION_READ_BYTES
-        } else {
-            0
-        }
-}
-
-fn door_placeable_ee_update_name_cursor(record_start: usize, mask: u32) -> usize {
-    door_placeable_update_name_cursor(record_start, mask)
-        + if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-            EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
-        } else {
-            0
-        }
-        + if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-            EE_UPDATE_SCALE_STATE_READ_BYTES
-        } else {
-            0
-        }
-}
-
-fn can_rewrite_legacy_live_object_update_bits(
-    object_type: u8,
-    translated_mask: u32,
-    bits: &[bool],
-    bit_cursor: usize,
-    name_payload_ready: bool,
-) -> bool {
-    if !matches!(object_type, TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+    if gui::is_verified_live_gui_read_buffer_record(bytes, offset, record_end) {
         return true;
     }
 
-    let mut cursor = bit_cursor;
-    let mut available_bits = bits.len();
-    if (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        if cursor > available_bits || available_bits - cursor < LEGACY_UPDATE_POSITION_FRAGMENT_BITS
-        {
-            return false;
-        }
-        cursor += LEGACY_UPDATE_POSITION_FRAGMENT_BITS;
-    }
-
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        && (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
-    {
-        available_bits += EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
-        cursor += EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
-    }
-
-    if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-        if cursor > available_bits || available_bits - cursor < LEGACY_UPDATE_STATE_FRAGMENT_BITS {
-            return false;
-        }
-        cursor += LEGACY_UPDATE_STATE_FRAGMENT_BITS;
-        if object_type == DOOR_OBJECT_TYPE {
-            available_bits += 1;
-            cursor += 1;
-        }
-    }
-
-    (translated_mask & LEGACY_UPDATE_NAME_MASK) == 0 || (name_payload_ready && cursor <= available_bits)
-}
-
-fn erase_dropped_legacy_live_object_position_bits(
-    object_type: u8,
-    raw_mask: u32,
-    translated_mask: u32,
-    bits: &mut Vec<bool>,
-    bit_cursor: usize,
-) -> Option<u32> {
-    if !matches!(object_type, TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
-        return Some(0);
-    }
-    let raw_has_position = (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0;
-    let translated_has_position = (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0;
-    if !raw_has_position || translated_has_position {
-        return Some(0);
-    }
-    bits::erase_msb_bits(bits, bit_cursor, LEGACY_UPDATE_POSITION_FRAGMENT_BITS)?;
-    Some(LEGACY_UPDATE_POSITION_FRAGMENT_BITS as u32)
-}
-
-fn insert_legacy_live_object_update_bits(
-    object_type: u8,
-    _object_id: u32,
-    translated_mask: u32,
-    orientation_scalar12: u16,
-    bits: &mut Vec<bool>,
-    bit_cursor: &mut usize,
-) -> Option<u32> {
-    let mut cursor = *bit_cursor;
-    let mut inserted = 0u32;
-    if (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        if bits.len().saturating_sub(cursor) < LEGACY_UPDATE_POSITION_FRAGMENT_BITS {
-            return None;
-        }
-        cursor += LEGACY_UPDATE_POSITION_FRAGMENT_BITS;
-    }
-
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        && (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
-    {
-        let inserted_orientation_bits = [
-            false,
-            ((orientation_scalar12 >> 3) & 1) != 0,
-            ((orientation_scalar12 >> 2) & 1) != 0,
-            ((orientation_scalar12 >> 1) & 1) != 0,
-            (orientation_scalar12 & 1) != 0,
-        ];
-        bits::insert_msb_bits(bits, cursor, &inserted_orientation_bits)?;
-        cursor += inserted_orientation_bits.len();
-        inserted = inserted.saturating_add(inserted_orientation_bits.len() as u32);
-    }
-
-    if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-        if bits.len().saturating_sub(cursor) < LEGACY_UPDATE_STATE_FRAGMENT_BITS {
-            return None;
-        }
-        cursor += LEGACY_UPDATE_STATE_FRAGMENT_BITS;
-        if object_type == DOOR_OBJECT_TYPE {
-            bits::insert_msb_bit(bits, cursor, false)?;
-            cursor += 1;
-            inserted = inserted.saturating_add(1);
-        }
-    }
-
-    if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        if object_type == TRIGGER_OBJECT_TYPE {
-            return None;
-        }
-        bits::insert_msb_bit(bits, cursor, false)?;
-        cursor += 1;
-        inserted = inserted.saturating_add(1);
-    }
-
-    *bit_cursor = cursor;
-    Some(inserted)
-}
-
-fn advance_live_add_record_bit_cursor(
-    bytes: &[u8],
-    bits: &[bool],
-    record_offset: usize,
-    record_end: usize,
-    bit_cursor: &mut usize,
-) -> bool {
-    if record_offset + 6 > record_end || record_end > bytes.len() {
-        return false;
-    }
-    match bytes[record_offset + 1] {
-        0x05 => creature::looks_like_legacy_creature_add_transform_fields(bytes, record_offset, record_end),
-        DOOR_OBJECT_TYPE => {
-            let Some(first_dword) = read_u32_le(bytes, record_offset + 6) else {
-                return false;
-            };
-            let visual_offset = record_offset + 2 + if first_dword == 0 { 12 } else { 8 };
-            let name_offset = if creature::has_ee_identity_visual_transform_map_at(bytes, visual_offset, record_end)
-            {
-                visual_offset + 40
-            } else {
-                visual_offset
-            };
-            if name_offset > record_end || *bit_cursor >= bits.len() {
-                return false;
-            }
-            let inline_name = locstring::inline_cexo_string_end(bytes, name_offset).is_some();
-            *bit_cursor = bit_cursor.saturating_add(if inline_name && bits[*bit_cursor] {
-                7
-            } else {
-                6
-            });
-            *bit_cursor <= bits.len()
-        }
-        PLACEABLE_OBJECT_TYPE => {
-            if *bit_cursor >= bits.len() {
-                return false;
-            }
-            let dest_inner_bits = usize::from(bits[*bit_cursor]);
-            *bit_cursor = bit_cursor.saturating_add(11 + dest_inner_bits);
-            *bit_cursor <= bits.len()
-        }
-        _ => false,
-    }
-}
-
-fn legacy_live_delete_fragment_bit_count(
-    bytes: &[u8],
-    record_offset: usize,
-    record_end: usize,
-) -> Option<usize> {
-    if record_end != record_offset + 6
-        || record_end > bytes.len()
-        || bytes.get(record_offset).copied() != Some(b'D')
-        || !looks_like_legacy_live_object_id_at(bytes, record_offset + 2)
-    {
-        return None;
-    }
-
-    match bytes[record_offset + 1] {
-        0x05 | 0x06 | 0x09 => Some(1),
-        0x07 | 0x0A => Some(0),
-        _ => None,
-    }
-}
-
-fn find_next_legacy_live_object_sub_message_boundary_after(
-    bytes: &[u8],
-    offset: usize,
-    search_end: usize,
-) -> usize {
-    let scan_end = search_end.min(bytes.len());
-    if offset >= scan_end {
-        return scan_end;
-    }
-    let start = scan_end.min(offset + minimum_legacy_live_object_record_length_at(bytes, offset));
-    let suppress_inline_string_boundaries = bytes.get(offset).copied() != Some(b'I');
-    let string_scan_start = (offset + 2).min(scan_end);
-    for candidate in start..scan_end.saturating_sub(1) {
-        if suppress_inline_string_boundaries
-            && locstring::candidate_inside_inline_string(bytes, string_scan_start, candidate)
-        {
-            continue;
-        }
-        if looks_like_legacy_live_object_sub_message_boundary(bytes, candidate) {
-            return candidate;
-        }
-    }
-    scan_end
-}
-
-fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> usize {
-    if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
-        return 2;
-    }
-    match (bytes[offset], bytes[offset + 1]) {
-        (b'A', 0x05) => 32,
-        (b'A', PLACEABLE_OBJECT_TYPE) => {
-            let name_offset = offset + 6;
-            if let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) {
-                return inline_end.saturating_add(5).saturating_sub(offset);
-            }
-            11
-        }
-        (b'A', DOOR_OBJECT_TYPE) => {
-            let Some(first_dword) = read_u32_le(bytes, offset + 6) else {
-                return 16;
-            };
-            let name_offset = offset + 2 + if first_dword == 0 { 12 } else { 8 };
-            if let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) {
-                return inline_end.saturating_add(2).saturating_sub(offset);
-            }
-            16
-        }
-        (b'U' | b'P', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 10,
-        (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
-        (b'I', _) => 7,
-        (b'W', marker) if marker <= 0x0F && bytes.get(offset + 2) == Some(&0x0E) => 3,
-        _ => 2,
-    }
-}
-
-fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usize) -> bool {
-    if offset > bytes.len() || bytes.len() - offset < 2 {
-        return false;
-    }
-    let opcode = bytes[offset];
-    let marker = bytes[offset + 1];
-    let typed_object_boundary = matches!(marker, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A)
-        && looks_like_legacy_live_object_id_at(bytes, offset + 2);
-    let legacy_type5_sentinel_boundary = marker == 0x05
-        && bytes.len() - offset >= 6
-        && bytes[offset + 2] == 0xFD
-        && bytes[offset + 3] == 0xFF
-        && bytes[offset + 4] == 0xFF
-        && bytes[offset + 5] == 0xFF;
-    if matches!(opcode, b'A' | b'D' | b'U' | b'P')
-        && (typed_object_boundary || legacy_type5_sentinel_boundary)
+    // `W` world-status records are three read-buffer bytes and fragment
+    // neutral. `world_status::normalize_record_for_ee` strips legacy tails; if
+    // the record is already exactly the legal length, this claim is a verified
+    // no-op.
+    if bytes[offset] == b'W'
+        && record_end == offset + 3
+        && bytes.get(offset + 1).copied().unwrap_or(0xFF) <= 0x0F
+        && bytes.get(offset + 2).copied() == Some(0x0E)
     {
         return true;
     }
-    let legacy_item_sentinel = item::is_legacy_item_sentinel(bytes, offset);
-    if opcode == b'I'
-        && (item::is_known_legacy_item_marker(marker)
-            || legacy_item_sentinel
-            || looks_like_legacy_live_object_id_at(bytes, offset + 1))
-    {
-        return true;
-    }
-    opcode == b'W' && bytes.len() - offset >= 3 && marker <= 0x0F && bytes[offset + 2] == 0x0E
-}
 
-fn looks_like_legacy_live_object_id_at(bytes: &[u8], offset: usize) -> bool {
-    read_u32_le(bytes, offset)
-        .map(looks_like_legacy_live_object_id_value)
-        .unwrap_or(false)
-}
-
-fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
+    if bytes[offset] == b'D' {
+        return cursor::legacy_live_delete_fragment_bit_count(bytes, offset, record_end)
+            == Some(0);
     }
-    let high_byte = object_id & 0xFF00_0000;
-    matches!(
-        high_byte,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
-    ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
-        .contains(&object_id)
+
+    false
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {

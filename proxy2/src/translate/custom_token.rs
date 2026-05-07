@@ -40,6 +40,31 @@ pub struct CustomTokenRewriteSummary {
     pub reason: &'static str,
 }
 
+pub fn claim_or_rewrite_payload_if_verified(
+    payload: &mut Vec<u8>,
+) -> Option<CustomTokenRewriteSummary> {
+    if !is_custom_token_payload(payload) {
+        return None;
+    }
+
+    if let Some(parsed) = parse_valid_custom_token_payload(payload) {
+        if parsed.valid {
+            return Some(CustomTokenRewriteSummary {
+                source_minor: payload[2],
+                old_declared_present: true,
+                old_declared: read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?,
+                new_declared: read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?,
+                old_payload_length: payload.len(),
+                new_payload_length: payload.len(),
+                old_token_count: observed_token_count(payload).unwrap_or(0),
+                reason: "verified-ee-compatible-custom-token-cnw-window",
+            });
+        }
+    }
+
+    rewrite_payload_if_possible(payload)
+}
+
 pub fn rewrite_payload_if_possible(payload: &mut Vec<u8>) -> Option<CustomTokenRewriteSummary> {
     if !is_custom_token_payload(payload) {
         return None;

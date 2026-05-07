@@ -44,9 +44,19 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         let record_end = span.offset + span.record_length;
         let record = &bytes[span.offset..record_end];
         if let Some(high) = span.high {
-            if high.is_known() {
-                rewritten.extend_from_slice(record);
-            } else {
+            let payload_offset = span.offset + LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+            let payload_end = payload_offset + span.payload_length;
+            let mut payload = bytes[payload_offset..payload_end].to_vec();
+            let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
+                &mut payload,
+                Some(&state.latest_area_placeables),
+                server_dispatch::SemanticScope::CoalescedSpan,
+                None,
+            );
+            if semantic_rewrite_summary.should_quarantine()
+                || !semantic_rewrite_summary.any_rewrite()
+                || payload.len() > u16::MAX as usize
+            {
                 changed = true;
                 dropped_spans = dropped_spans.saturating_add(1);
                 tracing::warn!(
@@ -55,10 +65,29 @@ pub(super) fn rewrite_server_window_spans_if_needed(
                     major = high.major,
                     minor = high.minor,
                     name = high.name(),
+                    known = high.is_known(),
                     prefix = %hex_prefix(record, 32),
-                    "server coalesced M window span quarantined: unknown high-level payload"
+                    "server coalesced M window span quarantined: semantic translator did not claim high-level payload"
                 );
+                continue;
             }
+
+            let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET].to_vec();
+            write_be_u16(&mut out_record, 10, payload.len() as u16)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("failed to update coalesced direct span length"))?;
+            out_record.extend_from_slice(&payload);
+            rewritten.extend_from_slice(&out_record);
+            changed = true;
+            tracing::info!(
+                offset = span.offset,
+                name = high.name(),
+                major = high.major,
+                minor = high.minor,
+                old_payload_length = span.payload_length,
+                new_payload_length = payload.len(),
+                "server coalesced direct high-level span semantically claimed for EE"
+            );
             continue;
         }
 
@@ -117,13 +146,27 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             continue;
         }
 
-        let mut semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
+        let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
             &mut inflated,
             Some(&state.latest_area_placeables),
             server_dispatch::SemanticScope::CoalescedSpan,
+            live_object_continuation_wrapped.then_some("GameObjUpdate_LiveObjectContinuation"),
         );
-        if live_object_continuation_wrapped {
-            semantic_rewrite_summary.note_rewrite("GameObjUpdate_LiveObjectContinuation");
+        if semantic_rewrite_summary.should_quarantine() {
+            let reason = semantic_rewrite_summary
+                .quarantine_reason
+                .unwrap_or("coalesced-untranslated-required-semantic-family");
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            dump_invalid_inflated_payload_for_span(&inflated, view.sequence, reason);
+            tracing::warn!(
+                offset = span.offset,
+                inflated = inflated.len(),
+                reason,
+                prefix = %hex_prefix(&inflated, 32),
+                "server coalesced M deflated span quarantined: required semantic translation is missing"
+            );
+            continue;
         }
         if !inflated_cnw_fragment_offset_valid(&inflated) {
             changed = true;
