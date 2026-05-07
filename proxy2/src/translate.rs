@@ -13,6 +13,7 @@
 mod bn;
 mod area;
 mod cnw_message;
+mod custom_token;
 mod loadbar;
 mod m_frame;
 mod module;
@@ -20,6 +21,7 @@ mod module_resources;
 mod live_object;
 mod live_object_update;
 mod player_list;
+mod profiles;
 mod quickbar;
 
 use crate::{

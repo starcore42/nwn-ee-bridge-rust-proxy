@@ -355,6 +355,7 @@ impl HighLevel {
             (0x31, 0x02) => "PlayModuleCharacterList_Stop",
             (0x31, 0x03) => "PlayModuleCharacterList_Response",
             (0x32, 0x01) => "SetCustomToken",
+            (0x32, 0x02) => "SetCustomTokenList",
             _ => "<unknown>",
         }
     }

@@ -7,9 +7,7 @@
 
 use crate::translate::live_object_update;
 
-use super::{
-    encode_legacy_m_crc, write_be_u16, MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET,
-};
+use super::{parse_window, MFrameView};
 
 pub type RewriteSummary = live_object_update::LiveObjectUpdateRewriteSummary;
 
@@ -28,9 +26,7 @@ pub fn rewrite_direct_frame_if_needed(
         return Ok(None);
     }
 
-    let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
-    let payload_end = payload_start + view.payload_length;
-    let Some(payload) = bytes.get(payload_start..payload_end) else {
+    let Some(payload) = parse_window::primary_payload(bytes, view) else {
         return Ok(None);
     };
 
@@ -38,23 +34,12 @@ pub fn rewrite_direct_frame_if_needed(
     let Some(summary) = rewrite_payload_if_needed(&mut rewritten_payload) else {
         return Ok(None);
     };
-    if rewritten_payload.len() > u16::MAX as usize {
-        anyhow::bail!("GameObjUpdate_LiveObject update payload too large");
-    }
-
-    let mut rewritten = bytes[..payload_start].to_vec();
-    write_be_u16(&mut rewritten, 10, rewritten_payload.len() as u16)
-        .then_some(())
-        .ok_or_else(|| {
-            anyhow::anyhow!("failed to update GameObjUpdate_LiveObject payload length")
-        })?;
-    rewritten.extend_from_slice(&rewritten_payload);
-    if let Some(trailing) = bytes.get(payload_end..) {
-        rewritten.extend_from_slice(trailing);
-    }
-    encode_legacy_m_crc(&mut rewritten)
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("failed to repair GameObjUpdate_LiveObject CRC"))?;
+    let rewritten = parse_window::replace_primary_payload_and_repair(
+        bytes,
+        view,
+        &rewritten_payload,
+        "GameObjUpdate_LiveObject",
+    )?;
 
     tracing::info!(
         old_declared = summary.old_declared,
@@ -73,6 +58,7 @@ pub fn rewrite_direct_frame_if_needed(
         bytes_removed = summary.bytes_removed,
         bits_inserted = summary.bits_inserted,
         bits_removed = summary.bits_removed,
+        fragment_bits_trimmed = summary.fragment_bits_trimmed,
         world_status_records_normalized = summary.world_status_records_normalized,
         "server GameObjUpdate_LiveObject update records rewritten for EE"
     );

@@ -24,31 +24,7 @@ const RESREF_BYTES: usize = 16;
 const MAX_SERVER_STATUS_STRING: usize = 4096;
 const MAX_MODULE_RESOURCES_PAYLOAD: usize = 4096;
 
-const HG_MODULE_HAK_ORDER_TOP_FIRST: [&str; 23] = [
-    "cep2_custom",
-    "cep2_top_v23",
-    "cep2_add_phenos5",
-    "cep2_add_phenos4",
-    "cep2_add_phenos3",
-    "cep2_add_phenos2",
-    "cep2_add_phenos1",
-    "cep2_add_loads",
-    "cep2_add_rules",
-    "cep2_add_sb_v1",
-    "cep2_core6",
-    "cep2_core5",
-    "cep2_core4",
-    "cep2_core3",
-    "cep2_core2",
-    "cep2_core1",
-    "cep2_core0",
-    "cep2_add_doors",
-    "cep2_add_tiles2",
-    "cep2_add_tiles1",
-    "cep2_ext_tiles",
-    "cep2_add_skies",
-    "cep2_crp",
-];
+use super::profiles::{self, ModuleResourceProfile};
 
 #[derive(Debug, Clone)]
 pub struct ModuleResourcesRewriteSummary {
@@ -57,6 +33,7 @@ pub struct ModuleResourcesRewriteSummary {
     pub old_payload_length: usize,
     pub new_payload_length: usize,
     pub status_module_name: String,
+    pub profile_name: &'static str,
     pub hak_count: usize,
     pub nwsync_advertised: bool,
 }
@@ -118,6 +95,14 @@ pub fn rewrite_server_status_module_resources_payload(
         return None;
     }
 
+    let profile = profiles::module_resources_profile("higher-ground");
+    rewrite_payload_for_profile(payload, profile)
+}
+
+fn rewrite_payload_for_profile(
+    payload: &mut Vec<u8>,
+    profile: ModuleResourceProfile,
+) -> Option<ModuleResourcesRewriteSummary> {
     let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     let declared = usize::try_from(old_declared).ok()?;
     if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES || declared > payload.len() {
@@ -133,12 +118,12 @@ pub fn rewrite_server_status_module_resources_payload(
 
     // The local EE user folder already has the HAKs installed by the harness.
     // Advertise no NWSync repository here and provide the explicit HAK list.
-    writer.write_bit(false);
+    writer.write_bit(profile.advertise_nwsync);
 
     writer.write_string("")?;
     writer.write_string("")?;
-    writer.write_byte(u8::try_from(HG_MODULE_HAK_ORDER_TOP_FIRST.len()).ok()?);
-    for hak in HG_MODULE_HAK_ORDER_TOP_FIRST {
+    writer.write_byte(u8::try_from(profile.hak_order_top_first.len()).ok()?);
+    for hak in profile.hak_order_top_first {
         writer.write_fixed_resref16(hak)?;
     }
 
@@ -161,8 +146,9 @@ pub fn rewrite_server_status_module_resources_payload(
         old_payload_length: payload.len(),
         new_payload_length: rewritten.len(),
         status_module_name,
-        hak_count: HG_MODULE_HAK_ORDER_TOP_FIRST.len(),
-        nwsync_advertised: false,
+        profile_name: profile.name,
+        hak_count: profile.hak_order_top_first.len(),
+        nwsync_advertised: profile.advertise_nwsync,
     };
     *payload = rewritten;
     Some(summary)

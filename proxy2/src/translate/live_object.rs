@@ -41,6 +41,7 @@ const LEGACY_PREFIXED_FRAGMENT_BYTES: usize = 4;
 const LEGACY_LIVE_BYTES_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + LEGACY_PREFIXED_FRAGMENT_BYTES;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES: usize = 2048;
+const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = 32;
 const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_1000;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
@@ -83,10 +84,15 @@ pub struct LiveObjectVisualTransformSummary {
     pub new_payload_length: usize,
     pub old_live_bytes_length: usize,
     pub new_live_bytes_length: usize,
+    pub old_fragment_bytes: usize,
+    pub new_fragment_bytes: usize,
     pub records_examined: u32,
     pub maps_inserted: u32,
     pub bytes_inserted: u32,
+    pub bytes_removed: u32,
+    pub fragment_bits_trimmed: u32,
     pub area_placeable_adds_suppressed: u32,
+    pub legacy_door_model_tokens_removed: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +194,10 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
         if salvaged.0 <= LEGACY_LIVE_BYTES_OFFSET {
             return None;
         }
+        let dropped_leadin = salvaged.0 - LEGACY_LIVE_BYTES_OFFSET;
+        if dropped_leadin > MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES {
+            return None;
+        }
         live_bytes_offset = salvaged.0;
         first_record_end = salvaged.1;
         salvaged_partial_leadin = true;
@@ -254,10 +264,14 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
     let mut fragment_bits_reliable = fragment_bits.is_some();
     let mut fragment_bits_changed = false;
     let old_live_bytes_length = live_bytes.len();
+    let old_fragment_bytes = fragment_bytes.len();
     let mut records_examined = 0u32;
     let mut maps_inserted = 0u32;
     let mut bytes_inserted = 0u32;
+    let mut bytes_removed = 0u32;
+    let mut fragment_bits_trimmed = 0u32;
     let mut area_placeable_adds_suppressed = 0u32;
+    let mut legacy_door_model_tokens_removed = 0u32;
     let mut offset = 0usize;
 
     while offset + 10 <= live_bytes.len() {
@@ -288,6 +302,10 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                     maps_inserted = maps_inserted.saturating_add(record_rewrite.maps_inserted);
                     bytes_inserted =
                         bytes_inserted.saturating_add(record_rewrite.bytes_inserted);
+                    bytes_removed =
+                        bytes_removed.saturating_add(record_rewrite.bytes_removed);
+                    legacy_door_model_tokens_removed = legacy_door_model_tokens_removed
+                        .saturating_add(record_rewrite.legacy_door_model_tokens_removed);
                     area_placeable_adds_suppressed = area_placeable_adds_suppressed
                         .saturating_add(record_rewrite.area_placeable_adds_suppressed);
                     fragment_bits_changed |= record_rewrite.fragment_bits_changed;
@@ -296,6 +314,18 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                     } else {
                         record_end.max(offset + 1)
                     };
+                    continue;
+                }
+                if advance_known_live_record_fragment_cursor_for_ee(
+                    &live_bytes,
+                    bits,
+                    offset,
+                    record_end,
+                    &mut fragment_bit_cursor,
+                )
+                .is_some()
+                {
+                    offset = record_end.max(offset + 1);
                     continue;
                 }
             } else {
@@ -326,10 +356,24 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         offset = record_end + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
     }
 
+    if fragment_bits_reliable {
+        if let Some(bits) = fragment_bits.as_mut() {
+            if fragment_bit_cursor >= CNW_FRAGMENT_HEADER_BITS
+                && fragment_bit_cursor < bits.len()
+            {
+                fragment_bits_trimmed = (bits.len() - fragment_bit_cursor) as u32;
+                bits.truncate(fragment_bit_cursor);
+                fragment_bits_changed = true;
+            }
+        }
+    }
+
     if maps_inserted == 0
         && !fragment_bits_changed
         && live_bytes.len() == old_live_bytes_length
+        && bytes_removed == 0
         && area_placeable_adds_suppressed == 0
+        && legacy_door_model_tokens_removed == 0
     {
         return None;
     }
@@ -352,10 +396,15 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         new_payload_length: rewritten.len(),
         old_live_bytes_length,
         new_live_bytes_length: live_bytes.len(),
+        old_fragment_bytes,
+        new_fragment_bytes: fragment_bytes.len(),
         records_examined,
         maps_inserted,
         bytes_inserted,
+        bytes_removed,
+        fragment_bits_trimmed,
         area_placeable_adds_suppressed,
+        legacy_door_model_tokens_removed,
     };
     *payload = rewritten;
     Some(summary)
@@ -617,10 +666,20 @@ fn legacy_add_visual_transform_insert_offset(
         // door add reads id + one/two DWORDs first, and placeable add reads
         // id/name/type/appearance/static fields first. Only synthesize the
         // identity map when those surrounding fields parse cleanly inside this
-        // exact record. Creature add remains disabled until its body/appearance
-        // bitfield parser owns the complete cursor; guessing there crashes EE
-        // and hides armor/body appearance problems behind a shifted stream.
-        CREATURE_OBJECT_TYPE => None,
+        // exact record. Creature add is only safe for the decompile-backed
+        // fixed 32-byte transform prefix: `sub_14077F870` reads six floats, a
+        // WORD, then `sub_140973160`. If additional appearance/body bytes are
+        // present in the same record, this pass must not guess a split point.
+        CREATURE_OBJECT_TYPE => {
+            let insert_offset = offset + CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET;
+            if record_end == insert_offset
+                && looks_like_legacy_creature_add_transform_fields(bytes, offset, record_end)
+            {
+                Some(insert_offset)
+            } else {
+                None
+            }
+        }
         DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE => None,
         _ => None,
     }
@@ -630,9 +689,11 @@ fn legacy_add_visual_transform_insert_offset(
 struct DoorPlaceableAddRewrite {
     maps_inserted: u32,
     bytes_inserted: u32,
+    bytes_removed: u32,
     fragment_bits_changed: bool,
     record_removed: bool,
     area_placeable_adds_suppressed: u32,
+    legacy_door_model_tokens_removed: u32,
 }
 
 fn rewrite_legacy_door_placeable_add_record_for_ee(
@@ -680,7 +741,7 @@ fn rewrite_legacy_door_add_record_for_ee(
     bits: &mut Vec<bool>,
     bit_cursor: &mut usize,
     record_offset: usize,
-    area_context: Option<&AreaPlaceableContext>,
+    _area_context: Option<&AreaPlaceableContext>,
 ) -> Option<DoorPlaceableAddRewrite> {
     if *bit_cursor >= bits.len() {
         return None;
@@ -701,10 +762,7 @@ fn rewrite_legacy_door_add_record_for_ee(
     } else {
         visual_offset
     };
-    if visual_offset > *record_end
-        || name_offset > *record_end
-        || !looks_like_legacy_door_add_name_at(bytes, name_offset, *record_end)
-    {
+    if visual_offset > *record_end || name_offset > *record_end {
         return None;
     }
 
@@ -720,7 +778,22 @@ fn rewrite_legacy_door_add_record_for_ee(
         summary.bytes_inserted = EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32;
     }
 
-    let short_name = inline_cexo_string_end(bytes, name_offset).is_none();
+    let name_shape = legacy_door_add_name_shape_at(bytes, name_offset, *record_end)?;
+    if let Some((token_offset, token_length)) = name_shape.legacy_model_token {
+        if token_offset < name_offset
+            || token_length > (*record_end).saturating_sub(token_offset)
+        {
+            return None;
+        }
+        bytes.drain(token_offset..token_offset + token_length);
+        *record_end -= token_length;
+        summary.bytes_removed = summary.bytes_removed.saturating_add(token_length as u32);
+        summary.legacy_door_model_tokens_removed = summary
+            .legacy_door_model_tokens_removed
+            .saturating_add(1);
+    }
+
+    let short_name = name_shape.short_name;
     if short_name {
         write_u32_le(bytes, name_offset, 0)?;
         set_cnw_msb_bit(bits, *bit_cursor, false)?;
@@ -737,7 +810,10 @@ fn rewrite_legacy_door_add_record_for_ee(
         summary.fragment_bits_changed = changed;
     }
 
-    if summary.maps_inserted != 0 || summary.fragment_bits_changed {
+    if summary.maps_inserted != 0
+        || summary.bytes_removed != 0
+        || summary.fragment_bits_changed
+    {
         Some(summary)
     } else {
         None
@@ -840,9 +916,11 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         return Some(DoorPlaceableAddRewrite {
             maps_inserted: 0,
             bytes_inserted: 0,
+            bytes_removed: (*record_end - record_offset) as u32,
             fragment_bits_changed: true,
             record_removed: true,
             area_placeable_adds_suppressed: 1,
+            legacy_door_model_tokens_removed: 0,
         });
     }
 
@@ -904,6 +982,115 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     }
 }
 
+fn advance_known_live_record_fragment_cursor_for_ee(
+    bytes: &[u8],
+    bits: &[bool],
+    record_offset: usize,
+    record_end: usize,
+    bit_cursor: &mut usize,
+) -> Option<()> {
+    if record_offset + 2 > record_end || record_end > bytes.len() {
+        return None;
+    }
+
+    match (bytes[record_offset], bytes[record_offset + 1]) {
+        (b'A', CREATURE_OBJECT_TYPE)
+            if looks_like_legacy_creature_add_transform_fields(bytes, record_offset, record_end) =>
+        {
+            Some(())
+        }
+        (b'A', DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) => {
+            advance_live_add_record_bit_cursor(bytes, bits, record_offset, record_end, bit_cursor)
+                .then_some(())
+        }
+        (b'D', object_type) => {
+            let bit_count = legacy_live_delete_fragment_bit_count(bytes, record_offset, record_end)?;
+            if matches!(object_type, 0x05 | 0x06 | 0x09 | 0x07 | 0x0A)
+                && bits.len().saturating_sub(*bit_cursor) >= bit_count
+            {
+                *bit_cursor += bit_count;
+                Some(())
+            } else {
+                None
+            }
+        }
+        (b'W', marker)
+            if marker <= 0x0F
+                && record_end >= record_offset + 3
+                && bytes.get(record_offset + 2) == Some(&0x0E) =>
+        {
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn advance_live_add_record_bit_cursor(
+    bytes: &[u8],
+    bits: &[bool],
+    record_offset: usize,
+    record_end: usize,
+    bit_cursor: &mut usize,
+) -> bool {
+    if record_offset + 6 > record_end || record_end > bytes.len() {
+        return false;
+    }
+
+    match bytes[record_offset + 1] {
+        DOOR_OBJECT_TYPE => {
+            let Some(first_dword) = read_u32_le(bytes, record_offset + 6) else {
+                return false;
+            };
+            let visual_offset = record_offset + 2 + if first_dword == 0 { 12 } else { 8 };
+            let name_offset = if has_ee_identity_visual_transform_map_at(bytes, visual_offset, record_end)
+            {
+                visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()
+            } else {
+                visual_offset
+            };
+            let Some(name_shape) = legacy_door_add_name_shape_at(bytes, name_offset, record_end)
+            else {
+                return false;
+            };
+            if *bit_cursor >= bits.len() {
+                return false;
+            }
+            let legacy_outer_locstring = !name_shape.short_name && bits[*bit_cursor];
+            *bit_cursor = bit_cursor.saturating_add(if legacy_outer_locstring { 7 } else { 6 });
+            *bit_cursor <= bits.len()
+        }
+        PLACEABLE_OBJECT_TYPE => {
+            if *bit_cursor >= bits.len() {
+                return false;
+            }
+            let dest_inner_bits = usize::from(bits[*bit_cursor]);
+            *bit_cursor = bit_cursor.saturating_add(11 + dest_inner_bits);
+            *bit_cursor <= bits.len()
+        }
+        _ => false,
+    }
+}
+
+fn legacy_live_delete_fragment_bit_count(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<usize> {
+    if record_end != record_offset + 6
+        || record_end > bytes.len()
+        || bytes.get(record_offset).copied() != Some(b'D')
+        || !looks_like_legacy_live_object_id_at(bytes, record_offset + 2)
+    {
+        return None;
+    }
+
+    match bytes[record_offset + 1] {
+        0x05 | 0x06 | 0x09 => Some(1),
+        0x07 | 0x0A => Some(0),
+        _ => None,
+    }
+}
+
 fn is_legacy_user_defined_placeable_appearance(appearance: u16) -> bool {
     // Diamond 1.72 `placeables.2da` rows 202..229 are User01..User28 and
     // rows 275..278 are User92..User95. These rows resolve to the generic
@@ -934,17 +1121,70 @@ fn format_bit_slice(bits: &[bool], offset: usize, length: usize) -> String {
     text
 }
 
-fn looks_like_legacy_door_add_name_at(bytes: &[u8], name_offset: usize, record_end: usize) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct DoorAddNameShape {
+    short_name: bool,
+    legacy_model_token: Option<(usize, usize)>,
+}
+
+fn legacy_door_add_name_shape_at(
+    bytes: &[u8],
+    name_offset: usize,
+    record_end: usize,
+) -> Option<DoorAddNameShape> {
     if name_offset > record_end || record_end > bytes.len() {
+        return None;
+    }
+
+    if let Some(inline_end) = inline_cexo_string_end(bytes, name_offset) {
+        if inline_end + 2 == record_end {
+            return Some(DoorAddNameShape {
+                short_name: false,
+                legacy_model_token: None,
+            });
+        }
+        const LEGACY_DOOR_MODEL_TOKEN_BYTES: usize = 4;
+        if inline_end + LEGACY_DOOR_MODEL_TOKEN_BYTES + 2 == record_end
+            && looks_like_legacy_door_model_token_at(bytes, inline_end, record_end)
+        {
+            return Some(DoorAddNameShape {
+                short_name: false,
+                legacy_model_token: Some((inline_end, LEGACY_DOOR_MODEL_TOKEN_BYTES)),
+            });
+        }
+        return None;
+    }
+
+    let legacy_tail_end = name_offset.checked_add(4 + 2)?;
+    if legacy_tail_end == record_end {
+        Some(DoorAddNameShape {
+            short_name: true,
+            legacy_model_token: None,
+        })
+    } else {
+        None
+    }
+}
+
+fn looks_like_legacy_door_model_token_at(
+    bytes: &[u8],
+    token_offset: usize,
+    record_end: usize,
+) -> bool {
+    const LEGACY_DOOR_MODEL_TOKEN_BYTES: usize = 4;
+    if token_offset > record_end
+        || record_end > bytes.len()
+        || record_end - token_offset != LEGACY_DOOR_MODEL_TOKEN_BYTES + 2
+    {
         return false;
     }
-    if let Some(inline_end) = inline_cexo_string_end(bytes, name_offset) {
-        return inline_end <= record_end && record_end - inline_end >= 2;
-    }
-    let legacy_tail_end = name_offset + 4 + 2;
-    legacy_tail_end <= record_end
-        && (legacy_tail_end == record_end
-            || has_ee_identity_visual_transform_map_at(bytes, legacy_tail_end, record_end))
+
+    let token = &bytes[token_offset..token_offset + LEGACY_DOOR_MODEL_TOKEN_BYTES];
+    token.iter().any(|byte| byte.is_ascii_alphanumeric())
+        && token.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
+        })
+        && read_u16_le(bytes, token_offset + LEGACY_DOOR_MODEL_TOKEN_BYTES).is_some()
 }
 
 fn decode_cnw_msb_valid_bits(fragment: &[u8]) -> Option<Vec<bool>> {

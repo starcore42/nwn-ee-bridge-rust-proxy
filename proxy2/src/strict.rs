@@ -294,16 +294,313 @@ fn validate_packetized_trailing(bytes: &[u8], offset: usize) -> Result<(), Stric
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum HighPayloadValidation {
+    /// A validator that owns the packet family and consumes the declared shape
+    /// narrowly enough for strict player-mode delivery.
+    Exact(bool),
+    /// A named family validator that still admits a broad CNW wrapper shape.
+    /// This is intentionally alpha-only so "known opcode" cannot silently mean
+    /// "safe forever."
+    Shallow(bool),
+    /// A known or unknown opcode with no family validator. These packets must
+    /// be quarantined until the decompiles/captures justify a translator.
+    Missing,
+}
+
+const ALLOW_SHALLOW_HIGH_LEVEL_VALIDATORS_DURING_ALPHA: bool = true;
+
 fn known_high_payload_shape_valid(payload: &[u8]) -> bool {
     let Some(high) = HighLevel::parse(payload) else {
         return false;
     };
-    match (high.major, high.minor) {
-        (0x05, 0x02) => game_obj_update_obj_control_shape_valid(payload),
-        (0x0E, 0x02) => party_get_list_payload_shape_valid(payload),
-        (0x0E, 0x01 | 0x03..=0x0E) => party_cnw_wrapped_payload_shape_valid(payload),
-        _ => true,
+    match high_payload_validation(payload, high) {
+        HighPayloadValidation::Exact(valid) => valid,
+        HighPayloadValidation::Shallow(valid) => {
+            if valid {
+                tracing::warn!(
+                    major = high.major,
+                    minor = high.minor,
+                    name = high.name(),
+                    "strict M high-level validator is shallow and allowed only during alpha"
+                );
+            }
+            valid && ALLOW_SHALLOW_HIGH_LEVEL_VALIDATORS_DURING_ALPHA
+        }
+        HighPayloadValidation::Missing => {
+            tracing::warn!(
+                major = high.major,
+                minor = high.minor,
+                name = high.name(),
+                "strict M high-level validator missing for known opcode"
+            );
+            false
+        }
     }
+}
+
+fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValidation {
+    match (high.major, high.minor) {
+        (0x01, 0x03) => HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload)),
+        (0x03, 0x01) => HighPayloadValidation::Exact(module_info_shape_valid(payload)),
+        (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
+        (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
+        (0x05, 0x02) => HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload)),
+        (0x0A, 0x01 | 0x02) => HighPayloadValidation::Exact(player_list_shape_valid(payload)),
+        (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
+        (0x0E, 0x01 | 0x03..=0x0E) => {
+            HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
+        }
+        (0x11, 0x03) => HighPayloadValidation::Exact(char_list_request_update_char_shape_valid(payload)),
+        (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
+        (0x1E, 0x01 | 0x02) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
+        (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
+        (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
+        (0x01, 0x00) => {
+            HighPayloadValidation::Shallow(payload.len() == 3 || cnw_wrapped_payload_shape_valid(payload, 3 + 4, 8))
+        }
+        (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x11 | 0x12)
+        | (0x03, 0x02 | 0x03 | 0x0E)
+        | (0x09, 0x01..=0x05)
+        | (0x0C, 0x01)
+        | (0x1C, 0x0C)
+        | (0x31, 0x01) => {
+            HighPayloadValidation::Shallow(bare_or_cnw_wrapped_payload_shape_valid(payload))
+        }
+        (0x04, 0x03) | (0x11, 0x01) => {
+            HighPayloadValidation::Shallow(payload.len() == 3 || cnw_wrapped_payload_shape_valid(payload, 3 + 4, 8))
+        }
+        (0x2C, 0x01..=0x03) => {
+            HighPayloadValidation::Shallow(cnw_wrapped_payload_shape_valid(payload, 3 + 4, 8))
+        }
+        (0x31, 0x02) => HighPayloadValidation::Shallow(payload.len() == 3),
+        _ => HighPayloadValidation::Missing,
+    }
+}
+
+fn cnw_wrapped_payload_shape_valid(
+    payload: &[u8],
+    min_declared: usize,
+    max_fragment_bytes: usize,
+) -> bool {
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    declared >= min_declared
+        && declared <= payload.len()
+        && payload.len().saturating_sub(declared) <= max_fragment_bytes
+}
+
+fn bare_or_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
+    payload.len() == 3 || cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
+    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 8)
+        && leading_cnw_string_consumes_inside_declared(payload)
+}
+
+fn module_info_shape_valid(payload: &[u8]) -> bool {
+    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn area_client_area_shape_valid(payload: &[u8]) -> bool {
+    const MIN_AREA_CLIENT_AREA_DECLARED: usize = 3 + 4 + 4 + 4 * 4 + 4 + 16;
+    cnw_wrapped_payload_shape_valid(payload, MIN_AREA_CLIENT_AREA_DECLARED, 64)
+}
+
+fn live_object_shape_valid(payload: &[u8]) -> bool {
+    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 4096)
+}
+
+fn player_list_shape_valid(payload: &[u8]) -> bool {
+    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn quickbar_shape_valid(payload: &[u8]) -> bool {
+    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn char_list_request_update_char_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // `CNWSMessage::HandlePlayerToServerCharListMessage` dispatches minor 3
+    // by reading one byte (`ReadBYTE(8, 1)`) followed by one fixed 16-byte
+    // `CResRef`, then checking `MessageReadUnderflow`. The CNW read window is
+    // therefore exactly high-level tag + declared length + byte + CResRef.
+    //
+    // The observed EE driver-only client packet carries one legacy packetized
+    // fragment byte after that declared window, so strict mode accepts the
+    // exact declared shape with at most that single trailing byte.
+    const DECLARED_BYTES: usize = 3 + 4 + 1 + 16;
+    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 1;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+
+    declared == DECLARED_BYTES
+        && payload.len() >= declared
+        && payload.len().saturating_sub(declared) <= MAX_OBSERVED_FRAGMENT_BYTES
+}
+
+fn client_side_feedback_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // `CNWSCreature::SendFeedbackMessage` stores the feedback id in
+    // `CNWCCMessageData` slot 9, then calls
+    // `CNWSMessage::SendServerToPlayerCCMessage(..., 0x0B, ...)`.
+    // The CC-message case 11 creates a bounded 0x80-byte write message,
+    // always writes that slot-9 value as a 16-bit WORD first, and then writes
+    // a small set of optional fields selected by the feedback id. The strict
+    // gate therefore validates the family/minor-specific CNW window bounds
+    // instead of allowing every known client-side-message opcode.
+    const MIN_DECLARED_BYTES: usize = 3 + 4 + 2;
+    const MAX_CC_FEEDBACK_WRITE_BYTES: usize = 0x80;
+    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 1;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+
+    declared >= MIN_DECLARED_BYTES
+        && declared <= 3 + 4 + MAX_CC_FEEDBACK_WRITE_BYTES
+        && payload.len() >= declared
+        && payload.len().saturating_sub(declared) <= MAX_OBSERVED_FRAGMENT_BYTES
+}
+
+fn set_custom_token_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // `CNWSMessage::SendServerToPlayerSetCustomToken` sizes the write message
+    // as string_length + 8, writes a 32-bit token id, then writes a
+    // `CExoString` with a 32-bit length prefix. The declared CNW window must
+    // exactly consume those fields; the one extra byte observed in legacy M
+    // packetization is accepted only as a trailing fragment byte.
+    custom_token_payload_shape_valid(payload, 0x01)
+}
+
+fn set_custom_token_list_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // `CNWSMessage::SendServerToPlayerSetCustomTokenList` writes a 32-bit
+    // token count, then `(DWORD token id, CExoString value)` for each entry.
+    // A zero-count list is therefore exactly `P 32 02`, declared 11, count 0,
+    // plus the observed legacy packetized fragment terminator byte.
+    custom_token_payload_shape_valid(payload, 0x02)
+}
+
+fn custom_token_payload_shape_valid(payload: &[u8], expected_minor: u8) -> bool {
+    const READ_START: usize = 3 + 4;
+    const MAX_REASONABLE_CUSTOM_TOKEN_BYTES: usize = 4096;
+    const MAX_REASONABLE_CUSTOM_TOKEN_COUNT: usize = 4096;
+    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 1;
+
+    if HighLevel::parse(payload)
+        .map(|high| high.major != 0x32 || high.minor != expected_minor)
+        .unwrap_or(true)
+    {
+        return false;
+    }
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared < READ_START
+        || declared >= payload.len()
+        || payload.len().saturating_sub(declared) > MAX_OBSERVED_FRAGMENT_BYTES
+    {
+        return false;
+    }
+
+    let mut cursor = READ_START;
+    match expected_minor {
+        0x01 => {
+            cursor = match cursor.checked_add(4) {
+                Some(cursor) if cursor <= declared => cursor,
+                _ => return false,
+            };
+            cursor = match custom_token_c_exo_string_end(
+                payload,
+                cursor,
+                declared,
+                MAX_REASONABLE_CUSTOM_TOKEN_BYTES,
+            ) {
+                Some(cursor) => cursor,
+                None => return false,
+            };
+        }
+        0x02 => {
+            let Some(count) =
+                read_le_u32(payload, cursor).and_then(|value| usize::try_from(value).ok())
+            else {
+                return false;
+            };
+            if count > MAX_REASONABLE_CUSTOM_TOKEN_COUNT {
+                return false;
+            }
+            cursor = match cursor.checked_add(4) {
+                Some(cursor) => cursor,
+                None => return false,
+            };
+            for _ in 0..count {
+                cursor = match cursor.checked_add(4) {
+                    Some(cursor) if cursor <= declared => cursor,
+                    _ => return false,
+                };
+                cursor = match custom_token_c_exo_string_end(
+                    payload,
+                    cursor,
+                    declared,
+                    MAX_REASONABLE_CUSTOM_TOKEN_BYTES,
+                ) {
+                    Some(cursor) => cursor,
+                    None => return false,
+                };
+            }
+        }
+        _ => return false,
+    }
+
+    cursor == declared
+}
+
+fn custom_token_c_exo_string_end(
+    payload: &[u8],
+    cursor: usize,
+    declared: usize,
+    max_string_bytes: usize,
+) -> Option<usize> {
+    let length = read_le_u32(payload, cursor).and_then(|value| usize::try_from(value).ok())?;
+    if length > max_string_bytes {
+        return None;
+    }
+    cursor
+        .checked_add(4)?
+        .checked_add(length)
+        .filter(|end| *end <= declared)
+}
+
+fn leading_cnw_string_consumes_inside_declared(payload: &[u8]) -> bool {
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared < 3 + 4 || declared > payload.len() {
+        return false;
+    }
+    let read_start = 3;
+    let string_len_offset = read_start + 4;
+    let Some(length) =
+        read_le_u32(payload, string_len_offset).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    string_len_offset
+        .checked_add(4)
+        .and_then(|start| start.checked_add(length))
+        .map(|end| end <= declared)
+        .unwrap_or(false)
 }
 
 fn game_obj_update_obj_control_shape_valid(payload: &[u8]) -> bool {
@@ -334,13 +631,11 @@ fn party_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
     const MIN_CNW_DECLARED_BYTES: usize = 3 + 4;
     const MAX_REASONABLE_PARTY_FRAGMENT_BYTES: usize = 32;
 
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    declared >= MIN_CNW_DECLARED_BYTES
-        && declared <= payload.len()
-        && payload.len() - declared <= MAX_REASONABLE_PARTY_FRAGMENT_BYTES
+    cnw_wrapped_payload_shape_valid(
+        payload,
+        MIN_CNW_DECLARED_BYTES,
+        MAX_REASONABLE_PARTY_FRAGMENT_BYTES,
+    )
 }
 
 fn party_get_list_payload_shape_valid(payload: &[u8]) -> bool {

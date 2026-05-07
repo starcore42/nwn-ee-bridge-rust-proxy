@@ -48,6 +48,13 @@ const LEGACY_AREA_OBJECT_ID_BYTES: usize = 4;
 const AREA_NAME_MODE_FRAGMENT_MASK: u8 = 0x08;
 const EE_POST_STATIC_ZERO_WORD_BYTES: usize = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaRewriteKind {
+    ExactEeAreaPresentBitInsert,
+    ExactEePostStaticZeroWordInsert,
+    LegacyHgMissingHeightRepair,
+}
+
 #[derive(Debug, Clone)]
 pub struct AreaRewriteSummary {
     pub old_declared: u32,
@@ -73,6 +80,7 @@ pub struct AreaRewriteSummary {
     pub tile_count: u32,
     pub tile_scan_valid: bool,
     pub height_repaired: bool,
+    pub rewrite_kinds: Vec<AreaRewriteKind>,
     pub placeable_context_valid: bool,
     pub placeable_light_count: usize,
     pub placeable_static_count: usize,
@@ -219,6 +227,13 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     let mut tile_scan = scan_area_tile_stream(payload, fragment_offset);
     let height_repaired = repair_missing_area_height(payload, fragment_offset, &mut tile_scan);
+    let mut rewrite_kinds = vec![
+        AreaRewriteKind::ExactEeAreaPresentBitInsert,
+        AreaRewriteKind::ExactEePostStaticZeroWordInsert,
+    ];
+    if height_repaired {
+        rewrite_kinds.push(AreaRewriteKind::LegacyHgMissingHeightRepair);
+    }
 
     let old_fragment_byte = payload[fragment_offset];
     let rewritten_fragment = rewrite_area_fragment_bits(&payload[fragment_offset..])?;
@@ -240,6 +255,17 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     let placeable_context = placeable_context.unwrap_or_default();
     let placeable_light_count = placeable_context.light_rows.len();
     let placeable_static_count = placeable_context.static_rows.len();
+    for kind in &rewrite_kinds {
+        tracing::info!(
+            rewrite_kind = ?kind,
+            area_resref = %area_resref,
+            old_declared = declared,
+            new_declared,
+            old_fragment_offset = fragment_offset,
+            new_fragment_offset,
+            "Area_ClientArea named compatibility rewrite applied"
+        );
+    }
 
     Some(AreaRewriteSummary {
         old_declared: declared,
@@ -265,6 +291,7 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         tile_count: tile_scan.tile_count,
         tile_scan_valid: tile_scan.valid,
         height_repaired,
+        rewrite_kinds,
         placeable_context_valid,
         placeable_light_count,
         placeable_static_count,
