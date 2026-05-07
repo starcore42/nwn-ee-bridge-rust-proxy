@@ -14,19 +14,35 @@
 
 use std::{
     fs,
-    io::Write,
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use flate2::{Compression, Decompress, FlushDecompress, Status, write::ZlibEncoder};
+use flate2::{Decompress, FlushDecompress};
 
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{
         HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView,
+        parse_packetized_spans,
     },
-    translate::{Emit, area, cnw_message, live_object, loadbar, module, player_list, quickbar},
+    translate::{
+        Emit, area, cnw_message, live_object, loadbar, module, module_resources, player_list,
+        quickbar,
+    },
+};
+
+mod deflate;
+mod live_update;
+mod sequence;
+
+use deflate::{
+    deflate_zlib, inflate_with_server_stream, inflate_with_window,
+    looks_like_zlib_wrapped_deflate,
+};
+use sequence::{
+    SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+    unshift_ack_for_origin,
 };
 
 const DEVICE_ADVERTISE_PROPERTY_MAJOR: u8 = 0x36;
@@ -47,6 +63,7 @@ pub struct SessionState {
     server_zlib_inflater: Option<Decompress>,
     completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
     server_zlib_stream_proxy_owned: bool,
+    server_quickbar_stream: Option<PendingQuickbarStream>,
     server_live_object_stream: Option<PendingLiveObjectStream>,
     latest_client_sequence_from_client: Option<u16>,
     latest_client_ack_from_client: Option<u16>,
@@ -54,6 +71,7 @@ pub struct SessionState {
     server_sequence_shifts: Vec<SequenceShift>,
     pending_server_to_client_packets: Vec<PendingServerPacket>,
     pending_synthetic_area_loaded: Option<PendingSyntheticAreaLoaded>,
+    latest_area_placeables: area::AreaPlaceableContext,
 }
 
 #[derive(Debug, Clone)]
@@ -87,16 +105,19 @@ struct CompletedDeflatedStreamWindow {
 }
 
 #[derive(Debug, Clone)]
-struct SequenceShift {
-    base: u16,
-    delta: u16,
-}
-
-#[derive(Debug, Clone)]
 struct PendingSyntheticAreaLoaded {
     server_ack_sequence: u16,
     release_client_ack_sequence: u16,
     release_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct PendingQuickbarStream {
+    payload: Vec<u8>,
+    target_length: Option<usize>,
+    fragment_wait: bool,
+    first_sequence: u16,
+    chunks: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -187,15 +208,303 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
 
+    if let Some(rewritten) = rewrite_coalesced_server_window_spans_if_needed(&inbound, &view, state)? {
+        return finalize_server_to_client_emit(
+            state,
+            Emit::VerifiedPackets(vec![rewritten]),
+            pending_count_before,
+        );
+    }
+
     let emit = if state.server_deflated.is_some() {
         continue_server_deflated_reassembly(&inbound, &view, state)?
     } else if should_start_server_deflated_reassembly(&view) {
         start_server_deflated_reassembly(&inbound, &view, state)?
+    } else if let Some(rewritten) = rewrite_server_status_module_resources_frame_if_needed(&inbound, &view)? {
+        Emit::VerifiedPackets(vec![rewritten])
+    } else if let Some(rewritten) = live_update::rewrite_direct_frame_if_needed(&inbound, &view)? {
+        Emit::VerifiedPackets(vec![rewritten])
     } else {
         Emit::Packet(inbound)
     };
 
     finalize_server_to_client_emit(state, emit, pending_count_before)
+}
+
+fn rewrite_server_status_module_resources_frame_if_needed(
+    bytes: &[u8],
+    view: &MFrameView,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(high) = view.high else {
+        return Ok(None);
+    };
+    if high.major != 0x01 || high.minor != 0x03 || view.payload_length == 0 {
+        return Ok(None);
+    }
+
+    let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+    let payload_end = payload_start + view.payload_length;
+    let Some(payload) = bytes.get(payload_start..payload_end) else {
+        return Ok(None);
+    };
+    let mut rewritten_payload = payload.to_vec();
+    let Some(summary) =
+        module_resources::rewrite_server_status_module_resources_payload(&mut rewritten_payload)
+    else {
+        return Ok(None);
+    };
+    if rewritten_payload.len() > u16::MAX as usize {
+        anyhow::bail!("ServerStatus_ModuleRunning module resources payload too large");
+    }
+
+    let mut rewritten = bytes[..payload_start].to_vec();
+    write_be_u16(&mut rewritten, 10, rewritten_payload.len() as u16)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to update ServerStatus module resources payload length"))?;
+    rewritten.extend_from_slice(&rewritten_payload);
+    if let Some(trailing) = bytes.get(payload_end..) {
+        rewritten.extend_from_slice(trailing);
+    }
+    encode_legacy_m_crc(&mut rewritten)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair ServerStatus module resources CRC"))?;
+
+    tracing::info!(
+        old_declared = summary.old_declared,
+        new_declared = summary.new_declared,
+        old_payload_length = summary.old_payload_length,
+        new_payload_length = summary.new_payload_length,
+        status_module_name = %summary.status_module_name,
+        hak_count = summary.hak_count,
+        nwsync_advertised = summary.nwsync_advertised,
+        "server ServerStatus_ModuleRunning module resources rewritten for EE"
+    );
+    Ok(Some(rewritten))
+}
+
+fn rewrite_coalesced_server_window_spans_if_needed(
+    bytes: &[u8],
+    view: &MFrameView,
+    state: &mut SessionState,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if view.trailing_payload_length == 0 {
+        return Ok(None);
+    }
+
+    let primary_len = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+    let Some(spans) = parse_packetized_spans(bytes, primary_len) else {
+        return Ok(None);
+    };
+    if spans.is_empty() {
+        return Ok(None);
+    }
+
+    let mut rewritten = bytes[..primary_len].to_vec();
+    let mut changed = false;
+    let mut dropped_spans = 0u32;
+    let mut rewritten_deflated_spans = 0u32;
+
+    for span in spans {
+        let record_end = span.offset + span.record_length;
+        let record = &bytes[span.offset..record_end];
+        if let Some(high) = span.high {
+            if high.is_known() {
+                rewritten.extend_from_slice(record);
+            } else {
+                changed = true;
+                dropped_spans = dropped_spans.saturating_add(1);
+                tracing::warn!(
+                    offset = span.offset,
+                    payload_length = span.payload_length,
+                    major = high.major,
+                    minor = high.minor,
+                    name = high.name(),
+                    prefix = %hex_prefix(record, 32),
+                    "server coalesced M window span quarantined: unknown high-level payload"
+                );
+            }
+            continue;
+        }
+
+        let Some(deflated) = span.deflated.as_ref() else {
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            tracing::warn!(
+                offset = span.offset,
+                payload_length = span.payload_length,
+                prefix = %hex_prefix(record, 32),
+                "server coalesced M window span quarantined: unknown non-deflated payload"
+            );
+            continue;
+        };
+
+        if !deflated.plausible || span.payload_length < CNW_LENGTH_BYTES {
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            tracing::warn!(
+                offset = span.offset,
+                payload_length = span.payload_length,
+                inflated_length = deflated.inflated_length,
+                prefix = %hex_prefix(record, 32),
+                "server coalesced M deflated span quarantined: implausible envelope"
+            );
+            continue;
+        }
+
+        let payload_offset = span.offset + LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+        let compressed_offset = payload_offset + CNW_LENGTH_BYTES;
+        let compressed_end = payload_offset + span.payload_length;
+        let compressed = &bytes[compressed_offset..compressed_end];
+        let InflatedGameplayPayload {
+            bytes: mut inflated,
+            used_server_stream,
+        } = inflate_gameplay_payload(
+            compressed,
+            deflated.inflated_length,
+            (span.flags & 0x01) != 0,
+            &mut state.server_zlib_inflater,
+        )?;
+
+        let live_object_continuation_wrap = if HighLevel::parse(&inflated).is_none() {
+            live_object::wrap_legacy_live_object_continuation_payload_if_plausible(&mut inflated)
+        } else {
+            None
+        };
+        if HighLevel::parse(&inflated).is_none() {
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            dump_invalid_inflated_payload_for_span(&inflated, view.sequence, "coalesced-no-high-level");
+            tracing::warn!(
+                offset = span.offset,
+                inflated = inflated.len(),
+                prefix = %hex_prefix(&inflated, 32),
+                used_server_stream,
+                "server coalesced M deflated span quarantined: no high-level payload"
+            );
+            continue;
+        }
+
+        let quickbar_normalize = quickbar::normalize_quickbar_payload_if_needed(&mut inflated);
+        let quickbar_rewrite = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut inflated);
+        let prefixed_fragments_normalize =
+            cnw_message::normalize_prefixed_fragments_payload_if_needed(&mut inflated);
+        let player_list_rewrite = player_list::rewrite_player_list_payload_if_possible(&mut inflated);
+        let live_object_normalize =
+            live_object::normalize_prefixed_fragments_payload_if_needed(&mut inflated);
+        let live_object_visual_transform =
+            live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+                &mut inflated,
+                Some(&state.latest_area_placeables),
+            );
+        let live_object_update_rewrite = live_update::rewrite_payload_if_needed(&mut inflated);
+        if !inflated_cnw_fragment_offset_valid(&inflated) {
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            dump_invalid_inflated_payload_for_span(&inflated, view.sequence, "coalesced-invalid-cnw-fragment-offset");
+            tracing::warn!(
+                offset = span.offset,
+                inflated = inflated.len(),
+                prefix = %hex_prefix(&inflated, 32),
+                "server coalesced M deflated span quarantined: invalid CNW fragment offset"
+            );
+            continue;
+        }
+
+        let semantic_rewrite = live_object_continuation_wrap.is_some()
+            || quickbar_normalize.is_some()
+            || quickbar_rewrite.is_some()
+            || prefixed_fragments_normalize.is_some()
+            || player_list_rewrite.is_some()
+            || live_object_normalize.is_some()
+            || live_object_visual_transform.is_some()
+            || live_object_update_rewrite.is_some();
+        let must_convert_stream = used_server_stream && (semantic_rewrite || state.server_zlib_stream_proxy_owned);
+        if !semantic_rewrite && !must_convert_stream {
+            rewritten.extend_from_slice(record);
+            continue;
+        }
+
+        if used_server_stream {
+            state.server_zlib_stream_proxy_owned = true;
+        }
+
+        let compressed = deflate_zlib(&inflated)?;
+        let new_payload_length = CNW_LENGTH_BYTES + compressed.len();
+        if new_payload_length > u16::MAX as usize {
+            changed = true;
+            dropped_spans = dropped_spans.saturating_add(1);
+            tracing::warn!(
+                offset = span.offset,
+                new_payload_length,
+                "server coalesced M deflated span quarantined: rewritten payload too large"
+            );
+            continue;
+        }
+
+        let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET].to_vec();
+        if !out_record.is_empty() {
+            out_record[7] &= !0x01;
+        }
+        write_be_u16(&mut out_record, 10, new_payload_length as u16)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to update coalesced span payload length"))?;
+        out_record.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
+        out_record.extend_from_slice(&compressed);
+        rewritten.extend_from_slice(&out_record);
+        changed = true;
+        rewritten_deflated_spans = rewritten_deflated_spans.saturating_add(1);
+
+        if let Some(summary) = live_object_continuation_wrap.as_ref() {
+            tracing::info!(
+                offset = span.offset,
+                old_payload_length = summary.old_payload_length,
+                new_payload_length = summary.new_payload_length,
+                dropped_leadin_bytes = summary.dropped_leadin_bytes,
+                read_bytes_length = summary.read_bytes_length,
+                fragment_bytes_length = summary.fragment_bytes_length,
+                new_declared = summary.new_declared,
+                used_server_stream,
+                "server coalesced GameObjUpdate_LiveObject continuation wrapped for EE"
+            );
+        }
+        if let Some(summary) = live_object_update_rewrite.as_ref() {
+            tracing::info!(
+                offset = span.offset,
+                old_declared = summary.old_declared,
+                new_declared = summary.new_declared,
+                old_payload_length = summary.old_payload_length,
+                new_payload_length = summary.new_payload_length,
+                records_examined = summary.records_examined,
+                update_records_examined = summary.update_records_examined,
+                update_records_rewritten = summary.update_records_rewritten,
+                masks_translated = summary.masks_translated,
+                bytes_inserted = summary.bytes_inserted,
+                bytes_removed = summary.bytes_removed,
+                bits_inserted = summary.bits_inserted,
+                bits_removed = summary.bits_removed,
+                used_server_stream,
+                "server coalesced GameObjUpdate_LiveObject update records rewritten for EE"
+            );
+        }
+    }
+
+    if !changed {
+        return Ok(None);
+    }
+
+    encode_legacy_m_crc(&mut rewritten)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair coalesced M CRC"))?;
+    tracing::info!(
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        old_len = bytes.len(),
+        new_len = rewritten.len(),
+        rewritten_deflated_spans,
+        dropped_spans,
+        "server coalesced M window spans rewritten for strict EE delivery"
+    );
+    Ok(Some(rewritten))
 }
 
 fn consume_device_advertise_property(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {
@@ -484,58 +793,6 @@ fn build_synthetic_gameplay_frame(
     Ok(packet)
 }
 
-fn sequence_at_or_after(sequence: u16, base: u16) -> bool {
-    sequence.wrapping_sub(base) < 0x8000
-}
-
-fn sequence_before(sequence: u16, base: u16) -> bool {
-    sequence != base && base.wrapping_sub(sequence) < 0x8000
-}
-
-fn sequence_in_forward_closed_range(sequence: u16, first: u16, last: u16) -> bool {
-    sequence_at_or_after(sequence, first) && sequence_at_or_after(last, sequence)
-}
-
-fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequence: u16) -> u16 {
-    let mut delta = 0u16;
-    for shift in shifts {
-        if shift.delta != 0 && sequence_at_or_after(original_sequence, shift.base) {
-            delta = delta.wrapping_add(shift.delta);
-        }
-    }
-    original_sequence.wrapping_add(delta)
-}
-
-fn unshift_ack_for_origin(shifts: &[SequenceShift], shifted_ack_sequence: u16) -> u16 {
-    let mut cumulative_delta = 0u16;
-    for shift in shifts {
-        if shift.delta == 0 {
-            continue;
-        }
-
-        let synthetic_first = shift.base.wrapping_add(cumulative_delta);
-        if sequence_before(shifted_ack_sequence, synthetic_first) {
-            return shifted_ack_sequence.wrapping_sub(cumulative_delta);
-        }
-
-        let synthetic_last = synthetic_first.wrapping_add(shift.delta).wrapping_sub(1);
-        if sequence_in_forward_closed_range(shifted_ack_sequence, synthetic_first, synthetic_last) {
-            return shift.base.wrapping_sub(1);
-        }
-
-        cumulative_delta = cumulative_delta.wrapping_add(shift.delta);
-    }
-    shifted_ack_sequence.wrapping_sub(cumulative_delta)
-}
-
-fn trim_sequence_shifts(shifts: &mut Vec<SequenceShift>) {
-    const MAX_SEQUENCE_SHIFTS: usize = 16;
-    if shifts.len() > MAX_SEQUENCE_SHIFTS {
-        let overflow = shifts.len() - MAX_SEQUENCE_SHIFTS;
-        shifts.drain(0..overflow);
-    }
-}
-
 fn shift_server_sequence_for_client(
     state: &SessionState,
     packet: &mut [u8],
@@ -814,6 +1071,15 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let old_inflated_length = bytes.len();
     log_inflated_high_level_summary(&bytes, &reassembly);
+    if let Some(emit) = maybe_buffer_or_flush_server_quickbar_stream(
+        state,
+        &reassembly,
+        source_compressed_length,
+        used_server_stream,
+        &bytes,
+    )? {
+        return Ok(emit);
+    }
     if let Some(emit) = maybe_buffer_or_flush_server_live_object_stream(
         state,
         &reassembly,
@@ -823,6 +1089,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     )? {
         return Ok(emit);
     }
+
+    let live_object_continuation_wrap = if HighLevel::parse(&bytes).is_none() {
+        live_object::wrap_legacy_live_object_continuation_payload_if_plausible(&mut bytes)
+    } else {
+        None
+    };
 
     if HighLevel::parse(&bytes).is_none() {
         dump_invalid_inflated_payload(&bytes, &reassembly, "no-high-level");
@@ -850,13 +1122,18 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     }
 
     let quickbar_normalize = quickbar::normalize_quickbar_payload_if_needed(&mut bytes);
+    let quickbar_rewrite = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut bytes);
     let prefixed_fragments_normalize =
         cnw_message::normalize_prefixed_fragments_payload_if_needed(&mut bytes);
     let player_list_rewrite = player_list::rewrite_player_list_payload_if_possible(&mut bytes);
     let live_object_normalize =
         live_object::normalize_prefixed_fragments_payload_if_needed(&mut bytes);
     let live_object_visual_transform =
-        live_object::rewrite_creature_add_visual_transform_maps_if_possible(&mut bytes);
+        live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut bytes,
+            Some(&state.latest_area_placeables),
+        );
+    let live_object_update_rewrite = live_update::rewrite_payload_if_needed(&mut bytes);
     if !inflated_cnw_fragment_offset_valid(&bytes) {
         dump_invalid_inflated_payload(&bytes, &reassembly, "invalid-cnw-fragment-offset");
         let mut outputs = build_consumed_server_deflated_frames(&reassembly)?;
@@ -882,13 +1159,19 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     let area_rewrite = area::rewrite_area_client_area_payload(&mut bytes);
     let module_rewrite = module::rewrite_module_info_payload(&mut bytes);
     if area_rewrite.is_some() {
+        if let Some(summary) = area_rewrite.as_ref() {
+            state.latest_area_placeables = summary.placeable_context.clone();
+        }
         queue_area_client_area_side_effects(state, &reassembly)?;
     }
     let semantic_rewrite = player_list_rewrite.is_some()
+        || live_object_continuation_wrap.is_some()
         || quickbar_normalize.is_some()
+        || quickbar_rewrite.is_some()
         || prefixed_fragments_normalize.is_some()
         || live_object_normalize.is_some()
         || live_object_visual_transform.is_some()
+        || live_object_update_rewrite.is_some()
         || area_rewrite.is_some()
         || module_rewrite.is_some();
     let must_convert_server_stream =
@@ -1001,6 +1284,27 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         );
     }
 
+    if let Some(summary) = live_object_continuation_wrap.as_ref() {
+        logged_specific_rewrite = true;
+        tracing::info!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            packetized_sequence = reassembly.packetized_sequence,
+            inflated = old_inflated_length,
+            rewritten_inflated = bytes.len(),
+            compressed = compressed.len(),
+            old_payload_length = summary.old_payload_length,
+            new_payload_length = summary.new_payload_length,
+            dropped_leadin_bytes = summary.dropped_leadin_bytes,
+            read_bytes_length = summary.read_bytes_length,
+            fragment_bytes_length = summary.fragment_bytes_length,
+            new_declared = summary.new_declared,
+            used_server_stream,
+            proxy_owned_stream = state.server_zlib_stream_proxy_owned,
+            "server GameObjUpdate_LiveObject continuation wrapped for EE"
+        );
+    }
+
     if let Some(summary) = live_object_visual_transform.as_ref() {
         logged_specific_rewrite = true;
         tracing::info!(
@@ -1019,9 +1323,39 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             records_examined = summary.records_examined,
             maps_inserted = summary.maps_inserted,
             bytes_inserted = summary.bytes_inserted,
+            area_placeable_adds_suppressed = summary.area_placeable_adds_suppressed,
             used_server_stream,
             proxy_owned_stream = state.server_zlib_stream_proxy_owned,
-            "server GameObjUpdate_LiveObject creature add visual-transform maps inserted for EE"
+            "server GameObjUpdate_LiveObject add-record translation applied for EE"
+        );
+    }
+
+    if let Some(summary) = live_object_update_rewrite.as_ref() {
+        logged_specific_rewrite = true;
+        tracing::info!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            packetized_sequence = reassembly.packetized_sequence,
+            old_declared = summary.old_declared,
+            new_declared = summary.new_declared,
+            old_payload_length = summary.old_payload_length,
+            new_payload_length = summary.new_payload_length,
+            old_live_bytes_length = summary.old_live_bytes_length,
+            new_live_bytes_length = summary.new_live_bytes_length,
+            old_fragment_bytes = summary.old_fragment_bytes,
+            new_fragment_bytes = summary.new_fragment_bytes,
+            records_examined = summary.records_examined,
+            update_records_examined = summary.update_records_examined,
+            update_records_rewritten = summary.update_records_rewritten,
+            masks_translated = summary.masks_translated,
+            bytes_inserted = summary.bytes_inserted,
+            bytes_removed = summary.bytes_removed,
+            bits_inserted = summary.bits_inserted,
+            bits_removed = summary.bits_removed,
+            world_status_records_normalized = summary.world_status_records_normalized,
+            used_server_stream,
+            proxy_owned_stream = state.server_zlib_stream_proxy_owned,
+            "server GameObjUpdate_LiveObject update records rewritten for EE"
         );
     }
 
@@ -1046,6 +1380,31 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             used_server_stream,
             proxy_owned_stream = state.server_zlib_stream_proxy_owned,
             "server GuiQuickbar prefixed fragments normalized for EE"
+        );
+    }
+
+    if let Some(summary) = quickbar_rewrite.as_ref() {
+        logged_specific_rewrite = true;
+        tracing::info!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            packetized_sequence = reassembly.packetized_sequence,
+            old_declared = summary.old_declared,
+            new_declared = summary.new_declared,
+            read_size = summary.read_size,
+            fragment_size = summary.fragment_size,
+            final_cursor = summary.final_cursor,
+            trailing_read_bytes = summary.trailing_read_bytes,
+            spells_preserved = summary.spells_preserved,
+            general_buttons_preserved = summary.general_buttons_preserved,
+            item_buttons_blanked = summary.item_buttons_blanked,
+            unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+            direct_opcode_stream = summary.direct_opcode_stream,
+            old_payload_length = summary.old_payload_length,
+            new_payload_length = summary.new_payload_length,
+            used_server_stream,
+            proxy_owned_stream = state.server_zlib_stream_proxy_owned,
+            "server GuiQuickbar semantic payload rewritten for EE"
         );
     }
 
@@ -1105,6 +1464,9 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             tile_count = summary.tile_count,
             tile_scan_valid = summary.tile_scan_valid,
             height_repaired = summary.height_repaired,
+            placeable_context_valid = summary.placeable_context_valid,
+            placeable_light_count = summary.placeable_light_count,
+            placeable_static_count = summary.placeable_static_count,
             used_server_stream,
             proxy_owned_stream = state.server_zlib_stream_proxy_owned,
             "server Area_ClientArea deflated stream rewritten for EE"
@@ -1158,6 +1520,10 @@ fn maybe_buffer_or_flush_server_live_object_stream(
     used_server_stream: bool,
     bytes: &mut Vec<u8>,
 ) -> anyhow::Result<Option<Emit>> {
+    if std::env::var_os("HGBRIDGE_PROXY2_ENABLE_LIVE_STREAM_BUFFER").is_none() {
+        return Ok(None);
+    }
+
     if !used_server_stream || !state.server_zlib_stream_proxy_owned {
         return Ok(None);
     }
@@ -1188,26 +1554,18 @@ fn maybe_buffer_or_flush_server_live_object_stream(
 
         if state.server_live_object_stream.is_some() {
             append_pending_live_object_continuation(state, reassembly.first_sequence, bytes);
-            let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
-            remember_completed_server_stream_window(
-                state,
-                reassembly,
-                source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
-            );
-            outputs.extend(reassembly.interleaved_packets.clone());
-            if let Some(pending) = state.server_live_object_stream.as_ref() {
+            if let Some(flushed) = take_pending_live_object_stream_payload(state) {
                 tracing::info!(
-                    first_sequence = pending.first_sequence,
                     current_sequence = reassembly.first_sequence,
-                    chunks = pending.chunks,
-                    read_bytes = pending.read_bytes.len(),
-                    fragment_bytes = pending.fragment_bytes.len(),
-                    prefix = %hex_prefix(bytes, 32),
-                    "server live-object stream continuation buffered after non-clean P05 chunk"
+                    old_inflated = bytes.len(),
+                    rebuilt_inflated = flushed.len(),
+                    prefix = %hex_prefix(&flushed, 32),
+                    "server live-object stream flushed on first non-clean P05 continuation"
                 );
+                *bytes = flushed;
+                return Ok(None);
             }
-            return Ok(Some(Emit::VerifiedPackets(outputs)));
+            return Ok(None);
         }
 
         return Ok(None);
@@ -1510,43 +1868,6 @@ fn inflate_gameplay_payload(
     )
 }
 
-fn inflate_with_server_stream(
-    compressed: &[u8],
-    inflated_length: usize,
-    server_stream: &mut Option<Decompress>,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    if inflated_length > MAX_REASONABLE_GAMEPLAY_PAYLOAD {
-        return Ok(None);
-    }
-
-    if server_stream.is_none() {
-        *server_stream = Some(Decompress::new(false));
-    }
-    let Some(decompressor) = server_stream.as_mut() else {
-        return Ok(None);
-    };
-
-    let before_in = decompressor.total_in();
-    let before_out = decompressor.total_out();
-    let mut output = vec![0; inflated_length];
-    let status = match decompressor.decompress(compressed, &mut output, FlushDecompress::Sync) {
-        Ok(status) => status,
-        Err(_) => return Ok(None),
-    };
-    let consumed = (decompressor.total_in() - before_in) as usize;
-    let produced = (decompressor.total_out() - before_out) as usize;
-
-    if produced == inflated_length
-        && consumed == compressed.len()
-        && matches!(status, Status::Ok | Status::StreamEnd | Status::BufError)
-    {
-        output.truncate(produced);
-        return Ok(Some(output));
-    }
-
-    Ok(None)
-}
-
 fn completed_server_stream_window<'a>(
     state: &'a SessionState,
     reassembly: &ServerDeflatedReassembly,
@@ -1586,58 +1907,207 @@ fn remember_completed_server_stream_window(
     }
 }
 
-fn inflate_with_window(
-    compressed: &[u8],
-    inflated_length: usize,
-    zlib_header: bool,
-    flush: FlushDecompress,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut decompressor = Decompress::new(zlib_header);
-    let mut output = vec![0; inflated_length];
-    let status = match decompressor.decompress(compressed, &mut output, flush) {
-        Ok(status) => status,
-        Err(_) => return Ok(None),
-    };
-    let total_in = decompressor.total_in() as usize;
-    let total_out = decompressor.total_out() as usize;
-    let finished = status == Status::StreamEnd
-        || (flush != FlushDecompress::Finish
-            && status == Status::Ok
-            && total_out == inflated_length);
+fn maybe_buffer_or_flush_server_quickbar_stream(
+    state: &mut SessionState,
+    reassembly: &ServerDeflatedReassembly,
+    source_compressed_length: usize,
+    used_server_stream: bool,
+    bytes: &[u8],
+) -> anyhow::Result<Option<Emit>> {
+    if !used_server_stream || !state.server_zlib_stream_proxy_owned {
+        return Ok(None);
+    }
 
-    if finished && total_in == compressed.len() && total_out == inflated_length {
-        output.truncate(total_out);
-        Ok(Some(output))
+    if state.server_quickbar_stream.is_none() {
+        let mut fragment_wait = false;
+        let target_length = quickbar::full_set_all_buttons_target_length(bytes);
+        if target_length.is_none() {
+            let mut probe = bytes.to_vec();
+            let Some((_, summary)) =
+                quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe)
+            else {
+                return Ok(None);
+            };
+            if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
+                return Ok(None);
+            }
+            fragment_wait = true;
+            tracing::info!(
+                first_sequence = reassembly.first_sequence,
+                packetized_sequence = reassembly.packetized_sequence,
+                read_size = summary.read_size,
+                fragment_size = summary.fragment_size,
+                final_cursor = summary.final_cursor,
+                trailing_read_bytes = summary.trailing_read_bytes,
+                spells_preserved = summary.spells_preserved,
+                general_buttons_preserved = summary.general_buttons_preserved,
+                item_buttons_blanked = summary.item_buttons_blanked,
+                unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+                buffered = bytes.len(),
+                "server GuiQuickbar_SetAllButtons continuation buffering started"
+            );
+        }
+        state.server_quickbar_stream = Some(PendingQuickbarStream {
+            payload: bytes.to_vec(),
+            target_length,
+            fragment_wait,
+            first_sequence: reassembly.first_sequence,
+            chunks: 1,
+        });
+        let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
+        remember_completed_server_stream_window(
+            state,
+            reassembly,
+            source_compressed_length,
+            CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
+        );
+        outputs.extend(reassembly.interleaved_packets.clone());
+        tracing::info!(
+            first_sequence = reassembly.first_sequence,
+            packetized_sequence = reassembly.packetized_sequence,
+            target_length = target_length.unwrap_or(0),
+            fragment_wait,
+            buffered = bytes.len(),
+            "server GuiQuickbar_SetAllButtons stream buffering started"
+        );
+        return Ok(Some(Emit::VerifiedPackets(outputs)));
+    }
+
+    let pending = state
+        .server_quickbar_stream
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("missing quickbar stream state"))?;
+    pending.payload.extend_from_slice(bytes);
+    pending.chunks = pending.chunks.saturating_add(1);
+    if let Some(target_length) = pending.target_length {
+        if pending.payload.len() < target_length {
+            let buffered = pending.payload.len();
+            let chunks = pending.chunks;
+            let first_sequence = pending.first_sequence;
+            let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
+            remember_completed_server_stream_window(
+                state,
+                reassembly,
+                source_compressed_length,
+                CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
+            );
+            outputs.extend(reassembly.interleaved_packets.clone());
+            tracing::info!(
+                first_sequence,
+                current_sequence = reassembly.first_sequence,
+                chunks,
+                buffered,
+                target_length,
+                "server GuiQuickbar_SetAllButtons stream buffering continued"
+            );
+            return Ok(Some(Emit::VerifiedPackets(outputs)));
+        }
     } else {
-        Ok(None)
+        let mut rewritten_payload = pending.payload.clone();
+        let rewrite = quickbar::normalize_and_rewrite_quickbar_payload_if_possible(
+            &mut rewritten_payload,
+        );
+        let should_wait = rewrite
+            .as_ref()
+            .map(|(_, summary)| {
+                quickbar::rewrite_summary_needs_more_quickbar_bytes(summary)
+                    && summary.spells_preserved == 0
+                    && pending.chunks < 2
+                    && pending.payload.len() < 32 * 1024
+            })
+            .unwrap_or(pending.chunks < 2 && pending.payload.len() < 32 * 1024);
+        if should_wait {
+            let buffered = pending.payload.len();
+            let chunks = pending.chunks;
+            let first_sequence = pending.first_sequence;
+            let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
+            remember_completed_server_stream_window(
+                state,
+                reassembly,
+                source_compressed_length,
+                CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
+            );
+            outputs.extend(reassembly.interleaved_packets.clone());
+            tracing::info!(
+                first_sequence,
+                current_sequence = reassembly.first_sequence,
+                chunks,
+                buffered,
+                "server GuiQuickbar_SetAllButtons continuation buffering continued"
+            );
+            return Ok(Some(Emit::VerifiedPackets(outputs)));
+        }
     }
-}
 
-fn deflate_zlib(inflated: &[u8]) -> anyhow::Result<Vec<u8>> {
-    // Use the same one-shot zlib wrapper the mature bridge emits after it has
-    // rewritten an EE-facing deflated stream. Clearing the stream bit on the
-    // first M frame tells the client this is now a self-contained zlib payload.
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(inflated)?;
-    Ok(encoder.finish()?)
-}
+    let pending = state
+        .server_quickbar_stream
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing quickbar stream state"))?;
+    let mut quickbar_payload = if let Some(target_length) = pending.target_length {
+        pending.payload[..target_length].to_vec()
+    } else {
+        pending.payload.clone()
+    };
+    let quickbar_rewrite =
+        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut quickbar_payload);
+    let trailing_bytes = pending
+        .target_length
+        .map(|target_length| pending.payload.len().saturating_sub(target_length))
+        .unwrap_or(0);
+    let compressed = deflate_zlib(&quickbar_payload)?;
+    let mut combined = Vec::with_capacity(CNW_LENGTH_BYTES + compressed.len());
+    combined.extend_from_slice(&(quickbar_payload.len() as u32).to_le_bytes());
+    combined.extend_from_slice(&compressed);
+    let mut outputs = build_server_deflated_output_frames(reassembly, &combined, 0x01, true)?;
+    remember_completed_server_stream_window(
+        state,
+        reassembly,
+        source_compressed_length,
+        CompletedDeflatedReplay::VerifiedPackets(outputs.clone()),
+    );
+    outputs.extend(reassembly.interleaved_packets.clone());
 
-fn looks_like_zlib_wrapped_deflate(compressed: &[u8]) -> bool {
-    if compressed.len() < 2 {
-        return false;
+    if let Some((_, summary)) = quickbar_rewrite.as_ref() {
+        tracing::info!(
+            first_sequence = pending.first_sequence,
+            current_sequence = reassembly.first_sequence,
+            chunks = pending.chunks,
+            fragment_wait = pending.fragment_wait,
+            old_declared = summary.old_declared,
+            new_declared = summary.new_declared,
+            read_size = summary.read_size,
+            fragment_size = summary.fragment_size,
+            final_cursor = summary.final_cursor,
+            trailing_read_bytes = summary.trailing_read_bytes,
+            spells_preserved = summary.spells_preserved,
+            general_buttons_preserved = summary.general_buttons_preserved,
+            item_buttons_blanked = summary.item_buttons_blanked,
+            unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+            old_payload_length = summary.old_payload_length,
+            new_payload_length = summary.new_payload_length,
+            compressed = compressed.len(),
+            "server GuiQuickbar_SetAllButtons stream reassembled and semantically rewritten for EE"
+        );
+    } else {
+        let buffered = pending.payload.len();
+        let chunks = pending.chunks;
+        tracing::info!(
+            first_sequence = pending.first_sequence,
+            current_sequence = reassembly.first_sequence,
+            chunks,
+            buffered,
+            fragment_wait = pending.fragment_wait,
+            trailing_bytes,
+            compressed = compressed.len(),
+            "server GuiQuickbar_SetAllButtons stream reassembled for EE"
+        );
     }
-    let cmf = u16::from(compressed[0]);
-    let flg = u16::from(compressed[1]);
-    if (cmf & 0x0f) != 8 {
-        return false;
-    }
-    let compression_info = (cmf >> 4) & 0x0f;
-    compression_info <= 7 && (((cmf << 8) | flg) % 31) == 0
+    Ok(Some(Emit::VerifiedPackets(outputs)))
 }
 
 fn inflated_cnw_fragment_offset_valid(inflated: &[u8]) -> bool {
     let Some(_) = HighLevel::parse(inflated) else {
-        return true;
+        return false;
     };
     let Some(declared) = read_le_u32(inflated, 3) else {
         return false;
@@ -1666,6 +2136,10 @@ fn inflated_cnw_fragment_offset_valid_or_normalizable(inflated: &[u8]) -> bool {
     }
     let mut probe = inflated.to_vec();
     if quickbar::normalize_quickbar_payload_if_needed(&mut probe).is_some() {
+        return true;
+    }
+    let mut probe = inflated.to_vec();
+    if quickbar::rewrite_simple_quickbar_payload_if_possible(&mut probe).is_some() {
         return true;
     }
     let mut probe = inflated.to_vec();
@@ -1807,6 +2281,39 @@ fn dump_invalid_inflated_payload(
         reason,
         "dumped invalid inflated payload for offline fixture analysis"
     );
+}
+
+fn dump_invalid_inflated_payload_for_span(inflated: &[u8], sequence: u16, reason: &str) {
+    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+        return;
+    };
+
+    let dir = PathBuf::from(dir);
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let high_name = HighLevel::parse(inflated)
+        .map(|high| high.name().replace(['<', '>', '/', '\\', ':', '*', '?', '"', '|'], "_"))
+        .unwrap_or_else(|| "no-high-level".to_string());
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!(
+        "{}-{}-coalesced-seq{}-{}.bin",
+        reason, high_name, sequence, millis
+    ));
+
+    if fs::write(&path, inflated).is_ok() {
+        tracing::info!(
+            path = %path.display(),
+            inflated_length = inflated.len(),
+            sequence,
+            reason,
+            "dumped invalid coalesced inflated payload for offline fixture analysis"
+        );
+    }
 }
 
 fn dump_module_info_candidate(

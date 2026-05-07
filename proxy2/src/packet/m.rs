@@ -266,6 +266,13 @@ impl HighLevel {
             (0x04, 0x01) => "Area_ClientArea",
             (0x04, 0x03) => "Area_AreaLoaded",
             (0x05, 0x01) => "GameObjUpdate_LiveObject",
+            // EE packet-name table maps 0x0502 to GameObjUpdate_ObjControl.
+            // `CNWSMessage::SendServerToPlayerGameObjUpdate_ObjControl`
+            // decompiles to an 8-byte CNW write message: DWORD player id
+            // plus WriteOBJECTIDServer(controlled object), sent as family 5,
+            // minor 2. Strict validation still checks that exact shape before
+            // allowing this packet through.
+            (0x05, 0x02) => "GameObjUpdate_ObjControl",
             (0x06, 0x01) => "Input_WalkToWaypoint",
             (0x06, 0x02) => "Input_Attack",
             (0x06, 0x03) => "Input_ChangeDoorState",
@@ -297,7 +304,26 @@ impl HighLevel {
             // Inventory family confirmed from EE's packet-name table and
             // `CNWSMessage::SendServerToPlayerInventory_Equip`.
             (0x0C, 0x01) => "Inventory_Equip",
+            // Party family confirmed from EE's packet-name table:
+            // 0x0E01..0x0E0E map to the party list/request/invite/control
+            // messages, and the exported CNWSMessage senders include
+            // SendServerToPlayerParty_List and
+            // SendServerToPlayerParty_TransferObjectControl. Strict mode
+            // still validates the CNW wrapper shape before allowing these.
+            (0x0E, 0x01) => "Party_List",
             (0x0E, 0x02) => "Party_GetList",
+            (0x0E, 0x03) => "Party_ListAdd",
+            (0x0E, 0x04) => "Party_ListRemove",
+            (0x0E, 0x05) => "Party_Join",
+            (0x0E, 0x06) => "Party_Leave",
+            (0x0E, 0x07) => "Party_Kick",
+            (0x0E, 0x08) => "Party_TransferLeadership",
+            (0x0E, 0x09) => "Party_Invite",
+            (0x0E, 0x0A) => "Party_IgnoreInvitation",
+            (0x0E, 0x0B) => "Party_AcceptInvitation",
+            (0x0E, 0x0C) => "Party_RejectInvitation",
+            (0x0E, 0x0D) => "Party_KickHenchman",
+            (0x0E, 0x0E) => "Party_TransferObjectControl",
             (0x11, 0x01) => "CharList_Request",
             (0x11, 0x02) => "CharList_ListResponse",
             (0x11, 0x03) => "CharList_RequestUpdateChar",

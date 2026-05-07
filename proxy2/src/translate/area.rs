@@ -13,10 +13,10 @@
 //! - EE `CNWSArea::PackAreaIntoMessage` writes the area OBJECTID, area resref,
 //!   area name mode/data, dimensions, tileset, tiles, post-tile lists, and ends
 //!   with two zero `WriteWORD` calls.
-//! - EE `CNWMessage::WriteBits` writes fragment bits most-significant-bit
-//!   first, and `GetWriteMessage` stores the final fragment bit cursor in the
-//!   first byte's high three bits. Inserting an EE-only BOOL must therefore
-//!   shift the following fragment bits, not merely OR a mask into byte zero.
+//! - EE reaches the raw-area-name discriminator with the earlier area-present
+//!   flag already consumed by the Area_ClientArea handler before `LoadArea`.
+//!   The legacy fragment stream therefore remains cursor-aligned; the bridge
+//!   must preserve it and only force the raw-string selector bit.
 //! - EE and Diamond `CNWMessage::SetReadMessage` both treat the first DWORD
 //!   after the high-level header as the read-buffer length plus the three-byte
 //!   high-level prefix. Moving the fragment stream therefore requires repairing
@@ -42,11 +42,10 @@ const LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET: usize =
 const LEGACY_AREA_OBJECT_ID_BYTES: usize = 4;
 
 // `CNWMessage::GetWriteMessage` stores the final fragment bit count in the
-// first byte's high three bits. The actual fragment data starts immediately
-// after those header bits.
-const CNW_FRAGMENT_HEADER_BITS: usize = 3;
-const AREA_PRESENT_FRAGMENT_BIT_INDEX: usize = CNW_FRAGMENT_HEADER_BITS;
-const AREA_NAME_MODE_FRAGMENT_BIT_INDEX: usize = CNW_FRAGMENT_HEADER_BITS + 1;
+// first byte's high three bits. Bit cursor 4 (mask 0x08 in the first byte)
+// selects the raw CExoString area name path after the client consumes the
+// Area_ClientArea area-present flag.
+const AREA_NAME_MODE_FRAGMENT_MASK: u8 = 0x08;
 const EE_POST_STATIC_ZERO_WORD_BYTES: usize = 4;
 
 #[derive(Debug, Clone)]
@@ -74,6 +73,46 @@ pub struct AreaRewriteSummary {
     pub tile_count: u32,
     pub tile_scan_valid: bool,
     pub height_repaired: bool,
+    pub placeable_context_valid: bool,
+    pub placeable_light_count: usize,
+    pub placeable_static_count: usize,
+    pub placeable_context: AreaPlaceableContext,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AreaPlaceableContext {
+    pub area_resref: String,
+    pub light_rows: Vec<AreaPlaceableContextRow>,
+    pub static_rows: Vec<AreaPlaceableContextRow>,
+}
+
+impl AreaPlaceableContext {
+    pub fn contains_placeable_id(&self, object_id: u32) -> bool {
+        self.light_rows
+            .iter()
+            .chain(self.static_rows.iter())
+            .any(|row| row.object_id == object_id)
+    }
+
+    pub fn rows_with_placeable_id(&self, object_id: u32) -> impl Iterator<Item = &AreaPlaceableContextRow> {
+        self.light_rows
+            .iter()
+            .chain(self.static_rows.iter())
+            .filter(move |row| row.object_id == object_id)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AreaPlaceableContextRow {
+    pub object_id: u32,
+    pub appearance: u16,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub dir_x: f32,
+    pub dir_y: f32,
+    pub dir_z: f32,
+    pub has_direction: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +234,12 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     payload.splice(fragment_offset.., replacement);
     write_u32_le(payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+    let placeable_context =
+        collect_area_post_tile_placeable_context(payload, new_fragment_offset, &area_resref);
+    let placeable_context_valid = placeable_context.is_some();
+    let placeable_context = placeable_context.unwrap_or_default();
+    let placeable_light_count = placeable_context.light_rows.len();
+    let placeable_static_count = placeable_context.static_rows.len();
 
     Some(AreaRewriteSummary {
         old_declared: declared,
@@ -220,94 +265,25 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         tile_count: tile_scan.tile_count,
         tile_scan_valid: tile_scan.valid,
         height_repaired,
+        placeable_context_valid,
+        placeable_light_count,
+        placeable_static_count,
+        placeable_context,
     })
 }
 
 fn rewrite_area_fragment_bits(fragment: &[u8]) -> Option<Vec<u8>> {
-    let mut bits = decode_cnw_msb_valid_bits(fragment)?;
-    if bits.len() <= AREA_PRESENT_FRAGMENT_BIT_INDEX {
-        tracing::warn!(
-            fragment_size = fragment.len(),
-            "Area_ClientArea rewrite skipped: fragment bit stream too short for EE area-present BOOL"
-        );
-        return None;
-    }
-
-    // EE `SendServerToPlayerArea_ClientArea` writes one area-present BOOL
-    // immediately before `CNWSArea::PackAreaIntoMessage`. The legacy payloads
-    // observed from the 1.69 server begin with the area packer's bits, so the
-    // EE-only BOOL must be inserted before them to preserve every following
-    // bit's meaning.
-    bits.insert(AREA_PRESENT_FRAGMENT_BIT_INDEX, true);
-
-    // EE `CNWSArea::PackAreaIntoMessage` writes BOOL(1) before
-    // `WriteCExoString` and BOOL(0) before `WriteCExoLocStringServer`.
-    // The verified legacy read-buffer shape at AREA_NAME_READ_OFFSET is a raw
-    // CExoString, so emit the EE raw-string selector while keeping the rest of
-    // the fragment stream shifted intact.
-    if bits.len() <= AREA_NAME_MODE_FRAGMENT_BIT_INDEX {
+    if fragment.is_empty() {
         tracing::warn!(
             fragment_size = fragment.len(),
             "Area_ClientArea rewrite skipped: fragment bit stream too short for EE area-name BOOL"
         );
         return None;
     }
-    bits[AREA_NAME_MODE_FRAGMENT_BIT_INDEX] = true;
 
-    Some(pack_cnw_msb_valid_bits(bits))
-}
-
-fn decode_cnw_msb_valid_bits(fragment: &[u8]) -> Option<Vec<bool>> {
-    let valid_bits = cnw_fragment_valid_bit_count(fragment)?;
-    let mut bits = Vec::with_capacity(valid_bits);
-    for bit_index in 0..valid_bits {
-        let byte = *fragment.get(bit_index / 8)?;
-        let mask = 0x80 >> (bit_index % 8);
-        bits.push((byte & mask) != 0);
-    }
-    Some(bits)
-}
-
-fn cnw_fragment_valid_bit_count(fragment: &[u8]) -> Option<usize> {
-    let first = *fragment.first()?;
-    let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
-    let valid_bits = if final_fragment_bits == 0 {
-        fragment.len().checked_mul(8)?
-    } else {
-        fragment
-            .len()
-            .checked_sub(1)?
-            .checked_mul(8)?
-            .checked_add(final_fragment_bits)?
-    };
-
-    if valid_bits < CNW_FRAGMENT_HEADER_BITS {
-        tracing::warn!(
-            fragment_size = fragment.len(),
-            final_fragment_bits,
-            valid_bits,
-            "Area_ClientArea rewrite skipped: invalid CNW fragment final-bit header"
-        );
-        return None;
-    }
-    Some(valid_bits)
-}
-
-fn pack_cnw_msb_valid_bits(mut bits: Vec<bool>) -> Vec<u8> {
-    let valid_bits = bits.len();
-    let final_fragment_bits = valid_bits % 8;
-
-    bits[0] = (final_fragment_bits & 0x04) != 0;
-    bits[1] = (final_fragment_bits & 0x02) != 0;
-    bits[2] = (final_fragment_bits & 0x01) != 0;
-
-    let mut packed = vec![0u8; valid_bits.div_ceil(8)];
-    for (bit_index, bit) in bits.into_iter().enumerate() {
-        if bit {
-            packed[bit_index / 8] |= 0x80 >> (bit_index % 8);
-        }
-    }
-    packed
+    let mut rewritten = fragment.to_vec();
+    rewritten[0] |= AREA_NAME_MODE_FRAGMENT_MASK;
+    Some(rewritten)
 }
 
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {
@@ -404,6 +380,118 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
         tile_count,
         tile_end_read_offset: cursor,
     }
+}
+
+fn collect_area_post_tile_placeable_context(
+    payload: &[u8],
+    fragment_offset: usize,
+    area_resref: &str,
+) -> Option<AreaPlaceableContext> {
+    let scan = scan_area_tile_stream(payload, fragment_offset);
+    if !scan.valid {
+        return None;
+    }
+
+    let mut cursor = scan.tile_end_read_offset;
+
+    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if transition_count > 4096 {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    for _ in 0..transition_count {
+        let name_offset = cursor.checked_add(4 + 3 * 4)?;
+        let (_, after_name) = read_c_exo_string_shape(payload, fragment_offset, name_offset, 1024)?;
+        cursor = after_name;
+    }
+
+    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if map_pin_count > 4096 {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    for _ in 0..map_pin_count {
+        let label_offset = cursor.checked_add(4)?;
+        let (_, after_label) =
+            read_c_exo_string_shape(payload, fragment_offset, label_offset, 1024)?;
+        cursor = after_label.checked_add(3 * 4)?;
+        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+            return None;
+        }
+    }
+
+    let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if sound_count > 4096 {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..sound_count {
+        const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
+        const AREA_SOUND_BASE_BYTES: usize = 54;
+        let resref_count =
+            read_area_u16(payload, fragment_offset, cursor + AREA_SOUND_RESREF_COUNT_OFFSET)?;
+        if resref_count > 64 {
+            return None;
+        }
+        let bytes = AREA_SOUND_BASE_BYTES.checked_add(resref_count as usize * CRESREF_TEXT_BYTES)?;
+        cursor = cursor.checked_add(bytes)?;
+        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+            return None;
+        }
+    }
+
+    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
+    cursor = cursor.checked_add(2)?;
+    let mut light_rows = Vec::with_capacity(light_count as usize);
+    for _ in 0..light_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        let appearance = read_area_u16(payload, fragment_offset, cursor + 4)?;
+        let x = read_area_f32(payload, fragment_offset, cursor + 6)?;
+        let y = read_area_f32(payload, fragment_offset, cursor + 10)?;
+        let z = read_area_f32(payload, fragment_offset, cursor + 14)?;
+        light_rows.push(AreaPlaceableContextRow {
+            object_id,
+            appearance,
+            x,
+            y,
+            z,
+            has_direction: false,
+            ..AreaPlaceableContextRow::default()
+        });
+        cursor = cursor.checked_add(4 + 2 + 3 * 4)?;
+    }
+
+    let static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    cursor = cursor.checked_add(2)?;
+    let mut static_rows = Vec::with_capacity(static_count as usize);
+    for _ in 0..static_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        let appearance = read_area_u16(payload, fragment_offset, cursor + 4)?;
+        let x = read_area_f32(payload, fragment_offset, cursor + 6)?;
+        let y = read_area_f32(payload, fragment_offset, cursor + 10)?;
+        let z = read_area_f32(payload, fragment_offset, cursor + 14)?;
+        let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
+        let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
+        let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
+        static_rows.push(AreaPlaceableContextRow {
+            object_id,
+            appearance,
+            x,
+            y,
+            z,
+            dir_x,
+            dir_y,
+            dir_z,
+            has_direction: true,
+        });
+        cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
+    }
+
+    Some(AreaPlaceableContext {
+        area_resref: area_resref.to_string(),
+        light_rows,
+        static_rows,
+    })
 }
 
 fn repair_missing_area_height(
@@ -519,6 +607,14 @@ fn read_area_u16(payload: &[u8], fragment_offset: usize, read_offset: usize) -> 
     }
     let bytes = payload.get(payload_offset..payload_offset + 2)?;
     Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_area_f32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> Option<f32> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < 4 {
+        return None;
+    }
+    read_f32_le(payload, payload_offset)
 }
 
 fn start_fields_plausible(payload: &[u8]) -> bool {

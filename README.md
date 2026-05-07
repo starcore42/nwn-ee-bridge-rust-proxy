@@ -119,3 +119,4 @@ solution. Treat asset setup as part of local test environment preparation.
 ## Progress Log
 
 - Initial public Rust proxy snapshot: strict translation structure, EE crypto handling, Diamond CD-key derivation, module/area/live-object/quickbar translation experiments.
+- Expanded proxy2 translation work: module resources, quickbar payloads, area context, live-object updates, and M-frame sequencing/reassembly helpers.

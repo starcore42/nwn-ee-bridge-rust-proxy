@@ -30,6 +30,8 @@
 //! fixed transform prefix ends exactly where EE will begin reading the map, or
 //! for verified door/placeable add records at the EE decompile-backed cursor.
 
+use crate::translate::area::AreaPlaceableContext;
+
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const GAME_OBJECT_UPDATE_MAJOR: u8 = 0x05;
 const LIVE_OBJECT_MINOR: u8 = 0x01;
@@ -37,6 +39,7 @@ const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const LEGACY_PREFIXED_FRAGMENT_BYTES: usize = 4;
 const LEGACY_LIVE_BYTES_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + LEGACY_PREFIXED_FRAGMENT_BYTES;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES: usize = 2048;
 const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_1000;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
@@ -83,6 +86,73 @@ pub struct LiveObjectVisualTransformSummary {
     pub records_examined: u32,
     pub maps_inserted: u32,
     pub bytes_inserted: u32,
+    pub area_placeable_adds_suppressed: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveObjectContinuationWrapSummary {
+    pub old_payload_length: usize,
+    pub new_payload_length: usize,
+    pub dropped_leadin_bytes: usize,
+    pub read_bytes_length: usize,
+    pub fragment_bytes_length: usize,
+    pub new_declared: u32,
+}
+
+pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
+    payload: &mut Vec<u8>,
+) -> Option<LiveObjectContinuationWrapSummary> {
+    if payload.len() < 16 || payload.first().copied() == Some(HIGH_LEVEL_ENVELOPE) {
+        return None;
+    }
+
+    let boundary_offset = legacy_live_object_continuation_boundary_offset(payload)?;
+    let source = &payload[boundary_offset..];
+    if source.len() < 8 {
+        return None;
+    }
+
+    // Decompile discipline:
+    // EE enters `CNWSMessage::HandleGameObjUpdate` only through high-level
+    // family 0x0501, then seeds `CNWMessage::SetReadMessage` from a declared
+    // byte-buffer length followed by fragment bits. Some 1.69/HG zlib-stream
+    // windows arrive as raw live-object read bytes with no high-level envelope.
+    // Emit the narrowest valid EE shape for that verified continuation instead
+    // of passing the raw blob through or silently consuming it.
+    //
+    // The continuation has no trustworthy standalone fragment cursor, so keep
+    // one byte as CNW fragment storage. This is intentionally conservative:
+    // the exact typed live-object record parsers should grow this into a
+    // decompile-derived fragment-boundary decision per opcode.
+    const CONTINUATION_FRAGMENT_BYTES: usize = 1;
+    if source.len() <= CONTINUATION_FRAGMENT_BYTES {
+        return None;
+    }
+    let read_bytes_length = source.len() - CONTINUATION_FRAGMENT_BYTES;
+    let new_declared_usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + read_bytes_length;
+    let new_declared = u32::try_from(new_declared_usize).ok()?;
+
+    let old_payload_length = payload.len();
+    let mut rewritten = Vec::with_capacity(
+        HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + source.len(),
+    );
+    rewritten.push(HIGH_LEVEL_ENVELOPE);
+    rewritten.push(GAME_OBJECT_UPDATE_MAJOR);
+    rewritten.push(LIVE_OBJECT_MINOR);
+    rewritten.extend_from_slice(&new_declared.to_le_bytes());
+    rewritten.extend_from_slice(&source[..read_bytes_length]);
+    rewritten.extend_from_slice(&source[read_bytes_length..]);
+
+    let summary = LiveObjectContinuationWrapSummary {
+        old_payload_length,
+        new_payload_length: rewritten.len(),
+        dropped_leadin_bytes: boundary_offset,
+        read_bytes_length,
+        fragment_bytes_length: CONTINUATION_FRAGMENT_BYTES,
+        new_declared,
+    };
+    *payload = rewritten;
+    Some(summary)
 }
 
 pub fn normalize_prefixed_fragments_payload_if_needed(
@@ -161,6 +231,7 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
 
 pub fn rewrite_creature_add_visual_transform_maps_if_possible(
     payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
 ) -> Option<LiveObjectVisualTransformSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
@@ -177,10 +248,16 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
     }
 
     let mut live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared].to_vec();
+    let mut fragment_bytes = payload[declared..].to_vec();
+    let mut fragment_bits = decode_cnw_msb_valid_bits(&fragment_bytes);
+    let mut fragment_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    let mut fragment_bits_reliable = fragment_bits.is_some();
+    let mut fragment_bits_changed = false;
     let old_live_bytes_length = live_bytes.len();
     let mut records_examined = 0u32;
     let mut maps_inserted = 0u32;
     let mut bytes_inserted = 0u32;
+    let mut area_placeable_adds_suppressed = 0u32;
     let mut offset = 0usize;
 
     while offset + 10 <= live_bytes.len() {
@@ -190,7 +267,7 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         }
 
         records_examined = records_examined.saturating_add(1);
-        let record_end =
+        let mut record_end =
             find_next_legacy_live_object_sub_message_boundary_after(&live_bytes, offset, live_bytes.len())
                 .min(live_bytes.len());
         if record_end <= offset {
@@ -198,9 +275,38 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
             continue;
         }
 
+        if fragment_bits_reliable {
+            if let Some(bits) = fragment_bits.as_mut() {
+                if let Some(record_rewrite) = rewrite_legacy_door_placeable_add_record_for_ee(
+                    &mut live_bytes,
+                    &mut record_end,
+                    bits,
+                    &mut fragment_bit_cursor,
+                    offset,
+                    area_context,
+                ) {
+                    maps_inserted = maps_inserted.saturating_add(record_rewrite.maps_inserted);
+                    bytes_inserted =
+                        bytes_inserted.saturating_add(record_rewrite.bytes_inserted);
+                    area_placeable_adds_suppressed = area_placeable_adds_suppressed
+                        .saturating_add(record_rewrite.area_placeable_adds_suppressed);
+                    fragment_bits_changed |= record_rewrite.fragment_bits_changed;
+                    offset = if record_rewrite.record_removed {
+                        offset
+                    } else {
+                        record_end.max(offset + 1)
+                    };
+                    continue;
+                }
+            } else {
+                fragment_bits_reliable = false;
+            }
+        }
+
         let Some(insert_offset) =
             legacy_add_visual_transform_insert_offset(&live_bytes, offset, record_end)
         else {
+            fragment_bits_reliable = false;
             offset = record_end.max(offset + 1);
             continue;
         };
@@ -220,17 +326,24 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         offset = record_end + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
     }
 
-    if maps_inserted == 0 {
+    if maps_inserted == 0
+        && !fragment_bits_changed
+        && live_bytes.len() == old_live_bytes_length
+        && area_placeable_adds_suppressed == 0
+    {
         return None;
     }
 
     let new_declared_usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live_bytes.len();
     let new_declared = u32::try_from(new_declared_usize).ok()?;
-    let mut rewritten = Vec::with_capacity(new_declared_usize + payload.len() - declared);
+    if fragment_bits_changed {
+        fragment_bytes = pack_cnw_msb_valid_bits(fragment_bits?);
+    }
+    let mut rewritten = Vec::with_capacity(new_declared_usize + fragment_bytes.len());
     rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
     rewritten.extend_from_slice(&new_declared.to_le_bytes());
     rewritten.extend_from_slice(&live_bytes);
-    rewritten.extend_from_slice(&payload[declared..]);
+    rewritten.extend_from_slice(&fragment_bytes);
 
     let summary = LiveObjectVisualTransformSummary {
         old_declared,
@@ -242,6 +355,7 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         records_examined,
         maps_inserted,
         bytes_inserted,
+        area_placeable_adds_suppressed,
     };
     *payload = rewritten;
     Some(summary)
@@ -375,6 +489,13 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
     }
 }
 
+fn legacy_live_object_continuation_boundary_offset(bytes: &[u8]) -> Option<usize> {
+    let max_scan = bytes.len().saturating_sub(2).min(96);
+    (0..=max_scan).find(|&offset| {
+        looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
+    })
+}
+
 fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usize) -> bool {
     if offset > bytes.len() || bytes.len() - offset < 2 {
         return false;
@@ -491,25 +612,396 @@ fn legacy_add_visual_transform_insert_offset(
     }
 
     match bytes[offset + 1] {
-        CREATURE_OBJECT_TYPE => {
-            let insert_offset = offset + CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET;
-            if record_end >= insert_offset
-                && insert_offset == record_end
-                && looks_like_legacy_creature_add_transform_fields(bytes, offset, record_end)
-            {
-                Some(insert_offset)
-            } else {
-                None
-            }
-        }
-        DOOR_OBJECT_TYPE => {
-            try_find_legacy_door_add_visual_transform_insert_offset(bytes, offset, record_end)
-        }
-        PLACEABLE_OBJECT_TYPE => {
-            try_find_legacy_placeable_add_visual_transform_insert_offset(bytes, offset, record_end)
-        }
+        // EE door/placeable add handlers read CAurObjectVisualTransformData at
+        // fixed decompile-backed cursors relative to the legacy add record:
+        // door add reads id + one/two DWORDs first, and placeable add reads
+        // id/name/type/appearance/static fields first. Only synthesize the
+        // identity map when those surrounding fields parse cleanly inside this
+        // exact record. Creature add remains disabled until its body/appearance
+        // bitfield parser owns the complete cursor; guessing there crashes EE
+        // and hides armor/body appearance problems behind a shifted stream.
+        CREATURE_OBJECT_TYPE => None,
+        DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE => None,
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DoorPlaceableAddRewrite {
+    maps_inserted: u32,
+    bytes_inserted: u32,
+    fragment_bits_changed: bool,
+    record_removed: bool,
+    area_placeable_adds_suppressed: u32,
+}
+
+fn rewrite_legacy_door_placeable_add_record_for_ee(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddRewrite> {
+    if record_offset > bytes.len()
+        || *record_end > bytes.len()
+        || *record_end <= record_offset
+        || bytes.len() - record_offset < 10
+        || bytes[record_offset] != b'A'
+        || !looks_like_legacy_live_object_id_at(bytes, record_offset + 2)
+    {
+        return None;
+    }
+
+    match bytes[record_offset + 1] {
+        DOOR_OBJECT_TYPE => rewrite_legacy_door_add_record_for_ee(
+            bytes,
+            record_end,
+            bits,
+            bit_cursor,
+            record_offset,
+            area_context,
+        ),
+        PLACEABLE_OBJECT_TYPE => rewrite_legacy_placeable_add_record_for_ee(
+            bytes,
+            record_end,
+            bits,
+            bit_cursor,
+            record_offset,
+            area_context,
+        ),
+        _ => None,
+    }
+}
+
+fn rewrite_legacy_door_add_record_for_ee(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddRewrite> {
+    if *bit_cursor >= bits.len() {
+        return None;
+    }
+    let first_dword = read_u32_le(bytes, record_offset + 6)?;
+    let visual_offset = record_offset + 2 + if first_dword == 0 { 12 } else { 8 };
+
+    // EE's door add reader consumes CAurObjectVisualTransformData immediately
+    // before the name branch. Legacy streams start with the name at this
+    // cursor. If a previous translation pass has already inserted the identity
+    // map, the name has moved after the map; otherwise we insert the map and
+    // must advance the semantic name cursor ourselves before repairing the
+    // name-mode fragment bits below.
+    let already_has_visual_map =
+        has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end);
+    let mut name_offset = if already_has_visual_map {
+        visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()
+    } else {
+        visual_offset
+    };
+    if visual_offset > *record_end
+        || name_offset > *record_end
+        || !looks_like_legacy_door_add_name_at(bytes, name_offset, *record_end)
+    {
+        return None;
+    }
+
+    let mut summary = DoorPlaceableAddRewrite::default();
+    if !already_has_visual_map {
+        bytes.splice(
+            visual_offset..visual_offset,
+            EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES,
+        );
+        *record_end += EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
+        name_offset += EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
+        summary.maps_inserted = 1;
+        summary.bytes_inserted = EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32;
+    }
+
+    let short_name = inline_cexo_string_end(bytes, name_offset).is_none();
+    if short_name {
+        write_u32_le(bytes, name_offset, 0)?;
+        set_cnw_msb_bit(bits, *bit_cursor, false)?;
+        insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        *bit_cursor += 6;
+        summary.fragment_bits_changed = true;
+    } else if bits.get(*bit_cursor).copied().unwrap_or(false) {
+        set_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        *bit_cursor += 7;
+        summary.fragment_bits_changed = true;
+    } else {
+        let changed = set_cnw_msb_bit(bits, *bit_cursor, false)?;
+        *bit_cursor += 6;
+        summary.fragment_bits_changed = changed;
+    }
+
+    if summary.maps_inserted != 0 || summary.fragment_bits_changed {
+        Some(summary)
+    } else {
+        None
+    }
+}
+
+fn rewrite_legacy_placeable_add_record_for_ee(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<DoorPlaceableAddRewrite> {
+    if *bit_cursor >= bits.len() {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 2)?;
+    let name_offset = record_offset + 6;
+    let inline_name_end = inline_cexo_string_end(bytes, name_offset);
+    let short_name = inline_name_end.is_none();
+    let tail_offset = inline_name_end.unwrap_or(name_offset + 4);
+    let visual_offset = legacy_placeable_add_tail_end(bytes, tail_offset, *record_end)?;
+    let before_bits = bits.clone();
+    let legacy_outer_locstring = before_bits.get(*bit_cursor).copied().unwrap_or(false);
+    let legacy_inner_client_tlk = !short_name
+        && legacy_outer_locstring
+        && before_bits.get(*bit_cursor + 1).copied().unwrap_or(false);
+    let direct_inline_name_payload = !short_name;
+    let direct_name_mode_repair =
+        legacy_outer_locstring && legacy_inner_client_tlk && direct_inline_name_payload;
+    let inline_locstring_name =
+        !short_name && legacy_outer_locstring && !direct_name_mode_repair;
+    let source_name_inner_bits = usize::from(inline_locstring_name);
+    let destination_name_inner_bits = usize::from(short_name || inline_locstring_name);
+    let required_source_bits = 10 + source_name_inner_bits;
+    if before_bits.len().saturating_sub(*bit_cursor) < required_source_bits {
+        return None;
+    }
+
+    let appearance = read_u16_le(bytes, tail_offset + 1)?;
+    tracing::info!(
+        record_offset,
+        record_end = *record_end,
+        bit_cursor = *bit_cursor,
+        name_offset,
+        tail_offset,
+        visual_offset,
+        appearance,
+        short_name,
+        legacy_outer_locstring,
+        legacy_inner_client_tlk,
+        direct_name_mode_repair,
+        inline_locstring_name,
+        source_name_inner_bits,
+        destination_name_inner_bits,
+        source_bits = required_source_bits,
+        tail = %format_hex_slice(bytes, tail_offset, (*record_end).saturating_sub(tail_offset).min(16)),
+        bits = %format_bit_slice(&before_bits, *bit_cursor, required_source_bits.min(16)),
+        "server->client live-object placeable add candidate"
+    );
+
+    // EE `sub_1407A7800` resolves the add-record appearance row through
+    // `placeables.2da` and then immediately tries to load the resulting model
+    // resref. Diamond/HG UserNN placeable rows intentionally have no standalone
+    // model at that row; the usable model comes from the area/static placeable
+    // context. Until the Rust bridge carries that context across from
+    // `Area_ClientArea`, strict translation must not emit these as ordinary EE
+    // live adds or EE will try to load USER.mdl and crash during startup.
+    if area_context.is_some_and(|context| context.contains_placeable_id(object_id))
+        || is_legacy_user_defined_placeable_appearance(appearance)
+    {
+        let source_span = required_source_bits;
+        if bits.len().saturating_sub(*bit_cursor) < source_span {
+            return None;
+        }
+        bits.drain(*bit_cursor..(*bit_cursor + source_span));
+        bytes.drain(record_offset..*record_end);
+        *record_end = record_offset;
+        let mut area_rows = String::new();
+        if let Some(context) = area_context {
+            for (index, row) in context.rows_with_placeable_id(object_id).enumerate() {
+                if index != 0 {
+                    area_rows.push(',');
+                }
+                area_rows.push_str(&format!(
+                    "app=0x{:04X}@{:.2},{:.2},{:.2}",
+                    row.appearance, row.x, row.y, row.z
+                ));
+            }
+        }
+        tracing::info!(
+            object_id = format_args!("0x{object_id:08X}"),
+            appearance,
+            source_bits = source_span,
+            area_rows = %area_rows,
+            "server->client live-object placeable add suppressed because Area_ClientArea already owns it"
+        );
+        return Some(DoorPlaceableAddRewrite {
+            maps_inserted: 0,
+            bytes_inserted: 0,
+            fragment_bits_changed: true,
+            record_removed: true,
+            area_placeable_adds_suppressed: 1,
+        });
+    }
+
+    let mut summary = DoorPlaceableAddRewrite::default();
+    if short_name {
+        write_u32_le(bytes, name_offset, 0)?;
+        set_cnw_msb_bit(bits, *bit_cursor, true)?;
+        insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        summary.fragment_bits_changed = true;
+    } else if direct_name_mode_repair {
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+    } else if inline_locstring_name {
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+    }
+
+    let optional_bit = *bit_cursor + 2 + destination_name_inner_bits;
+    insert_cnw_msb_bit(bits, optional_bit, false)?;
+    summary.fragment_bits_changed = true;
+
+    let source_shift = source_name_inner_bits;
+    let post_name_bit = *bit_cursor + 1 + destination_name_inner_bits;
+    if bits.len() <= post_name_bit + 9 {
+        return None;
+    }
+    for (destination_delta, source_relative) in [
+        (0usize, 1usize),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 8),
+        (8, 9),
+    ] {
+        let value = before_bits
+            .get(*bit_cursor + source_relative + source_shift)
+            .copied()
+            .unwrap_or(false);
+        summary.fragment_bits_changed |=
+            set_cnw_msb_bit(bits, post_name_bit + destination_delta, value)?;
+    }
+    summary.fragment_bits_changed |= set_cnw_msb_bit(bits, post_name_bit + 9, false)?;
+
+    if !has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end) {
+        bytes.splice(
+            visual_offset..visual_offset,
+            EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES,
+        );
+        *record_end += EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
+        summary.maps_inserted = 1;
+        summary.bytes_inserted = EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32;
+    }
+
+    *bit_cursor += 11 + destination_name_inner_bits;
+    if summary.maps_inserted != 0 || summary.fragment_bits_changed {
+        Some(summary)
+    } else {
+        None
+    }
+}
+
+fn is_legacy_user_defined_placeable_appearance(appearance: u16) -> bool {
+    // Diamond 1.72 `placeables.2da` rows 202..229 are User01..User28 and
+    // rows 275..278 are User92..User95. These rows resolve to the generic
+    // user-defined model token rather than a real model resref in EE.
+    matches!(appearance, 202..=229 | 275..=278)
+}
+
+fn format_hex_slice(bytes: &[u8], offset: usize, length: usize) -> String {
+    let Some(slice) = bytes.get(offset..offset.saturating_add(length).min(bytes.len())) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for (index, byte) in slice.iter().enumerate() {
+        if index != 0 {
+            text.push(' ');
+        }
+        text.push_str(&format!("{byte:02X}"));
+    }
+    text
+}
+
+fn format_bit_slice(bits: &[bool], offset: usize, length: usize) -> String {
+    let mut text = String::new();
+    let end = offset.saturating_add(length).min(bits.len());
+    for bit in &bits[offset.min(bits.len())..end] {
+        text.push(if *bit { '1' } else { '0' });
+    }
+    text
+}
+
+fn looks_like_legacy_door_add_name_at(bytes: &[u8], name_offset: usize, record_end: usize) -> bool {
+    if name_offset > record_end || record_end > bytes.len() {
+        return false;
+    }
+    if let Some(inline_end) = inline_cexo_string_end(bytes, name_offset) {
+        return inline_end <= record_end && record_end - inline_end >= 2;
+    }
+    let legacy_tail_end = name_offset + 4 + 2;
+    legacy_tail_end <= record_end
+        && (legacy_tail_end == record_end
+            || has_ee_identity_visual_transform_map_at(bytes, legacy_tail_end, record_end))
+}
+
+fn decode_cnw_msb_valid_bits(fragment: &[u8]) -> Option<Vec<bool>> {
+    let first = *fragment.first()?;
+    let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
+    let valid_bits = if final_fragment_bits == 0 {
+        fragment.len().checked_mul(8)?
+    } else {
+        fragment
+            .len()
+            .checked_sub(1)?
+            .checked_mul(8)?
+            .checked_add(final_fragment_bits)?
+    };
+    if valid_bits < CNW_FRAGMENT_HEADER_BITS {
+        return None;
+    }
+
+    let mut bits = Vec::with_capacity(valid_bits);
+    for bit_index in 0..valid_bits {
+        let byte = *fragment.get(bit_index / 8)?;
+        bits.push((byte & (0x80 >> (bit_index % 8))) != 0);
+    }
+    Some(bits)
+}
+
+fn pack_cnw_msb_valid_bits(mut bits: Vec<bool>) -> Vec<u8> {
+    if bits.len() < CNW_FRAGMENT_HEADER_BITS {
+        return Vec::new();
+    }
+    let final_fragment_bits = bits.len() % 8;
+    bits[0] = (final_fragment_bits & 0x04) != 0;
+    bits[1] = (final_fragment_bits & 0x02) != 0;
+    bits[2] = (final_fragment_bits & 0x01) != 0;
+
+    let mut packed = vec![0u8; bits.len().div_ceil(8)];
+    for (bit_index, bit) in bits.into_iter().enumerate() {
+        if bit {
+            packed[bit_index / 8] |= 0x80 >> (bit_index % 8);
+        }
+    }
+    packed
+}
+
+fn set_cnw_msb_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {
+    let bit = bits.get_mut(bit_index)?;
+    let changed = *bit != value;
+    *bit = value;
+    Some(changed)
+}
+
+fn insert_cnw_msb_bit(bits: &mut Vec<bool>, bit_index: usize, value: bool) -> Option<()> {
+    if bit_index > bits.len() {
+        return None;
+    }
+    bits.insert(bit_index, value);
+    Some(())
 }
 
 fn try_find_legacy_door_add_visual_transform_insert_offset(
@@ -637,16 +1129,10 @@ fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
         return false;
     }
 
-    // EE live-object client readers use `sub_1409737C0`, which is a raw
-    // four-byte `CNWMessage` read. Unlike `ReadOBJECTIDServer`, it does not
-    // clear or constrain the high bit. Legacy HG captures therefore contain
-    // valid object ids such as `0xEC0034D1`; rejecting those made the normalizer
-    // skip real door/placeable records and "salvage" from a later false
-    // boundary.
-    if (object_id & 0xFF00_0000) != 0 {
-        return true;
-    }
-
+    // Match the mature C++ proxy's bounded object-id classifier. Accepting any
+    // nonzero high byte makes shifted ASCII/name/appearance bytes look like
+    // live-object ids, which in turn causes false record boundaries and shifted
+    // door/placeable transforms.
     let high_byte = object_id & 0xFF00_0000;
     matches!(
         high_byte,
@@ -670,6 +1156,11 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     let bytes = bytes.get(offset..offset + 2)?;
     Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
+    bytes.get_mut(offset..offset + 4)?.copy_from_slice(&value.to_le_bytes());
+    Some(())
 }
 
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {

@@ -5,11 +5,14 @@
 //! conservative: when a new packet appears, we quarantine it, inspect the
 //! decompiles, add the translator/validator, and only then allow it.
 
-use crate::packet::{
-    Direction, Packet,
-    bn::{BnPacket, BnTag},
-    hex_prefix,
-    m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
+use crate::{
+    crc::read_le_u32,
+    packet::{
+        Direction, Packet,
+        bn::{BnPacket, BnTag},
+        hex_prefix,
+        m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +100,22 @@ pub fn decide(direction: Direction, bytes: &[u8]) -> StrictDecision {
             }
             if let Some(high) = view.high {
                 if high.is_known() {
+                    let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                    let payload_end = payload_start + view.payload_length;
+                    let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                        return StrictDecision::quarantine(
+                            "M/high",
+                            high.name(),
+                            "known-high-level-payload-overflow",
+                        );
+                    };
+                    if !known_high_payload_shape_valid(payload) {
+                        return StrictDecision::quarantine(
+                            "M/high",
+                            high.name(),
+                            "known-high-level-invalid-shape",
+                        );
+                    }
                     return StrictDecision::allow(
                         "M/high",
                         high.name(),
@@ -225,6 +244,22 @@ fn validate_packetized_trailing(bytes: &[u8], offset: usize) -> Result<(), Stric
     for span in spans {
         if let Some(high) = span.high {
             if high.is_known() {
+                let payload_start = span.offset + LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + span.payload_length;
+                let Some(payload) = bytes.get(payload_start..payload_end) else {
+                    return Err(StrictDecision::quarantine(
+                        "M/high",
+                        high.name(),
+                        "known-window-high-level-payload-overflow",
+                    ));
+                };
+                if !known_high_payload_shape_valid(payload) {
+                    return Err(StrictDecision::quarantine(
+                        "M/high",
+                        high.name(),
+                        "known-window-high-level-invalid-shape",
+                    ));
+                }
                 continue;
             }
             return Err(StrictDecision::quarantine(
@@ -257,6 +292,63 @@ fn validate_packetized_trailing(bytes: &[u8], offset: usize) -> Result<(), Stric
     }
 
     Ok(())
+}
+
+fn known_high_payload_shape_valid(payload: &[u8]) -> bool {
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    match (high.major, high.minor) {
+        (0x05, 0x02) => game_obj_update_obj_control_shape_valid(payload),
+        (0x0E, 0x02) => party_get_list_payload_shape_valid(payload),
+        (0x0E, 0x01 | 0x03..=0x0E) => party_cnw_wrapped_payload_shape_valid(payload),
+        _ => true,
+    }
+}
+
+fn game_obj_update_obj_control_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // - SendServerToPlayerGameObjUpdate_ObjControl creates an 8-byte
+    //   CNWMessage write buffer.
+    // - The read window therefore contains the 4-byte declared length plus
+    //   DWORD player id plus WriteOBJECTIDServer object id.
+    // - Observed/Diamond-compatible CNW wrapping is `declared = 15`, which
+    //   places one fragment byte after the 12-byte read buffer.
+    const OBJ_CONTROL_DECLARED: u32 = 15;
+    const OBJ_CONTROL_PAYLOAD_BYTES: usize = 16;
+
+    payload.len() == OBJ_CONTROL_PAYLOAD_BYTES
+        && HighLevel::parse(payload)
+            .map(|high| high.major == 0x05 && high.minor == 0x02)
+            .unwrap_or(false)
+        && read_le_u32(payload, 3) == Some(OBJ_CONTROL_DECLARED)
+}
+
+fn party_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed classification:
+    // EE's packet table names 0x0E01..0x0E0E as the Party family, and the
+    // exported CNWSMessage Party_List / TransferObjectControl senders use the
+    // normal CNWMessage write-buffer path. The exact read payload is variable
+    // for member lists, so strict mode validates the CNW wrapper boundary
+    // here and leaves semantic field parsing to the translate/party module.
+    const MIN_CNW_DECLARED_BYTES: usize = 3 + 4;
+    const MAX_REASONABLE_PARTY_FRAGMENT_BYTES: usize = 32;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    declared >= MIN_CNW_DECLARED_BYTES
+        && declared <= payload.len()
+        && payload.len() - declared <= MAX_REASONABLE_PARTY_FRAGMENT_BYTES
+}
+
+fn party_get_list_payload_shape_valid(payload: &[u8]) -> bool {
+    // EE sends the Party_GetList request as a bare high-level tag with no
+    // CNWMessage read payload; server-to-client party list/control responses
+    // use the CNW-wrapped sender path and are validated by the generic party
+    // wrapper check.
+    payload.len() == 3 || party_cnw_wrapped_payload_shape_valid(payload)
 }
 
 fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
