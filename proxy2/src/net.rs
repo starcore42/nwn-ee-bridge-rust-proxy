@@ -103,8 +103,21 @@ fn drain_client_socket(
                                 format!("sending client datagram to server {}", config.server)
                             })?;
                     }
-                    Emit::Packets(outbounds) | Emit::VerifiedPackets(outbounds) => {
+                    Emit::Packets(outbounds)
+                    | Emit::PacketsPreShifted(outbounds)
+                    | Emit::VerifiedPackets { packets: outbounds, .. }
+                    | Emit::VerifiedPacketsPreShifted { packets: outbounds, .. } => {
                         for outbound in outbounds {
+                            session
+                                .upstream
+                                .send_to(&outbound, config.server)
+                                .with_context(|| {
+                                    format!("sending client datagram to server {}", config.server)
+                                })?;
+                        }
+                    }
+                    Emit::MixedVerifiedPackets(outbounds) => {
+                        for (_, outbound) in outbounds {
                             session
                                 .upstream
                                 .send_to(&outbound, config.server)
@@ -150,8 +163,22 @@ fn drain_server_sockets(
                                 format!("sending server datagram to client {}", session.client)
                             })?;
                         }
-                        Emit::Packets(outbounds) | Emit::VerifiedPackets(outbounds) => {
+                        Emit::Packets(outbounds)
+                        | Emit::PacketsPreShifted(outbounds)
+                        | Emit::VerifiedPackets { packets: outbounds, .. }
+                        | Emit::VerifiedPacketsPreShifted { packets: outbounds, .. } => {
                             for outbound in outbounds {
+                                let outbound = session
+                                    .ee_crypto
+                                    .encrypt_server_packet_if_needed(&outbound)
+                                    .context("encrypting server packet for EE client")?;
+                                listen.send_to(&outbound, session.client).with_context(|| {
+                                    format!("sending server datagram to client {}", session.client)
+                                })?;
+                            }
+                        }
+                        Emit::MixedVerifiedPackets(outbounds) => {
+                            for (_, outbound) in outbounds {
                                 let outbound = session
                                     .ee_crypto
                                     .encrypt_server_packet_if_needed(&outbound)

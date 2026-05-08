@@ -18,8 +18,11 @@
 //! - EE `CNWSMessage::SendServerToPlayerArea_ClientArea` writes the
 //!   area-present BOOL immediately before calling `CNWSArea::PackAreaIntoMessage`.
 //!   `PackAreaIntoMessage` then writes the area-name BOOL. Diamond `CNWCArea`
-//!   reads the area name without that discriminator, so the bridge inserts the
-//!   EE-only raw-string selector bit immediately after the area-present BOOL.
+//!   reads the area name without that discriminator. The decompiled EE client
+//!   consumes the earlier area flag before `CNWCArea::LoadArea`; the legacy
+//!   driver shim fixed this by forcing the existing `0x08` first-fragment-byte
+//!   bit at the area-name read site, not by inserting and shifting every later
+//!   area BOOL. Driver-only mode requires the proxy to force that bit in-band.
 //! - EE and Diamond `CNWMessage::SetReadMessage` both treat the first DWORD
 //!   after the high-level header as the read-buffer length plus the three-byte
 //!   high-level prefix. Moving the fragment stream therefore requires repairing
@@ -49,8 +52,7 @@ const MAX_REASONABLE_AREA_DIMENSION: u32 = 512;
 const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const AREA_PRESENT_USER_BOOL_COUNT: usize = 1;
-const AREA_NAME_MODE_INSERT_BIT_INDEX: usize =
-    CNW_FRAGMENT_HEADER_BITS + AREA_PRESENT_USER_BOOL_COUNT;
+const AREA_NAME_MODE_FORCE_MASK: u8 = 0x08;
 
 const TRANSITION_INDEX_PAYLOAD_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const START_X_PAYLOAD_OFFSET: usize = TRANSITION_INDEX_PAYLOAD_OFFSET + 4;
@@ -62,7 +64,7 @@ const EE_POST_STATIC_LIST_ZERO_WORD_BYTES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaRewriteKind {
-    ExactEeAreaNameModeBitInsert,
+    ExactEeAreaNameModeBitForce,
     ExactEePostStaticListZeroWords,
     LegacyHgMissingHeightRepair,
 }
@@ -240,7 +242,7 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     let mut tile_scan = scan_area_tile_stream(payload, fragment_offset);
     let height_repaired = repair_missing_area_height(payload, fragment_offset, &mut tile_scan);
     let mut rewrite_kinds = vec![
-        AreaRewriteKind::ExactEeAreaNameModeBitInsert,
+        AreaRewriteKind::ExactEeAreaNameModeBitForce,
         AreaRewriteKind::ExactEePostStaticListZeroWords,
     ];
     if height_repaired {
@@ -322,19 +324,19 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 }
 
 fn rewrite_area_fragment_bits(fragment: &[u8]) -> Option<Vec<u8>> {
-    let mut bits = decode_cnw_msb_valid_bits(
+    let _bits = decode_cnw_msb_valid_bits(
         fragment,
-        CNW_FRAGMENT_HEADER_BITS + AREA_PRESENT_USER_BOOL_COUNT,
+        CNW_FRAGMENT_HEADER_BITS + AREA_PRESENT_USER_BOOL_COUNT + 1,
     )?;
-    insert_cnw_msb_bit(&mut bits, AREA_NAME_MODE_INSERT_BIT_INDEX, true)?;
-    let rewritten = pack_cnw_msb_valid_bits(bits);
-    if rewritten.is_empty() {
+    let mut rewritten = fragment.to_vec();
+    let Some(first) = rewritten.first_mut() else {
         tracing::warn!(
             fragment_size = fragment.len(),
-            "Area_ClientArea rewrite skipped: fragment bit stream too short for EE area BOOL inserts"
+            "Area_ClientArea rewrite skipped: fragment bit stream too short for EE area BOOL force"
         );
         return None;
-    }
+    };
+    *first |= AREA_NAME_MODE_FORCE_MASK;
     Some(rewritten)
 }
 
@@ -362,37 +364,6 @@ fn decode_cnw_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<V
         bits.push((byte & (0x80 >> (bit_index % 8))) != 0);
     }
     Some(bits)
-}
-
-fn pack_cnw_msb_valid_bits(mut bits: Vec<bool>) -> Vec<u8> {
-    if bits.len() < CNW_FRAGMENT_HEADER_BITS {
-        return Vec::new();
-    }
-    let final_fragment_bits = bits.len() % 8;
-    bits[0] = (final_fragment_bits & 0x04) != 0;
-    bits[1] = (final_fragment_bits & 0x02) != 0;
-    bits[2] = (final_fragment_bits & 0x01) != 0;
-
-    let mut packed = vec![0u8; bits.len() / 8 + 1];
-    for (bit_index, bit) in bits.into_iter().enumerate() {
-        if bit {
-            packed[bit_index / 8] |= 0x80 >> (bit_index % 8);
-        }
-    }
-    packed
-}
-
-fn insert_cnw_msb_bit(bits: &mut Vec<bool>, bit_index: usize, value: bool) -> Option<()> {
-    if bit_index > bits.len() {
-        tracing::warn!(
-            bit_index,
-            valid_bits = bits.len(),
-            "Area_ClientArea rewrite skipped: EE fragment bit insert outside valid bit stream"
-        );
-        return None;
-    }
-    bits.insert(bit_index, value);
-    Some(())
 }
 
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {

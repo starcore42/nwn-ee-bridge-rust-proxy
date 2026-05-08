@@ -112,9 +112,46 @@ pub struct LiveObjectContinuationWrapSummary {
     pub new_declared: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RawPrefixedLiveObjectSplit {
+    pub live_bytes_offset: usize,
+    pub read_bytes_length: usize,
+    pub fragment_bytes_length: usize,
+}
+
+pub fn raw_prefixed_live_object_split(payload: &[u8]) -> Option<RawPrefixedLiveObjectSplit> {
+    if payload.len() < 3 || payload.first().copied() == Some(HIGH_LEVEL_ENVELOPE) {
+        return None;
+    }
+
+    let live_bytes_offset = legacy_live_object_continuation_boundary_offset(payload)?;
+    if live_bytes_offset == 0 || live_bytes_offset > LEGACY_PREFIXED_FRAGMENT_BYTES {
+        return None;
+    }
+    if !payload[..live_bytes_offset]
+        .iter()
+        .any(|byte| *byte != 0 && *byte != 0xFF)
+    {
+        return None;
+    }
+    if !looks_like_legacy_live_object_sub_message_boundary(payload, live_bytes_offset) {
+        return None;
+    }
+
+    Some(RawPrefixedLiveObjectSplit {
+        live_bytes_offset,
+        read_bytes_length: payload.len().checked_sub(live_bytes_offset)?,
+        fragment_bytes_length: live_bytes_offset,
+    })
+}
+
 pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
     payload: &mut Vec<u8>,
 ) -> Option<LiveObjectContinuationWrapSummary> {
+    if let Some(summary) = wrap_raw_legacy_live_object_prefixed_fragment_payload(payload) {
+        return Some(summary);
+    }
+
     // Strict-mode discipline: a zlib-inflated blob without a high-level packet
     // header is not, by itself, a packet. Earlier development builds wrapped
     // any plausible live-object-looking continuation into `P 05 01` with a
@@ -178,6 +215,57 @@ pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
         dropped_leadin_bytes: boundary_offset,
         read_bytes_length,
         fragment_bytes_length: CONTINUATION_FRAGMENT_BYTES,
+        new_declared,
+    };
+    *payload = rewritten;
+    Some(summary)
+}
+
+fn wrap_raw_legacy_live_object_prefixed_fragment_payload(
+    payload: &mut Vec<u8>,
+) -> Option<LiveObjectContinuationWrapSummary> {
+    // Decompile-backed transport normalization:
+    // Diamond-era live-object traffic can place the CNW fragment storage before
+    // the live-object read buffer, while EE's `CNWMessage::SetReadMessage`
+    // path reaches `HandleGameObjUpdate` through high-level `P 05 01` with a
+    // declared byte read window followed by fragment bytes. When a server zlib
+    // stream chunk begins after the high-level envelope, the inflated bytes can
+    // therefore look like:
+    //
+    //   [legacy fragment prefix bytes] [A/U/P/D/I/G/W live-object records...]
+    //
+    // This is not a semantic claim by itself. It only rebuilds the EE envelope
+    // and moves the verified leading fragment prefix to the tail; the focused
+    // live-object translators/validators must still claim the resulting
+    // `P 05 01` packet before strict mode emits it.
+    if payload.len() < 3 || payload.first().copied() == Some(HIGH_LEVEL_ENVELOPE) {
+        return None;
+    }
+
+    let split = raw_prefixed_live_object_split(payload)?;
+    let live_bytes_offset = split.live_bytes_offset;
+
+    let read_bytes_length = payload.len().checked_sub(live_bytes_offset)?;
+    let new_declared_usize = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(read_bytes_length)?;
+    let new_declared = u32::try_from(new_declared_usize).ok()?;
+
+    let old_payload_length = payload.len();
+    let mut rewritten = Vec::with_capacity(new_declared_usize + live_bytes_offset);
+    rewritten.push(HIGH_LEVEL_ENVELOPE);
+    rewritten.push(GAME_OBJECT_UPDATE_MAJOR);
+    rewritten.push(LIVE_OBJECT_MINOR);
+    rewritten.extend_from_slice(&new_declared.to_le_bytes());
+    rewritten.extend_from_slice(&payload[live_bytes_offset..]);
+    rewritten.extend_from_slice(&payload[..live_bytes_offset]);
+
+    let summary = LiveObjectContinuationWrapSummary {
+        old_payload_length,
+        new_payload_length: rewritten.len(),
+        dropped_leadin_bytes: 0,
+        read_bytes_length,
+        fragment_bytes_length: live_bytes_offset,
         new_declared,
     };
     *payload = rewritten;

@@ -148,3 +148,4 @@ still experimental, not a finished public content pipeline.
 - Expanded proxy2 translation work: module resources, quickbar payloads, area context, live-object updates, and M-frame sequencing/reassembly helpers.
 - Split proxy2 translation internals into focused M-frame, live-object update, custom token, and profile modules while preserving the experimental proxy build.
 - Added runtime NWSync advertisement/serving, asset profile tooling, stricter validation profiles, and broader BN/high-level packet validators.
+- Split quickbar and live-object inventory translation into smaller modules, with new M-frame stream state and continuation helpers.

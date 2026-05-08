@@ -47,6 +47,14 @@ pub(super) struct PendingServerPacket {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum AreaLoadedFallbackReason {
+    /// EE consumes a client-only area-name-mode BOOL before the legacy
+    /// `PackAreaIntoMessage` fragment cursor reaches the area name. The
+    /// translator forces that proven bit rather than shifting the stream.
+    ExactEeAreaNameModeBitForce,
+    /// EE expects two post-static object list counts that Diamond did not send
+    /// for this legacy `Area_ClientArea` shape. The translator inserts the
+    /// decompile-backed zero-count DWORDs before the fragment section.
+    ExactEePostStaticListZeroWords,
     /// HG legacy area streams can omit a usable height DWORD while still
     /// carrying a tile stream whose width * inferred height is exact. This
     /// fallback is allowed only when that named compatibility transform ran.
@@ -56,6 +64,8 @@ pub(super) enum AreaLoadedFallbackReason {
 impl AreaLoadedFallbackReason {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ExactEeAreaNameModeBitForce => "ExactEeAreaNameModeBitForce",
+            Self::ExactEePostStaticListZeroWords => "ExactEePostStaticListZeroWords",
             Self::LegacyHgMissingHeightRepair => "LegacyHgMissingHeightRepair",
         }
     }
@@ -64,17 +74,34 @@ impl AreaLoadedFallbackReason {
 pub(super) fn fallback_reason_for_area_rewrite(
     summary: &area::AreaRewriteSummary,
 ) -> Option<AreaLoadedFallbackReason> {
-    if summary
+    let reason = if summary
         .rewrite_kinds
         .contains(&area::AreaRewriteKind::LegacyHgMissingHeightRepair)
     {
+        Some(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair)
+    } else if summary
+        .rewrite_kinds
+        .contains(&area::AreaRewriteKind::ExactEePostStaticListZeroWords)
+    {
+        Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords)
+    } else if summary
+        .rewrite_kinds
+        .contains(&area::AreaRewriteKind::ExactEeAreaNameModeBitForce)
+    {
+        Some(AreaLoadedFallbackReason::ExactEeAreaNameModeBitForce)
+    } else {
+        None
+    };
+
+    if let Some(reason) = reason {
         tracing::info!(
             area_resref = %summary.area_resref,
-            "client synthetic Area_AreaLoaded fallback armed candidate: named HG missing-height compatibility transform ran"
+            reason = reason.as_str(),
+            rewrite_kinds = ?summary.rewrite_kinds,
+            "client synthetic Area_AreaLoaded fallback armed candidate: named Area_ClientArea compatibility transform ran"
         );
-        return Some(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair);
     }
-    None
+    reason
 }
 
 pub(super) fn is_native_area_loaded(high: Option<HighLevel>) -> bool {

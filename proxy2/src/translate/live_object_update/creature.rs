@@ -6,6 +6,26 @@
 
 use super::{read_f32_le, read_u16_le, read_u32_le};
 
+const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
+const LEGACY_LIVE_CREATURE_UPDATE_UNSUPPORTED_FEATURE_MASK: u32 =
+    0x0010_0000 | 0x0020_0000 | 0x0040_0000 | 0x0080_0000 | 0x0100_0000;
+const SUPPORTED_LEGACY_CREATURE_UPDATE_CURSOR_MASK: u32 =
+    0x0000_0001
+    | 0x0000_0002
+    | 0x0000_0004
+    | 0x0000_0008
+    | 0x0000_0020
+    | 0x0000_0040
+    | 0x0000_0100
+    | 0x0000_0200
+    | 0x0000_0400
+    | 0x0000_0800
+    | 0x0000_1000
+    | LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK
+    | 0x0000_4000
+    | 0x0000_8000
+    | 0x0002_0000;
+
 pub(super) fn looks_like_legacy_creature_add_transform_fields(
     bytes: &[u8],
     offset: usize,
@@ -80,48 +100,77 @@ pub(super) fn advance_verified_noop_creature_update_record(
     }
 
     let original_bit_cursor = *bit_cursor;
-    let advanced = match raw_mask {
-        // Mask 0x00000008 is the creature status/effect table helper. EE's
-        // decompiled reader (`sub_1407B1F00`, noted in the packet-alignment
-        // reference) reads one WORD row count and then BYTE opcode + WORD
-        // table-row for each observed HG row. On the current legacy-build path
-        // feature 0x0E is false, so no EE visual-transform map is read and no
-        // CNW fragment BOOLs are consumed. This is therefore a strict identity
-        // translation only when the read cursor lands exactly at the boundary.
-        0x0000_0008 => {
-            simulate_legacy_creature_update_status_effect_helper(bytes, offset, record_end)
-        }
-
-        // EE and Diamond both read the three posture/visibility BOOLs for this
-        // creature update mask and leave the read buffer otherwise unchanged.
-        // This is the `0x00008000` branch in the decompiled creature-update
-        // cursor path, so the translator is a verified no-op only if those
-        // three fragment bits are actually present.
-        0x0000_8000 if record_end == offset + 10 => {
-            advance_fragment_bits(fragment_bits, bit_cursor, 3)
-        }
-
-        // Mask 0x47 is the common movement/action/status creature update:
-        // position bits, facing/target branch, action branch, state byte, and
-        // command-state branch. The read bytes are dialect-identical for the HG
-        // 1.69 path we have captures for, but the decompiled reader consumes a
-        // mixture of read-buffer bytes and CNW fragment bits. Simulate that
-        // cursor exactly before claiming the packet as a no-op translation.
-        0x0000_0047 => simulate_legacy_creature_update_mask_0x47(
-            bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            bit_cursor,
-        ),
-
-        _ => false,
-    };
+    let advanced =
+        simulate_legacy_live_creature_update_cursors(bytes, offset, record_end, fragment_bits, bit_cursor);
 
     if !advanced {
         *bit_cursor = original_bit_cursor;
     }
     advanced
+}
+
+pub(super) fn advance_verified_noop_creature_appearance_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    if offset + 8 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'P')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+    {
+        return false;
+    }
+
+    let Some(object_id) = read_u32_le(bytes, offset + 2) else {
+        return false;
+    };
+    let Some(flags) = read_u16_le(bytes, offset + 6) else {
+        return false;
+    };
+    if !looks_like_legacy_creature_object_id(object_id) {
+        return false;
+    }
+
+    // EE `CNWSMessage::WriteGameObjUpdate_UpdateAppearance` writes the same
+    // P/creature header as Diamond: CHAR 'P', BYTE object type, object id, and
+    // a WORD appearance-update mask. The only CNW-fragment cursor behavior we
+    // can verify from the decompiled legacy-compatible path is the name-pair
+    // branch guarded by mask bit 0x0400. This helper therefore claims the record
+    // only as an identity semantic translation and advances exactly those bits;
+    // byte-shape rewrites remain outside this classifier.
+    let original_bit_cursor = *bit_cursor;
+    let mut cursor = LegacyCreatureUpdateCursor {
+        bytes,
+        record_end,
+        read_cursor: offset + 8,
+        bit_cursor: *bit_cursor,
+        fragment_bits,
+    };
+
+    if (flags & 0x0400) != 0 {
+        let Some(double_locstring_names) = cursor.read_bool() else {
+            *bit_cursor = original_bit_cursor;
+            return false;
+        };
+        if double_locstring_names {
+            for _ in 0..2 {
+                let Some(inner_tlk_ref) = cursor.read_bool() else {
+                    *bit_cursor = original_bit_cursor;
+                    return false;
+                };
+                if inner_tlk_ref && cursor.read_bool().is_none() {
+                    *bit_cursor = original_bit_cursor;
+                    return false;
+                }
+            }
+        }
+    }
+
+    *bit_cursor = cursor.bit_cursor;
+    true
 }
 
 fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
@@ -132,6 +181,156 @@ fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
         object_id & 0xFF00_0000,
         0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
     ) || (0x0000_1000..=0x00FF_FFFF).contains(&object_id)
+}
+
+fn simulate_legacy_live_creature_update_cursors(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
+        return false;
+    };
+    if !is_supported_legacy_creature_update_cursor_mask(raw_mask) {
+        return false;
+    }
+
+    let mut cursor = LegacyCreatureUpdateCursor {
+        bytes,
+        record_end,
+        read_cursor: offset + 10,
+        bit_cursor: *bit_cursor,
+        fragment_bits,
+    };
+
+    if (raw_mask & 0x0000_0001) != 0
+        && (cursor.read_unsigned_bits(16).is_none()
+            || cursor.read_unsigned_bits(16).is_none()
+            || cursor.read_unsigned_bits(18).is_none())
+    {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_0002) != 0 {
+        let Some(vector_branch) = cursor.read_bool() else {
+            return false;
+        };
+        if vector_branch {
+            if cursor.read_unsigned_bits(16).is_none()
+                || cursor.read_unsigned_bits(16).is_none()
+                || cursor.read_unsigned_bits(16).is_none()
+            {
+                return false;
+            }
+        } else if cursor.read_unsigned_bits(12).is_none() {
+            return false;
+        }
+
+        let Some(has_target) = cursor.read_bool() else {
+            return false;
+        };
+        if has_target && cursor.read_u32().is_none() {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_0020) != 0 {
+        let Some(portrait_row) = cursor.read_u16() else {
+            return false;
+        };
+        if portrait_row >= 0xFFFE && cursor.read_cresref().is_none() {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_0004) != 0 {
+        let Some(action_code) = simulate_legacy_creature_update_action_branch(&mut cursor) else {
+            return false;
+        };
+        if cursor.read_u8().is_none() {
+            return false;
+        }
+        if !simulate_legacy_creature_update_action_post_state_followup(&mut cursor, action_code) {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_0008) != 0
+        && !simulate_legacy_creature_update_status_effect_helper_cursor(&mut cursor)
+    {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_0040) != 0 {
+        let Some(_first) = cursor.read_u16() else {
+            return false;
+        };
+        let Some(branch_mode) = cursor.read_u8() else {
+            return false;
+        };
+        if cursor.read_u16().is_none()
+            || cursor.read_u8().is_none()
+            || cursor.read_bool().is_none()
+        {
+            return false;
+        }
+        if branch_mode == 2 && cursor.read_u32().is_none() {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_0100) != 0
+        && (cursor.read_unsigned_bits(32).is_none() || cursor.read_unsigned_bits(32).is_none())
+    {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_0200) != 0
+        && (cursor.read_unsigned_bits(10).is_none() || cursor.read_unsigned_bits(10).is_none())
+    {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_0400) != 0 {
+        for _ in 0..4 {
+            if cursor.read_u16().is_none() {
+                return false;
+            }
+        }
+    }
+
+    if (raw_mask & 0x0002_0000) != 0 && cursor.read_u16().is_none() {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_0800) != 0 && cursor.read_u8().is_none() {
+        return false;
+    }
+
+    if (raw_mask & 0x0000_1000) != 0 {
+        let Some(accepted) =
+            try_simulate_legacy_creature_update_identity_optional_suffix(raw_mask, cursor)
+        else {
+            return false;
+        };
+        cursor = accepted;
+    } else if !simulate_legacy_creature_update_suffix_after_identity(raw_mask, &mut cursor) {
+        return false;
+    }
+
+    if cursor.read_cursor != record_end {
+        return false;
+    }
+    *bit_cursor = cursor.bit_cursor;
+    true
+}
+
+fn is_supported_legacy_creature_update_cursor_mask(raw_mask: u32) -> bool {
+    raw_mask != 0
+        && (raw_mask & LEGACY_LIVE_CREATURE_UPDATE_UNSUPPORTED_FEATURE_MASK) == 0
+        && (raw_mask & !SUPPORTED_LEGACY_CREATURE_UPDATE_CURSOR_MASK) == 0
 }
 
 fn simulate_legacy_creature_update_status_effect_helper(
@@ -160,6 +359,132 @@ fn simulate_legacy_creature_update_status_effect_helper(
     }
 
     cursor == record_end
+}
+
+fn simulate_legacy_creature_update_status_effect_helper_cursor(
+    cursor: &mut LegacyCreatureUpdateCursor<'_>,
+) -> bool {
+    let Some(count) = cursor.read_u16() else {
+        return false;
+    };
+    if count > 256 {
+        return false;
+    }
+
+    for _ in 0..count {
+        if cursor.advance_read(3).is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+fn try_simulate_legacy_creature_update_identity_optional_suffix(
+    raw_mask: u32,
+    identity_start: LegacyCreatureUpdateCursor<'_>,
+) -> Option<LegacyCreatureUpdateCursor<'_>> {
+    let candidates =
+        build_legacy_creature_update_identity_branch_candidate_states(identity_start)?;
+    let mut accepted: Option<LegacyCreatureUpdateCursor<'_>> = None;
+
+    for mut candidate in candidates {
+        if !simulate_legacy_creature_update_suffix_after_identity(raw_mask, &mut candidate) {
+            continue;
+        }
+        if candidate.read_cursor != candidate.record_end {
+            continue;
+        }
+        if accepted.is_some() {
+            return None;
+        }
+        accepted = Some(candidate);
+    }
+
+    accepted
+}
+
+fn build_legacy_creature_update_identity_branch_candidate_states(
+    mut cursor: LegacyCreatureUpdateCursor<'_>,
+) -> Option<Vec<LegacyCreatureUpdateCursor<'_>>> {
+    cursor.read_u16()?;
+    cursor.read_cexo_string()?;
+    cursor.read_cexo_string()?;
+    cursor.read_u8()?;
+    cursor.read_u16()?;
+    cursor.read_u16()?;
+    cursor.read_bool()?;
+    cursor.read_bool()?;
+    let row_count = usize::from(cursor.read_u8()?);
+    if row_count > 32 {
+        return None;
+    }
+
+    let mut states = vec![cursor];
+    for _ in 0..row_count {
+        let mut next = Vec::new();
+        for state in states {
+            for optional_extra_bytes in 0..=3 {
+                let mut candidate = state;
+                candidate.advance_read(2 + optional_extra_bytes)?;
+                next.push(candidate);
+            }
+        }
+        if next.len() > 4096 {
+            return None;
+        }
+        states = next;
+    }
+    Some(states)
+}
+
+fn simulate_legacy_creature_update_suffix_after_identity(
+    raw_mask: u32,
+    cursor: &mut LegacyCreatureUpdateCursor<'_>,
+) -> bool {
+    if (raw_mask & LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK) != 0 {
+        if cursor.read_u32().is_none()
+            || cursor.read_u16().is_none()
+            || cursor.read_bool().is_none()
+            || cursor.read_bool().is_none()
+        {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_4000) != 0 {
+        let Some(_name_visible) = cursor.read_bool() else {
+            return false;
+        };
+        let Some(has_detail_strings) = cursor.read_bool() else {
+            return false;
+        };
+        if cursor.read_bool().is_none()
+            || cursor.read_bool().is_none()
+            || cursor.read_bool().is_none()
+        {
+            return false;
+        }
+        if has_detail_strings
+            && (cursor.read_u32().is_none()
+                || cursor.read_cexo_string().is_none()
+                || cursor.read_cexo_string().is_none())
+        {
+            return false;
+        }
+        if cursor.read_bool().is_none() || cursor.read_bool().is_none() {
+            return false;
+        }
+    }
+
+    if (raw_mask & 0x0000_8000) != 0 {
+        for _ in 0..3 {
+            if cursor.read_bool().is_none() {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 fn simulate_legacy_creature_update_mask_0x47(
@@ -325,6 +650,7 @@ fn advance_fragment_bits(bits: &[bool], bit_cursor: &mut usize, count: usize) ->
     true
 }
 
+#[derive(Clone, Copy)]
 struct LegacyCreatureUpdateCursor<'a> {
     bytes: &'a [u8],
     record_end: usize,
@@ -334,6 +660,14 @@ struct LegacyCreatureUpdateCursor<'a> {
 }
 
 impl LegacyCreatureUpdateCursor<'_> {
+    fn advance_read(&mut self, count: usize) -> Option<()> {
+        if count > self.record_end.checked_sub(self.read_cursor)? {
+            return None;
+        }
+        self.read_cursor = self.read_cursor.checked_add(count)?;
+        Some(())
+    }
+
     fn read_u8(&mut self) -> Option<u8> {
         let value = *self.bytes.get(self.read_cursor)?;
         self.read_cursor = self.read_cursor.checked_add(1)?;
@@ -356,6 +690,18 @@ impl LegacyCreatureUpdateCursor<'_> {
         let value = read_u32_le(self.bytes, self.read_cursor)?;
         self.read_cursor = self.read_cursor.checked_add(4)?;
         Some(value)
+    }
+
+    fn read_cresref(&mut self) -> Option<()> {
+        self.advance_read(16)
+    }
+
+    fn read_cexo_string(&mut self) -> Option<()> {
+        let len = usize::try_from(self.read_u32()?).ok()?;
+        if len > 4096 {
+            return None;
+        }
+        self.advance_read(len)
     }
 
     fn read_bool(&mut self) -> Option<bool> {

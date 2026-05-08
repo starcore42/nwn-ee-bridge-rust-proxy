@@ -16,6 +16,7 @@
 //!   the same masks and cursor discipline; this Rust port keeps the transform
 //!   focused here instead of folding it into `m_frame`.
 
+mod add;
 mod bits;
 mod boundary;
 mod creature;
@@ -94,6 +95,7 @@ pub struct LiveObjectUpdateClaimSummary {
     pub inventory_fragment_bits: u32,
     pub live_gui_read_buffer_records: u32,
     pub read_buffer_only_records: u32,
+    pub add_records: u32,
     pub creature_update_records: u32,
     pub delete_records: u32,
 }
@@ -169,6 +171,29 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
         if is_verified_read_buffer_only_record(live_bytes, offset, record_end) {
             summary.read_buffer_only_records =
                 summary.read_buffer_only_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+        if add::advance_verified_add_record(
+            live_bytes,
+            offset,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ) {
+            summary.add_records = summary.add_records.saturating_add(1);
+            offset = record_end;
+            continue;
+        }
+        if creature::advance_verified_noop_creature_appearance_record(
+            live_bytes,
+            offset,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ) {
+            summary.creature_update_records =
+                summary.creature_update_records.saturating_add(1);
             offset = record_end;
             continue;
         }

@@ -9,7 +9,7 @@ use flate2::{Decompress, FlushDecompress};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD},
-    translate::Emit,
+    translate::{Emit, VerifiedFamily},
 };
 
 use super::{
@@ -56,7 +56,7 @@ pub(super) enum CompletedDeflatedReplay {
     /// The inflated payload was either translated or deliberately quarantined.
     /// Duplicates must preserve that exact safe disposition; raw legacy bytes
     /// must never leak through on retransmit.
-    VerifiedPackets(Vec<Vec<u8>>),
+    VerifiedPackets { family: VerifiedFamily, packets: Vec<Vec<u8>> },
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +108,7 @@ pub(super) fn start_server_deflated_reassembly(
         interleaved_packets: Vec::new(),
     };
     reassembly.frames.push(frame);
-    state.server_deflated = Some(reassembly);
+    state.deflate.server_reassembly = Some(reassembly);
 
     tracing::info!(
         inflated_length = deflated.inflated_length,
@@ -122,6 +122,10 @@ pub(super) fn start_server_deflated_reassembly(
     if expected_frames == 1 {
         super::emit_completed_server_deflated_reassembly(state)
     } else {
+        // Strict translation discipline: a multi-frame deflated window is not
+        // EE-safe until the full inflated payload has been classified and
+        // claimed by a semantic translator. Hold the partial legacy frame
+        // instead of leaking a transport placeholder to the client.
         Ok(Emit::Consumed)
     }
 }
@@ -131,7 +135,7 @@ pub(super) fn continue_server_deflated_reassembly(
     view: &MFrameView,
     state: &mut SessionState,
 ) -> anyhow::Result<Emit> {
-    let Some(snapshot) = state.server_deflated.as_ref() else {
+    let Some(snapshot) = state.deflate.server_reassembly.as_ref() else {
         tracing::warn!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -148,7 +152,7 @@ pub(super) fn continue_server_deflated_reassembly(
     let distance = view.sequence.wrapping_sub(first_sequence) as usize;
     if distance >= expected_frames {
         let interleaved_packet = claim_or_consume_interleaved_server_packet(bytes, view, state)?;
-        let Some(reassembly) = state.server_deflated.as_mut() else {
+        let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
             return Ok(Emit::Drop);
         };
         if reassembly.interleaved_packets.len() >= MAX_INTERLEAVED_PACKETS {
@@ -158,14 +162,14 @@ pub(super) fn continue_server_deflated_reassembly(
                 expected_frames = reassembly.expected_frames,
                 "server deflated M reassembly abandoned after too many interleaved packets"
             );
-            state.server_deflated = None;
+            state.deflate.server_reassembly = None;
             return Ok(Emit::Drop);
         }
         reassembly.interleaved_packets.push(interleaved_packet);
         return Ok(Emit::Consumed);
     }
 
-    let Some(reassembly) = state.server_deflated.as_mut() else {
+    let Some(reassembly) = state.deflate.server_reassembly.as_mut() else {
         return Ok(Emit::Drop);
     };
 
@@ -174,11 +178,26 @@ pub(super) fn continue_server_deflated_reassembly(
         .iter()
         .any(|frame| frame.sequence == view.sequence)
     {
+        let buffered_frames = reassembly.frames.len();
+        let expected_frames = reassembly.expected_frames;
+        let first_sequence = reassembly.first_sequence;
         tracing::warn!(
             sequence = view.sequence,
-            first_sequence = reassembly.first_sequence,
+            first_sequence,
+            buffered_frames,
+            expected_frames,
             "duplicate server deflated M frame dropped"
         );
+        if buffered_frames + 1 >= expected_frames {
+            if let Some(emit) =
+                super::try_emit_salvaged_incomplete_server_deflated_reassembly(
+                    state,
+                    "duplicate retransmit while one packetized frame is missing",
+                )?
+            {
+                return Ok(emit);
+            }
+        }
         return Ok(Emit::Consumed);
     }
 
@@ -247,7 +266,14 @@ fn consume_interleaved_unclaimed_server_packet(bytes: &[u8]) -> anyhow::Result<V
     let mut out_packet = bytes.to_vec();
     out_packet.truncate(LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
     if out_packet.len() > 7 {
-        out_packet[7] &= !0x07;
+        // Decompile-backed EE window behavior: byte 7's high nibble selects
+        // the M-frame kind. Only kind 0 enters CNetLayerWindow::FrameReceive's
+        // reliable-data path, which stores the frame and advances the incoming
+        // sequence/ACK cursor. The 0x10 control kind is ACK-only and does not
+        // consume a sequence number, so an empty progress carrier must stay a
+        // data frame while clearing zlib/packet-length semantics. Preserve only
+        // the high-priority queue bit.
+        out_packet[7] &= 0x08;
     }
     write_be_u16(&mut out_packet, 8, 0)
         .then_some(())
@@ -306,8 +332,13 @@ pub(super) fn build_server_deflated_output_frames(
 
         let final_frame = index + 1 == reassembly.frames.len();
         let remaining = combined_payload.len() - cursor;
+        let frames_left = reassembly.frames.len() - index;
+        let minimum_reserved_for_later = frames_left.saturating_sub(1);
+        let max_this_frame = remaining.saturating_sub(minimum_reserved_for_later);
         let chunk_length = if final_frame {
             remaining
+        } else if remaining >= frames_left {
+            frame.payload_length.min(max_this_frame).max(1)
         } else {
             frame.payload_length.min(remaining)
         };
@@ -321,6 +352,12 @@ pub(super) fn build_server_deflated_output_frames(
             out_packet
                 [LEGACY_GAMEPLAY_PAYLOAD_OFFSET..LEGACY_GAMEPLAY_PAYLOAD_OFFSET + chunk_length]
                 .copy_from_slice(&combined_payload[cursor..cursor + chunk_length]);
+        } else if out_packet.len() > 7 {
+            // Empty replacement tails still need to be reliable-data frames so
+            // the EE receive window advances. Clear the deflate/stream bits and
+            // keep only priority; a 0x10 control frame would be ignored for
+            // sequence progress by CNetLayerWindow::FrameReceive.
+            out_packet[7] &= 0x08;
         }
         cursor += chunk_length;
 
@@ -370,11 +407,11 @@ pub(super) fn build_consumed_server_deflated_frames(
         out_packet.truncate(LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
         if out_packet.len() > 7 {
             // Keep the reliable-window sequence/ack shell so the client can
-            // acknowledge progress, but clear stream, packetized, and deflate
-            // delivery bits before zeroing packetized count/length. Leaving
-            // bit 0x02 set on an empty shell advertises a packetized payload
-            // that no longer exists and can stall reliable-window progress.
-            out_packet[7] &= !0x07;
+            // acknowledge progress. This must remain frame type 0: EE's
+            // decompiled FrameReceive only advances incoming reliable sequence
+            // numbers on the data-frame branch. Clear zlib/extended semantics
+            // and preserve only high-priority queue placement.
+            out_packet[7] &= 0x08;
         }
         write_be_u16(&mut out_packet, 8, 0)
             .then_some(())
@@ -451,7 +488,7 @@ pub(super) fn completed_server_stream_window<'a>(
     reassembly: &ServerDeflatedReassembly,
     compressed_length: usize,
 ) -> Option<&'a CompletedDeflatedStreamWindow> {
-    state.completed_server_stream_windows.iter().find(|window| {
+    state.deflate.completed_server_stream_windows.iter().find(|window| {
         window.first_sequence == reassembly.first_sequence
             && window.expected_frames == reassembly.expected_frames
             && window.packetized_sequence == reassembly.packetized_sequence
@@ -466,12 +503,19 @@ pub(super) fn remember_completed_server_stream_window(
     compressed_length: usize,
     replay: CompletedDeflatedReplay,
 ) {
-    if completed_server_stream_window(state, reassembly, compressed_length).is_some() {
+    if let Some(window) = state.deflate.completed_server_stream_windows.iter_mut().find(|window| {
+        window.first_sequence == reassembly.first_sequence
+            && window.expected_frames == reassembly.expected_frames
+            && window.packetized_sequence == reassembly.packetized_sequence
+            && window.inflated_length == reassembly.inflated_length
+            && window.compressed_length == compressed_length
+    }) {
+        window.replay = replay;
         return;
     }
 
     const MAX_COMPLETED_STREAM_WINDOWS: usize = 16;
-    state.completed_server_stream_windows.push(CompletedDeflatedStreamWindow {
+    state.deflate.completed_server_stream_windows.push(CompletedDeflatedStreamWindow {
         first_sequence: reassembly.first_sequence,
         expected_frames: reassembly.expected_frames,
         packetized_sequence: reassembly.packetized_sequence,
@@ -479,9 +523,9 @@ pub(super) fn remember_completed_server_stream_window(
         compressed_length,
         replay,
     });
-    if state.completed_server_stream_windows.len() > MAX_COMPLETED_STREAM_WINDOWS {
-        let overflow = state.completed_server_stream_windows.len() - MAX_COMPLETED_STREAM_WINDOWS;
-        state.completed_server_stream_windows.drain(0..overflow);
+    if state.deflate.completed_server_stream_windows.len() > MAX_COMPLETED_STREAM_WINDOWS {
+        let overflow = state.deflate.completed_server_stream_windows.len() - MAX_COMPLETED_STREAM_WINDOWS;
+        state.deflate.completed_server_stream_windows.drain(0..overflow);
     }
 }
 

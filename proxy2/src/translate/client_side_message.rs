@@ -53,6 +53,9 @@ pub fn claim_or_rewrite_payload_if_verified(
     if let Some(summary) = claim_payload_if_verified(payload) {
         return Some(summary);
     }
+    if rewrite_legacy_bulk_feedback_declared_text_window(payload).is_some() {
+        return claim_feedback(payload);
+    }
     rewrite_legacy_bulk_feedback_string(payload)
 }
 
@@ -135,6 +138,20 @@ fn rewrite_legacy_bulk_feedback_string(
     // window as the EE CExoString and keep the original four prefixed fragment
     // bytes as CNW trailing fragments.
     if rewrite_legacy_bulk_feedback_single_byte_id_window(payload).is_some() {
+        return claim_feedback(payload);
+    }
+
+    // HG's area-entry welcome text can arrive as a Diamond-era feedback body
+    // that is already inside a deflated M stream but is not in EE's
+    // CNW-declared shape.  The decompile-backed target is still precise:
+    // EE's CC-message case 11 writes slot-9 as a WORD, and feedback id 0xCC
+    // writes only string slot 0 as a DWORD-length CExoString.  The observed
+    // legacy shape has the first four fragment bytes where EE would put the
+    // declared length, the WORD id at the legacy read start, and another
+    // four-byte legacy fragment word before the bulk text window.  Convert
+    // that semantic text window into the exact EE form rather than allowing the
+    // malformed legacy bytes to leak through.
+    if rewrite_legacy_bulk_feedback_fragmented_text_window(payload).is_some() {
         return claim_feedback(payload);
     }
 
@@ -243,6 +260,143 @@ fn rewrite_legacy_bulk_feedback_single_byte_id_window(payload: &mut Vec<u8>) -> 
 
     *payload = rewritten;
     Some(())
+}
+
+fn rewrite_legacy_bulk_feedback_fragmented_text_window(payload: &mut Vec<u8>) -> Option<()> {
+    let id_start = LEGACY_READ_START;
+    if read_u16_le(payload, id_start)? != BULK_FEEDBACK_STRING_ID {
+        return None;
+    }
+
+    let text_start = id_start
+        .checked_add(FEEDBACK_ID_BYTES)?
+        .checked_add(LEGACY_PREFIXED_FRAGMENT_BYTES)?;
+    if text_start >= payload.len() {
+        return None;
+    }
+
+    let text = extract_legacy_feedback_text(&payload[text_start..])?;
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text.len()) {
+        return None;
+    }
+
+    let declared = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(FEEDBACK_ID_BYTES)?
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(text.len())?;
+    let declared_u32 = u32::try_from(declared).ok()?;
+    let text_len_u32 = u32::try_from(text.len()).ok()?;
+
+    let mut rewritten = Vec::with_capacity(declared);
+    rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
+    rewritten.extend_from_slice(&declared_u32.to_le_bytes());
+    rewritten.extend_from_slice(&BULK_FEEDBACK_STRING_ID.to_le_bytes());
+    rewritten.extend_from_slice(&text_len_u32.to_le_bytes());
+    rewritten.extend_from_slice(&text);
+
+    *payload = rewritten;
+    Some(())
+}
+
+
+/// HG's 1.69 bulk feedback path can arrive as a `ClientSideMessage_Feedback`
+/// record whose declared high-level span contains the whole CExoString text, while
+/// the DWORD immediately after feedback id 0x00CC is a stale legacy/argument count
+/// rather than the EE CExoString byte count. The EE client decompile's feedback
+/// case for id 0x00CC consumes WORD id + DWORD CExoString length + text, so the
+/// strict bridge rewrites only this proven declared-window shape by deriving the
+/// EE string length from the validated packet span. The packet is then re-claimed
+/// by the normal exact feedback validator before it can be emitted.
+fn rewrite_legacy_bulk_feedback_declared_text_window(payload: &mut Vec<u8>) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
+    if declared <= text_start || declared > payload.len() {
+        return None;
+    }
+    if payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES {
+        return None;
+    }
+    if read_u16_le(payload, READ_START)? != BULK_FEEDBACK_STRING_ID {
+        return None;
+    }
+
+    let legacy_dword = usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
+    let text_len = declared.checked_sub(text_start)?;
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text_len) {
+        return None;
+    }
+    if legacy_dword == text_len || legacy_dword > text_len {
+        return None;
+    }
+    if !feedback_text_window_plausible(&payload[text_start..declared]) {
+        return None;
+    }
+
+    let text_len_u32 = u32::try_from(text_len).ok()?;
+    payload[READ_START + FEEDBACK_ID_BYTES..READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES]
+        .copy_from_slice(&text_len_u32.to_le_bytes());
+    Some(())
+}
+
+fn feedback_text_window_plausible(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+
+    let mut useful = 0usize;
+    let mut control = 0usize;
+    for &byte in bytes {
+        match byte {
+            b'\r' | b'\n' | b'\t' => useful += 1,
+            0x20..=0x7e => useful += 1,
+            // HG feedback text can contain legacy color/control bytes embedded in
+            // CExoString markup. They are accepted as text evidence, but only
+            // after the surrounding declared span and 0x00CC feedback id match.
+            0x80..=0xff => useful += 1,
+            _ => control += 1,
+        }
+    }
+
+    useful >= 16 && control <= (bytes.len() / 16).saturating_add(4)
+}fn extract_legacy_feedback_text(raw: &[u8]) -> Option<Vec<u8>> {
+    let mut text = Vec::with_capacity(raw.len());
+    let mut last_was_space = false;
+    let mut kept_printable = 0usize;
+
+    for &byte in raw {
+        let mapped = match byte {
+            b'\r' | b'\n' | b'\t' => byte,
+            b' '..=b'~' => byte,
+            0 => b' ',
+            _ => b' ',
+        };
+
+        if mapped == b' ' {
+            if last_was_space {
+                continue;
+            }
+            last_was_space = true;
+        } else {
+            last_was_space = false;
+            if mapped.is_ascii_graphic() {
+                kept_printable += 1;
+            }
+        }
+
+        text.push(mapped);
+    }
+
+    while text.last().copied() == Some(b' ') {
+        text.pop();
+    }
+
+    (kept_printable >= 16).then_some(text)
 }
 
 fn feedback_string_tail_valid(payload: &[u8], tail_start: usize, declared: usize) -> bool {

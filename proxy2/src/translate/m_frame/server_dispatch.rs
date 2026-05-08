@@ -11,7 +11,7 @@ use crate::{
     translate::{
         area, char_list, chat, client_side_message, cnw_message, custom_token, game_obj_update,
         inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
-        party, player_list, quickbar,
+        party, player_list, quickbar, VerifiedFamily,
     },
 };
 
@@ -51,6 +51,21 @@ impl InflatedPayloadRewrite {
     pub(super) fn should_quarantine(&self) -> bool {
         self.quarantine_reason.is_some()
     }
+
+    pub(super) fn verified_family(&self) -> VerifiedFamily {
+        match self.family_names.as_slice() {
+            ["Area_ClientArea"] => VerifiedFamily::AreaClientArea,
+            ["CharList"] => VerifiedFamily::CharList,
+            ["ClientSideMessage"] => VerifiedFamily::ClientSideMessage,
+            ["GameObjUpdate_LiveObjectPrefixedFragments"]
+            | ["GameObjUpdate_LiveObjectAddRecords"]
+            | ["GameObjUpdate_LiveObjectUpdateRecords"]
+            | ["GameObjUpdate_LiveObjectClaimedRecords"] => VerifiedFamily::GameObjUpdateLiveObject,
+            ["GuiQuickbar"] => VerifiedFamily::GuiQuickbar,
+            ["Module_Info"] => VerifiedFamily::ModuleInfo,
+            _ => VerifiedFamily::SemanticDeflated,
+        }
+    }
 }
 
 pub(super) struct DeflatedSemanticLogContext {
@@ -69,6 +84,53 @@ pub(super) fn wrap_legacy_live_object_continuation_if_needed(payload: &mut Vec<u
         && live_object::wrap_legacy_live_object_continuation_payload_if_plausible(payload).is_some()
 }
 
+#[derive(Debug, Default)]
+struct ServerTranslatorClaim {
+    area_rewrite: Option<area::AreaRewriteSummary>,
+}
+
+#[derive(Debug)]
+enum ServerTranslatorOutcome {
+    None,
+    TransportOnly,
+    Claim(ServerTranslatorClaim),
+}
+
+type ServerTranslatorFn = fn(
+    &mut Vec<u8>,
+    Option<&area::AreaPlaceableContext>,
+    SemanticScope,
+) -> ServerTranslatorOutcome;
+
+#[derive(Debug, Clone, Copy)]
+struct ServerToClientTranslator {
+    family_name: &'static str,
+    translate: ServerTranslatorFn,
+}
+
+const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
+    ServerToClientTranslator { family_name: "SetCustomToken", translate: translate_custom_token },
+    ServerToClientTranslator { family_name: "Login", translate: translate_login },
+    ServerToClientTranslator { family_name: "Module_Time", translate: translate_module_time },
+    ServerToClientTranslator { family_name: "LoadBar", translate: translate_loadbar },
+    ServerToClientTranslator { family_name: "ClientSideMessage", translate: translate_client_side_message },
+    ServerToClientTranslator { family_name: "Journal", translate: translate_journal },
+    ServerToClientTranslator { family_name: "Chat", translate: translate_chat },
+    ServerToClientTranslator { family_name: "Inventory", translate: translate_inventory },
+    ServerToClientTranslator { family_name: "GameObjUpdate", translate: translate_game_obj_update },
+    ServerToClientTranslator { family_name: "Party", translate: translate_party },
+    ServerToClientTranslator { family_name: "GuiQuickbar", translate: translate_quickbar },
+    ServerToClientTranslator { family_name: "CNWPrefixedFragmentsTransportOnly", translate: normalize_cnw_transport_only },
+    ServerToClientTranslator { family_name: "CharList", translate: translate_char_list },
+    ServerToClientTranslator { family_name: "PlayerList", translate: translate_player_list },
+    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectPrefixedFragments", translate: translate_live_object_prefixed_fragments },
+    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectAddRecords", translate: translate_live_object_add_records },
+    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectUpdateRecords", translate: translate_live_object_update_records },
+    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectClaimedRecords", translate: translate_live_object_claimed_records },
+    ServerToClientTranslator { family_name: "Area_ClientArea", translate: translate_area_client_area },
+    ServerToClientTranslator { family_name: "Module_Info", translate: translate_module_info },
+];
+
 pub(super) fn rewrite_inflated_payload_for_ee(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
@@ -80,87 +142,34 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     if let Some(family_name) = preclaimed_family {
         rewrite.note_rewrite(family_name);
     }
-    if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("SetCustomToken");
-    }
-    if login::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Login");
-    }
-    if module_time::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Module_Time");
-    }
-    if loadbar::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("LoadBar");
-    }
-    if client_side_message::claim_or_rewrite_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("ClientSideMessage");
-    }
-    if journal::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Journal");
-    }
-    if chat::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Chat");
-    }
-    if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Inventory");
-    }
-    if game_obj_update::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("GameObjUpdate");
-    }
-    if party::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("Party");
-    }
-    if quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload).is_some()
-        || quickbar::rewrite_simple_quickbar_payload_if_possible(payload).is_some()
-    {
-        rewrite.note_rewrite("GuiQuickbar");
-    }
-    // Generic CNW prefixed-fragment repair is transport normalization only.
-    // It must never count as semantic ownership: even byte-identical packets
-    // need a decompile-backed family translator to claim them. If no later
-    // translator recognizes the repaired high-level shape, the strict layer
-    // quarantines the payload instead of leaking it to the EE client.
-    let _ = cnw_message::normalize_prefixed_fragments_payload_if_needed(payload);
-    if char_list::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("CharList");
-    }
-    if player_list::rewrite_player_list_payload_if_possible(payload).is_some() {
-        rewrite.note_rewrite("PlayerList");
-    }
-    // Live-object `P 05 01` packets are not safe to repair by CNW envelope
-    // shape alone. EE and Diamond both dispatch the read-buffer as a stream of
-    // typed live-object submessages, so the prefixed-fragment path must prove
-    // a record boundary before it can claim the packet; otherwise strict mode
-    // quarantines the chunk for decompile-backed stream/reassembly work.
-    if live_object::normalize_prefixed_fragments_payload_if_needed(payload).is_some() {
-        rewrite.note_rewrite("GameObjUpdate_LiveObjectPrefixedFragments");
-    }
-    if live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        payload,
-        latest_area_placeables,
-    )
-    .is_some()
-    {
-        rewrite.note_rewrite("GameObjUpdate_LiveObjectAddRecords");
-    }
-    if live_update::rewrite_payload_if_needed(payload).is_some() {
-        rewrite.note_rewrite("GameObjUpdate_LiveObjectUpdateRecords");
-    }
-    if live_update::claim_payload_if_verified(payload).is_some() {
-        rewrite.note_rewrite("GameObjUpdate_LiveObjectClaimedRecords");
+
+    for translator in SERVER_TO_CLIENT_TRANSLATORS {
+        match (translator.translate)(payload, latest_area_placeables, scope) {
+            ServerTranslatorOutcome::None => {}
+            ServerTranslatorOutcome::TransportOnly => {
+                // Transport-only normalizers may repair a CNW envelope so a
+                // later semantic translator can see it, but they never count as
+                // ownership. This preserves the strict no-raw-passthrough rule.
+            }
+            ServerTranslatorOutcome::Claim(claim) => {
+                rewrite.note_rewrite(translator.family_name);
+                if let Some(area_rewrite) = claim.area_rewrite {
+                    rewrite.area_rewrite = Some(area_rewrite);
+                }
+                // A semantic claim is exclusive ownership of this high-level
+                // payload. Continue past transport-only repair so normalized
+                // CNW envelopes can reach their semantic owner, but stop after
+                // the first real family claim. Otherwise later generic probes
+                // can mutate or diagnose an already-owned packet, which is how
+                // valid ClientSideMessage feedback was being reported as a
+                // CNW-fragment transport failure.
+                break;
+            }
+        }
     }
 
-    if matches!(scope, SemanticScope::DeflatedReassembly) {
-        if let Some(summary) = area::rewrite_area_client_area_payload(payload) {
-            rewrite.note_rewrite("Area_ClientArea");
-            rewrite.area_rewrite = Some(summary);
-        }
-        if module::rewrite_module_info_payload(payload).is_some() {
-            rewrite.note_rewrite("Module_Info");
-        }
-        if !rewrite.any_rewrite() {
-            rewrite.module_info_candidate_offset = module::first_module_info_candidate_offset(payload);
-        }
+    if matches!(scope, SemanticScope::DeflatedReassembly) && !rewrite.any_rewrite() {
+        rewrite.module_info_candidate_offset = module::first_module_info_candidate_offset(payload);
     }
 
     if !rewrite.any_rewrite() {
@@ -170,6 +179,192 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     rewrite
 }
 
+fn claimed() -> ServerTranslatorOutcome {
+    ServerTranslatorOutcome::Claim(ServerTranslatorClaim::default())
+}
+
+fn translate_custom_token(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_login(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if login::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_module_time(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if module_time::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_loadbar(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if loadbar::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_client_side_message(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if client_side_message::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_journal(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if journal::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_chat(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if chat::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_inventory(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_game_obj_update(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if game_obj_update::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_party(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if party::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_quickbar(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload).is_some()
+        || quickbar::rewrite_simple_quickbar_payload_if_possible(payload).is_some()
+    {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn normalize_cnw_transport_only(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if cnw_message::normalize_prefixed_fragments_payload_if_needed(payload).is_some() {
+        ServerTranslatorOutcome::TransportOnly
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_char_list(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if char_list::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_player_list(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if player_list::rewrite_player_list_payload_if_possible(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_live_object_prefixed_fragments(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if live_object::normalize_prefixed_fragments_payload_if_needed(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_live_object_add_records(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if live_object::rewrite_creature_add_visual_transform_maps_if_possible(payload, latest_area_placeables).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_live_object_update_records(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if live_update::rewrite_payload_if_needed(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_live_object_claimed_records(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if live_update::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
+
+fn translate_area_client_area(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    scope: SemanticScope,
+) -> ServerTranslatorOutcome {
+    // `Area_ClientArea` is a semantic CNW payload; the reliable-window
+    // transport may carry it either as the whole deflated reassembly or as a
+    // deflated primary record inside a coalesced M datagram. The EE/Diamond
+    // sender/reader shape is the same after the M layer inflates it, so the
+    // area translator owns both scopes instead of letting coalescing decide
+    // packet validity.
+    let _ = scope;
+    match area::rewrite_area_client_area_payload(payload) {
+        Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim { area_rewrite: Some(summary) }),
+        None => ServerTranslatorOutcome::None,
+    }
+}
+
+fn translate_module_info(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    scope: SemanticScope,
+) -> ServerTranslatorOutcome {
+    if !matches!(scope, SemanticScope::DeflatedReassembly) {
+        return ServerTranslatorOutcome::None;
+    }
+    if module::rewrite_module_info_payload(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+}
 fn mark_untranslated_semantic_quarantine(
     payload: &[u8],
     scope: SemanticScope,

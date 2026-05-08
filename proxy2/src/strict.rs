@@ -14,7 +14,10 @@ use crate::{
         hex_prefix,
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
+    translate::{char_list, journal, VerifiedFamily},
 };
+use flate2::read::ZlibDecoder;
+use std::io::Read;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -183,51 +186,406 @@ pub fn decide(direction: Direction, bytes: &[u8], profile: StrictProfile) -> Str
     }
 }
 
-pub fn decide_verified_translated(direction: Direction, bytes: &[u8]) -> StrictDecision {
+pub fn decide_verified_translated(
+    direction: Direction,
+    family: VerifiedFamily,
+    bytes: &[u8],
+) -> StrictDecision {
     match Packet::classify(bytes) {
         Packet::M(frame) => {
             let Some(view) = &frame.parsed else {
-                return StrictDecision::quarantine("M", "invalid translated M frame", "parse-failed");
+                return StrictDecision::quarantine("M", family.as_str(), "parse-failed");
             };
             if !view.crc_valid {
-                return StrictDecision::quarantine(
-                    "M",
-                    "invalid translated M frame",
-                    "crc-mismatch",
-                );
+                return StrictDecision::quarantine("M", family.as_str(), "crc-mismatch");
             }
             if view.declared_payload_length != 0
                 && view.declared_payload_length > view.available_payload_length
             {
                 return StrictDecision::quarantine(
                     "M",
-                    "invalid translated M frame",
+                    family.as_str(),
                     "declared-payload-overflow",
                 );
             }
-            StrictDecision::allow(
-                "M/translated-deflated",
-                "verified translated deflated frame",
-                match direction {
-                    Direction::ServerToClient => "semantic-module-info-rewrite",
-                    Direction::ServerToClientSynthetic => "synthetic-semantic-module-info-rewrite",
-                    Direction::ClientToServer => "unexpected-client-verified-translation",
-                },
+
+            if view.payload_length == 0 && view.trailing_payload_length == 0 {
+                return StrictDecision::allow(
+                    "M/verified-empty",
+                    family.as_str(),
+                    "verified-family-empty-control-frame",
+                );
+            }
+
+            if family == VerifiedFamily::ConsumedEmptyMFrame {
+                if view.payload_length == 0 && view.trailing_payload_length == 0 {
+                    return StrictDecision::allow(
+                        "M/verified-empty",
+                        family.as_str(),
+                        "verified-consumed-empty-frame",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-empty",
+                    family.as_str(),
+                    "consumed-frame-not-empty",
+                );
+            }
+
+            if verified_family_allows_deflated_continuation(family)
+                && matches!(
+                    direction,
+                    Direction::ServerToClient | Direction::ServerToClientSynthetic
+                )
+                && view.payload_length != 0
+                && view.payload_length == view.available_payload_length
+                && view.trailing_payload_length == 0
+                && view.packetized_sequence == 0
+                && (view.flags & 0x08) != 0
+                && (view.flags & 0x04) == 0
+            {
+                return StrictDecision::allow(
+                    "M/verified-deflated-continuation",
+                    family.as_str(),
+                    "verified-family-deflated-continuation-frame",
+                );
+            }
+
+            if family == VerifiedFamily::CoalescedWindow {
+                if coalesced_window_shape_valid(frame.bytes, view) {
+                    return StrictDecision::allow(
+                        "M/verified-coalesced",
+                        family.as_str(),
+                        "verified-family-exact-coalesced-window-shape",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-coalesced",
+                    family.as_str(),
+                    "verified-family-coalesced-window-invalid-shape",
+                );
+            }
+
+            if let Some(high) = view.high {
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-high",
+                        family.as_str(),
+                        "verified-high-payload-overflow",
+                    );
+                };
+                if exact_high_payload_shape_valid(payload) {
+                    return StrictDecision::allow(
+                        "M/verified-high",
+                        family.as_str(),
+                        "verified-family-exact-high-level-shape",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-high",
+                    high.name(),
+                    "verified-family-high-level-invalid-shape",
+                );
+            }
+
+            if let Some(deflated) = &view.deflated {
+                if !deflated.plausible {
+                    return StrictDecision::quarantine(
+                        "M/verified-deflated",
+                        family.as_str(),
+                        "verified-family-invalid-deflated-envelope",
+                    );
+                }
+                if family == VerifiedFamily::SemanticDeflated {
+                    return StrictDecision::quarantine(
+                        "M/verified-deflated",
+                        family.as_str(),
+                        "verified-deflated-missing-semantic-family",
+                    );
+                }
+                let Some(inflated) =
+                    inflate_verified_deflated_payload(frame.bytes, view.payload_length, deflated.inflated_length)
+                else {
+                    return StrictDecision::quarantine(
+                        "M/verified-deflated",
+                        family.as_str(),
+                        "verified-family-deflated-inflate-failed",
+                    );
+                };
+                if verified_family_inflated_payload_valid(family, &inflated) {
+                    return StrictDecision::allow(
+                        "M/verified-deflated-exact",
+                        family.as_str(),
+                        match direction {
+                            Direction::ServerToClient => "verified-family-deflated-exact-high-level-shape",
+                            Direction::ServerToClientSynthetic => "verified-family-synthetic-deflated-exact-high-level-shape",
+                            Direction::ClientToServer => "unexpected-client-verified-deflated-exact-high-level-shape",
+                        },
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-deflated",
+                    family.as_str(),
+                    "verified-family-deflated-high-level-invalid-shape",
+                );
+            }
+
+            StrictDecision::quarantine(
+                "M/verified",
+                family.as_str(),
+                "verified-family-unclassified-M-payload",
             )
         }
         Packet::Bn(_) => StrictDecision::quarantine(
             "BN",
-            "invalid verified translation",
+            family.as_str(),
             "verified-translation-not-M",
         ),
         Packet::UnknownTopLevel(_) => StrictDecision::quarantine(
             "top-level",
-            "invalid verified translation",
+            family.as_str(),
             "unknown-top-level",
         ),
     }
 }
 
+pub fn decide_verified_translated_batch(
+    direction: Direction,
+    family: VerifiedFamily,
+    packets: &[Vec<u8>],
+) -> Option<StrictDecision> {
+    if packets.len() <= 1
+        || !matches!(
+            direction,
+            Direction::ServerToClient | Direction::ServerToClientSynthetic
+        )
+    {
+        return None;
+    }
+
+    let Packet::M(first_frame) = Packet::classify(packets.first()?.as_slice()) else {
+        return None;
+    };
+    let first_view = match &first_frame.parsed {
+        Some(view) => view,
+        None => {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-first-frame-parse-failed",
+            ));
+        }
+    };
+    let expected_frames = usize::from(first_view.packetized_sequence);
+    if expected_frames <= 1 {
+        return None;
+    }
+    if expected_frames != packets.len() {
+        return None;
+    }
+    if family == VerifiedFamily::SemanticDeflated {
+        return Some(StrictDecision::quarantine(
+            "M/verified-deflated-batch",
+            family.as_str(),
+            "verified-deflated-batch-missing-semantic-family",
+        ));
+    }
+    if !verified_family_allows_deflated_continuation(family) {
+        return None;
+    }
+
+    let mut combined = Vec::new();
+    for (index, packet) in packets.iter().enumerate() {
+        let Packet::M(frame) = Packet::classify(packet.as_slice()) else {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-not-M",
+            ));
+        };
+        let Some(view) = &frame.parsed else {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-parse-failed",
+            ));
+        };
+        if !view.crc_valid {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-crc-mismatch",
+            ));
+        }
+        if view.declared_payload_length != 0
+            && view.declared_payload_length > view.available_payload_length
+        {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-declared-payload-overflow",
+            ));
+        }
+        if view.trailing_payload_length != 0 {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-invalid-payload-window",
+            ));
+        }
+        if index == 0 && usize::from(view.packetized_sequence) != expected_frames {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-first-frame-count-mismatch",
+            ));
+        }
+        if view.payload_length == 0 {
+            if index == 0
+                || view.available_payload_length != 0
+                || view.declared_payload_length != 0
+                || view.packetized_sequence != 0
+                || view.frame_type != 0
+                || (view.flags & !0x08) != 0
+            {
+                return Some(StrictDecision::quarantine(
+                    "M/verified-deflated-batch",
+                    family.as_str(),
+                    "batch-member-invalid-empty-shell",
+                ));
+            }
+            continue;
+        }
+        let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+        let payload_end = payload_start + view.payload_length;
+        let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+            return Some(StrictDecision::quarantine(
+                "M/verified-deflated-batch",
+                family.as_str(),
+                "batch-member-payload-overflow",
+            ));
+        };
+        combined.extend_from_slice(payload);
+    }
+
+    let Some(inflated) = inflate_verified_deflated_combined_payload(&combined, None) else {
+        return Some(StrictDecision::quarantine(
+            "M/verified-deflated-batch",
+            family.as_str(),
+            "batch-deflated-inflate-failed",
+        ));
+    };
+    if verified_family_inflated_payload_valid(family, &inflated) {
+        return Some(StrictDecision::allow(
+            "M/verified-deflated-batch-exact",
+            family.as_str(),
+            "verified-family-deflated-batch-exact-high-level-shape",
+        ));
+    }
+
+    Some(StrictDecision::quarantine(
+        "M/verified-deflated-batch",
+        family.as_str(),
+        "batch-deflated-high-level-invalid-shape",
+    ))
+}
+
+fn inflate_verified_deflated_payload(
+    bytes: &[u8],
+    payload_length: usize,
+    expected_inflated_length: usize,
+) -> Option<Vec<u8>> {
+    let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+    let payload_end = payload_start.checked_add(payload_length)?;
+    let payload = bytes.get(payload_start..payload_end)?;
+    inflate_verified_deflated_combined_payload(payload, Some(expected_inflated_length))
+}
+
+fn inflate_verified_deflated_combined_payload(
+    payload: &[u8],
+    expected_inflated_length: Option<usize>,
+) -> Option<Vec<u8>> {
+    let declared_inflated =
+        usize::try_from(read_le_u32(payload, 0)?).ok()?;
+    if expected_inflated_length.is_some_and(|expected| declared_inflated != expected) {
+        return None;
+    }
+
+    let mut decoder = ZlibDecoder::new(payload.get(4..)?);
+    let mut inflated = Vec::new();
+    decoder.read_to_end(&mut inflated).ok()?;
+    if inflated.len() != declared_inflated {
+        return None;
+    }
+    Some(inflated)
+}
+
+fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]) -> bool {
+    if family == VerifiedFamily::ServerZlibStreamContinuation {
+        // Decompile-backed transport ownership: CNetLayerWindow stores full
+        // reliable-window frames and UnpacketizeFullMessages may append later
+        // zlib-stream bytes that do not begin with a CNW `P major minor`
+        // header. The translator has already consumed Diamond stream state and
+        // re-emitted these exact continuation bytes in a fresh EE zlib envelope.
+        // This family is intentionally valid only for non-empty no-header
+        // continuation payloads; high-level gameplay messages must use their
+        // exact semantic family instead.
+        return !payload.is_empty() && HighLevel::parse(payload).is_none();
+    }
+
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+
+    match family {
+        VerifiedFamily::AreaClientArea => {
+            high.major == 0x04 && high.minor == 0x01 && area_client_area_shape_valid(payload)
+        }
+        VerifiedFamily::CharList => {
+            high.major == 0x11 && char_list_shape_valid(payload)
+        }
+        VerifiedFamily::ClientSideMessage => {
+            high.major == 0x12 && high.minor == 0x0B && client_side_feedback_shape_valid(payload)
+        }
+        VerifiedFamily::GameObjUpdateLiveObject => {
+            high.major == 0x05 && high.minor == 0x01 && live_object_shape_valid(payload)
+        }
+        VerifiedFamily::GuiQuickbar => {
+            high.major == 0x1E && high.minor == 0x01 && quickbar_shape_valid(payload)
+        }
+        VerifiedFamily::LoadBar => {
+            high.major == 0x2C && (0x01..=0x03).contains(&high.minor) && loadbar_shape_valid(payload)
+        }
+        VerifiedFamily::ModuleInfo => {
+            high.major == 0x03 && high.minor == 0x01 && module_info_shape_valid(payload)
+        }
+        VerifiedFamily::ServerStatusModuleResources => {
+            high.major == 0x01
+                && high.minor == 0x03
+                && server_status_module_resources_shape_valid(payload)
+        }
+        VerifiedFamily::CoalescedWindow
+        | VerifiedFamily::ConsumedEmptyMFrame
+        | VerifiedFamily::DirectSemantic
+        | VerifiedFamily::SemanticDeflated
+        | VerifiedFamily::ServerZlibStreamContinuation => false,
+    }
+}
+
+fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool {
+    matches!(
+        family,
+        VerifiedFamily::AreaClientArea
+            | VerifiedFamily::CharList | VerifiedFamily::ClientSideMessage
+            | VerifiedFamily::GameObjUpdateLiveObject
+            | VerifiedFamily::GuiQuickbar
+            | VerifiedFamily::ModuleInfo
+            | VerifiedFamily::ServerZlibStreamContinuation
+            | VerifiedFamily::ServerStatusModuleResources
+    )
+}
 fn validate_packetized_trailing(
     bytes: &[u8],
     offset: usize,
@@ -324,6 +682,12 @@ impl HighPayloadValidation {
     }
 }
 
+fn exact_high_payload_shape_valid(payload: &[u8]) -> bool {
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    matches!(high_payload_validation(payload, high), HighPayloadValidation::Exact(true))
+}
 fn known_high_payload_shape_valid(payload: &[u8], profile: StrictProfile) -> bool {
     let Some(high) = HighLevel::parse(payload) else {
         return false;
@@ -376,27 +740,29 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         }
         (0x03, 0x01) => HighPayloadValidation::Exact(module_info_shape_valid(payload)),
         (0x03, 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x03, 0x03) => HighPayloadValidation::Exact(module_time_shape_valid(payload)),
         (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
         (0x04, 0x03) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
         (0x05, 0x02) => HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload)),
+        (0x09, 0x04 | 0x05) => HighPayloadValidation::Exact(chat_shape_valid(payload, high)),
         (0x0A, 0x01 | 0x02) => HighPayloadValidation::Exact(player_list_shape_valid(payload)),
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
         }
         (0x11, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x11, 0x02 | 0x04) => HighPayloadValidation::Exact(char_list_shape_valid(payload)),
         (0x11, 0x03) => HighPayloadValidation::Exact(char_list_request_update_char_shape_valid(payload)),
         (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
+        (0x1C, 0x0C) => HighPayloadValidation::Exact(journal_shape_valid(payload)),
         (0x1E, 0x01 | 0x02) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
         (0x31, 0x01 | 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
         (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
         (0x02, 0x0A | 0x10 | 0x12)
-        | (0x03, 0x03 | 0x0E)
-        | (0x09, 0x01..=0x05)
-        | (0x0C, 0x01)
-        | (0x1C, 0x0C) => {
+        | (0x03, 0x0E)
+        | (0x0C, 0x01) => {
             HighPayloadValidation::shallow_noncritical(bare_or_cnw_wrapped_payload_shape_valid(payload))
         }
         (0x2C, 0x01..=0x03) => HighPayloadValidation::Exact(loadbar_shape_valid(payload)),
@@ -438,8 +804,288 @@ fn cnw_wrapped_payload_shape_valid(
         && payload.len().saturating_sub(declared) <= max_fragment_bytes
 }
 
+fn coalesced_window_shape_valid(bytes: &[u8], view: &crate::packet::m::MFrameView) -> bool {
+    if view.trailing_payload_length == 0 {
+        return false;
+    }
+    if view.declared_payload_length != 0 && view.declared_payload_length > view.available_payload_length {
+        return false;
+    }
+
+    let primary_end = match LEGACY_GAMEPLAY_PAYLOAD_OFFSET.checked_add(view.payload_length) {
+        Some(end) if end <= bytes.len() => end,
+        _ => return false,
+    };
+    let Some(primary_payload) = bytes.get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..primary_end) else {
+        return false;
+    };
+    if !coalesced_payload_shape_valid(primary_payload, view.deflated.as_ref()) {
+        return false;
+    }
+
+    let Some(spans) = parse_packetized_spans(bytes, primary_end) else {
+        return false;
+    };
+    if spans.is_empty() {
+        return false;
+    }
+
+    spans.into_iter().all(|span| {
+        if span.declared_payload_length != span.payload_length {
+            return false;
+        }
+        let payload_offset = span.offset + LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+        let payload_end = payload_offset + span.payload_length;
+        let Some(payload) = bytes.get(payload_offset..payload_end) else {
+            return false;
+        };
+        coalesced_payload_shape_valid(payload, span.deflated.as_ref())
+    })
+}
+
+fn coalesced_payload_shape_valid(
+    payload: &[u8],
+    deflated: Option<&crate::packet::m::DeflatedEnvelope>,
+) -> bool {
+    if payload.is_empty() {
+        return true;
+    }
+    if HighLevel::parse(payload).is_some() {
+        return exact_high_payload_shape_valid(payload);
+    }
+    let Some(deflated) = deflated else {
+        return false;
+    };
+    if !deflated.plausible {
+        return false;
+    }
+    let Some(inflated) =
+        inflate_verified_deflated_combined_payload(payload, Some(deflated.inflated_length))
+    else {
+        return false;
+    };
+    exact_high_payload_shape_valid(&inflated)
+}
+
 fn bare_or_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
     payload.len() == 3 || cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn module_time_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed shape:
+    // EE `CNWSMessage::SendServerToPlayerModuleUpdate_Time` emits server
+    // message 03/03 by creating a CNW read message, writing one update mask
+    // byte, then conditionally writing byte/dword fields for mask bits 0x01,
+    // 0x02, 0x04, 0x08, and 0x10. The 1.69 capture is byte-identical for
+    // the simple time-of-day case (`mask=0x02`, one value byte), so this is a
+    // verified no-op translator path rather than a permissive passthrough.
+    const HEADER_AND_DECLARED_LEN: usize = 7;
+    const MASK_OFFSET: usize = HEADER_AND_DECLARED_LEN;
+    const MAX_OBSERVED_TRAILING_BYTES: usize = 1;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared <= MASK_OFFSET
+        || declared > payload.len()
+        || payload.len().saturating_sub(declared) > MAX_OBSERVED_TRAILING_BYTES
+    {
+        return false;
+    }
+
+    let mask = payload[MASK_OFFSET];
+    if mask == 0 || (mask & !0x1F) != 0 {
+        return false;
+    }
+
+    let mut cursor = MASK_OFFSET + 1;
+    if (mask & 0x01) != 0 {
+        if cursor >= declared {
+            return false;
+        }
+        let time_state = payload[cursor];
+        cursor += 1;
+        if matches!(time_state, 3 | 4) {
+            cursor = match cursor.checked_add(4) {
+                Some(next) if next <= declared => next,
+                _ => return false,
+            };
+        }
+    }
+    for bit in [0x02, 0x04, 0x08] {
+        if (mask & bit) != 0 {
+            cursor = match cursor.checked_add(1) {
+                Some(next) if next <= declared => next,
+                _ => return false,
+            };
+        }
+    }
+    if (mask & 0x10) != 0 {
+        cursor = match cursor.checked_add(4) {
+            Some(next) if next <= declared => next,
+            _ => return false,
+        };
+    }
+
+    cursor == declared
+}
+
+fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
+    // Decompile-backed shape:
+    // EE `CNWSMessage::SendServerToPlayerChat_ServerTell` calls
+    // `CreateWriteMessage(message_len + 4, ..., 1)`, writes exactly one
+    // `CExoString` via `WriteCExoString(..., 0x20)`, and sends high-level
+    // family 0x09/minor 0x05. Observed HG/1.69 packets carry the same declared
+    // read-window with only the normal CNW fragment tail after the text.
+    //
+    // EE `CNWSMessage::SendServerToPlayerChat_Tell` writes object id,
+    // `CExoString`, three FLOATs, then one BOOL fragment selecting the speaker
+    // name branch before sending family 0x09/minor 0x04. This exact validator
+    // owns only those two chat shapes; other chat minors still need their own
+    // semantic translators before strict mode should allow them.
+    match high.minor {
+        0x04 => chat_tell_shape_valid(payload),
+        0x05 => chat_server_tell_shape_valid(payload),
+        _ => false,
+    }
+}
+
+fn chat_server_tell_shape_valid(payload: &[u8]) -> bool {
+    const READ_START: usize = 3 + 4;
+    const STRING_LENGTH_BYTES: usize = 4;
+    const MAX_CHAT_TEXT_BYTES: usize = 8192;
+    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 16;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared < READ_START + STRING_LENGTH_BYTES
+        || declared > payload.len()
+        || payload.len().saturating_sub(declared) > MAX_OBSERVED_FRAGMENT_BYTES
+    {
+        return false;
+    }
+
+    let Some(text_len) =
+        read_le_u32(payload, READ_START).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if text_len > MAX_CHAT_TEXT_BYTES {
+        return false;
+    }
+
+    READ_START
+        .checked_add(STRING_LENGTH_BYTES)
+        .and_then(|text_start| text_start.checked_add(text_len))
+        == Some(declared)
+}
+
+fn chat_tell_shape_valid(payload: &[u8]) -> bool {
+    const READ_START: usize = 3 + 4;
+    const OBJECT_ID_BYTES: usize = 4;
+    const STRING_LENGTH_BYTES: usize = 4;
+    const FLOAT_BYTES: usize = 4;
+    const POSITION_FLOATS: usize = 3;
+    const MAX_CHAT_TEXT_BYTES: usize = 8192;
+    const MAX_CHAT_SPEAKER_BYTES: usize = 512;
+    const REQUIRED_BOOL_FRAGMENT_BYTES: usize = 1;
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared < READ_START + OBJECT_ID_BYTES + STRING_LENGTH_BYTES
+        || declared > payload.len()
+        || payload.len().saturating_sub(declared) != REQUIRED_BOOL_FRAGMENT_BYTES
+        || !cnw_fragment_tail_can_hold_one_bool(&payload[declared..])
+    {
+        return false;
+    }
+
+    let mut cursor = READ_START;
+    let Some(object_id) = read_le_u32(payload, cursor) else {
+        return false;
+    };
+    if object_id == 0 || object_id == u32::MAX {
+        return false;
+    }
+    cursor += OBJECT_ID_BYTES;
+
+    let Some((message_end, _)) =
+        read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_TEXT_BYTES)
+    else {
+        return false;
+    };
+    cursor = message_end;
+
+    for _ in 0..POSITION_FLOATS {
+        let Some(value) = read_le_f32(payload, cursor) else {
+            return false;
+        };
+        if !value.is_finite() || value.abs() > 1_000_000.0 {
+            return false;
+        }
+        cursor += FLOAT_BYTES;
+    }
+
+    if let Some((speaker_end, _)) =
+        read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_SPEAKER_BYTES)
+    {
+        speaker_end == declared
+            || read_bounded_cexo_string_end(
+                payload,
+                speaker_end,
+                declared,
+                MAX_CHAT_SPEAKER_BYTES,
+            )
+            .is_some_and(|(second_end, _)| second_end == declared)
+    } else {
+        false
+    }
+}
+
+fn read_bounded_cexo_string_end(
+    payload: &[u8],
+    offset: usize,
+    declared: usize,
+    max_bytes: usize,
+) -> Option<(usize, usize)> {
+    let length = usize::try_from(read_le_u32(payload, offset)?).ok()?;
+    if length > max_bytes {
+        return None;
+    }
+    let end = offset.checked_add(4)?.checked_add(length)?;
+    if end > declared {
+        return None;
+    }
+    Some((end, length))
+}
+
+fn read_le_f32(payload: &[u8], offset: usize) -> Option<f32> {
+    let bytes = payload.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
+    const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+
+    let Some(first) = fragment.first().copied() else {
+        return false;
+    };
+    let final_bits = usize::from((first & 0xE0) >> 5);
+    let valid_bits = if final_bits == 0 {
+        fragment.len().saturating_mul(8)
+    } else {
+        fragment
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(8)
+            .saturating_add(final_bits)
+    };
+    valid_bits > CNW_FRAGMENT_HEADER_BITS
 }
 
 fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
@@ -469,6 +1115,27 @@ fn live_object_shape_valid(payload: &[u8]) -> bool {
 
 fn player_list_shape_valid(payload: &[u8]) -> bool {
     cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+}
+
+fn char_list_shape_valid(payload: &[u8]) -> bool {
+    // Reuse the focused semantic owner for the exact CharList packet proof.
+    // The module's parser is decompile-backed for `CharList_ListResponse`
+    // (`0x11/0x02`) and `CharList_UpdateCharResponse` (`0x11/0x04`), including
+    // exact cursor consumption and the EE-safe BIC canonicalization path. Strict
+    // validation clones here so verification cannot mutate the packet being
+    // checked.
+    let mut candidate = payload.to_vec();
+    char_list::claim_payload_if_verified(&mut candidate).is_some()
+}
+
+fn journal_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed no-op translator proof:
+    // EE's packet-name table maps 0x1C/0x0C to `Journal_Updated`, and the
+    // exported sender takes a `CExoLocString`. HG's observed login updates use
+    // the same compact CNW read-window form already documented in
+    // `translate::journal`, so strict delegates exact cursor validation to
+    // that semantic owner instead of allowing the opcode generically.
+    journal::claim_payload_if_verified(payload).is_some()
 }
 
 fn quickbar_shape_valid(payload: &[u8]) -> bool {
