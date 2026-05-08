@@ -1,4 +1,4 @@
-﻿//! Inventory-family live-object update policy.
+//! Inventory-family live-object update policy.
 //!
 //! Inventory and GUI item-create submessages can own fragment BOOLs. The
 //! decompile-backed rule is intentionally stricter than "the next byte looks
@@ -99,7 +99,11 @@ pub(super) fn try_get_legacy_live_inventory_fragment_bit_count(
 
     if mask == 0x2000 {
         let feature25 = try_parse_feature25_record(bytes, record_offset, record_end)?;
-        return Some(usize::try_from(feature25.second_count).ok()?.saturating_mul(3));
+        return Some(
+            usize::try_from(feature25.second_count)
+                .ok()?
+                .saturating_mul(3),
+        );
     }
 
     if mask == 0x0400 {
@@ -194,10 +198,18 @@ fn try_parse_inventory_2400_slot_update_shape(
     Some(1)
 }
 
-include!("mask.rs");
-include!("feature25.rs");
-include!("categories.rs");
-include!("icon_list.rs");
-include!("equipment_delta.rs");
-include!("opcode_stream.rs");
-include!("bit_count.rs");
+mod bit_count;
+mod categories;
+mod equipment_delta;
+mod feature25;
+mod icon_list;
+mod mask;
+mod opcode_stream;
+
+use bit_count::*;
+use categories::*;
+use equipment_delta::*;
+use feature25::*;
+use icon_list::*;
+use mask::*;
+use opcode_stream::*;

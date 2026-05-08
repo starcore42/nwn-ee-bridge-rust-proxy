@@ -1,6 +1,8 @@
+use super::*;
+
 // Ten-bit value-group parser and fragment-neutral bit-count helpers.
 
-fn apply_ten_bit_groups(
+pub(super) fn apply_ten_bit_groups(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -52,4 +54,3 @@ fn advance_ten_bit_value_groups(
     }
     Some((cursor, u32::from(group_count), value_count))
 }
-

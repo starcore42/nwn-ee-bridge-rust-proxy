@@ -1,13 +1,16 @@
+use super::*;
+
 // Inventory opcode stream parser for mask 0x0100.
 
-fn apply_0100(
+pub(super) fn apply_0100(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
 ) -> Vec<GenericInventoryCandidate> {
     let mut next = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let Some(cursor) = advance_inventory_0100_opcode_stream(bytes, candidate.cursor, record_end)
+        let Some(cursor) =
+            advance_inventory_0100_opcode_stream(bytes, candidate.cursor, record_end)
         else {
             continue;
         };
@@ -73,4 +76,3 @@ fn advance_inventory_0100_opcode_stream(
     }
     Some(cursor)
 }
-

@@ -1,6 +1,8 @@
+use super::*;
+
 // Inventory feature-25 object-list parser and mask integration.
 
-fn apply_2000(
+pub(super) fn apply_2000(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -25,8 +27,7 @@ fn apply_2000(
     next
 }
 
-
-fn try_parse_inventory_2a00_shape(
+pub(super) fn try_parse_inventory_2a00_shape(
     bytes: &[u8],
     record_offset: usize,
     record_end: usize,
@@ -42,7 +43,11 @@ fn try_parse_inventory_2a00_shape(
         }
         Some(
             2usize
-                .saturating_add(usize::try_from(feature25.second_count).ok()?.saturating_mul(3))
+                .saturating_add(
+                    usize::try_from(feature25.second_count)
+                        .ok()?
+                        .saturating_mul(3),
+                )
                 .saturating_add(1),
         )
     };
@@ -67,7 +72,7 @@ fn try_parse_inventory_2a00_shape(
     None
 }
 
-fn try_parse_feature25_record(
+pub(super) fn try_parse_feature25_record(
     bytes: &[u8],
     record_offset: usize,
     record_end: usize,
@@ -92,7 +97,8 @@ fn try_parse_feature25_at(
         return None;
     }
     let first_objects = cursor.checked_add(4)?;
-    let first_end = first_objects.checked_add(usize::try_from(first_count).ok()?.checked_mul(4)?)?;
+    let first_end =
+        first_objects.checked_add(usize::try_from(first_count).ok()?.checked_mul(4)?)?;
     if first_end > record_end
         || !looks_like_feature25_object_list(bytes, first_objects, first_count, first_end)
     {
@@ -152,4 +158,3 @@ fn looks_like_feature25_object_list(
     }
     true
 }
-

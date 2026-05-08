@@ -1,6 +1,8 @@
+use super::*;
+
 // Legacy inventory icon-list parser.
 
-fn apply_legacy_icon_list(
+pub(super) fn apply_legacy_icon_list(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -52,4 +54,3 @@ fn advance_legacy_icon_list_block(
     cursor += second_bytes;
     Some((cursor, u32::from(first_count), u32::from(second_count), 0))
 }
-

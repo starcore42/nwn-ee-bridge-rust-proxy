@@ -162,15 +162,31 @@ impl Default for QuickbarItemObject {
     }
 }
 
-include!("transport.rs");
-include!("split.rs");
-include!("facade.rs");
-include!("fragments.rs");
-include!("reader.rs");
-include!("item.rs");
-include!("active_props.rs");
-include!("writer.rs");
-include!("baseitems.rs");
-include!("wire.rs");
+mod active_props;
+mod baseitems;
+mod facade;
+mod fragments;
+mod item;
+mod reader;
+mod split;
+mod transport;
+mod wire;
+mod writer;
+
 #[cfg(test)]
-include!("tests.rs");
+mod tests;
+
+use active_props::*;
+use baseitems::*;
+use fragments::*;
+use item::*;
+use reader::*;
+use split::*;
+use transport::*;
+use wire::*;
+
+pub use facade::{
+    full_set_all_buttons_target_length, normalize_and_rewrite_quickbar_payload_if_possible,
+    rewrite_simple_quickbar_payload_if_possible, rewrite_summary_needs_more_quickbar_bytes,
+};
+pub use writer::build_blank_set_all_buttons_payload;

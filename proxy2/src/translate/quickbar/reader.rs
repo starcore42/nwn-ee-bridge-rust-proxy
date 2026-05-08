@@ -1,6 +1,8 @@
+use super::*;
+
 // Decompile-owned 36-slot quickbar reader and non-item button parser.
 
-fn parse_direct_opcode_quickbar_stream(payload: &[u8]) -> Option<QuickbarParse> {
+pub(super) fn parse_direct_opcode_quickbar_stream(payload: &[u8]) -> Option<QuickbarParse> {
     if payload.len() <= HIGH_LEVEL_HEADER_BYTES {
         return None;
     }
@@ -35,21 +37,21 @@ fn parse_direct_opcode_quickbar_stream(payload: &[u8]) -> Option<QuickbarParse> 
     })
 }
 
-fn parse_quickbar_read_buffer(
+pub(super) fn parse_quickbar_read_buffer(
     read_buffer: &[u8],
     mut cursor: usize,
 ) -> Option<(Vec<QuickbarButton>, usize)> {
     let mut buttons = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
     let memo_width = read_buffer.len().checked_add(1)?;
-    let mut memo = vec![
-        QUICKBAR_UNKNOWN_SCORE;
-        (LEGACY_QUICKBAR_BUTTON_COUNT + 1).checked_mul(memo_width)?
-    ];
+    let mut memo =
+        vec![QUICKBAR_UNKNOWN_SCORE; (LEGACY_QUICKBAR_BUTTON_COUNT + 1).checked_mul(memo_width)?];
     for slot in 0..LEGACY_QUICKBAR_BUTTON_COUNT {
         if cursor >= read_buffer.len() {
-            buttons.extend((slot..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
-                kind: QuickbarButtonKind::Unsupported,
-            }));
+            buttons.extend(
+                (slot..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
+                    kind: QuickbarButtonKind::Unsupported,
+                }),
+            );
             break;
         }
 
@@ -87,7 +89,7 @@ fn parse_quickbar_read_buffer(
     Some((buttons, cursor.min(read_buffer.len())))
 }
 
-fn parse_quickbar_read_buffer_with_fragments(
+pub(super) fn parse_quickbar_read_buffer_with_fragments(
     read_buffer: &[u8],
     fragments: &[u8],
     cursor: usize,
@@ -108,16 +110,16 @@ fn parse_quickbar_read_buffer_with_fragments(
 
     let mut buttons = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
     let memo_width = read_buffer.len().checked_add(1)?;
-    let mut memo = vec![
-        QUICKBAR_UNKNOWN_SCORE;
-        (LEGACY_QUICKBAR_BUTTON_COUNT + 1).checked_mul(memo_width)?
-    ];
+    let mut memo =
+        vec![QUICKBAR_UNKNOWN_SCORE; (LEGACY_QUICKBAR_BUTTON_COUNT + 1).checked_mul(memo_width)?];
     let mut opaque_item_slots_blanked = false;
     for slot in 0..LEGACY_QUICKBAR_BUTTON_COUNT {
         if reader.cursor >= read_buffer.len() {
-            buttons.extend((slot..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
-                kind: QuickbarButtonKind::Unsupported,
-            }));
+            buttons.extend(
+                (slot..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
+                    kind: QuickbarButtonKind::Unsupported,
+                }),
+            );
             opaque_item_slots_blanked = true;
             break;
         }
@@ -295,7 +297,6 @@ fn quickbar_can_blank_remaining_after_source_parse_failure(
         })
 }
 
-
 fn parse_legacy_quickbar_non_item_from_reader(
     reader: &mut QuickbarPacketReader<'_>,
     ty: u8,
@@ -368,7 +369,7 @@ fn parse_legacy_quickbar_non_item_from_reader(
     None
 }
 
-fn parse_legacy_quickbar_non_item(
+pub(super) fn parse_legacy_quickbar_non_item(
     read_buffer: &[u8],
     cursor: usize,
 ) -> Option<(QuickbarButton, usize)> {
@@ -380,9 +381,7 @@ fn parse_legacy_quickbar_non_item(
     if legacy_quickbar_type_has_no_payload(ty) {
         return Some((
             QuickbarButton {
-                kind: QuickbarButtonKind::General {
-                    bytes: vec![ty],
-                },
+                kind: QuickbarButtonKind::General { bytes: vec![ty] },
             },
             cursor + 1,
         ));
@@ -492,11 +491,11 @@ fn advance_legacy_quickbar_string(read_buffer: &[u8], cursor: usize) -> Option<u
     cursor.checked_add(CNW_LENGTH_BYTES)?.checked_add(length)
 }
 
-fn is_legacy_quickbar_plausible_type(ty: u8) -> bool {
+pub(super) fn is_legacy_quickbar_plausible_type(ty: u8) -> bool {
     ty <= 48
 }
 
-fn legacy_quickbar_type_has_no_payload(ty: u8) -> bool {
+pub(super) fn legacy_quickbar_type_has_no_payload(ty: u8) -> bool {
     matches!(
         ty,
         // Diamond 1.69's `sub_469FD0` quickbar receiver maps type 9 to the
@@ -528,4 +527,3 @@ fn legacy_quickbar_int_payload_is_valid_for_ee(ty: u8, value: u32) -> bool {
         _ => true,
     }
 }
-

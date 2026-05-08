@@ -1,6 +1,8 @@
+use super::*;
+
 // Generic inventory mask orchestration and mask-local branch helpers.
 
-fn try_parse_generic_inventory_with_branching(
+pub(super) fn try_parse_generic_inventory_with_branching(
     bytes: &[u8],
     record_offset: usize,
     record_end: usize,
@@ -184,7 +186,7 @@ fn apply_4000(
     next
 }
 
-fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
+pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
     if object_id == 0 || object_id == u32::MAX {
         return false;
     }
@@ -200,4 +202,3 @@ fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
             | 0x3500_0000
     ) || (0x0000_1000..=0x00FF_FFFF).contains(&object_id)
 }
-

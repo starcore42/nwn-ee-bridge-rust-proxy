@@ -1,6 +1,8 @@
+use super::*;
+
 // Decompile-owned quickbar item-object and item-appearance parser.
 
-fn parse_legacy_quickbar_item_payload(
+pub(super) fn parse_legacy_quickbar_item_payload(
     reader: &mut QuickbarPacketReader<'_>,
     model_types: &[i8],
 ) -> Option<(QuickbarItemObject, QuickbarItemObject)> {
@@ -52,9 +54,11 @@ fn parse_legacy_quickbar_item_object(
                 if !bits_ok || !candidate_present {
                     continue;
                 }
-                if let Some(mut item) =
-                    parse_legacy_quickbar_item_object_body(&mut trial, include_int_param, model_types)
-                {
+                if let Some(mut item) = parse_legacy_quickbar_item_object_body(
+                    &mut trial,
+                    include_int_param,
+                    model_types,
+                ) {
                     item.present = true;
                     tracing::info!(
                         skipped_bits,
@@ -119,7 +123,6 @@ fn parse_legacy_quickbar_item_appearance(
     Some((base_item_id, model_type, appearance_bytes))
 }
 
-
 fn skip_legacy_quickbar_item_payload(
     reader: &mut QuickbarPacketReader<'_>,
     model_types: &[i8],
@@ -159,12 +162,8 @@ fn skip_legacy_quickbar_item_object(
                 if !bits_ok || !candidate_present {
                     continue;
                 }
-                if skip_legacy_quickbar_item_object_body(
-                    &mut trial,
-                    include_int_param,
-                    model_types,
-                )
-                .is_some()
+                if skip_legacy_quickbar_item_object_body(&mut trial, include_int_param, model_types)
+                    .is_some()
                 {
                     *reader = trial;
                     return Some(());
@@ -194,7 +193,7 @@ fn skip_legacy_quickbar_item_object_body(
     skip_legacy_quickbar_active_item_properties(reader, base_item_id)
 }
 
-fn looks_like_quickbar_item_object_body_at(
+pub(super) fn looks_like_quickbar_item_object_body_at(
     reader: &QuickbarPacketReader<'_>,
     include_int_param: bool,
     model_types: &[i8],
@@ -241,7 +240,7 @@ fn looks_like_quickbar_item_object_body_at(
     reader.read_buffer.len().saturating_sub(cursor) >= legacy_size
 }
 
-fn legacy_item_appearance_read_size(model_type: i8) -> Option<usize> {
+pub(super) fn legacy_item_appearance_read_size(model_type: i8) -> Option<usize> {
     match model_type {
         0 => Some(CNW_LENGTH_BYTES + 1),
         1 => Some(CNW_LENGTH_BYTES + 1 + 6),
@@ -251,7 +250,6 @@ fn legacy_item_appearance_read_size(model_type: i8) -> Option<usize> {
     }
 }
 
-fn legacy_quickbar_base_item_requires_active_property_word(base_item_id: u32) -> bool {
+pub(super) fn legacy_quickbar_base_item_requires_active_property_word(base_item_id: u32) -> bool {
     base_item_id == 0x10
 }
-

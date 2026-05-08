@@ -1,6 +1,8 @@
+use super::*;
+
 // Active item-property parser for quickbar item buttons.
 
-fn parse_legacy_quickbar_active_item_properties(
+pub(super) fn parse_legacy_quickbar_active_item_properties(
     reader: &mut QuickbarPacketReader<'_>,
     base_item_id: u32,
 ) -> Option<QuickbarActiveItemProperties> {
@@ -126,7 +128,7 @@ fn parse_legacy_quickbar_active_item_properties_tail(
     Some(properties)
 }
 
-fn skip_legacy_quickbar_active_item_properties(
+pub(super) fn skip_legacy_quickbar_active_item_properties(
     reader: &mut QuickbarPacketReader<'_>,
     base_item_id: u32,
 ) -> Option<()> {
@@ -172,11 +174,10 @@ fn skip_legacy_quickbar_active_item_properties_bare_inline_fallback(
     }
 
     let text_start = name_length_offset.checked_add(CNW_LENGTH_BYTES)?;
-    let text_limit =
-        probe
-            .read_buffer
-            .len()
-            .min(text_start.checked_add(MAX_QUICKBAR_BARE_ACTIVE_ITEM_NAME_BYTES)?);
+    let text_limit = probe
+        .read_buffer
+        .len()
+        .min(text_start.checked_add(MAX_QUICKBAR_BARE_ACTIVE_ITEM_NAME_BYTES)?);
     let mut printable_end = text_start;
     while printable_end < text_limit
         && is_legacy_bare_active_item_name_byte(probe.read_buffer[printable_end])
@@ -233,4 +234,3 @@ fn skip_legacy_quickbar_active_item_properties_tail(
 fn is_legacy_bare_active_item_name_byte(ch: u8) -> bool {
     (0x20..=0x7E).contains(&ch)
 }
-

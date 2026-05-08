@@ -15,16 +15,16 @@
 //! and rewrites the compression envelope while preserving the byte stream that
 //! the already-classified packet family owns.
 
-use crate::translate::{Emit, VerifiedFamily};
+use crate::translate::{ContinuationOwner, Emit, VerifiedFamily};
 
 use super::{
+    CNW_LENGTH_BYTES, SessionState,
     deflate::deflate_zlib,
     hex_prefix,
     reassembly::{
-        build_server_deflated_output_frames, remember_completed_server_stream_window,
-        CompletedDeflatedReplay, ServerDeflatedReassembly,
+        CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
+        remember_completed_server_stream_window,
     },
-    SessionState, CNW_LENGTH_BYTES,
 };
 
 pub(super) fn emit_verified_server_stream_continuation(
@@ -37,6 +37,11 @@ pub(super) fn emit_verified_server_stream_continuation(
     let mut combined = Vec::with_capacity(CNW_LENGTH_BYTES + compressed.len());
     combined.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
     combined.extend_from_slice(&compressed);
+    let owner = state
+        .deflate
+        .server_zlib_stream_owner
+        .unwrap_or(ContinuationOwner::UnknownProxyOwned);
+    let family = VerifiedFamily::ServerZlibStreamContinuation { owner };
 
     let mut outputs = build_server_deflated_output_frames(reassembly, &combined, 0x01, true)?;
     remember_completed_server_stream_window(
@@ -44,7 +49,7 @@ pub(super) fn emit_verified_server_stream_continuation(
         reassembly,
         source_compressed_length,
         CompletedDeflatedReplay::VerifiedPackets {
-            family: VerifiedFamily::ServerZlibStreamContinuation,
+            family,
             packets: outputs.clone(),
         },
     );
@@ -56,12 +61,13 @@ pub(super) fn emit_verified_server_stream_continuation(
         packetized_sequence = reassembly.packetized_sequence,
         inflated = inflated.len(),
         compressed = compressed.len(),
+        owner = owner.as_str(),
         prefix = %hex_prefix(inflated, 32),
         "server deflated zlib-stream continuation converted to EE one-shot envelope"
     );
 
     Ok(Emit::VerifiedPackets {
-        family: VerifiedFamily::ServerZlibStreamContinuation,
+        family,
         packets: outputs,
     })
 }

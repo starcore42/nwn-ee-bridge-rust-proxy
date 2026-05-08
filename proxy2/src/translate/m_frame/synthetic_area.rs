@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET},
-    translate::{area, loadbar},
+    translate::{VerifiedFamily, area, loadbar},
 };
 
 use super::sequence::{
@@ -40,6 +40,7 @@ pub(super) struct PendingAreaLoaded {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingServerPacket {
+    pub(super) family: VerifiedFamily,
     pub(super) packet: Vec<u8>,
     pub(super) due_at: Instant,
     pub(super) reason: &'static str,
@@ -128,7 +129,8 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
 
     let start_payload = loadbar::start_payload(LOADBAR_STALL_EVENT_ID);
     let end_payload = loadbar::end_success_payload(LOADBAR_STALL_EVENT_ID);
-    let start_packet = build_synthetic_gameplay_frame(start_sequence, ack_sequence, &start_payload)?;
+    let start_packet =
+        build_synthetic_gameplay_frame(start_sequence, ack_sequence, &start_payload)?;
     let end_packet = build_synthetic_gameplay_frame(end_sequence, ack_sequence, &end_payload)?;
 
     let now = Instant::now();
@@ -139,11 +141,13 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     });
     trim_sequence_shifts(server_sequence_shifts);
     pending_packets.push(PendingServerPacket {
+        family: VerifiedFamily::LoadBar,
         packet: start_packet,
         due_at: now,
         reason: "Area_ClientArea synthetic LoadBar_Start",
     });
     pending_packets.push(PendingServerPacket {
+        family: VerifiedFamily::LoadBar,
         packet: end_packet,
         due_at: end_due_at,
         reason: "Area_ClientArea synthetic LoadBar_End",
@@ -254,7 +258,9 @@ fn arm_area_loaded_fallback(
     tracing::info!(
         server_ack_sequence,
         release_client_ack_sequence,
-        delay_ms = release_at.saturating_duration_since(Instant::now()).as_millis(),
+        delay_ms = release_at
+            .saturating_duration_since(Instant::now())
+            .as_millis(),
         reason = reason.as_str(),
         "client synthetic Area_AreaLoaded fallback armed after synthetic LoadBar completion"
     );

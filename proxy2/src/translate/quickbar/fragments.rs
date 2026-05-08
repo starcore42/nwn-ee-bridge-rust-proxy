@@ -1,19 +1,21 @@
-﻿// CNW fragment bit reader for quickbar item objects. CNW BOOLs are packed
+use super::*;
+
+// CNW fragment bit reader for quickbar item objects. CNW BOOLs are packed
 // least-significant-bit first; the first three bits encode the final fragment
 // bit count used by the original reader as an end-of-stream guard.
 
 #[derive(Debug, Clone)]
-struct QuickbarPacketReader<'a> {
-    read_buffer: &'a [u8],
-    fragments: &'a [u8],
-    cursor: usize,
-    fragment_cursor: usize,
-    fragment_bit: u8,
-    final_fragment_bits: u8,
+pub(super) struct QuickbarPacketReader<'a> {
+    pub(super) read_buffer: &'a [u8],
+    pub(super) fragments: &'a [u8],
+    pub(super) cursor: usize,
+    pub(super) fragment_cursor: usize,
+    pub(super) fragment_bit: u8,
+    pub(super) final_fragment_bits: u8,
 }
 
 impl<'a> QuickbarPacketReader<'a> {
-    fn read_bit(&mut self) -> Option<bool> {
+    pub(super) fn read_bit(&mut self) -> Option<bool> {
         let byte = *self.fragments.get(self.fragment_cursor)?;
         let bit = ((byte >> self.fragment_bit) & 1) != 0;
         self.fragment_bit = self.fragment_bit.saturating_add(1);
@@ -24,7 +26,7 @@ impl<'a> QuickbarPacketReader<'a> {
         Some(bit)
     }
 
-    fn read_bits(&mut self, count: u8) -> Option<u32> {
+    pub(super) fn read_bits(&mut self, count: u8) -> Option<u32> {
         let mut value = 0u32;
         for shift in 0..count {
             if self.read_bit()? {
@@ -34,29 +36,29 @@ impl<'a> QuickbarPacketReader<'a> {
         Some(value)
     }
 
-    fn read_byte(&mut self) -> Option<u8> {
+    pub(super) fn read_byte(&mut self) -> Option<u8> {
         let byte = *self.read_buffer.get(self.cursor)?;
         self.cursor = self.cursor.checked_add(1)?;
         Some(byte)
     }
 
-    fn read_word(&mut self) -> Option<u16> {
+    pub(super) fn read_word(&mut self) -> Option<u16> {
         let value = read_u16_le(self.read_buffer, self.cursor)?;
         self.cursor = self.cursor.checked_add(2)?;
         Some(value)
     }
 
-    fn read_dword(&mut self) -> Option<u32> {
+    pub(super) fn read_dword(&mut self) -> Option<u32> {
         let value = read_u32_le(self.read_buffer, self.cursor)?;
         self.cursor = self.cursor.checked_add(CNW_LENGTH_BYTES)?;
         Some(value)
     }
 
-    fn read_i32(&mut self) -> Option<i32> {
+    pub(super) fn read_i32(&mut self) -> Option<i32> {
         Some(i32::from_le_bytes(self.read_dword()?.to_le_bytes()))
     }
 
-    fn read_string(&mut self) -> Option<Vec<u8>> {
+    pub(super) fn read_string(&mut self) -> Option<Vec<u8>> {
         let len = usize::try_from(self.read_dword()?).ok()?;
         if len > MAX_REASONABLE_QUICKBAR_STRING_BYTES {
             return None;
@@ -67,7 +69,7 @@ impl<'a> QuickbarPacketReader<'a> {
         Some(text)
     }
 
-    fn read_loc_string(&mut self) -> Option<QuickbarLocStringField> {
+    pub(super) fn read_loc_string(&mut self) -> Option<QuickbarLocStringField> {
         let custom_tlk = self.read_bit()?;
         if custom_tlk {
             let language_selector = self.read_bit()?;
@@ -89,7 +91,7 @@ impl<'a> QuickbarPacketReader<'a> {
         }
     }
 
-    fn skip_bytes(&mut self, count: usize) -> Option<()> {
+    pub(super) fn skip_bytes(&mut self, count: usize) -> Option<()> {
         self.cursor = self.cursor.checked_add(count)?;
         if self.cursor > self.read_buffer.len() {
             return None;
@@ -97,7 +99,7 @@ impl<'a> QuickbarPacketReader<'a> {
         Some(())
     }
 
-    fn skip_string(&mut self) -> Option<()> {
+    pub(super) fn skip_string(&mut self) -> Option<()> {
         let len = usize::try_from(self.read_dword()?).ok()?;
         if len > MAX_REASONABLE_QUICKBAR_STRING_BYTES {
             return None;
@@ -105,7 +107,7 @@ impl<'a> QuickbarPacketReader<'a> {
         self.skip_bytes(len)
     }
 
-    fn skip_loc_string(&mut self) -> Option<()> {
+    pub(super) fn skip_loc_string(&mut self) -> Option<()> {
         if self.read_bit()? {
             let _language_selector = self.read_bit()?;
             let _string_ref = self.read_dword()?;

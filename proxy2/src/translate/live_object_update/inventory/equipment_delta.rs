@@ -1,6 +1,8 @@
+use super::*;
+
 // Equipment delta masks, including exact set/clear cursor and fragment-bit counts.
 
-fn apply_0400(
+pub(super) fn apply_0400(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -34,7 +36,11 @@ fn apply_0400(
     next
 }
 
-fn try_parse_inventory_0400(bytes: &[u8], mut cursor: usize, record_end: usize) -> Option<u8> {
+pub(super) fn try_parse_inventory_0400(
+    bytes: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+) -> Option<u8> {
     if cursor >= record_end {
         return None;
     }
@@ -55,4 +61,3 @@ fn try_parse_inventory_0400(bytes: &[u8], mut cursor: usize, record_end: usize) 
     cursor += usize::from(set_count);
     (cursor == record_end).then_some(set_count)
 }
-

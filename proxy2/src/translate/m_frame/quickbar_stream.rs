@@ -6,7 +6,7 @@
 
 use crate::{
     packet::m::HighLevel,
-    translate::{quickbar, Emit, VerifiedFamily},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar},
 };
 use std::{
     env, fs,
@@ -14,12 +14,12 @@ use std::{
 };
 
 use super::{
+    CNW_LENGTH_BYTES, SessionState,
     deflate::deflate_zlib,
     reassembly::{
-        build_server_deflated_output_frames, remember_completed_server_stream_window,
-        CompletedDeflatedReplay, ServerDeflatedReassembly,
+        CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
+        remember_completed_server_stream_window,
     },
-    SessionState, CNW_LENGTH_BYTES,
 };
 
 // Current HG captures deliver the legacy-prefixed SetAllButtons stream as the
@@ -66,6 +66,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
     if !used_server_stream || !state.deflate.server_zlib_stream_proxy_owned {
         return Ok(None);
     }
+    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
 
     if state.quickbar.pending_stream.is_none() {
         let mut fragment_wait = false;
@@ -121,7 +122,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
             state,
             reassembly,
             source_compressed_length,
-            CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs.clone() },
+            CompletedDeflatedReplay::VerifiedPackets {
+                family: VerifiedFamily::GuiQuickbarPlaceholder,
+                packets: outputs.clone(),
+            },
         );
         outputs.extend(reassembly.interleaved_packets.clone());
         tracing::info!(
@@ -132,11 +136,15 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
             buffered = bytes.len(),
             "server GuiQuickbar_SetAllButtons stream buffering started"
         );
-        return Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs }));
+        return Ok(Some(Emit::VerifiedPackets {
+            family: VerifiedFamily::GuiQuickbarPlaceholder,
+            packets: outputs,
+        }));
     }
 
     let pending = state
-        .quickbar.pending_stream
+        .quickbar
+        .pending_stream
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("missing quickbar stream state"))?;
     pending.payload.extend_from_slice(bytes);
@@ -151,7 +159,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 state,
                 reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::GuiQuickbarPlaceholder,
+                    packets: outputs.clone(),
+                },
             );
             outputs.extend(reassembly.interleaved_packets.clone());
             tracing::info!(
@@ -162,13 +173,15 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 target_length,
                 "server GuiQuickbar_SetAllButtons stream buffering continued"
             );
-            return Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs }));
+            return Ok(Some(Emit::VerifiedPackets {
+                family: VerifiedFamily::GuiQuickbarPlaceholder,
+                packets: outputs,
+            }));
         }
     } else {
         let mut rewritten_payload = pending.payload.clone();
-        let rewrite = quickbar::normalize_and_rewrite_quickbar_payload_if_possible(
-            &mut rewritten_payload,
-        );
+        let rewrite =
+            quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut rewritten_payload);
         let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
             && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
         let should_wait = rewrite
@@ -190,7 +203,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 state,
                 reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::GuiQuickbarPlaceholder,
+                    packets: outputs.clone(),
+                },
             );
             outputs.extend(reassembly.interleaved_packets.clone());
             tracing::info!(
@@ -200,7 +216,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                 buffered,
                 "server GuiQuickbar_SetAllButtons continuation buffering continued"
             );
-            return Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs }));
+            return Ok(Some(Emit::VerifiedPackets {
+                family: VerifiedFamily::GuiQuickbarPlaceholder,
+                packets: outputs,
+            }));
         }
     }
 
@@ -212,6 +231,7 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
     reassembly: &ServerDeflatedReassembly,
     source_compressed_length: usize,
 ) -> anyhow::Result<Option<Emit>> {
+    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
     let Some(pending) = state.quickbar.pending_stream.as_mut() else {
         return Ok(None);
     };
@@ -253,13 +273,13 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
         reassembly,
         source_compressed_length,
         CompletedDeflatedReplay::VerifiedPackets {
-            family: VerifiedFamily::GuiQuickbar,
+            family: VerifiedFamily::GuiQuickbarPlaceholder,
             packets: outputs.clone(),
         },
     );
     outputs.extend(reassembly.interleaved_packets.clone());
     Ok(Some(Emit::VerifiedPackets {
-        family: VerifiedFamily::GuiQuickbar,
+        family: VerifiedFamily::GuiQuickbarPlaceholder,
         packets: outputs,
     }))
 }
@@ -302,8 +322,10 @@ fn flush_pending_server_quickbar_stream(
     reassembly: &ServerDeflatedReassembly,
     source_compressed_length: usize,
 ) -> anyhow::Result<Option<Emit>> {
+    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
     let pending = state
-        .quickbar.pending_stream
+        .quickbar
+        .pending_stream
         .take()
         .ok_or_else(|| anyhow::anyhow!("missing quickbar stream state"))?;
     let mut quickbar_payload = if let Some(target_length) = pending.target_length {
@@ -324,7 +346,10 @@ fn flush_pending_server_quickbar_stream(
             state,
             reassembly,
             source_compressed_length,
-            CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs.clone() },
+            CompletedDeflatedReplay::VerifiedPackets {
+                family: VerifiedFamily::GuiQuickbarPlaceholder,
+                packets: outputs.clone(),
+            },
         );
         outputs.extend(reassembly.interleaved_packets.clone());
         tracing::warn!(
@@ -334,10 +359,15 @@ fn flush_pending_server_quickbar_stream(
             buffered = pending.payload.len(),
             fragment_wait = pending.fragment_wait,
             trailing_bytes,
-            high_level = HighLevel::parse(&quickbar_payload).map(|high| high.name()).unwrap_or("none"),
+            high_level = HighLevel::parse(&quickbar_payload)
+                .map(|high| high.name())
+                .unwrap_or("none"),
             "server GuiQuickbar_SetAllButtons stream quarantined: semantic quickbar translator did not claim payload"
         );
-        return Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs }));
+        return Ok(Some(Emit::VerifiedPackets {
+            family: VerifiedFamily::GuiQuickbarPlaceholder,
+            packets: outputs,
+        }));
     }
     let compressed = deflate_zlib(&quickbar_payload)?;
     let mut combined = Vec::with_capacity(CNW_LENGTH_BYTES + compressed.len());
@@ -348,7 +378,10 @@ fn flush_pending_server_quickbar_stream(
         state,
         reassembly,
         source_compressed_length,
-        CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs.clone() },
+        CompletedDeflatedReplay::VerifiedPackets {
+            family: VerifiedFamily::GuiQuickbar,
+            packets: outputs.clone(),
+        },
     );
     outputs.extend(reassembly.interleaved_packets.clone());
 
@@ -387,7 +420,10 @@ fn flush_pending_server_quickbar_stream(
             "server GuiQuickbar_SetAllButtons stream reassembled for EE"
         );
     }
-    Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GuiQuickbar, packets: outputs }))
+    Ok(Some(Emit::VerifiedPackets {
+        family: VerifiedFamily::GuiQuickbar,
+        packets: outputs,
+    }))
 }
 
 fn dump_quickbar_payload_for_diagnostics(label: &str, payload: &[u8]) {

@@ -21,7 +21,7 @@ use std::{
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
-    translate::{Emit, VerifiedFamily, area, module_resources},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, area, module_resources},
 };
 
 mod client_filters;
@@ -40,12 +40,12 @@ mod synthetic_area;
 mod transport_identity;
 
 use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
-use sequence::{
-    SequenceShift, shift_sequence_for_peer, trim_sequence_shifts, unshift_ack_for_origin,
-};
 use reassembly::{
     CompletedDeflatedReplay, CompletedDeflatedStreamWindow, InflatedGameplayPayload,
     ServerDeflatedReassembly,
+};
+use sequence::{
+    SequenceShift, shift_sequence_for_peer, trim_sequence_shifts, unshift_ack_for_origin,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -53,7 +53,6 @@ const MAX_INTERLEAVED_PACKETS: usize = 32;
 const CNW_LENGTH_BYTES: usize = 4;
 
 pub use state::SessionState;
-
 
 pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
@@ -88,10 +87,7 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     Ok(Emit::Packet(packet))
 }
 
-fn translate_client_to_server_packet(
-    bytes: Vec<u8>,
-    view: &MFrameView,
-) -> anyhow::Result<Vec<u8>> {
+fn translate_client_to_server_packet(bytes: Vec<u8>, view: &MFrameView) -> anyhow::Result<Vec<u8>> {
     client_filters::translate_client_frame(bytes, view)
 }
 
@@ -104,10 +100,15 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
 
-    if let Some(rewritten) = coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)? {
+    if let Some(rewritten) =
+        coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)?
+    {
         return finalize_server_to_client_emit(
             state,
-            Emit::VerifiedPackets { family: VerifiedFamily::CoalescedWindow, packets: vec![rewritten] },
+            Emit::VerifiedPackets {
+                family: VerifiedFamily::CoalescedWindow,
+                packets: vec![rewritten],
+            },
             pending_count_before,
         );
     }
@@ -116,10 +117,13 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         reassembly::continue_server_deflated_reassembly(&inbound, &view, state)?
     } else if reassembly::should_start_server_deflated_reassembly(&view) {
         reassembly::start_server_deflated_reassembly(&inbound, &view, state)?
-    } else if let Some(rewritten) =
+    } else if let Some(verified) =
         server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
     {
-        Emit::VerifiedPackets { family: VerifiedFamily::DirectSemantic, packets: vec![rewritten] }
+        Emit::VerifiedPackets {
+            family: verified.family,
+            packets: vec![verified.packet],
+        }
     } else if let Some(summary) = transport_identity::claim_server_frame_if_verified(&view) {
         tracing::info!(
             packet = summary.packet_name,
@@ -195,7 +199,8 @@ fn unshift_server_ack_for_client(
         return Ok(());
     }
 
-    let unshifted = unshift_ack_for_origin(&state.sequence.client_sequence_shifts, view.ack_sequence);
+    let unshifted =
+        unshift_ack_for_origin(&state.sequence.client_sequence_shifts, view.ack_sequence);
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -225,7 +230,8 @@ fn unshift_client_ack_for_server(
         return Ok(());
     }
 
-    let unshifted = unshift_ack_for_origin(&state.sequence.server_sequence_shifts, view.ack_sequence);
+    let unshifted =
+        unshift_ack_for_origin(&state.sequence.server_sequence_shifts, view.ack_sequence);
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -280,10 +286,7 @@ fn queue_area_client_area_side_effects_after_sequence(
     )
 }
 
-fn shift_server_sequence_for_client(
-    state: &SessionState,
-    packet: &mut [u8],
-) -> anyhow::Result<()> {
+fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> anyhow::Result<()> {
     if state.sequence.server_sequence_shifts.is_empty() {
         return Ok(());
     }
@@ -326,7 +329,12 @@ fn finalize_server_to_client_emit(
     let mut suffix = Vec::new();
     let mut kept = Vec::new();
 
-    for (index, pending) in state.synthetic_area.pending_server_to_client_packets.drain(..).enumerate() {
+    for (index, pending) in state
+        .synthetic_area
+        .pending_server_to_client_packets
+        .drain(..)
+        .enumerate()
+    {
         if pending.due_at > now {
             kept.push(pending);
             continue;
@@ -338,9 +346,9 @@ fn finalize_server_to_client_emit(
             "server synthetic M packet released"
         );
         if index < pending_count_before {
-            prefix.push(pending.packet);
+            prefix.push((pending.family, pending.packet));
         } else {
-            suffix.push(pending.packet);
+            suffix.push((pending.family, pending.packet));
         }
     }
     state.synthetic_area.pending_server_to_client_packets = kept;
@@ -351,7 +359,7 @@ fn finalize_server_to_client_emit(
             if prefix.is_empty() {
                 Ok(Emit::Consumed)
             } else {
-                Ok(Emit::Packets(prefix))
+                Ok(Emit::MixedVerifiedPackets(prefix))
             }
         }
         Emit::Drop => {
@@ -359,7 +367,7 @@ fn finalize_server_to_client_emit(
             if prefix.is_empty() {
                 Ok(Emit::Drop)
             } else {
-                Ok(Emit::Packets(prefix))
+                Ok(Emit::MixedVerifiedPackets(prefix))
             }
         }
         Emit::Packet(mut packet) => {
@@ -367,43 +375,50 @@ fn finalize_server_to_client_emit(
             if prefix.is_empty() && suffix.is_empty() {
                 Ok(Emit::Packet(packet))
             } else {
-                prefix.push(packet);
-                prefix.extend(suffix);
-                Ok(Emit::Packets(prefix))
+                let mut plain = prefix
+                    .into_iter()
+                    .map(|(_, packet)| packet)
+                    .collect::<Vec<_>>();
+                plain.push(packet);
+                plain.extend(suffix.into_iter().map(|(_, packet)| packet));
+                Ok(Emit::Packets(plain))
             }
         }
         Emit::Packets(mut packets) => {
             for packet in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
             }
-            prefix.extend(packets);
-            prefix.extend(suffix);
-            Ok(Emit::Packets(prefix))
+            let mut plain = prefix
+                .into_iter()
+                .map(|(_, packet)| packet)
+                .collect::<Vec<_>>();
+            plain.extend(packets);
+            plain.extend(suffix.into_iter().map(|(_, packet)| packet));
+            Ok(Emit::Packets(plain))
         }
         Emit::PacketsPreShifted(mut packets) => {
-            prefix.extend(packets);
-            prefix.extend(suffix);
-            Ok(Emit::PacketsPreShifted(prefix))
+            let mut plain = prefix
+                .into_iter()
+                .map(|(_, packet)| packet)
+                .collect::<Vec<_>>();
+            plain.extend(packets);
+            plain.extend(suffix.into_iter().map(|(_, packet)| packet));
+            Ok(Emit::PacketsPreShifted(plain))
         }
         Emit::MixedVerifiedPackets(mut packets) => {
             for (_, packet) in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
             }
             let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
-            mixed.extend(
-                prefix
-                    .into_iter()
-                    .map(|packet| (VerifiedFamily::LoadBar, packet)),
-            );
+            mixed.extend(prefix);
             mixed.extend(packets);
-            mixed.extend(
-                suffix
-                    .into_iter()
-                    .map(|packet| (VerifiedFamily::LoadBar, packet)),
-            );
+            mixed.extend(suffix);
             Ok(Emit::MixedVerifiedPackets(mixed))
         }
-        Emit::VerifiedPackets { family, packets: mut packets } => {
+        Emit::VerifiedPackets {
+            family,
+            packets: mut packets,
+        } => {
             for packet in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
             }
@@ -411,36 +426,23 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::VerifiedPackets { family, packets })
             } else {
                 let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
-                mixed.extend(
-                    prefix
-                        .into_iter()
-                        .map(|packet| (VerifiedFamily::LoadBar, packet)),
-                );
+                mixed.extend(prefix);
                 mixed.extend(packets.into_iter().map(|packet| (family, packet)));
-                mixed.extend(
-                    suffix
-                        .into_iter()
-                        .map(|packet| (VerifiedFamily::LoadBar, packet)),
-                );
+                mixed.extend(suffix);
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
-        Emit::VerifiedPacketsPreShifted { family, packets: mut packets } => {
+        Emit::VerifiedPacketsPreShifted {
+            family,
+            packets: mut packets,
+        } => {
             if prefix.is_empty() && suffix.is_empty() {
                 Ok(Emit::VerifiedPacketsPreShifted { family, packets })
             } else {
                 let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
-                mixed.extend(
-                    prefix
-                        .into_iter()
-                        .map(|packet| (VerifiedFamily::LoadBar, packet)),
-                );
+                mixed.extend(prefix);
                 mixed.extend(packets.into_iter().map(|packet| (family, packet)));
-                mixed.extend(
-                    suffix
-                        .into_iter()
-                        .map(|packet| (VerifiedFamily::LoadBar, packet)),
-                );
+                mixed.extend(suffix);
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
@@ -474,7 +476,10 @@ fn retarget_completed_reassembly_emit_after_progress_shells(
             )?;
             Ok(Emit::PacketsPreShifted(packets))
         }
-        Emit::VerifiedPackets { family, mut packets } => {
+        Emit::VerifiedPackets {
+            family,
+            mut packets,
+        } => {
             retarget_completed_reassembly_packets_after_progress_shells(
                 state,
                 reassembly,
@@ -495,17 +500,23 @@ fn retarget_completed_reassembly_packets_after_progress_shells(
         return Ok(());
     }
     if packets.len() > u16::MAX as usize {
-        anyhow::bail!("too many delayed deflated replacement packets: {}", packets.len());
+        anyhow::bail!(
+            "too many delayed deflated replacement packets: {}",
+            packets.len()
+        );
     }
 
     let replacement_base = reassembly
         .first_sequence
         .wrapping_add(reassembly.expected_frames.saturating_sub(1) as u16);
-    let shifted_base = shift_sequence_for_peer(&state.sequence.server_sequence_shifts, replacement_base);
+    let shifted_base =
+        shift_sequence_for_peer(&state.sequence.server_sequence_shifts, replacement_base);
     for (index, packet) in packets.iter_mut().enumerate() {
         write_be_u16(packet, 3, shifted_base.wrapping_add(index as u16))
             .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("failed to retarget delayed deflated replacement sequence"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to retarget delayed deflated replacement sequence")
+            })?;
         encode_legacy_m_crc(packet)
             .then_some(())
             .ok_or_else(|| anyhow::anyhow!("failed to repair delayed deflated replacement CRC"))?;
@@ -549,8 +560,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         .collect::<Vec<_>>();
     let source_compressed_length = compressed.len();
 
-    let stream_payload =
-        reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
+    let stream_payload = reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
     if stream_payload {
         if let Some(window) =
             reassembly::completed_server_stream_window(state, &reassembly, source_compressed_length)
@@ -589,7 +599,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                     );
                     Ok(Emit::Packets(packets))
                 }
-                CompletedDeflatedReplay::VerifiedPackets { family, packets: mut packets } => {
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family,
+                    packets: mut packets,
+                } => {
                     packets.extend(interleaved_packets);
                     tracing::info!(
                         frames = packets.len(),
@@ -656,7 +669,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 state,
                 &reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::ConsumedEmptyMFrame,
+                    packets: outputs.clone(),
+                },
             );
         }
         outputs.extend(reassembly.interleaved_packets);
@@ -670,7 +686,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             proxy_owned_stream = state.deflate.server_zlib_stream_proxy_owned,
             "server deflated payload consumed because it has no high-level packet header"
         );
-        return Ok(Emit::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs });
+        return Ok(Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: outputs,
+        });
     }
 
     let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
@@ -690,7 +709,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 state,
                 &reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::ConsumedEmptyMFrame,
+                    packets: outputs.clone(),
+                },
             );
         }
         outputs.extend(reassembly.interleaved_packets);
@@ -703,7 +725,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             prefix = %hex_prefix(&bytes, 32),
             "server deflated high-level payload consumed because required semantic translation is missing"
         );
-        return Ok(Emit::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs });
+        return Ok(Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: outputs,
+        });
     }
     if !inflated_cnw_fragment_offset_valid(&bytes) {
         dump_invalid_inflated_payload(&bytes, &reassembly, "invalid-cnw-fragment-offset");
@@ -713,7 +738,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 state,
                 &reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::ConsumedEmptyMFrame,
+                    packets: outputs.clone(),
+                },
             );
         }
         outputs.extend(reassembly.interleaved_packets);
@@ -725,7 +753,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             prefix = %hex_prefix(&bytes, 32),
             "server deflated high-level payload consumed because CNW fragment offset is invalid"
         );
-        return Ok(Emit::VerifiedPackets { family: VerifiedFamily::ConsumedEmptyMFrame, packets: outputs });
+        return Ok(Emit::VerifiedPackets {
+            family: VerifiedFamily::ConsumedEmptyMFrame,
+            packets: outputs,
+        });
     }
     if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
         state.area_context.latest_area_placeables = summary.placeable_context.clone();
@@ -767,8 +798,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         return Ok(Emit::Packets(packets));
     }
 
+    let verified_family = semantic_rewrite_summary.verified_family();
     if used_server_stream {
         state.deflate.server_zlib_stream_proxy_owned = true;
+        state.deflate.server_zlib_stream_owner =
+            Some(ContinuationOwner::from_verified_family(verified_family));
     }
 
     let compressed = deflate_zlib(&bytes)?;
@@ -776,14 +810,17 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     combined.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     combined.extend_from_slice(&compressed);
 
-    let verified_family = semantic_rewrite_summary.verified_family();
-    let mut outputs = reassembly::build_server_deflated_output_frames(&reassembly, &combined, 0x01, true)?;
+    let mut outputs =
+        reassembly::build_server_deflated_output_frames(&reassembly, &combined, 0x01, true)?;
     if used_server_stream {
         reassembly::remember_completed_server_stream_window(
             state,
             &reassembly,
             source_compressed_length,
-            CompletedDeflatedReplay::VerifiedPackets { family: verified_family, packets: outputs.clone() },
+            CompletedDeflatedReplay::VerifiedPackets {
+                family: verified_family,
+                packets: outputs.clone(),
+            },
         );
     }
     outputs.extend(reassembly.interleaved_packets);
@@ -802,7 +839,10 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         },
     );
 
-    Ok(Emit::VerifiedPackets { family: verified_family, packets: outputs })
+    Ok(Emit::VerifiedPackets {
+        family: verified_family,
+        packets: outputs,
+    })
 }
 
 pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
@@ -823,8 +863,7 @@ pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
         .iter()
         .flat_map(|frame| frame.compressed_chunk.iter().copied())
         .collect::<Vec<_>>();
-    let stream_payload =
-        reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
+    let stream_payload = reassembly.zlib_stream && !looks_like_zlib_wrapped_deflate(&compressed);
     if stream_payload && state.deflate.server_zlib_inflater.is_some() {
         tracing::debug!(
             first_sequence = reassembly.first_sequence,
@@ -1018,7 +1057,10 @@ fn dump_invalid_inflated_payload(
     }
 
     let high_name = HighLevel::parse(inflated)
-        .map(|high| high.name().replace(['<', '>', '/', '\\', ':', '*', '?', '"', '|'], "_"))
+        .map(|high| {
+            high.name()
+                .replace(['<', '>', '/', '\\', ':', '*', '?', '"', '|'], "_")
+        })
         .unwrap_or_else(|| "no-high-level".to_string());
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)

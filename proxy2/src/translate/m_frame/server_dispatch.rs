@@ -9,9 +9,9 @@ use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        area, char_list, chat, client_side_message, cnw_message, custom_token, game_obj_update,
-        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
-        party, player_list, quickbar, VerifiedFamily,
+        VerifiedFamily, VerifiedPacket, area, char_list, chat, client_side_message, cnw_message,
+        custom_token, game_obj_update, gameplay_stream, inventory, journal, live_object, loadbar,
+        login, module, module_resources, module_time, party, player_list, quickbar,
     },
 };
 
@@ -31,16 +31,20 @@ pub(super) enum SemanticScope {
 #[derive(Debug, Default)]
 pub(super) struct InflatedPayloadRewrite {
     family_names: Vec<&'static str>,
+    families: Vec<VerifiedFamily>,
     pub(super) area_rewrite: Option<area::AreaRewriteSummary>,
     pub(super) module_info_candidate_offset: Option<usize>,
     pub(super) quarantine_reason: Option<&'static str>,
 }
 
 impl InflatedPayloadRewrite {
-    pub(super) fn note_rewrite(&mut self, family_name: &'static str) {
+    pub(super) fn note_rewrite(&mut self, family_name: &'static str, family: VerifiedFamily) {
         self.quarantine_reason = None;
         if !self.family_names.contains(&family_name) {
             self.family_names.push(family_name);
+        }
+        if !self.families.contains(&family) {
+            self.families.push(family);
         }
     }
 
@@ -53,18 +57,12 @@ impl InflatedPayloadRewrite {
     }
 
     pub(super) fn verified_family(&self) -> VerifiedFamily {
-        match self.family_names.as_slice() {
-            ["Area_ClientArea"] => VerifiedFamily::AreaClientArea,
-            ["CharList"] => VerifiedFamily::CharList,
-            ["ClientSideMessage"] => VerifiedFamily::ClientSideMessage,
-            ["GameObjUpdate_LiveObjectPrefixedFragments"]
-            | ["GameObjUpdate_LiveObjectAddRecords"]
-            | ["GameObjUpdate_LiveObjectUpdateRecords"]
-            | ["GameObjUpdate_LiveObjectClaimedRecords"] => VerifiedFamily::GameObjUpdateLiveObject,
-            ["GuiQuickbar"] => VerifiedFamily::GuiQuickbar,
-            ["Module_Info"] => VerifiedFamily::ModuleInfo,
-            _ => VerifiedFamily::SemanticDeflated,
-        }
+        self.families
+            .as_slice()
+            .first()
+            .copied()
+            .filter(|_| self.families.len() == 1)
+            .unwrap_or(VerifiedFamily::SemanticDeflated)
     }
 }
 
@@ -96,51 +94,138 @@ enum ServerTranslatorOutcome {
     Claim(ServerTranslatorClaim),
 }
 
-type ServerTranslatorFn = fn(
-    &mut Vec<u8>,
-    Option<&area::AreaPlaceableContext>,
-    SemanticScope,
-) -> ServerTranslatorOutcome;
+type ServerTranslatorFn =
+    fn(&mut Vec<u8>, Option<&area::AreaPlaceableContext>, SemanticScope) -> ServerTranslatorOutcome;
 
 #[derive(Debug, Clone, Copy)]
 struct ServerToClientTranslator {
     family_name: &'static str,
+    verified_family: Option<VerifiedFamily>,
     translate: ServerTranslatorFn,
 }
 
 const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
-    ServerToClientTranslator { family_name: "SetCustomToken", translate: translate_custom_token },
-    ServerToClientTranslator { family_name: "Login", translate: translate_login },
-    ServerToClientTranslator { family_name: "Module_Time", translate: translate_module_time },
-    ServerToClientTranslator { family_name: "LoadBar", translate: translate_loadbar },
-    ServerToClientTranslator { family_name: "ClientSideMessage", translate: translate_client_side_message },
-    ServerToClientTranslator { family_name: "Journal", translate: translate_journal },
-    ServerToClientTranslator { family_name: "Chat", translate: translate_chat },
-    ServerToClientTranslator { family_name: "Inventory", translate: translate_inventory },
-    ServerToClientTranslator { family_name: "GameObjUpdate", translate: translate_game_obj_update },
-    ServerToClientTranslator { family_name: "Party", translate: translate_party },
-    ServerToClientTranslator { family_name: "GuiQuickbar", translate: translate_quickbar },
-    ServerToClientTranslator { family_name: "CNWPrefixedFragmentsTransportOnly", translate: normalize_cnw_transport_only },
-    ServerToClientTranslator { family_name: "CharList", translate: translate_char_list },
-    ServerToClientTranslator { family_name: "PlayerList", translate: translate_player_list },
-    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectPrefixedFragments", translate: translate_live_object_prefixed_fragments },
-    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectAddRecords", translate: translate_live_object_add_records },
-    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectUpdateRecords", translate: translate_live_object_update_records },
-    ServerToClientTranslator { family_name: "GameObjUpdate_LiveObjectClaimedRecords", translate: translate_live_object_claimed_records },
-    ServerToClientTranslator { family_name: "Area_ClientArea", translate: translate_area_client_area },
-    ServerToClientTranslator { family_name: "Module_Info", translate: translate_module_info },
+    ServerToClientTranslator {
+        family_name: "SetCustomToken",
+        verified_family: Some(VerifiedFamily::SetCustomToken),
+        translate: translate_custom_token,
+    },
+    ServerToClientTranslator {
+        family_name: "Login",
+        verified_family: Some(VerifiedFamily::Login),
+        translate: translate_login,
+    },
+    ServerToClientTranslator {
+        family_name: "Module_Time",
+        verified_family: Some(VerifiedFamily::ModuleTime),
+        translate: translate_module_time,
+    },
+    ServerToClientTranslator {
+        family_name: "LoadBar",
+        verified_family: Some(VerifiedFamily::LoadBar),
+        translate: translate_loadbar,
+    },
+    ServerToClientTranslator {
+        family_name: "ClientSideMessage",
+        verified_family: Some(VerifiedFamily::ClientSideMessage),
+        translate: translate_client_side_message,
+    },
+    ServerToClientTranslator {
+        family_name: "Journal",
+        verified_family: Some(VerifiedFamily::Journal),
+        translate: translate_journal,
+    },
+    ServerToClientTranslator {
+        family_name: "Chat",
+        verified_family: Some(VerifiedFamily::Chat),
+        translate: translate_chat,
+    },
+    ServerToClientTranslator {
+        family_name: "Inventory",
+        verified_family: Some(VerifiedFamily::Inventory),
+        translate: translate_inventory,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate",
+        verified_family: Some(VerifiedFamily::GameObjUpdateObjectControl),
+        translate: translate_game_obj_update,
+    },
+    ServerToClientTranslator {
+        family_name: "Party",
+        verified_family: Some(VerifiedFamily::Party),
+        translate: translate_party,
+    },
+    ServerToClientTranslator {
+        family_name: "GuiQuickbar",
+        verified_family: Some(VerifiedFamily::GuiQuickbar),
+        translate: translate_quickbar,
+    },
+    ServerToClientTranslator {
+        family_name: "CNWPrefixedFragmentsTransportOnly",
+        verified_family: None,
+        translate: normalize_cnw_transport_only,
+    },
+    ServerToClientTranslator {
+        family_name: "CharList",
+        verified_family: Some(VerifiedFamily::CharList),
+        translate: translate_char_list,
+    },
+    ServerToClientTranslator {
+        family_name: "PlayerList",
+        verified_family: Some(VerifiedFamily::PlayerList),
+        translate: translate_player_list,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectPrefixedFragments",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_prefixed_fragments,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectAddRecords",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_add_records,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectUpdateRecords",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_update_records,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectClaimedRecords",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_claimed_records,
+    },
+    ServerToClientTranslator {
+        family_name: "Area_ClientArea",
+        verified_family: Some(VerifiedFamily::AreaClientArea),
+        translate: translate_area_client_area,
+    },
+    ServerToClientTranslator {
+        family_name: "Module_Info",
+        verified_family: Some(VerifiedFamily::ModuleInfo),
+        translate: translate_module_info,
+    },
 ];
 
 pub(super) fn rewrite_inflated_payload_for_ee(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
-    preclaimed_family: Option<&'static str>,
+    preclaimed_family: Option<(&'static str, VerifiedFamily)>,
 ) -> InflatedPayloadRewrite {
     let mut rewrite = InflatedPayloadRewrite::default();
 
-    if let Some(family_name) = preclaimed_family {
-        rewrite.note_rewrite(family_name);
+    let split = gameplay_stream::split_inflated_gameplay(payload);
+    if !split.complete {
+        tracing::debug!(
+            units = split.units.len(),
+            payload_length = payload.len(),
+            "inflated gameplay stream classified as incomplete/non-header continuation"
+        );
+    }
+
+    if let Some((family_name, family)) = preclaimed_family {
+        rewrite.note_rewrite(family_name, family);
     }
 
     for translator in SERVER_TO_CLIENT_TRANSLATORS {
@@ -152,7 +237,11 @@ pub(super) fn rewrite_inflated_payload_for_ee(
                 // ownership. This preserves the strict no-raw-passthrough rule.
             }
             ServerTranslatorOutcome::Claim(claim) => {
-                rewrite.note_rewrite(translator.family_name);
+                let Some(family) = translator.verified_family else {
+                    rewrite.quarantine_reason = Some("claimed-semantic-missing-verified-family");
+                    break;
+                };
+                rewrite.note_rewrite(translator.family_name, family);
                 if let Some(area_rewrite) = claim.area_rewrite {
                     rewrite.area_rewrite = Some(area_rewrite);
                 }
@@ -188,7 +277,11 @@ fn translate_custom_token(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_login(
@@ -196,7 +289,11 @@ fn translate_login(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if login::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if login::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_module_time(
@@ -204,7 +301,11 @@ fn translate_module_time(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if module_time::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if module_time::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_loadbar(
@@ -212,7 +313,11 @@ fn translate_loadbar(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if loadbar::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if loadbar::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_client_side_message(
@@ -220,7 +325,11 @@ fn translate_client_side_message(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if client_side_message::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if client_side_message::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_journal(
@@ -228,7 +337,11 @@ fn translate_journal(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if journal::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if journal::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_chat(
@@ -236,7 +349,11 @@ fn translate_chat(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if chat::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if chat::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_inventory(
@@ -244,7 +361,11 @@ fn translate_inventory(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if inventory::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_game_obj_update(
@@ -252,7 +373,11 @@ fn translate_game_obj_update(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if game_obj_update::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if game_obj_update::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_party(
@@ -260,7 +385,11 @@ fn translate_party(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if party::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if party::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_quickbar(
@@ -294,7 +423,11 @@ fn translate_char_list(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if char_list::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if char_list::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_player_list(
@@ -302,7 +435,11 @@ fn translate_player_list(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if player_list::rewrite_player_list_payload_if_possible(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if player_list::rewrite_player_list_payload_if_possible(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_live_object_prefixed_fragments(
@@ -310,7 +447,11 @@ fn translate_live_object_prefixed_fragments(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if live_object::normalize_prefixed_fragments_payload_if_needed(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if live_object::normalize_prefixed_fragments_payload_if_needed(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_live_object_add_records(
@@ -318,7 +459,16 @@ fn translate_live_object_add_records(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if live_object::rewrite_creature_add_visual_transform_maps_if_possible(payload, latest_area_placeables).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        payload,
+        latest_area_placeables,
+    )
+    .is_some()
+    {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_live_object_update_records(
@@ -326,7 +476,11 @@ fn translate_live_object_update_records(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if live_update::rewrite_payload_if_needed(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if live_update::rewrite_payload_if_needed(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_live_object_claimed_records(
@@ -334,7 +488,11 @@ fn translate_live_object_claimed_records(
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
 ) -> ServerTranslatorOutcome {
-    if live_update::claim_payload_if_verified(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if live_update::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 
 fn translate_area_client_area(
@@ -350,7 +508,9 @@ fn translate_area_client_area(
     // packet validity.
     let _ = scope;
     match area::rewrite_area_client_area_payload(payload) {
-        Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim { area_rewrite: Some(summary) }),
+        Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
+            area_rewrite: Some(summary),
+        }),
         None => ServerTranslatorOutcome::None,
     }
 }
@@ -363,7 +523,11 @@ fn translate_module_info(
     if !matches!(scope, SemanticScope::DeflatedReassembly) {
         return ServerTranslatorOutcome::None;
     }
-    if module::rewrite_module_info_payload(payload).is_some() { claimed() } else { ServerTranslatorOutcome::None }
+    if module::rewrite_module_info_payload(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
 }
 fn mark_untranslated_semantic_quarantine(
     payload: &[u8],
@@ -491,21 +655,34 @@ pub(super) fn rewrite_direct_frame_if_needed(
     bytes: &[u8],
     view: &MFrameView,
     module_resource_runtime: &module_resources::ModuleResourceRuntime,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    if let Some(rewritten) =
-        rewrite_server_status_module_resources_frame_if_needed(bytes, view, module_resource_runtime)?
-    {
-        return Ok(Some(rewritten));
+) -> anyhow::Result<Option<VerifiedPacket>> {
+    if let Some(rewritten) = rewrite_server_status_module_resources_frame_if_needed(
+        bytes,
+        view,
+        module_resource_runtime,
+    )? {
+        return Ok(Some(VerifiedPacket {
+            family: VerifiedFamily::ServerStatusModuleResources,
+            packet: rewritten,
+        }));
     }
     if let Some(rewritten) = live_update::rewrite_direct_frame_if_needed(bytes, view)? {
-        return Ok(Some(rewritten));
+        return Ok(Some(VerifiedPacket {
+            family: VerifiedFamily::GameObjUpdateLiveObject,
+            packet: rewritten,
+        }));
     }
     if let Some(high) = view.high {
-        if let Some(rewritten) = rewrite_direct_semantic_frame_if_claimed(bytes, view, high)? {
-            return Ok(Some(rewritten));
+        if let Some(verified) = rewrite_direct_semantic_frame_if_claimed(bytes, view, high)? {
+            return Ok(Some(verified));
         }
         let reason = untranslated_semantic_quarantine_reason(high);
-        return consume_untranslated_direct_frame(bytes, view, high, reason).map(Some);
+        return consume_untranslated_direct_frame(bytes, view, high, reason).map(|packet| {
+            Some(VerifiedPacket {
+                family: VerifiedFamily::ConsumedEmptyMFrame,
+                packet,
+            })
+        });
     }
     Ok(None)
 }
@@ -514,7 +691,7 @@ fn rewrite_direct_semantic_frame_if_claimed(
     bytes: &[u8],
     view: &MFrameView,
     high: HighLevel,
-) -> anyhow::Result<Option<Vec<u8>>> {
+) -> anyhow::Result<Option<VerifiedPacket>> {
     let Some(payload) = parse_window::primary_payload(bytes, view) else {
         return Ok(None);
     };
@@ -535,8 +712,10 @@ fn rewrite_direct_semantic_frame_if_claimed(
         &rewritten_payload,
         "direct semantic high-level payload",
     )?;
+    let verified_family = semantic_rewrite_summary.verified_family();
     tracing::info!(
         family = high.name(),
+        verified_family = verified_family.as_str(),
         major = high.major,
         minor = high.minor,
         sequence = view.sequence,
@@ -544,7 +723,10 @@ fn rewrite_direct_semantic_frame_if_claimed(
         new_payload_length = rewritten_payload.len(),
         "server direct M high-level payload semantically claimed for EE"
     );
-    Ok(Some(rewritten))
+    Ok(Some(VerifiedPacket {
+        family: verified_family,
+        packet: rewritten,
+    }))
 }
 
 fn consume_untranslated_direct_frame(
@@ -608,8 +790,7 @@ fn rewrite_server_status_module_resources_frame_if_needed(
     let Some(summary) = module_resources::rewrite_server_status_module_resources_payload(
         &mut rewritten_payload,
         module_resource_runtime,
-    )
-    else {
+    ) else {
         return Ok(None);
     };
     let rewritten = parse_window::replace_primary_payload_and_repair(

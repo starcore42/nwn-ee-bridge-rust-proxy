@@ -8,14 +8,14 @@ use flate2::{Decompress, FlushDecompress};
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD},
+    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView},
     translate::{Emit, VerifiedFamily},
 };
 
 use super::{
+    MAX_INTERLEAVED_PACKETS, MAX_REASSEMBLY_FRAMES, SessionState,
     deflate::{inflate_with_server_stream, inflate_with_window, looks_like_zlib_wrapped_deflate},
-    server_dispatch, transport_identity, SessionState, MAX_INTERLEAVED_PACKETS,
-    MAX_REASSEMBLY_FRAMES,
+    server_dispatch, transport_identity,
 };
 
 #[derive(Debug, Clone)]
@@ -56,7 +56,10 @@ pub(super) enum CompletedDeflatedReplay {
     /// The inflated payload was either translated or deliberately quarantined.
     /// Duplicates must preserve that exact safe disposition; raw legacy bytes
     /// must never leak through on retransmit.
-    VerifiedPackets { family: VerifiedFamily, packets: Vec<Vec<u8>> },
+    VerifiedPackets {
+        family: VerifiedFamily,
+        packets: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +67,6 @@ pub(super) struct InflatedGameplayPayload {
     pub(super) bytes: Vec<u8>,
     pub(super) used_server_stream: bool,
 }
-
 
 pub(super) fn should_start_server_deflated_reassembly(view: &MFrameView) -> bool {
     view.deflated
@@ -189,12 +191,10 @@ pub(super) fn continue_server_deflated_reassembly(
             "duplicate server deflated M frame dropped"
         );
         if buffered_frames + 1 >= expected_frames {
-            if let Some(emit) =
-                super::try_emit_salvaged_incomplete_server_deflated_reassembly(
-                    state,
-                    "duplicate retransmit while one packetized frame is missing",
-                )?
-            {
+            if let Some(emit) = super::try_emit_salvaged_incomplete_server_deflated_reassembly(
+                state,
+                "duplicate retransmit while one packetized frame is missing",
+            )? {
                 return Ok(emit);
             }
         }
@@ -234,7 +234,7 @@ fn claim_or_consume_interleaved_server_packet(
             payload_len = view.payload_length,
             "interleaved server M packet semantically claimed while deflated reassembly is pending"
         );
-        return Ok(rewritten);
+        return Ok(rewritten.packet);
     }
 
     if let Some(summary) = transport_identity::claim_server_frame_if_verified(view) {
@@ -488,13 +488,17 @@ pub(super) fn completed_server_stream_window<'a>(
     reassembly: &ServerDeflatedReassembly,
     compressed_length: usize,
 ) -> Option<&'a CompletedDeflatedStreamWindow> {
-    state.deflate.completed_server_stream_windows.iter().find(|window| {
-        window.first_sequence == reassembly.first_sequence
-            && window.expected_frames == reassembly.expected_frames
-            && window.packetized_sequence == reassembly.packetized_sequence
-            && window.inflated_length == reassembly.inflated_length
-            && window.compressed_length == compressed_length
-    })
+    state
+        .deflate
+        .completed_server_stream_windows
+        .iter()
+        .find(|window| {
+            window.first_sequence == reassembly.first_sequence
+                && window.expected_frames == reassembly.expected_frames
+                && window.packetized_sequence == reassembly.packetized_sequence
+                && window.inflated_length == reassembly.inflated_length
+                && window.compressed_length == compressed_length
+        })
 }
 
 pub(super) fn remember_completed_server_stream_window(
@@ -503,30 +507,40 @@ pub(super) fn remember_completed_server_stream_window(
     compressed_length: usize,
     replay: CompletedDeflatedReplay,
 ) {
-    if let Some(window) = state.deflate.completed_server_stream_windows.iter_mut().find(|window| {
-        window.first_sequence == reassembly.first_sequence
-            && window.expected_frames == reassembly.expected_frames
-            && window.packetized_sequence == reassembly.packetized_sequence
-            && window.inflated_length == reassembly.inflated_length
-            && window.compressed_length == compressed_length
-    }) {
+    if let Some(window) = state
+        .deflate
+        .completed_server_stream_windows
+        .iter_mut()
+        .find(|window| {
+            window.first_sequence == reassembly.first_sequence
+                && window.expected_frames == reassembly.expected_frames
+                && window.packetized_sequence == reassembly.packetized_sequence
+                && window.inflated_length == reassembly.inflated_length
+                && window.compressed_length == compressed_length
+        })
+    {
         window.replay = replay;
         return;
     }
 
     const MAX_COMPLETED_STREAM_WINDOWS: usize = 16;
-    state.deflate.completed_server_stream_windows.push(CompletedDeflatedStreamWindow {
-        first_sequence: reassembly.first_sequence,
-        expected_frames: reassembly.expected_frames,
-        packetized_sequence: reassembly.packetized_sequence,
-        inflated_length: reassembly.inflated_length,
-        compressed_length,
-        replay,
-    });
+    state
+        .deflate
+        .completed_server_stream_windows
+        .push(CompletedDeflatedStreamWindow {
+            first_sequence: reassembly.first_sequence,
+            expected_frames: reassembly.expected_frames,
+            packetized_sequence: reassembly.packetized_sequence,
+            inflated_length: reassembly.inflated_length,
+            compressed_length,
+            replay,
+        });
     if state.deflate.completed_server_stream_windows.len() > MAX_COMPLETED_STREAM_WINDOWS {
-        let overflow = state.deflate.completed_server_stream_windows.len() - MAX_COMPLETED_STREAM_WINDOWS;
-        state.deflate.completed_server_stream_windows.drain(0..overflow);
+        let overflow =
+            state.deflate.completed_server_stream_windows.len() - MAX_COMPLETED_STREAM_WINDOWS;
+        state
+            .deflate
+            .completed_server_stream_windows
+            .drain(0..overflow);
     }
 }
-
-

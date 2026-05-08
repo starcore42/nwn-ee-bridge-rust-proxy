@@ -1,8 +1,11 @@
-﻿// Quickbar transport normalization. This file is allowed to be conservative and
+use super::facade::quickbar_has_plausible_cnw_declared;
+use super::*;
+
+// Quickbar transport normalization. This file is allowed to be conservative and
 // visibly heuristic; semantic ownership still requires the reader/writer path to
 // successfully parse and emit the 36 verified button records.
 
-fn normalize_quickbar_payload_if_needed(
+pub(super) fn normalize_quickbar_payload_if_needed(
     payload: &mut Vec<u8>,
 ) -> Option<PrefixedFragmentsNormalizeSummary> {
     normalize_quickbar_prefixed_short_declared_payload_if_needed(payload)
@@ -10,7 +13,7 @@ fn normalize_quickbar_payload_if_needed(
         .or_else(|| normalize_quickbar_scanned_tail_payload_if_needed(payload))
 }
 
-fn is_quickbar_family(high: HighLevel) -> bool {
+pub(super) fn is_quickbar_family(high: HighLevel) -> bool {
     high.major == QUICKBAR_MAJOR && high.minor == SET_ALL_BUTTONS_MINOR
 }
 
@@ -37,21 +40,19 @@ fn normalize_quickbar_prefixed_short_declared_payload_if_needed(
         QuickbarSplitPolicy::DecompileOwnedBoundary,
     )?;
 
-    let mut read_buffer = Vec::with_capacity(
-        LEGACY_QUICKBAR_READ_CURSOR_START.checked_add(split.read_body_len)?,
-    );
+    let mut read_buffer =
+        Vec::with_capacity(LEGACY_QUICKBAR_READ_CURSOR_START.checked_add(split.read_body_len)?);
     read_buffer.extend_from_slice(&[0, 0, 0, 0]);
     read_buffer.extend_from_slice(body_and_tail.get(..split.read_body_len)?);
 
-    let mut fragments = Vec::with_capacity(
-        LEGACY_PREFIXED_FRAGMENT_BYTES.checked_add(split.fragment_tail_len)?,
-    );
+    let mut fragments =
+        Vec::with_capacity(LEGACY_PREFIXED_FRAGMENT_BYTES.checked_add(split.fragment_tail_len)?);
     fragments.extend_from_slice(&prefixed_fragment_bytes);
     fragments.extend_from_slice(body_and_tail.get(split.read_body_len..)?);
 
     let old_payload_length = payload.len();
-    let new_declared = u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(read_buffer.len())?)
-    .ok()?;
+    let new_declared =
+        u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(read_buffer.len())?).ok()?;
     let mut rewritten = Vec::with_capacity(
         HIGH_LEVEL_HEADER_BYTES
             .checked_add(CNW_LENGTH_BYTES)?

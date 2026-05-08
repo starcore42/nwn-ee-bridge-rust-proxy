@@ -6,7 +6,7 @@
 
 use crate::{
     packet::m::HighLevel,
-    translate::{area, live_object, Emit, VerifiedFamily},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, area, live_object},
 };
 use std::{
     fs,
@@ -15,14 +15,13 @@ use std::{
 };
 
 use super::{
+    CNW_LENGTH_BYTES, SessionState,
     deflate::deflate_zlib,
-    hex_prefix,
-    live_update,
+    hex_prefix, live_update,
     reassembly::{
-        build_server_deflated_output_frames, remember_completed_server_stream_window,
-        CompletedDeflatedReplay, ServerDeflatedReassembly,
+        CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
+        remember_completed_server_stream_window,
     },
-    SessionState, CNW_LENGTH_BYTES,
 };
 
 #[derive(Debug, Clone)]
@@ -76,6 +75,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     used_server_stream: bool,
     bytes: &mut Vec<u8>,
 ) -> anyhow::Result<Option<Emit>> {
+    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GameObjUpdateLiveObject);
     if !used_server_stream || !state.deflate.server_zlib_stream_proxy_owned {
         return Ok(None);
     }
@@ -91,11 +91,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                 split.live_bytes_offset,
             );
             let area_context = state.area_context.latest_area_placeables.clone();
-            if flush_pending_live_object_stream_if_verified(
-                state,
-                bytes,
-                Some(&area_context),
-            ) {
+            if flush_pending_live_object_stream_if_verified(state, bytes, Some(&area_context)) {
                 tracing::info!(
                     first_sequence = reassembly.first_sequence,
                     rebuilt_inflated = bytes.len(),
@@ -133,7 +129,8 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
         }
 
         if state.live_object.pending_stream.is_some() {
-            let Some(prefix_len) = prefixed_live_object_stream_continuation_prefix_len(bytes) else {
+            let Some(prefix_len) = prefixed_live_object_stream_continuation_prefix_len(bytes)
+            else {
                 return Ok(None);
             };
             append_pending_live_object_prefixed_fragment(
@@ -143,11 +140,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                 prefix_len,
             );
             let area_context = state.area_context.latest_area_placeables.clone();
-            if flush_pending_live_object_stream_if_verified(
-                state,
-                bytes,
-                Some(&area_context),
-            ) {
+            if flush_pending_live_object_stream_if_verified(state, bytes, Some(&area_context)) {
                 tracing::info!(
                     current_sequence = reassembly.first_sequence,
                     rebuilt_inflated = bytes.len(),
@@ -193,7 +186,10 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                 state,
                 reassembly,
                 source_compressed_length,
-                CompletedDeflatedReplay::VerifiedPackets { family: VerifiedFamily::GameObjUpdateLiveObject, packets: outputs.clone() },
+                CompletedDeflatedReplay::VerifiedPackets {
+                    family: VerifiedFamily::GameObjUpdateLiveObject,
+                    packets: outputs.clone(),
+                },
             );
             outputs.extend(reassembly.interleaved_packets.clone());
             if let Some(pending) = state.live_object.pending_stream.as_ref() {
@@ -206,7 +202,10 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     "server live-object stream fragment buffered pending continuation"
                 );
             }
-            return Ok(Some(Emit::VerifiedPackets { family: VerifiedFamily::GameObjUpdateLiveObject, packets: outputs }));
+            return Ok(Some(Emit::VerifiedPackets {
+                family: VerifiedFamily::GameObjUpdateLiveObject,
+                packets: outputs,
+            }));
         }
 
         if state.live_object.pending_stream.is_some() {
@@ -253,14 +252,12 @@ fn starts_with_live_object_high_level(bytes: &[u8]) -> bool {
     bytes.len() >= 7 && bytes[0] == b'P' && bytes[1] == 0x05 && bytes[2] == 0x01
 }
 
-
 fn looks_like_clean_legacy_live_object_fragment(bytes: &[u8]) -> bool {
     let mut probe = bytes.to_vec();
     live_object::normalize_prefixed_fragments_payload_if_needed(&mut probe)
         .map(|summary| summary.dropped_leadin_bytes == 0 && !summary.salvaged_partial_leadin)
         .unwrap_or(false)
 }
-
 
 fn append_pending_live_object_clean_fragment(
     state: &mut SessionState,
@@ -271,7 +268,8 @@ fn append_pending_live_object_clean_fragment(
         return;
     }
     let pending = state
-        .live_object.pending_stream
+        .live_object
+        .pending_stream
         .get_or_insert_with(|| PendingLiveObjectStream {
             read_bytes: Vec::new(),
             fragment_bytes: Vec::new(),
@@ -283,7 +281,6 @@ fn append_pending_live_object_clean_fragment(
     pending.chunks = pending.chunks.saturating_add(1);
 }
 
-
 fn append_pending_live_object_prefixed_fragment(
     state: &mut SessionState,
     first_sequence: u16,
@@ -294,18 +291,22 @@ fn append_pending_live_object_prefixed_fragment(
         return;
     }
     let pending = state
-        .live_object.pending_stream
+        .live_object
+        .pending_stream
         .get_or_insert_with(|| PendingLiveObjectStream {
             read_bytes: Vec::new(),
             fragment_bytes: Vec::new(),
             first_sequence,
             chunks: 0,
         });
-    pending.fragment_bytes.extend_from_slice(&bytes[..live_bytes_offset]);
-    pending.read_bytes.extend_from_slice(&bytes[live_bytes_offset..]);
+    pending
+        .fragment_bytes
+        .extend_from_slice(&bytes[..live_bytes_offset]);
+    pending
+        .read_bytes
+        .extend_from_slice(&bytes[live_bytes_offset..]);
     pending.chunks = pending.chunks.saturating_add(1);
 }
-
 
 fn append_pending_live_object_continuation(
     state: &mut SessionState,
@@ -313,7 +314,8 @@ fn append_pending_live_object_continuation(
     bytes: &[u8],
 ) {
     let pending = state
-        .live_object.pending_stream
+        .live_object
+        .pending_stream
         .get_or_insert_with(|| PendingLiveObjectStream {
             read_bytes: Vec::new(),
             fragment_bytes: Vec::new(),
@@ -323,7 +325,6 @@ fn append_pending_live_object_continuation(
     pending.read_bytes.extend_from_slice(bytes);
     pending.chunks = pending.chunks.saturating_add(1);
 }
-
 
 fn flush_pending_live_object_stream_if_verified(
     state: &mut SessionState,
@@ -395,7 +396,6 @@ fn build_live_object_stream_payload(pending: &PendingLiveObjectStream) -> Option
     rebuilt.extend_from_slice(&pending.fragment_bytes);
     Some(rebuilt)
 }
-
 
 fn prefixed_live_object_stream_continuation_prefix_len(bytes: &[u8]) -> Option<usize> {
     let Some(first) = bytes.first().copied() else {

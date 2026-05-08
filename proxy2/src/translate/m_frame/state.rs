@@ -6,7 +6,7 @@
 
 use flate2::Decompress;
 
-use crate::translate::{area, module_resources};
+use crate::translate::{ContinuationOwner, area, module_resources};
 
 use super::{
     live_stream, quickbar_stream,
@@ -21,6 +21,7 @@ pub(super) struct DeflateState {
     pub(super) server_zlib_inflater: Option<Decompress>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
     pub(super) server_zlib_stream_proxy_owned: bool,
+    pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
 }
 
 #[derive(Debug, Default)]

@@ -1,4 +1,6 @@
-﻿// baseitems.2da support used by the quickbar item-object parser.
+use super::*;
+
+// baseitems.2da support used by the quickbar item-object parser.
 //
 // The parser needs the model-type column to know the exact legacy appearance
 // width. Direct 2DA files are preferred. If HG assets are still packaged inside
@@ -6,7 +8,7 @@
 // built-in table for common base item ids so spells/general slots still translate
 // while opaque item bodies are blanked instead of leaked.
 
-fn quickbar_base_item_model_types() -> Option<&'static [i8]> {
+pub(super) fn quickbar_base_item_model_types() -> Option<&'static [i8]> {
     QUICKBAR_BASE_ITEM_MODEL_TYPES
         .get_or_init(load_quickbar_base_item_model_types)
         .as_deref()

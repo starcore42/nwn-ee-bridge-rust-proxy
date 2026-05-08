@@ -1,3 +1,5 @@
+use super::*;
+
 // Split candidate selection and visibly heuristic quickbar boundary scoring.
 //
 // EE/Diamond quickbar SetAllButtons writes 36 slot records plus a compact BOOL
@@ -8,15 +10,15 @@
 const MAX_DECOMPILE_OWNED_QUICKBAR_FRAGMENT_TAIL_SCAN_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
-struct QuickbarTransportSplit {
-    read_body_len: usize,
-    fragment_tail_len: usize,
-    translated_item_slots: u32,
-    spell_slots: u32,
-    general_slots: u32,
-    item_candidate_slots: u32,
-    unsupported_slots: u32,
-    trailing_read_bytes: usize,
+pub(super) struct QuickbarTransportSplit {
+    pub(super) read_body_len: usize,
+    pub(super) fragment_tail_len: usize,
+    pub(super) translated_item_slots: u32,
+    pub(super) spell_slots: u32,
+    pub(super) general_slots: u32,
+    pub(super) item_candidate_slots: u32,
+    pub(super) unsupported_slots: u32,
+    pub(super) trailing_read_bytes: usize,
 }
 
 impl QuickbarTransportSplit {
@@ -29,7 +31,7 @@ impl QuickbarTransportSplit {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum QuickbarSplitPolicy {
+pub(super) enum QuickbarSplitPolicy {
     /// Decompile-backed quickbar transport repair for server-to-client
     /// `GuiQuickbar_SetAllButtons`: EE/Diamond both read exactly 36 slot type
     /// bytes and the item/spell payloads that follow them. A split is allowed
@@ -49,7 +51,7 @@ enum QuickbarSplitPolicy {
     DecompileOwnedBoundary,
 }
 
-fn choose_quickbar_split(
+pub(super) fn choose_quickbar_split(
     body_and_tail: &[u8],
     prefixed_fragment_bytes: &[u8],
     policy: QuickbarSplitPolicy,
@@ -74,8 +76,11 @@ fn choose_quickbar_split(
         read_buffer.extend_from_slice(&[0, 0, 0, 0]);
         read_buffer.extend_from_slice(body_and_tail.get(..read_body_len)?);
 
-        let mut fragments =
-            Vec::with_capacity(prefixed_fragment_bytes.len().checked_add(fragment_tail_len)?);
+        let mut fragments = Vec::with_capacity(
+            prefixed_fragment_bytes
+                .len()
+                .checked_add(fragment_tail_len)?,
+        );
         fragments.extend_from_slice(prefixed_fragment_bytes);
         fragments.extend_from_slice(body_and_tail.get(read_body_len..)?);
 
@@ -319,7 +324,7 @@ fn choose_cursor_derived_quickbar_split(
     Some(split)
 }
 
-fn choose_legacy_quickbar_item_end(
+pub(super) fn choose_legacy_quickbar_item_end(
     read_buffer: &[u8],
     slot: usize,
     cursor: usize,
@@ -343,8 +348,7 @@ fn choose_legacy_quickbar_item_end(
             continue;
         }
 
-        let mut score =
-            score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
+        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
         if score <= QUICKBAR_BAD_SCORE / 2 {
             continue;
         }
@@ -356,11 +360,7 @@ fn choose_legacy_quickbar_item_end(
         }
     }
 
-    if best_score < 0 {
-        None
-    } else {
-        best_candidate
-    }
+    if best_score < 0 { None } else { best_candidate }
 }
 
 fn score_legacy_quickbar_parse_from(
@@ -399,7 +399,9 @@ fn score_legacy_quickbar_parse_from(
     if ty == 1 {
         let item_payload_start = cursor + 1;
         let min_candidate = read_buffer.len().min(item_payload_start.saturating_add(8));
-        let max_candidate = read_buffer.len().min(item_payload_start.saturating_add(420));
+        let max_candidate = read_buffer
+            .len()
+            .min(item_payload_start.saturating_add(420));
         for candidate in min_candidate..=max_candidate {
             if candidate.saturating_add(remaining_slots_after_this) > read_buffer.len() {
                 break;
@@ -420,9 +422,9 @@ fn score_legacy_quickbar_parse_from(
             score += 12 - skipped.checked_div(16).unwrap_or(0).min(120) as i32;
             best_score = best_score.max(score);
         }
-    } else if let Some((button, next_cursor)) = parse_legacy_quickbar_non_item(read_buffer, cursor) {
-        let mut score =
-            score_legacy_quickbar_parse_from(read_buffer, slot + 1, next_cursor, memo);
+    } else if let Some((button, next_cursor)) = parse_legacy_quickbar_non_item(read_buffer, cursor)
+    {
+        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, next_cursor, memo);
         if score > QUICKBAR_BAD_SCORE / 2 {
             match button.kind {
                 QuickbarButtonKind::Spell { .. } => score += 60,
@@ -430,8 +432,7 @@ fn score_legacy_quickbar_parse_from(
                     score += 8;
                 }
                 QuickbarButtonKind::General { ref bytes }
-                    if bytes.len() == 1
-                        && legacy_quickbar_type_has_no_payload(bytes[0]) =>
+                    if bytes.len() == 1 && legacy_quickbar_type_has_no_payload(bytes[0]) =>
                 {
                     score += 20;
                 }
@@ -498,7 +499,7 @@ fn score_legacy_quickbar_candidate_window(
     Some(score)
 }
 
-fn find_legacy_quickbar_resync(
+pub(super) fn find_legacy_quickbar_resync(
     read_buffer: &[u8],
     slot: usize,
     cursor: usize,
@@ -538,5 +539,3 @@ fn find_legacy_quickbar_resync(
         None
     }
 }
-
-

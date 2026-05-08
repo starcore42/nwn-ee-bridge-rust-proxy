@@ -1,6 +1,8 @@
+use super::*;
+
 // Simple and rich inventory category block parsers.
 
-fn apply_simple_categories(
+pub(super) fn apply_simple_categories(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -19,7 +21,7 @@ fn apply_simple_categories(
     next
 }
 
-fn apply_rich_categories(
+pub(super) fn apply_rich_categories(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
@@ -31,9 +33,11 @@ fn apply_rich_categories(
         {
             next.push(GenericInventoryCandidate {
                 cursor,
-                bits: candidate
-                    .bits
-                    .saturating_add(usize::try_from(second_entries).unwrap_or(usize::MAX).saturating_mul(2)),
+                bits: candidate.bits.saturating_add(
+                    usize::try_from(second_entries)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(2),
+                ),
             });
         }
     }
@@ -45,7 +49,14 @@ fn advance_simple_category_block(
     cursor: usize,
     record_end: usize,
 ) -> Option<(usize, u32, u32)> {
-    advance_category_block(bytes, cursor, record_end, LEGACY_INVENTORY_CATEGORY_COUNT, 4, 4)
+    advance_category_block(
+        bytes,
+        cursor,
+        record_end,
+        LEGACY_INVENTORY_CATEGORY_COUNT,
+        4,
+        4,
+    )
 }
 
 fn advance_rich_category_block(
@@ -53,7 +64,14 @@ fn advance_rich_category_block(
     cursor: usize,
     record_end: usize,
 ) -> Option<(usize, u32, u32)> {
-    advance_category_block(bytes, cursor, record_end, LEGACY_INVENTORY_CATEGORY_COUNT, 2, 7)
+    advance_category_block(
+        bytes,
+        cursor,
+        record_end,
+        LEGACY_INVENTORY_CATEGORY_COUNT,
+        2,
+        7,
+    )
 }
 
 fn advance_category_block(
@@ -96,5 +114,3 @@ fn advance_category_block(
     }
     Some((cursor, first_total, second_total))
 }
-
-

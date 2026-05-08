@@ -1,4 +1,6 @@
-﻿// EE quickbar writer. This module emits a fresh verified EE-side packet from
+use super::*;
+
+// EE quickbar writer. This module emits a fresh verified EE-side packet from
 // the typed legacy parse; unsupported source bytes are never copied raw.
 
 #[derive(Debug, Clone)]
@@ -61,7 +63,7 @@ impl QuickbarPacketWriter {
     }
 }
 
-fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8>> {
+pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8>> {
     let mut writer = QuickbarPacketWriter::new();
     for button in &parsed.buttons {
         match &button.kind {
@@ -102,8 +104,8 @@ fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8>> {
     }
 
     let fragments = writer.clone().fragment_bytes();
-    let declared = u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(writer.read_buffer.len())?)
-        .ok()?;
+    let declared =
+        u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(writer.read_buffer.len())?).ok()?;
     let mut payload = Vec::with_capacity(
         HIGH_LEVEL_HEADER_BYTES
             .checked_add(CNW_LENGTH_BYTES)?

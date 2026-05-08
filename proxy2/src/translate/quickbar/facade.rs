@@ -1,4 +1,6 @@
-﻿// Public quickbar translation facade. These functions are the only entry points
+use super::*;
+
+// Public quickbar translation facade. These functions are the only entry points
 // used by the M-frame dispatcher; all semantic work is delegated to the focused
 // reader/writer modules.
 
@@ -20,7 +22,7 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
     let old_payload_length = payload.len();
     let parsed = parse_cnw_quickbar_payload(payload)?;
     let old_declared = parsed.declared;
-    let rewritten = build_ee_quickbar_payload(&parsed)?;
+    let rewritten = super::writer::build_ee_quickbar_payload(&parsed)?;
     let summary = summarize_quickbar_rewrite(
         &parsed,
         old_payload_length,
@@ -32,7 +34,7 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
     Some(summary)
 }
 
-fn quickbar_has_plausible_cnw_declared(payload: &[u8]) -> bool {
+pub(super) fn quickbar_has_plausible_cnw_declared(payload: &[u8]) -> bool {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
         return false;
     }
@@ -42,9 +44,7 @@ fn quickbar_has_plausible_cnw_declared(payload: &[u8]) -> bool {
     let Ok(declared) = usize::try_from(declared) else {
         return false;
     };
-    if declared < HIGH_LEVEL_HEADER_BYTES
-        || declared > MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
-    {
+    if declared < HIGH_LEVEL_HEADER_BYTES || declared > MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES {
         return false;
     }
     let read_size = declared.saturating_sub(HIGH_LEVEL_HEADER_BYTES);
@@ -61,7 +61,7 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
     let old_payload_length = payload.len();
     let parsed = parse_cnw_quickbar_payload(payload)?;
     let old_declared = parsed.declared;
-    let rewritten = build_ee_quickbar_payload(&parsed)?;
+    let rewritten = super::writer::build_ee_quickbar_payload(&parsed)?;
     let new_declared = read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared);
     let summary = summarize_quickbar_rewrite(
         &parsed,
