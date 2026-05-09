@@ -66,7 +66,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
     if !used_server_stream || !state.deflate.server_zlib_stream_proxy_owned {
         return Ok(None);
     }
-    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
+    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
 
     if state.quickbar.pending_stream.is_none() {
         let mut fragment_wait = false;
@@ -231,7 +231,7 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
     reassembly: &ServerDeflatedReassembly,
     source_compressed_length: usize,
 ) -> anyhow::Result<Option<Emit>> {
-    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
+    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
     let Some(pending) = state.quickbar.pending_stream.as_mut() else {
         return Ok(None);
     };
@@ -322,7 +322,7 @@ fn flush_pending_server_quickbar_stream(
     reassembly: &ServerDeflatedReassembly,
     source_compressed_length: usize,
 ) -> anyhow::Result<Option<Emit>> {
-    state.deflate.server_zlib_stream_owner = Some(ContinuationOwner::GuiQuickbar);
+    claim_server_zlib_stream_owner(state, ContinuationOwner::GuiQuickbar);
     let pending = state
         .quickbar
         .pending_stream
@@ -458,4 +458,12 @@ fn starts_with_implausible_quickbar_set_all_buttons(bytes: &[u8]) -> bool {
     }
     let declared = u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]) as usize;
     declared < 3 || declared > bytes.len()
+}
+
+fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationOwner) {
+    if state.deflate.server_zlib_stream_owner != Some(owner) {
+        state.deflate.server_zlib_stream_epoch =
+            state.deflate.server_zlib_stream_epoch.saturating_add(1);
+    }
+    state.deflate.server_zlib_stream_owner = Some(owner);
 }

@@ -131,9 +131,8 @@ pub fn rewrite_player_list_payload_if_possible(
         return None;
     }
 
-    let original_fragments = payload
-        [HIGH_LEVEL_HEADER_BYTES + layout.read_size
-            ..HIGH_LEVEL_HEADER_BYTES + layout.read_size + layout.fragment_size]
+    let original_fragments = payload[HIGH_LEVEL_HEADER_BYTES + layout.read_size
+        ..HIGH_LEVEL_HEADER_BYTES + layout.read_size + layout.fragment_size]
         .to_vec();
     let mut fragment_bits = decode_cnw_fragment_bits(&original_fragments)?;
     if consumed_fragment_bits > fragment_bits.len() {
@@ -555,6 +554,8 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
-    bytes.get_mut(offset..offset + 4)?.copy_from_slice(&value.to_le_bytes());
+    bytes
+        .get_mut(offset..offset + 4)?
+        .copy_from_slice(&value.to_le_bytes());
     Some(())
 }

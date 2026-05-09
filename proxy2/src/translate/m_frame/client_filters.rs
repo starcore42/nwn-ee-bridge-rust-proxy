@@ -7,7 +7,7 @@
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET},
+    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
     translate::client_high,
 };
 
@@ -46,8 +46,17 @@ pub(super) fn translate_client_frame(bytes: Vec<u8>, view: &MFrameView) -> anyho
     let payload = bytes
         .get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end)
         .ok_or_else(|| anyhow::anyhow!("client M high-level payload outside frame"))?;
+    let mut translated_payload = payload.to_vec();
 
-    if let Some(summary) = client_high::claim_payload_if_verified(payload) {
+    if let Some(summary) =
+        client_high::claim_or_rewrite_payload_if_verified(&mut translated_payload)
+    {
+        let payload_rewritten = translated_payload.as_slice() != payload;
+        let out = if payload_rewritten {
+            replace_client_payload_and_repair_crc(&bytes, view, &translated_payload)?
+        } else {
+            bytes
+        };
         tracing::info!(
             family = summary.family_name,
             packet = summary.packet_name,
@@ -57,12 +66,38 @@ pub(super) fn translate_client_frame(bytes: Vec<u8>, view: &MFrameView) -> anyho
             ack_sequence = view.ack_sequence,
             payload_len = view.payload_length,
             trailing_payload_len = view.trailing_payload_length,
+            payload_rewritten,
             "client high-level payload semantically claimed for Diamond/1.69"
         );
-        return Ok(bytes);
+        return Ok(out);
     }
 
     return consume_unclaimed_client_high_level(&bytes, view);
+}
+
+fn replace_client_payload_and_repair_crc(
+    bytes: &[u8],
+    view: &MFrameView,
+    payload: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    if payload.len() != view.payload_length {
+        anyhow::bail!(
+            "client high-level translator changed payload length without M-frame repacketizer"
+        );
+    }
+
+    let payload_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+        .checked_add(view.payload_length)
+        .ok_or_else(|| anyhow::anyhow!("client M payload length overflow"))?;
+    let mut rewritten = bytes.to_vec();
+    let target = rewritten
+        .get_mut(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end)
+        .ok_or_else(|| anyhow::anyhow!("client M replacement payload outside frame"))?;
+    target.copy_from_slice(payload);
+    encode_legacy_m_crc(&mut rewritten)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair rewritten client M CRC"))?;
+    Ok(rewritten)
 }
 
 fn consume_unclaimed_client_high_level(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {

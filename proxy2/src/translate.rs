@@ -16,7 +16,9 @@ pub(crate) mod char_list;
 mod chat;
 mod client_area;
 mod client_char_list;
+mod client_gui_inventory;
 mod client_high;
+pub(crate) mod client_input;
 mod client_login;
 mod client_module;
 mod client_server_status;
@@ -24,11 +26,11 @@ pub(crate) mod client_side_message;
 mod cnw_message;
 mod custom_token;
 mod game_obj_update;
-mod gameplay_stream;
+pub(crate) mod gameplay_stream;
 mod inventory;
 pub(crate) mod journal;
 mod live_object;
-mod live_object_update;
+pub(crate) mod live_object_update;
 mod loadbar;
 mod login;
 mod m_frame;
@@ -36,10 +38,10 @@ mod module;
 mod module_resources;
 mod module_time;
 mod party;
-mod play_module_character_list;
+pub(crate) mod play_module_character_list;
 mod player_list;
 mod profiles;
-mod quickbar;
+pub(crate) mod quickbar;
 
 use crate::{
     config::{Config, StrictProfile},
@@ -56,6 +58,7 @@ pub enum ContinuationOwner {
     GameObjUpdateLiveObject,
     GuiQuickbar,
     ModuleInfo,
+    PlayModuleCharacterList,
     ServerStatusModuleResources,
     UnknownProxyOwned,
 }
@@ -70,6 +73,7 @@ impl ContinuationOwner {
                 Self::GuiQuickbar
             }
             VerifiedFamily::ModuleInfo => Self::ModuleInfo,
+            VerifiedFamily::PlayModuleCharacterList => Self::PlayModuleCharacterList,
             VerifiedFamily::ServerStatusModuleResources => Self::ServerStatusModuleResources,
             _ => Self::UnknownProxyOwned,
         }
@@ -82,6 +86,7 @@ impl ContinuationOwner {
             Self::GameObjUpdateLiveObject => "GameObjUpdate_LiveObject",
             Self::GuiQuickbar => "GuiQuickbar",
             Self::ModuleInfo => "Module_Info",
+            Self::PlayModuleCharacterList => "PlayModuleCharacterList",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
             Self::UnknownProxyOwned => "UnknownProxyOwned",
         }
@@ -107,10 +112,15 @@ pub enum VerifiedFamily {
     ModuleInfo,
     ModuleTime,
     Party,
+    PlayModuleCharacterList,
     PlayerList,
     SemanticDeflated,
     SetCustomToken,
-    ServerZlibStreamContinuation { owner: ContinuationOwner },
+    ServerZlibStreamContinuation {
+        owner: ContinuationOwner,
+        stream_epoch: u64,
+        first_sequence: u16,
+    },
     ServerStatusModuleResources,
 }
 
@@ -134,6 +144,7 @@ impl VerifiedFamily {
             Self::ModuleInfo => "Module_Info",
             Self::ModuleTime => "Module_Time",
             Self::Party => "Party",
+            Self::PlayModuleCharacterList => "PlayModuleCharacterList",
             Self::PlayerList => "PlayerList",
             Self::SemanticDeflated => "SemanticDeflated",
             Self::SetCustomToken => "SetCustomToken",
@@ -145,8 +156,45 @@ impl VerifiedFamily {
 
 #[derive(Debug, Clone)]
 pub struct VerifiedPacket {
-    pub family: VerifiedFamily,
+    pub proof: VerifiedProof,
     pub packet: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifiedProof {
+    Family(VerifiedFamily),
+    GameplayStream(Vec<VerifiedFamily>),
+    CoalescedWindow(Vec<VerifiedProof>),
+}
+
+impl VerifiedProof {
+    pub fn family(family: VerifiedFamily) -> Self {
+        Self::Family(family)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Family(family) => family.as_str(),
+            Self::GameplayStream(_) => "GameplayStream",
+            Self::CoalescedWindow(_) => "CoalescedWindow",
+        }
+    }
+
+    pub fn primary_family(&self) -> Option<VerifiedFamily> {
+        match self {
+            Self::Family(family) => Some(*family),
+            Self::GameplayStream(families) => families.first().copied(),
+            Self::CoalescedWindow(records) => records.first().and_then(Self::primary_family),
+        }
+    }
+
+    pub fn from_unit_families(families: Vec<VerifiedFamily>) -> Self {
+        match families.as_slice() {
+            [family] => Self::Family(*family),
+            [] => Self::Family(VerifiedFamily::SemanticDeflated),
+            _ => Self::GameplayStream(families),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +211,15 @@ pub enum Emit {
         packets: Vec<Vec<u8>>,
     },
     MixedVerifiedPackets(Vec<(VerifiedFamily, Vec<u8>)>),
+    VerifiedProofPackets {
+        proof: VerifiedProof,
+        packets: Vec<Vec<u8>>,
+    },
+    VerifiedProofPacketsPreShifted {
+        proof: VerifiedProof,
+        packets: Vec<Vec<u8>>,
+    },
+    MixedVerifiedProofPackets(Vec<(VerifiedProof, Vec<u8>)>),
     Consumed,
     Drop,
 }
@@ -212,6 +269,10 @@ impl Translator {
 }
 
 impl SessionTranslator {
+    pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
+        m_frame::take_pending_client_to_server_packets(&mut self.m_state)
+    }
+
     pub fn translate(&mut self, direction: Direction, bytes: &[u8]) -> Emit {
         // Translation happens before strict validation. This prevents an
         // untranslated-but-recognized packet from slipping through simply
@@ -287,8 +348,11 @@ impl SessionTranslator {
                         | Emit::Packets(_)
                         | Emit::PacketsPreShifted(_)
                         | Emit::MixedVerifiedPackets(_)
+                        | Emit::MixedVerifiedProofPackets(_)
                         | Emit::VerifiedPackets { .. }
-                        | Emit::VerifiedPacketsPreShifted { .. } => {
+                        | Emit::VerifiedPacketsPreShifted { .. }
+                        | Emit::VerifiedProofPackets { .. }
+                        | Emit::VerifiedProofPacketsPreShifted { .. } => {
                             return Emit::Drop;
                         }
                     }
@@ -301,6 +365,13 @@ impl SessionTranslator {
                 }
 
                 self.validate_mixed_verified_packets(direction, packets)
+            }
+            Emit::MixedVerifiedProofPackets(packets) => {
+                if packets.is_empty() {
+                    return Emit::Drop;
+                }
+
+                self.validate_mixed_verified_proof_packets(direction, packets)
             }
             Emit::VerifiedPackets { family, packets }
             | Emit::VerifiedPacketsPreShifted { family, packets } => {
@@ -356,9 +427,71 @@ impl SessionTranslator {
                 }
                 Emit::Packets(validated)
             }
+            Emit::VerifiedProofPackets { proof, packets }
+            | Emit::VerifiedProofPacketsPreShifted { proof, packets } => {
+                self.validate_verified_proof_packets(direction, proof, packets)
+            }
             Emit::Consumed => Emit::Consumed,
             Emit::Drop => Emit::Drop,
         }
+    }
+
+    fn validate_verified_proof_packets(
+        &self,
+        direction: Direction,
+        proof: VerifiedProof,
+        packets: Vec<Vec<u8>>,
+    ) -> Emit {
+        if packets.is_empty() {
+            return Emit::Drop;
+        }
+
+        if let Some(decision) =
+            strict::decide_verified_proof_translated_batch(direction, &proof, &packets)
+        {
+            strict::log_decision(
+                direction,
+                packets.first().map(Vec::as_slice).unwrap_or_default(),
+                &decision,
+                self.template.strict_translate,
+            );
+            if self.template.strict_translate && decision.verdict == Verdict::Quarantine {
+                return Emit::Drop;
+            }
+            return Emit::Packets(packets);
+        }
+
+        let has_batch_prefix =
+            match Packet::classify(packets.first().map(Vec::as_slice).unwrap_or_default()) {
+                Packet::M(frame) => frame
+                    .parsed
+                    .as_ref()
+                    .map(|view| {
+                        let expected = usize::from(view.packetized_sequence);
+                        expected > 1 && expected < packets.len()
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            };
+        if has_batch_prefix {
+            return self.validate_verified_proof_packet_batch_prefix(direction, proof, packets);
+        }
+
+        let mut validated = Vec::with_capacity(packets.len());
+        for packet in packets {
+            let decision = strict::decide_verified_proof_translated(direction, &proof, &packet);
+            strict::log_decision(
+                direction,
+                &packet,
+                &decision,
+                self.template.strict_translate,
+            );
+            if self.template.strict_translate && decision.verdict == Verdict::Quarantine {
+                return Emit::Drop;
+            }
+            validated.push(packet);
+        }
+        Emit::Packets(validated)
     }
 
     fn validate_verified_packet_batch_prefix(
@@ -407,8 +540,71 @@ impl SessionTranslator {
                 | Emit::Packets(_)
                 | Emit::PacketsPreShifted(_)
                 | Emit::MixedVerifiedPackets(_)
+                | Emit::MixedVerifiedProofPackets(_)
                 | Emit::VerifiedPackets { .. }
-                | Emit::VerifiedPacketsPreShifted { .. } => {
+                | Emit::VerifiedPacketsPreShifted { .. }
+                | Emit::VerifiedProofPackets { .. }
+                | Emit::VerifiedProofPacketsPreShifted { .. } => {
+                    return Emit::Drop;
+                }
+            }
+        }
+        packets.extend(validated_suffix);
+        Emit::Packets(packets)
+    }
+
+    fn validate_verified_proof_packet_batch_prefix(
+        &self,
+        direction: Direction,
+        proof: VerifiedProof,
+        mut packets: Vec<Vec<u8>>,
+    ) -> Emit {
+        let Some(first) = packets.first() else {
+            return Emit::Drop;
+        };
+        let expected = match Packet::classify(first.as_slice()) {
+            Packet::M(frame) => {
+                let Some(view) = frame.parsed.as_ref() else {
+                    return Emit::Drop;
+                };
+                usize::from(view.packetized_sequence)
+            }
+            _ => return Emit::Drop,
+        };
+        if expected <= 1 || expected >= packets.len() {
+            return Emit::Drop;
+        }
+
+        let suffix = packets.split_off(expected);
+        let Some(decision) =
+            strict::decide_verified_proof_translated_batch(direction, &proof, &packets)
+        else {
+            return Emit::Drop;
+        };
+        strict::log_decision(
+            direction,
+            packets.first().map(Vec::as_slice).unwrap_or_default(),
+            &decision,
+            self.template.strict_translate,
+        );
+        if self.template.strict_translate && decision.verdict == Verdict::Quarantine {
+            return Emit::Drop;
+        }
+
+        let mut validated_suffix = Vec::with_capacity(suffix.len());
+        for packet in suffix {
+            match self.validate_packet(direction, packet) {
+                Emit::Packet(packet) => validated_suffix.push(packet),
+                Emit::Consumed
+                | Emit::Drop
+                | Emit::Packets(_)
+                | Emit::PacketsPreShifted(_)
+                | Emit::MixedVerifiedPackets(_)
+                | Emit::MixedVerifiedProofPackets(_)
+                | Emit::VerifiedPackets { .. }
+                | Emit::VerifiedPacketsPreShifted { .. }
+                | Emit::VerifiedProofPackets { .. }
+                | Emit::VerifiedProofPacketsPreShifted { .. } => {
                     return Emit::Drop;
                 }
             }
@@ -466,6 +662,68 @@ impl SessionTranslator {
             }
 
             let decision = strict::decide_verified_translated(direction, *family, packet);
+            strict::log_decision(direction, packet, &decision, self.template.strict_translate);
+            if self.template.strict_translate && decision.verdict == Verdict::Quarantine {
+                return Emit::Drop;
+            }
+            validated.push(packet.clone());
+            index += 1;
+        }
+
+        Emit::Packets(validated)
+    }
+
+    fn validate_mixed_verified_proof_packets(
+        &self,
+        direction: Direction,
+        packets: Vec<(VerifiedProof, Vec<u8>)>,
+    ) -> Emit {
+        let mut validated = Vec::with_capacity(packets.len());
+        let mut index = 0;
+
+        while index < packets.len() {
+            let (proof, packet) = &packets[index];
+            let batch_len = match Packet::classify(packet.as_slice()) {
+                Packet::M(frame) => frame
+                    .parsed
+                    .as_ref()
+                    .map(|view| usize::from(view.packetized_sequence))
+                    .unwrap_or(0),
+                _ => 0,
+            };
+
+            if batch_len > 1 && index + batch_len <= packets.len() {
+                let same_proof_batch = packets[index..index + batch_len]
+                    .iter()
+                    .all(|(candidate_proof, _)| candidate_proof == proof);
+                if same_proof_batch {
+                    let batch_packets = packets[index..index + batch_len]
+                        .iter()
+                        .map(|(_, packet)| packet.clone())
+                        .collect::<Vec<_>>();
+                    if let Some(decision) = strict::decide_verified_proof_translated_batch(
+                        direction,
+                        proof,
+                        &batch_packets,
+                    ) {
+                        strict::log_decision(
+                            direction,
+                            batch_packets.first().map(Vec::as_slice).unwrap_or_default(),
+                            &decision,
+                            self.template.strict_translate,
+                        );
+                        if self.template.strict_translate && decision.verdict == Verdict::Quarantine
+                        {
+                            return Emit::Drop;
+                        }
+                        validated.extend(batch_packets);
+                        index += batch_len;
+                        continue;
+                    }
+                }
+            }
+
+            let decision = strict::decide_verified_proof_translated(direction, proof, packet);
             strict::log_decision(direction, packet, &decision, self.template.strict_translate);
             if self.template.strict_translate && decision.verdict == Verdict::Quarantine {
                 return Emit::Drop;

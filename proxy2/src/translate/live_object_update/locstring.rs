@@ -5,8 +5,8 @@
 //! cursor heuristics.
 
 use super::{
-    record::door_placeable_update_name_cursor, read_u32_le, LEGACY_UPDATE_HEADER_BYTES,
-    MAX_LIVE_OBJECT_NAME_BYTES,
+    LEGACY_UPDATE_HEADER_BYTES, MAX_LIVE_OBJECT_NAME_BYTES, read_u32_le,
+    record::door_placeable_update_name_cursor,
 };
 
 pub(super) fn legacy_live_update_name_payload_ready(
@@ -26,7 +26,11 @@ pub(super) fn legacy_live_update_name_payload_ready(
         .unwrap_or(false)
 }
 
-pub(super) fn candidate_inside_inline_string(bytes: &[u8], search_start: usize, candidate: usize) -> bool {
+pub(super) fn candidate_inside_inline_string(
+    bytes: &[u8],
+    search_start: usize,
+    candidate: usize,
+) -> bool {
     let mut string_offset = search_start;
     while string_offset + 4 <= candidate && string_offset < bytes.len() {
         if let Some(string_end) = inline_cexo_string_end(bytes, string_offset) {
@@ -55,4 +59,3 @@ pub(super) fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usiz
         None
     }
 }
-

@@ -26,7 +26,13 @@ use super::sequence::{
 const AREA_MAJOR: u8 = 0x04;
 const AREA_LOADED_MINOR: u8 = 0x03;
 const LOADBAR_DELAY: Duration = Duration::from_millis(6500);
-const AREA_LOADED_FALLBACK_GRACE: Duration = Duration::from_secs(2);
+// The fallback is already gated on the client ACKing the synthetic
+// LoadBar_End sequence. Keeping an additional wall-clock grace stranded the
+// fallback in driver-only captures: EE sent the final ACK and then produced no
+// further client packet for the proxy to piggyback Area_AreaLoaded onto. Native
+// Area_AreaLoaded still wins because it clears the pending fallback before this
+// ACK-gated release path runs.
+const AREA_LOADED_FALLBACK_GRACE: Duration = Duration::from_millis(0);
 const LOADBAR_FRAME_COUNT: u16 = 2;
 const LOADBAR_STALL_EVENT_ID: u32 = 2;
 

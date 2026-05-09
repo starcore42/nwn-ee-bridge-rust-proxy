@@ -1,12 +1,30 @@
 //! Bounded legacy live-object update readers.
+//!
+//! The update path deliberately keeps byte parsing separate from mutation:
+//! callers first parse a bounded legacy or EE shape into one of these tiny
+//! structs, then the writer/validator decides what to emit or claim.
 
-use super::{read_f32_le, read_u16_le, read_u32_le, MAX_LIVE_OBJECT_NAME_BYTES};
+use super::{
+    DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
+    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
+    LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, MAX_LIVE_OBJECT_NAME_BYTES,
+    PLACEABLE_OBJECT_TYPE, read_f32_le, read_u16_le, read_u32_le,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LegacyNamedUpdateTail {
     pub(super) facing: u16,
     pub(super) scale_raw: u32,
     pub(super) generic_state_word: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
+    pub(super) read_end: usize,
+    pub(super) next_bit_cursor: usize,
 }
 
 pub(super) fn read_legacy_named_update_tail9(
@@ -58,7 +76,123 @@ pub(super) fn legacy_named_update_tail_following_payload_ready(
         }
     }
 
-    record_end.saturating_sub(name_offset + 4) <= 4
+    read_u32_le(bytes, name_offset) == Some(0) && record_end.saturating_sub(name_offset + 4) <= 4
+}
+
+pub(super) fn parse_verified_ee_door_placeable_update_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<VerifiedEeDoorPlaceableUpdateRecord> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > record_end || record_end > bytes.len() {
+        return None;
+    }
+    if bytes.get(offset).copied()? != b'U' {
+        return None;
+    }
+    let object_type = bytes.get(offset + 1).copied()?;
+    if !matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+        return None;
+    }
+
+    let mask = read_u32_le(bytes, offset + 6)?;
+    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_NAME_MASK;
+    if mask == 0 || (mask & !allowed_mask) != 0 {
+        return None;
+    }
+
+    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
+    let mut fragment_cursor = bit_cursor;
+
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        if read_cursor > record_end {
+            return None;
+        }
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+        )?;
+    }
+
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        // EE `sub_14079C050` first reads a BOOL branch for generic
+        // orientation. The bridge writer only emits the scalar branch
+        // (`false`) plus the 12-bit `ReadFLOAT(10.0,12)` payload.
+        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+        if read_cursor > record_end || fragment_bits.get(fragment_cursor).copied()? {
+            return None;
+        }
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+        )?;
+    }
+
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        let scale = read_f32_le(bytes, read_cursor)?;
+        if !is_plausible_legacy_object_scale(scale) {
+            return None;
+        }
+        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+        )?;
+        if object_type == DOOR_OBJECT_TYPE {
+            // EE's door update path has one extra BOOL beyond the five
+            // Diamond state bits. The translator inserts `false`, so an exact
+            // claimed bridge packet must still carry that neutral branch.
+            if fragment_bits.get(fragment_cursor).copied()? {
+                return None;
+            }
+            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        // EE door/placeable update readers branch exactly like their add
+        // readers: false reads an inline CExoString directly, true enters the
+        // locstring helper. The bridge accepts the decompile-backed inline
+        // locstring shape only when the helper's inner/client-tlk bit is false;
+        // true/true would route EE into the TLK/strref path and is rejected.
+        if fragment_bits.get(fragment_cursor).copied()? {
+            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+            if fragment_bits.get(fragment_cursor).copied()? {
+                return None;
+            }
+        }
+        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        let name_end = inline_cexo_string_end(bytes, read_cursor)?;
+        if name_end != record_end {
+            return None;
+        }
+        read_cursor = name_end;
+    }
+
+    if read_cursor != record_end {
+        return None;
+    }
+
+    Some(VerifiedEeDoorPlaceableUpdateRecord {
+        read_end: read_cursor,
+        next_bit_cursor: fragment_cursor,
+    })
 }
 
 fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
@@ -76,6 +210,13 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
+    if bits.len().saturating_sub(cursor) < count {
+        return None;
+    }
+    cursor.checked_add(count)
 }
 
 fn is_plausible_legacy_object_scale(scale: f32) -> bool {

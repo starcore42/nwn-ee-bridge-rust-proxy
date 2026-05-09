@@ -187,10 +187,10 @@ fn rewrite_legacy_bulk_feedback_string_variant(
         return None;
     }
 
-    let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] =
-        payload[HIGH_LEVEL_HEADER_BYTES..LEGACY_READ_START]
-            .try_into()
-            .ok()?;
+    let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] = payload
+        [HIGH_LEVEL_HEADER_BYTES..LEGACY_READ_START]
+        .try_into()
+        .ok()?;
     let trailing_fragments = payload[text_end..].to_vec();
     let text = payload[text_start..text_end].to_vec();
 
@@ -202,9 +202,8 @@ fn rewrite_legacy_bulk_feedback_string_variant(
     let declared_u32 = u32::try_from(declared).ok()?;
     let text_len_u32 = u32::try_from(text.len()).ok()?;
 
-    let mut rewritten = Vec::with_capacity(
-        declared + trailing_fragment_bytes + LEGACY_PREFIXED_FRAGMENT_BYTES,
-    );
+    let mut rewritten =
+        Vec::with_capacity(declared + trailing_fragment_bytes + LEGACY_PREFIXED_FRAGMENT_BYTES);
     rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
     rewritten.extend_from_slice(&declared_u32.to_le_bytes());
     rewritten.extend_from_slice(&feedback_id.to_le_bytes());
@@ -222,8 +221,7 @@ fn rewrite_legacy_bulk_feedback_single_byte_id_window(payload: &mut Vec<u8>) -> 
         return None;
     }
 
-    let legacy_text_len =
-        usize::try_from(read_le_u32(payload, LEGACY_READ_START + 1)?).ok()?;
+    let legacy_text_len = usize::try_from(read_le_u32(payload, LEGACY_READ_START + 1)?).ok()?;
     if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&legacy_text_len) {
         return None;
     }
@@ -236,10 +234,10 @@ fn rewrite_legacy_bulk_feedback_single_byte_id_window(payload: &mut Vec<u8>) -> 
         return None;
     }
 
-    let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] =
-        payload[HIGH_LEVEL_HEADER_BYTES..LEGACY_READ_START]
-            .try_into()
-            .ok()?;
+    let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] = payload
+        [HIGH_LEVEL_HEADER_BYTES..LEGACY_READ_START]
+        .try_into()
+        .ok()?;
     let text = payload[text_start..].to_vec();
 
     let declared = HIGH_LEVEL_HEADER_BYTES
@@ -299,7 +297,6 @@ fn rewrite_legacy_bulk_feedback_fragmented_text_window(payload: &mut Vec<u8>) ->
     Some(())
 }
 
-
 /// HG's 1.69 bulk feedback path can arrive as a `ClientSideMessage_Feedback`
 /// record whose declared high-level span contains the whole CExoString text, while
 /// the DWORD immediately after feedback id 0x00CC is a stale legacy/argument count
@@ -326,7 +323,8 @@ fn rewrite_legacy_bulk_feedback_declared_text_window(payload: &mut Vec<u8>) -> O
         return None;
     }
 
-    let legacy_dword = usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
+    let legacy_dword =
+        usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
     let text_len = declared.checked_sub(text_start)?;
     if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text_len) {
         return None;
@@ -364,7 +362,8 @@ fn feedback_text_window_plausible(bytes: &[u8]) -> bool {
     }
 
     useful >= 16 && control <= (bytes.len() / 16).saturating_add(4)
-}fn extract_legacy_feedback_text(raw: &[u8]) -> Option<Vec<u8>> {
+}
+fn extract_legacy_feedback_text(raw: &[u8]) -> Option<Vec<u8>> {
     let mut text = Vec::with_capacity(raw.len());
     let mut last_was_space = false;
     let mut kept_printable = 0usize;
@@ -400,7 +399,8 @@ fn feedback_text_window_plausible(bytes: &[u8]) -> bool {
 }
 
 fn feedback_string_tail_valid(payload: &[u8], tail_start: usize, declared: usize) -> bool {
-    let Some(length) = read_le_u32(payload, tail_start).and_then(|value| usize::try_from(value).ok())
+    let Some(length) =
+        read_le_u32(payload, tail_start).and_then(|value| usize::try_from(value).ok())
     else {
         return false;
     };

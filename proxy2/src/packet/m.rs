@@ -304,6 +304,12 @@ impl HighLevel {
             // Inventory family confirmed from EE's packet-name table and
             // `CNWSMessage::SendServerToPlayerInventory_Equip`.
             (0x0C, 0x01) => "Inventory_Equip",
+            // GUI inventory family confirmed from EE's packet-name table and
+            // `CNWSMessage::SendPlayerToServerGuiInventory_Status` /
+            // `HandlePlayerToServerGuiInventoryMessage`. Strict/client
+            // translation owns the EE self-object-id compatibility rewrite.
+            (0x0D, 0x01) => "GuiInventory_Status",
+            (0x0D, 0x02) => "GuiInventory_SelectPanel",
             // Party family confirmed from EE's packet-name table:
             // 0x0E01..0x0E0E map to the party list/request/invite/control
             // messages, and the exported CNWSMessage senders include

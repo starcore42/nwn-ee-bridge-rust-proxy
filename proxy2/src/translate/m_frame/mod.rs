@@ -21,7 +21,7 @@ use std::{
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
-    translate::{ContinuationOwner, Emit, VerifiedFamily, area, module_resources},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area, module_resources},
 };
 
 mod client_filters;
@@ -29,6 +29,7 @@ mod coalesced;
 mod deflate;
 mod live_stream;
 mod live_update;
+mod local_ack;
 mod parse_window;
 mod quickbar_stream;
 mod reassembly;
@@ -53,6 +54,10 @@ const MAX_INTERLEAVED_PACKETS: usize = 32;
 const CNW_LENGTH_BYTES: usize = 4;
 
 pub use state::SessionState;
+
+pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Vec<u8>> {
+    std::mem::take(&mut state.sequence.pending_client_to_server_packets)
+}
 
 pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
@@ -100,13 +105,13 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
 
-    if let Some(rewritten) =
+    if let Some((proof, rewritten)) =
         coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)?
     {
         return finalize_server_to_client_emit(
             state,
-            Emit::VerifiedPackets {
-                family: VerifiedFamily::CoalescedWindow,
+            Emit::VerifiedProofPackets {
+                proof,
                 packets: vec![rewritten],
             },
             pending_count_before,
@@ -120,8 +125,8 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     } else if let Some(verified) =
         server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
     {
-        Emit::VerifiedPackets {
-            family: verified.family,
+        Emit::VerifiedProofPackets {
+            proof: verified.proof,
             packets: vec![verified.packet],
         }
     } else if let Some(summary) = transport_identity::claim_server_frame_if_verified(&view) {
@@ -415,6 +420,24 @@ fn finalize_server_to_client_emit(
             mixed.extend(suffix);
             Ok(Emit::MixedVerifiedPackets(mixed))
         }
+        Emit::MixedVerifiedProofPackets(mut packets) => {
+            for (_, packet) in &mut packets {
+                shift_server_sequence_for_client(state, packet)?;
+            }
+            let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+            mixed.extend(
+                prefix
+                    .into_iter()
+                    .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+            );
+            mixed.extend(packets);
+            mixed.extend(
+                suffix
+                    .into_iter()
+                    .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+            );
+            Ok(Emit::MixedVerifiedProofPackets(mixed))
+        }
         Emit::VerifiedPackets {
             family,
             packets: mut packets,
@@ -432,6 +455,31 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
+        Emit::VerifiedProofPackets {
+            proof,
+            packets: mut packets,
+        } => {
+            for packet in &mut packets {
+                shift_server_sequence_for_client(state, packet)?;
+            }
+            if prefix.is_empty() && suffix.is_empty() {
+                Ok(Emit::VerifiedProofPackets { proof, packets })
+            } else {
+                let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+                mixed.extend(
+                    prefix
+                        .into_iter()
+                        .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+                );
+                mixed.extend(packets.into_iter().map(|packet| (proof.clone(), packet)));
+                mixed.extend(
+                    suffix
+                        .into_iter()
+                        .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+                );
+                Ok(Emit::MixedVerifiedProofPackets(mixed))
+            }
+        }
         Emit::VerifiedPacketsPreShifted {
             family,
             packets: mut packets,
@@ -444,6 +492,28 @@ fn finalize_server_to_client_emit(
                 mixed.extend(packets.into_iter().map(|packet| (family, packet)));
                 mixed.extend(suffix);
                 Ok(Emit::MixedVerifiedPackets(mixed))
+            }
+        }
+        Emit::VerifiedProofPacketsPreShifted {
+            proof,
+            packets: mut packets,
+        } => {
+            if prefix.is_empty() && suffix.is_empty() {
+                Ok(Emit::VerifiedProofPacketsPreShifted { proof, packets })
+            } else {
+                let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+                mixed.extend(
+                    prefix
+                        .into_iter()
+                        .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+                );
+                mixed.extend(packets.into_iter().map(|packet| (proof.clone(), packet)));
+                mixed.extend(
+                    suffix
+                        .into_iter()
+                        .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+                );
+                Ok(Emit::MixedVerifiedProofPackets(mixed))
             }
         }
     }
@@ -486,6 +556,14 @@ fn retarget_completed_reassembly_emit_after_progress_shells(
                 &mut packets,
             )?;
             Ok(Emit::VerifiedPacketsPreShifted { family, packets })
+        }
+        Emit::VerifiedProofPackets { proof, mut packets } => {
+            retarget_completed_reassembly_packets_after_progress_shells(
+                state,
+                reassembly,
+                &mut packets,
+            )?;
+            Ok(Emit::VerifiedProofPacketsPreShifted { proof, packets })
         }
         other => Ok(other),
     }
@@ -615,6 +693,22 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                     );
                     Ok(Emit::VerifiedPackets { family, packets })
                 }
+                CompletedDeflatedReplay::VerifiedProofPackets {
+                    proof,
+                    packets: mut packets,
+                } => {
+                    packets.extend(interleaved_packets);
+                    tracing::info!(
+                        frames = packets.len(),
+                        first_sequence = window_first_sequence,
+                        packetized_sequence = window_packetized_sequence,
+                        inflated_length = window_inflated_length,
+                        compressed = source_compressed_length,
+                        replay = "verified-proof-packets",
+                        "server deflated M stream duplicate replayed without advancing inflater"
+                    );
+                    Ok(Emit::VerifiedProofPackets { proof, packets })
+                }
             };
         }
     }
@@ -696,6 +790,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &mut bytes,
         Some(&state.area_context.latest_area_placeables),
         server_dispatch::SemanticScope::DeflatedReassembly,
+        Some(&state.module_resources),
         None,
     );
     if semantic_rewrite_summary.should_quarantine() {
@@ -799,10 +894,18 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     }
 
     let verified_family = semantic_rewrite_summary.verified_family();
+    let verified_proof = semantic_rewrite_summary.verified_proof();
     if used_server_stream {
         state.deflate.server_zlib_stream_proxy_owned = true;
-        state.deflate.server_zlib_stream_owner =
-            Some(ContinuationOwner::from_verified_family(verified_family));
+        let owner = verified_proof
+            .primary_family()
+            .map(ContinuationOwner::from_verified_family)
+            .unwrap_or_else(|| ContinuationOwner::from_verified_family(verified_family));
+        if state.deflate.server_zlib_stream_owner != Some(owner) {
+            state.deflate.server_zlib_stream_epoch =
+                state.deflate.server_zlib_stream_epoch.saturating_add(1);
+        }
+        state.deflate.server_zlib_stream_owner = Some(owner);
     }
 
     let compressed = deflate_zlib(&bytes)?;
@@ -817,8 +920,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             state,
             &reassembly,
             source_compressed_length,
-            CompletedDeflatedReplay::VerifiedPackets {
-                family: verified_family,
+            CompletedDeflatedReplay::VerifiedProofPackets {
+                proof: verified_proof.clone(),
                 packets: outputs.clone(),
             },
         );
@@ -839,8 +942,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         },
     );
 
-    Ok(Emit::VerifiedPackets {
-        family: verified_family,
+    Ok(Emit::VerifiedProofPackets {
+        proof: verified_proof,
         packets: outputs,
     })
 }

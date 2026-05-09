@@ -53,10 +53,7 @@ pub fn claim_or_rewrite_payload_if_verified(
     }
 }
 
-fn claim_or_rewrite_equip_shape(
-    payload: &mut Vec<u8>,
-    minor: u8,
-) -> Option<InventoryClaimSummary> {
+fn claim_or_rewrite_equip_shape(payload: &mut Vec<u8>, minor: u8) -> Option<InventoryClaimSummary> {
     if payload.len() < READ_START + EE_READ_BYTES {
         return None;
     }

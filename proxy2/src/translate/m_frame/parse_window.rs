@@ -6,7 +6,7 @@
 
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
-    packet::m::{MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET},
+    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
 };
 
 pub(super) fn primary_payload<'a>(bytes: &'a [u8], view: &MFrameView) -> Option<&'a [u8]> {

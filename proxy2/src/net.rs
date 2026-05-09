@@ -105,8 +105,18 @@ fn drain_client_socket(
                     }
                     Emit::Packets(outbounds)
                     | Emit::PacketsPreShifted(outbounds)
-                    | Emit::VerifiedPackets { packets: outbounds, .. }
-                    | Emit::VerifiedPacketsPreShifted { packets: outbounds, .. } => {
+                    | Emit::VerifiedPackets {
+                        packets: outbounds, ..
+                    }
+                    | Emit::VerifiedPacketsPreShifted {
+                        packets: outbounds, ..
+                    }
+                    | Emit::VerifiedProofPackets {
+                        packets: outbounds, ..
+                    }
+                    | Emit::VerifiedProofPacketsPreShifted {
+                        packets: outbounds, ..
+                    } => {
                         for outbound in outbounds {
                             session
                                 .upstream
@@ -117,6 +127,16 @@ fn drain_client_socket(
                         }
                     }
                     Emit::MixedVerifiedPackets(outbounds) => {
+                        for (_, outbound) in outbounds {
+                            session
+                                .upstream
+                                .send_to(&outbound, config.server)
+                                .with_context(|| {
+                                    format!("sending client datagram to server {}", config.server)
+                                })?;
+                        }
+                    }
+                    Emit::MixedVerifiedProofPackets(outbounds) => {
                         for (_, outbound) in outbounds {
                             session
                                 .upstream
@@ -150,10 +170,18 @@ fn drain_server_sockets(
                 Ok((len, server)) => {
                     let bytes = &recv_buf[..len];
                     session.last_seen = Instant::now();
-                    match session
+                    let emit = session
                         .translator
-                        .translate(Direction::ServerToClient, bytes)
-                    {
+                        .translate(Direction::ServerToClient, bytes);
+                    for outbound in session.translator.take_pending_client_to_server_packets() {
+                        session
+                            .upstream
+                            .send_to(&outbound, server)
+                            .with_context(|| {
+                                format!("sending local consumed-frame ACK to server {server}")
+                            })?;
+                    }
+                    match emit {
                         Emit::Packet(outbound) => {
                             let outbound = session
                                 .ee_crypto
@@ -165,8 +193,18 @@ fn drain_server_sockets(
                         }
                         Emit::Packets(outbounds)
                         | Emit::PacketsPreShifted(outbounds)
-                        | Emit::VerifiedPackets { packets: outbounds, .. }
-                        | Emit::VerifiedPacketsPreShifted { packets: outbounds, .. } => {
+                        | Emit::VerifiedPackets {
+                            packets: outbounds, ..
+                        }
+                        | Emit::VerifiedPacketsPreShifted {
+                            packets: outbounds, ..
+                        }
+                        | Emit::VerifiedProofPackets {
+                            packets: outbounds, ..
+                        }
+                        | Emit::VerifiedProofPacketsPreShifted {
+                            packets: outbounds, ..
+                        } => {
                             for outbound in outbounds {
                                 let outbound = session
                                     .ee_crypto
@@ -178,6 +216,17 @@ fn drain_server_sockets(
                             }
                         }
                         Emit::MixedVerifiedPackets(outbounds) => {
+                            for (_, outbound) in outbounds {
+                                let outbound = session
+                                    .ee_crypto
+                                    .encrypt_server_packet_if_needed(&outbound)
+                                    .context("encrypting server packet for EE client")?;
+                                listen.send_to(&outbound, session.client).with_context(|| {
+                                    format!("sending server datagram to client {}", session.client)
+                                })?;
+                            }
+                        }
+                        Emit::MixedVerifiedProofPackets(outbounds) => {
                             for (_, outbound) in outbounds {
                                 let outbound = session
                                     .ee_crypto

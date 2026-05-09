@@ -26,7 +26,9 @@ pub struct ModuleTimeClaimSummary {
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ModuleTimeClaimSummary> {
     let high = HighLevel::parse(payload)?;
-    if high.major != MODULE_MAJOR || high.minor != MODULE_TIME_MINOR || payload.len() < READ_START + 1
+    if high.major != MODULE_MAJOR
+        || high.minor != MODULE_TIME_MINOR
+        || payload.len() < READ_START + 1
     {
         return None;
     }

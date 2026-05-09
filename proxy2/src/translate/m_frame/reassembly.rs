@@ -9,7 +9,7 @@ use flate2::{Decompress, FlushDecompress};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView},
-    translate::{Emit, VerifiedFamily},
+    translate::{Emit, VerifiedFamily, VerifiedProof},
 };
 
 use super::{
@@ -58,6 +58,10 @@ pub(super) enum CompletedDeflatedReplay {
     /// must never leak through on retransmit.
     VerifiedPackets {
         family: VerifiedFamily,
+        packets: Vec<Vec<u8>>,
+    },
+    VerifiedProofPackets {
+        proof: VerifiedProof,
         packets: Vec<Vec<u8>>,
     },
 }
@@ -127,7 +131,11 @@ pub(super) fn start_server_deflated_reassembly(
         // Strict translation discipline: a multi-frame deflated window is not
         // EE-safe until the full inflated payload has been classified and
         // claimed by a semantic translator. Hold the partial legacy frame
-        // instead of leaking a transport placeholder to the client.
+        // instead of leaking a transport placeholder to the client. Because the
+        // proxy is now the reliable-window endpoint for this consumed frame, it
+        // also sends a verified empty ACK/control shell upstream so Diamond can
+        // continue the packetized window.
+        queue_reassembly_progress_ack(state, "server deflated M initial frame buffered")?;
         Ok(Emit::Consumed)
     }
 }
@@ -198,6 +206,10 @@ pub(super) fn continue_server_deflated_reassembly(
                 return Ok(emit);
             }
         }
+        queue_reassembly_progress_ack(
+            state,
+            "duplicate consumed deflated M frame re-acknowledged",
+        )?;
         return Ok(Emit::Consumed);
     }
 
@@ -212,10 +224,43 @@ pub(super) fn continue_server_deflated_reassembly(
     reassembly.frames.insert(insert_index, frame);
 
     if reassembly.frames.len() < reassembly.expected_frames {
+        queue_reassembly_progress_ack(state, "server deflated M continuation buffered")?;
         return Ok(Emit::Consumed);
     }
 
     super::emit_completed_server_deflated_reassembly(state)
+}
+
+pub(super) fn queue_reassembly_progress_ack(
+    state: &mut SessionState,
+    reason: &'static str,
+) -> anyhow::Result<()> {
+    let Some(ack_sequence) = state
+        .deflate
+        .server_reassembly
+        .as_ref()
+        .and_then(highest_contiguous_buffered_sequence)
+    else {
+        return Ok(());
+    };
+    super::local_ack::queue_consumed_server_frame_ack(state, ack_sequence, reason)
+}
+
+fn highest_contiguous_buffered_sequence(reassembly: &ServerDeflatedReassembly) -> Option<u16> {
+    let mut expected_distance = 0usize;
+    let mut ack_sequence = None;
+    for frame in &reassembly.frames {
+        let distance = frame.sequence.wrapping_sub(reassembly.first_sequence) as usize;
+        if distance < expected_distance {
+            continue;
+        }
+        if distance != expected_distance {
+            break;
+        }
+        ack_sequence = Some(frame.sequence);
+        expected_distance = expected_distance.saturating_add(1);
+    }
+    ack_sequence
 }
 
 fn claim_or_consume_interleaved_server_packet(

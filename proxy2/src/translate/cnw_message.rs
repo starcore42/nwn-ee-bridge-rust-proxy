@@ -26,8 +26,7 @@ use crate::{crc::read_le_u32, packet::m::HighLevel};
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const LEGACY_PREFIXED_FRAGMENT_BYTES: usize = 4;
-const LEGACY_READ_BYTES_OFFSET: usize =
-    HIGH_LEVEL_HEADER_BYTES + LEGACY_PREFIXED_FRAGMENT_BYTES;
+const LEGACY_READ_BYTES_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + LEGACY_PREFIXED_FRAGMENT_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct PrefixedFragmentsNormalizeSummary {
@@ -70,8 +69,7 @@ pub fn normalize_prefixed_fragments_payload_for(
     }
 
     let read_bytes_length = payload.len() - LEGACY_READ_BYTES_OFFSET;
-    let new_declared =
-        (CNW_LENGTH_BYTES + read_bytes_length + HIGH_LEVEL_HEADER_BYTES) as u32;
+    let new_declared = (CNW_LENGTH_BYTES + read_bytes_length + HIGH_LEVEL_HEADER_BYTES) as u32;
     let prefixed_fragment_bytes: [u8; LEGACY_PREFIXED_FRAGMENT_BYTES] = payload
         [HIGH_LEVEL_HEADER_BYTES..LEGACY_READ_BYTES_OFFSET]
         .try_into()

@@ -9,10 +9,12 @@
 //! - The harnessed EE client emits `CharList_Request` as an empty three-byte
 //!   high-level envelope, which is the same shape the 1.69 server handler
 //!   accepts.
-//! - `CharList_RequestUpdateChar` is a bounded CNW read-message window carrying
-//!   the selected character identifier, followed by the normal fragment byte.
-//!   No EE-only fields were observed or found in the handler path, so the
-//!   bridge validates the declared window exactly and leaves bytes unchanged.
+//! - `CharList_RequestUpdateChar` dispatches minor `0x03` by reading one
+//!   `BYTE(8)` request/status value, then one fixed-width `CResRef(16)`, then
+//!   checking `MessageReadUnderflow`. The CResRef is a 16-byte binary field,
+//!   not a variable ASCII identifier string, so NUL padding is legal.
+//! - No EE-only fields were observed or found in this handler path, so the
+//!   bridge validates the exact declared read window and leaves bytes unchanged.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -23,8 +25,12 @@ const EMPTY_HIGH_LEVEL_BYTES: usize = 3;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const UPDATE_REQUEST_TYPE_BYTES: usize = 1;
-const MAX_CLIENT_CHARLIST_FRAGMENT_BYTES: usize = 8;
-const MAX_CHARACTER_IDENTIFIER_BYTES: usize = 256;
+const UPDATE_REQUEST_CRESREF_BYTES: usize = 16;
+const REQUEST_UPDATE_CHAR_DECLARED_BYTES: usize = HIGH_LEVEL_HEADER_BYTES
+    + CNW_LENGTH_BYTES
+    + UPDATE_REQUEST_TYPE_BYTES
+    + UPDATE_REQUEST_CRESREF_BYTES;
+const MAX_OBSERVED_REQUEST_UPDATE_CHAR_FRAGMENT_BYTES: usize = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientCharListClaimSummary {
@@ -56,24 +62,64 @@ fn request_update_char_shape_valid(payload: &[u8]) -> bool {
     else {
         return false;
     };
-    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_REQUEST_TYPE_BYTES
+    if declared != REQUEST_UPDATE_CHAR_DECLARED_BYTES
         || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_CLIENT_CHARLIST_FRAGMENT_BYTES
+        || payload.len().saturating_sub(declared) > MAX_OBSERVED_REQUEST_UPDATE_CHAR_FRAGMENT_BYTES
     {
         return false;
     }
 
     let body_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
-    let Some(request_type) = payload.get(body_start).copied() else {
-        return false;
-    };
-    let identifier = &payload[body_start + UPDATE_REQUEST_TYPE_BYTES..declared];
-    request_type <= 0x10
-        && !identifier.is_empty()
-        && identifier.len() <= MAX_CHARACTER_IDENTIFIER_BYTES
-        && identifier.iter().all(|byte| is_safe_identifier_byte(*byte))
+    let cresref_start = body_start + UPDATE_REQUEST_TYPE_BYTES;
+    payload.get(body_start).is_some()
+        && payload
+            .get(cresref_start..cresref_start + UPDATE_REQUEST_CRESREF_BYTES)
+            .is_some()
 }
 
-fn is_safe_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claims_request_update_char_with_fixed_cresref_and_fragment_byte() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[b'P', CHAR_LIST_MAJOR, REQUEST_UPDATE_CHAR_MINOR]);
+        payload.extend_from_slice(&(REQUEST_UPDATE_CHAR_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(0x01);
+        payload.extend_from_slice(b"starcore-druid60");
+        payload.push(0x80);
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("decompile-backed RequestUpdateChar shape should be claimed");
+        assert_eq!(summary.packet_name, "CharList_RequestUpdateChar");
+    }
+
+    #[test]
+    fn claims_request_update_char_with_nul_padded_cresref() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[b'P', CHAR_LIST_MAJOR, REQUEST_UPDATE_CHAR_MINOR]);
+        payload.extend_from_slice(&(REQUEST_UPDATE_CHAR_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(0x00);
+        payload.extend_from_slice(b"starcore");
+        payload.extend_from_slice(&[0; UPDATE_REQUEST_CRESREF_BYTES - b"starcore".len()]);
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("CResRef NUL padding is part of the exact binary shape");
+        assert_eq!(summary.packet_name, "CharList_RequestUpdateChar");
+    }
+
+    #[test]
+    fn rejects_request_update_char_with_variable_identifier_length() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[b'P', CHAR_LIST_MAJOR, REQUEST_UPDATE_CHAR_MINOR]);
+        payload.extend_from_slice(
+            &((HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_REQUEST_TYPE_BYTES + 8) as u32)
+                .to_le_bytes(),
+        );
+        payload.push(0x01);
+        payload.extend_from_slice(b"starcore");
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
 }

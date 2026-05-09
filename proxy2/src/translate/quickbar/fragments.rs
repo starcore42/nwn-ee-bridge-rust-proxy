@@ -1,8 +1,8 @@
 use super::*;
 
-// CNW fragment bit reader for quickbar item objects. CNW BOOLs are packed
-// least-significant-bit first; the first three bits encode the final fragment
-// bit count used by the original reader as an end-of-stream guard.
+// CNW fragment bit reader for quickbar item objects. CNW BOOL fragments use
+// the same MSB-first packing as live-object updates: the first three high bits
+// encode the final fragment bit count, then semantic BOOLs follow in wire order.
 
 #[derive(Debug, Clone)]
 pub(super) struct QuickbarPacketReader<'a> {
@@ -17,7 +17,7 @@ pub(super) struct QuickbarPacketReader<'a> {
 impl<'a> QuickbarPacketReader<'a> {
     pub(super) fn read_bit(&mut self) -> Option<bool> {
         let byte = *self.fragments.get(self.fragment_cursor)?;
-        let bit = ((byte >> self.fragment_bit) & 1) != 0;
+        let bit = (byte & (0x80 >> self.fragment_bit)) != 0;
         self.fragment_bit = self.fragment_bit.saturating_add(1);
         if self.fragment_bit == 8 {
             self.fragment_bit = 0;
@@ -28,9 +28,10 @@ impl<'a> QuickbarPacketReader<'a> {
 
     pub(super) fn read_bits(&mut self, count: u8) -> Option<u32> {
         let mut value = 0u32;
-        for shift in 0..count {
+        for _ in 0..count {
+            value <<= 1;
             if self.read_bit()? {
-                value |= 1u32 << shift;
+                value |= 1;
             }
         }
         Some(value)
@@ -72,11 +73,11 @@ impl<'a> QuickbarPacketReader<'a> {
     pub(super) fn read_loc_string(&mut self) -> Option<QuickbarLocStringField> {
         let custom_tlk = self.read_bit()?;
         if custom_tlk {
-            let language_selector = self.read_bit()?;
+            let language_id = self.read_byte()?;
             let string_ref = self.read_dword()?;
             Some(QuickbarLocStringField {
                 custom_tlk,
-                language_selector,
+                language_id,
                 string_ref,
                 text: Vec::new(),
             })
@@ -84,7 +85,7 @@ impl<'a> QuickbarPacketReader<'a> {
             let text = self.read_string()?;
             Some(QuickbarLocStringField {
                 custom_tlk,
-                language_selector: false,
+                language_id: 0,
                 string_ref: 0,
                 text,
             })
@@ -109,7 +110,7 @@ impl<'a> QuickbarPacketReader<'a> {
 
     pub(super) fn skip_loc_string(&mut self) -> Option<()> {
         if self.read_bit()? {
-            let _language_selector = self.read_bit()?;
+            let _language_id = self.read_byte()?;
             let _string_ref = self.read_dword()?;
             Some(())
         } else {

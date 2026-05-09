@@ -268,7 +268,8 @@ fn scan_for_valid_legacy_hak_block_after_module_name(
     read_raw_string_bounded(payload, &mut cursor, declared)?;
 
     let scan_end = declared.min(cursor.saturating_add(MAX_MODULE_INFO_PREFIX_SCAN));
-    (cursor..scan_end).find(|offset| valid_legacy_hak_block_at(payload, *offset, declared).is_some())
+    (cursor..scan_end)
+        .find(|offset| valid_legacy_hak_block_at(payload, *offset, declared).is_some())
 }
 
 fn valid_legacy_hak_block_near(
@@ -315,7 +316,11 @@ fn best_legacy_hak_block_in_range(
     first_empty_block
 }
 
-fn valid_legacy_hak_block_at(payload: &[u8], offset: usize, declared: usize) -> Option<LegacyHakBlock> {
+fn valid_legacy_hak_block_at(
+    payload: &[u8],
+    offset: usize,
+    declared: usize,
+) -> Option<LegacyHakBlock> {
     let count = *payload.get(offset)? as usize;
     if count > MAX_LEGACY_HAK_COUNT {
         return None;
@@ -346,7 +351,12 @@ fn valid_legacy_hak_block_at(payload: &[u8], offset: usize, declared: usize) -> 
         return None;
     }
 
-    valid_area_name_table_prefix(payload, offset + skipped_bytes + 4, resource_count, declared)?;
+    valid_area_name_table_prefix(
+        payload,
+        offset + skipped_bytes + 4,
+        resource_count,
+        declared,
+    )?;
 
     Some(LegacyHakBlock {
         offset,

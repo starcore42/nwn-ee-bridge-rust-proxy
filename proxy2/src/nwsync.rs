@@ -38,11 +38,18 @@ pub struct Advertisement {
 }
 
 impl Advertisement {
-    pub fn new(root_hash: String, url: String, manifests: Vec<ManifestAdvert>) -> anyhow::Result<Self> {
+    pub fn new(
+        root_hash: String,
+        url: String,
+        manifests: Vec<ManifestAdvert>,
+    ) -> anyhow::Result<Self> {
         validate_counted_ascii("NWSync root hash", &root_hash)?;
         validate_counted_ascii("NWSync URL", &url)?;
         if manifests.len() > u8::MAX as usize {
-            return Err(anyhow!("too many NWSync manifest adverts: {}", manifests.len()));
+            return Err(anyhow!(
+                "too many NWSync manifest adverts: {}",
+                manifests.len()
+            ));
         }
         for manifest in &manifests {
             validate_counted_ascii("NWSync manifest hash", &manifest.hash)?;
@@ -121,8 +128,15 @@ impl Runtime {
             return Ok(None);
         };
 
-        let advertisement = Advertisement::new(root_hash.trim().to_string(), url.trim().to_string(), Vec::new())?;
-        Ok(Some(Self { root, advertisement }))
+        let advertisement = Advertisement::new(
+            root_hash.trim().to_string(),
+            url.trim().to_string(),
+            Vec::new(),
+        )?;
+        Ok(Some(Self {
+            root,
+            advertisement,
+        }))
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -140,9 +154,7 @@ fn default_env_path() -> Option<PathBuf> {
         cwd.join(DEFAULT_ENV_PATH),
         cwd.parent().map(|parent| parent.join(DEFAULT_ENV_PATH))?,
     ];
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 pub struct HttpServerGuard {
@@ -157,23 +169,31 @@ pub fn start_http_server_if_needed(
         return Ok(None);
     };
     let Some(root) = runtime.root().map(Path::to_path_buf) else {
-        tracing::info!("NWSync advertisement enabled without a local repository root; no HTTP server started");
+        tracing::info!(
+            "NWSync advertisement enabled without a local repository root; no HTTP server started"
+        );
         return Ok(None);
     };
     if !root.is_dir() {
-        return Err(anyhow!("NWSync repository root does not exist: {}", root.display()));
+        return Err(anyhow!(
+            "NWSync repository root does not exist: {}",
+            root.display()
+        ));
     }
 
     let Some(bind) = config
         .nwsync_http_bind
         .or_else(|| local_bind_from_url(runtime.advertisement().url()))
     else {
-        tracing::info!(url = runtime.advertisement().url(), "NWSync URL is not local; no HTTP server started");
+        tracing::info!(
+            url = runtime.advertisement().url(),
+            "NWSync URL is not local; no HTTP server started"
+        );
         return Ok(None);
     };
 
-    let listener = TcpListener::bind(bind)
-        .with_context(|| format!("binding NWSync HTTP server on {bind}"))?;
+    let listener =
+        TcpListener::bind(bind).with_context(|| format!("binding NWSync HTTP server on {bind}"))?;
     let advertised_url = runtime.advertisement().url().to_string();
     let advertised_hash = runtime.advertisement().root_hash().to_string();
     let handle = thread::spawn(move || {
@@ -212,7 +232,9 @@ fn read_env_file(path: &Path) -> anyhow::Result<HashMap<String, String>> {
 
 fn validate_counted_ascii(label: &str, value: &str) -> anyhow::Result<()> {
     if value.len() > u8::MAX as usize {
-        return Err(anyhow!("{label} is too long for counted BN/NWSync encoding"));
+        return Err(anyhow!(
+            "{label} is too long for counted BN/NWSync encoding"
+        ));
     }
     if !value.is_ascii() {
         return Err(anyhow!("{label} must be ASCII for BN/NWSync advertisement"));
@@ -284,7 +306,11 @@ fn sanitize_http_path(raw_path: &str) -> Option<PathBuf> {
         return None;
     }
     let trimmed = path_without_query.trim_start_matches('/');
-    let relative = if trimmed.is_empty() { "latest" } else { trimmed };
+    let relative = if trimmed.is_empty() {
+        "latest"
+    } else {
+        trimmed
+    };
     let candidate = Path::new(relative);
     let mut clean = PathBuf::new();
     for component in candidate.components() {

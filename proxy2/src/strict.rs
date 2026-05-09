@@ -14,7 +14,10 @@ use crate::{
         hex_prefix,
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
-    translate::{VerifiedFamily, char_list, journal},
+    translate::{
+        ContinuationOwner, VerifiedFamily, VerifiedProof, char_list, client_input, gameplay_stream,
+        journal, live_object_update, play_module_character_list, quickbar,
+    },
 };
 use flate2::read::ZlibDecoder;
 use std::io::Read;
@@ -209,21 +212,28 @@ pub fn decide_verified_translated(
             }
 
             if view.payload_length == 0 && view.trailing_payload_length == 0 {
-                return StrictDecision::allow(
-                    "M/verified-empty",
-                    family.as_str(),
-                    "verified-family-empty-control-frame",
-                );
-            }
-
-            if family == VerifiedFamily::ConsumedEmptyMFrame {
-                if view.payload_length == 0 && view.trailing_payload_length == 0 {
+                if family == VerifiedFamily::ConsumedEmptyMFrame {
                     return StrictDecision::allow(
                         "M/verified-empty",
                         family.as_str(),
                         "verified-consumed-empty-frame",
                     );
                 }
+                if server_zlib_stream_continuation_empty_progress_valid(direction, family) {
+                    return StrictDecision::allow(
+                        "M/verified-empty",
+                        family.as_str(),
+                        "verified-server-zlib-continuation-empty-progress-frame",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-empty",
+                    family.as_str(),
+                    "empty-frame-family-mismatch",
+                );
+            }
+
+            if family == VerifiedFamily::ConsumedEmptyMFrame {
                 return StrictDecision::quarantine(
                     "M/verified-empty",
                     family.as_str(),
@@ -352,6 +362,407 @@ pub fn decide_verified_translated(
             StrictDecision::quarantine("top-level", family.as_str(), "unknown-top-level")
         }
     }
+}
+
+fn server_zlib_stream_continuation_empty_progress_valid(
+    direction: Direction,
+    family: VerifiedFamily,
+) -> bool {
+    if !matches!(
+        direction,
+        Direction::ServerToClient | Direction::ServerToClientSynthetic
+    ) {
+        return false;
+    }
+
+    match family {
+        VerifiedFamily::ServerZlibStreamContinuation {
+            owner,
+            stream_epoch,
+            ..
+        } => owner != ContinuationOwner::UnknownProxyOwned && stream_epoch != 0,
+        _ => false,
+    }
+}
+
+pub fn decide_verified_proof_translated(
+    direction: Direction,
+    proof: &VerifiedProof,
+    bytes: &[u8],
+) -> StrictDecision {
+    match proof {
+        VerifiedProof::Family(family) => decide_verified_translated(direction, *family, bytes),
+        VerifiedProof::GameplayStream(families) => {
+            decide_verified_gameplay_stream_translated(direction, families, bytes)
+        }
+        VerifiedProof::CoalescedWindow(records) => {
+            decide_verified_coalesced_window_translated(direction, records, bytes)
+        }
+    }
+}
+
+fn decide_verified_gameplay_stream_translated(
+    direction: Direction,
+    families: &[VerifiedFamily],
+    bytes: &[u8],
+) -> StrictDecision {
+    if families.is_empty() {
+        return StrictDecision::quarantine(
+            "M/verified-gameplay-stream",
+            "GameplayStream",
+            "empty-gameplay-proof",
+        );
+    }
+
+    match Packet::classify(bytes) {
+        Packet::M(frame) => {
+            let Some(view) = &frame.parsed else {
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "parse-failed",
+                );
+            };
+            if !view.crc_valid {
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "crc-mismatch",
+                );
+            }
+            if view.declared_payload_length != 0
+                && view.declared_payload_length > view.available_payload_length
+            {
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "declared-payload-overflow",
+                );
+            }
+
+            if view.payload_length == 0 || view.trailing_payload_length != 0 {
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "invalid-gameplay-stream-window",
+                );
+            }
+
+            if view.high.is_some() {
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "high-payload-overflow",
+                    );
+                };
+                if verified_gameplay_stream_payload_valid(families, payload) {
+                    return StrictDecision::allow(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "verified-unit-proof-high-level-shapes",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "unit-proof-high-level-invalid-shape",
+                );
+            }
+
+            if let Some(deflated) = &view.deflated {
+                if !deflated.plausible {
+                    return StrictDecision::quarantine(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "invalid-deflated-envelope",
+                    );
+                }
+                let Some(inflated) = inflate_verified_deflated_payload(
+                    frame.bytes,
+                    view.payload_length,
+                    deflated.inflated_length,
+                ) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "deflated-inflate-failed",
+                    );
+                };
+                if verified_gameplay_stream_payload_valid(families, &inflated) {
+                    return StrictDecision::allow(
+                        "M/verified-gameplay-stream-deflated",
+                        "GameplayStream",
+                        match direction {
+                            Direction::ServerToClient => {
+                                "verified-unit-proof-deflated-high-level-shapes"
+                            }
+                            Direction::ServerToClientSynthetic => {
+                                "verified-unit-proof-synthetic-deflated-high-level-shapes"
+                            }
+                            Direction::ClientToServer => {
+                                "unexpected-client-verified-unit-proof-deflated-high-level-shapes"
+                            }
+                        },
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "deflated-unit-proof-high-level-invalid-shape",
+                );
+            }
+
+            StrictDecision::quarantine(
+                "M/verified-gameplay-stream",
+                "GameplayStream",
+                "unclassified-M-payload",
+            )
+        }
+        Packet::Bn(_) => {
+            StrictDecision::quarantine("BN", "GameplayStream", "verified-proof-translation-not-M")
+        }
+        Packet::UnknownTopLevel(_) => {
+            StrictDecision::quarantine("top-level", "GameplayStream", "unknown-top-level")
+        }
+    }
+}
+
+fn decide_verified_coalesced_window_translated(
+    direction: Direction,
+    record_proofs: &[VerifiedProof],
+    bytes: &[u8],
+) -> StrictDecision {
+    if record_proofs.is_empty() {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "empty-coalesced-proof",
+        );
+    }
+
+    let Packet::M(frame) = Packet::classify(bytes) else {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "verified-proof-translation-not-M",
+        );
+    };
+    let Some(view) = &frame.parsed else {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "parse-failed",
+        );
+    };
+    if !view.crc_valid {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "crc-mismatch",
+        );
+    }
+    if view.declared_payload_length != view.payload_length
+        || view.payload_length > view.available_payload_length
+    {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "coalesced-primary-declared-mismatch",
+        );
+    }
+
+    let primary_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+    let primary_end = primary_start + view.payload_length;
+    let Some(primary_payload) = frame.bytes.get(primary_start..primary_end) else {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "coalesced-primary-payload-overflow",
+        );
+    };
+
+    let primary_deflated = view
+        .deflated
+        .as_ref()
+        .map(|deflated| (deflated.plausible, deflated.inflated_length));
+    if !coalesced_record_proof_valid(
+        direction,
+        &record_proofs[0],
+        primary_payload,
+        primary_deflated,
+    ) {
+        tracing::warn!(
+            record_index = 0usize,
+            proof = record_proofs[0].as_str(),
+            payload_len = primary_payload.len(),
+            prefix = %hex_prefix(primary_payload, 64),
+            "coalesced typed proof rejected primary payload"
+        );
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            record_proofs[0].as_str(),
+            "coalesced-record-proof-invalid",
+        );
+    }
+
+    let spans = if view.trailing_payload_length == 0 {
+        Vec::new()
+    } else {
+        let Some(spans) = parse_packetized_spans(frame.bytes, primary_end) else {
+            return StrictDecision::quarantine(
+                "M/verified-coalesced",
+                "CoalescedWindow",
+                "coalesced-span-parse-failed",
+            );
+        };
+        spans
+    };
+
+    if 1 + spans.len() != record_proofs.len() {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "coalesced-proof-record-count-mismatch",
+        );
+    }
+
+    for (record_index, (span, proof)) in spans.iter().zip(record_proofs.iter().skip(1)).enumerate()
+    {
+        if span.declared_payload_length != span.payload_length {
+            return StrictDecision::quarantine(
+                "M/verified-coalesced",
+                proof.as_str(),
+                "coalesced-span-declared-mismatch",
+            );
+        }
+        let payload_offset = span.offset + LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+        let payload_end = payload_offset + span.payload_length;
+        let Some(payload) = frame.bytes.get(payload_offset..payload_end) else {
+            return StrictDecision::quarantine(
+                "M/verified-coalesced",
+                proof.as_str(),
+                "coalesced-span-payload-overflow",
+            );
+        };
+        let span_deflated = span
+            .deflated
+            .as_ref()
+            .map(|deflated| (deflated.plausible, deflated.inflated_length));
+        if !coalesced_record_proof_valid(direction, proof, payload, span_deflated) {
+            tracing::warn!(
+                record_index = record_index + 1,
+                proof = proof.as_str(),
+                payload_len = payload.len(),
+                declared_payload_length = span.declared_payload_length,
+                span_offset = span.offset,
+                prefix = %hex_prefix(payload, 64),
+                "coalesced typed proof rejected span payload"
+            );
+            return StrictDecision::quarantine(
+                "M/verified-coalesced",
+                proof.as_str(),
+                "coalesced-record-proof-invalid",
+            );
+        }
+    }
+
+    StrictDecision::allow(
+        "M/verified-coalesced",
+        "CoalescedWindow",
+        "verified-family-exact-coalesced-window-proofs",
+    )
+}
+
+fn coalesced_record_proof_valid(
+    direction: Direction,
+    proof: &VerifiedProof,
+    payload: &[u8],
+    deflated: Option<(bool, usize)>,
+) -> bool {
+    match proof {
+        VerifiedProof::Family(VerifiedFamily::ConsumedEmptyMFrame) => payload.is_empty(),
+        VerifiedProof::Family(family @ VerifiedFamily::ServerZlibStreamContinuation { .. }) => {
+            payload.is_empty()
+                && server_zlib_stream_continuation_empty_progress_valid(direction, *family)
+        }
+        VerifiedProof::Family(family) => coalesced_family_payload_valid(*family, payload, deflated),
+        VerifiedProof::GameplayStream(families) => {
+            coalesced_gameplay_stream_payload_valid(families, payload, deflated)
+        }
+        VerifiedProof::CoalescedWindow(_) => false,
+    }
+}
+
+fn coalesced_family_payload_valid(
+    family: VerifiedFamily,
+    payload: &[u8],
+    deflated: Option<(bool, usize)>,
+) -> bool {
+    if payload.is_empty() {
+        return family == VerifiedFamily::ConsumedEmptyMFrame;
+    }
+    if HighLevel::parse(payload).is_some() {
+        return verified_family_inflated_payload_valid(family, payload);
+    }
+
+    let Some((plausible, inflated_length)) = deflated else {
+        return false;
+    };
+    if !plausible {
+        return false;
+    }
+    let Some(inflated) = inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
+    else {
+        return false;
+    };
+    verified_family_inflated_payload_valid(family, &inflated)
+}
+
+fn coalesced_gameplay_stream_payload_valid(
+    families: &[VerifiedFamily],
+    payload: &[u8],
+    deflated: Option<(bool, usize)>,
+) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+    if HighLevel::parse(payload).is_some() {
+        return verified_gameplay_stream_payload_valid(families, payload);
+    }
+
+    let Some((plausible, inflated_length)) = deflated else {
+        return false;
+    };
+    if !plausible {
+        return false;
+    }
+    let Some(inflated) = inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
+    else {
+        return false;
+    };
+    verified_gameplay_stream_payload_valid(families, &inflated)
+}
+fn verified_gameplay_stream_payload_valid(families: &[VerifiedFamily], payload: &[u8]) -> bool {
+    let split = gameplay_stream::split_inflated_gameplay(payload);
+    if !split.complete || split.units.len() != families.len() {
+        return false;
+    }
+
+    split
+        .units
+        .iter()
+        .zip(families)
+        .all(|(unit, family)| match unit {
+            gameplay_stream::GameplayUnit::HighLevel(message) => {
+                verified_family_inflated_payload_valid(*family, message.payload)
+            }
+            gameplay_stream::GameplayUnit::Continuation(_)
+            | gameplay_stream::GameplayUnit::PendingFragment(_)
+            | gameplay_stream::GameplayUnit::Unknown(_) => false,
+        })
 }
 
 pub fn decide_verified_translated_batch(
@@ -495,6 +906,145 @@ pub fn decide_verified_translated_batch(
     ))
 }
 
+pub fn decide_verified_proof_translated_batch(
+    direction: Direction,
+    proof: &VerifiedProof,
+    packets: &[Vec<u8>],
+) -> Option<StrictDecision> {
+    match proof {
+        VerifiedProof::Family(family) => {
+            decide_verified_translated_batch(direction, *family, packets)
+        }
+        VerifiedProof::CoalescedWindow(_) => None,
+        VerifiedProof::GameplayStream(families) => {
+            if packets.len() <= 1
+                || !matches!(
+                    direction,
+                    Direction::ServerToClient | Direction::ServerToClientSynthetic
+                )
+            {
+                return None;
+            }
+
+            let Packet::M(first_frame) = Packet::classify(packets.first()?.as_slice()) else {
+                return None;
+            };
+            let first_view = match &first_frame.parsed {
+                Some(view) => view,
+                None => {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-first-frame-parse-failed",
+                    ));
+                }
+            };
+            let expected_frames = usize::from(first_view.packetized_sequence);
+            if expected_frames <= 1 {
+                return None;
+            }
+            if expected_frames != packets.len() {
+                return None;
+            }
+
+            let mut combined = Vec::new();
+            for (index, packet) in packets.iter().enumerate() {
+                let Packet::M(frame) = Packet::classify(packet.as_slice()) else {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-not-M",
+                    ));
+                };
+                let Some(view) = &frame.parsed else {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-parse-failed",
+                    ));
+                };
+                if !view.crc_valid {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-crc-mismatch",
+                    ));
+                }
+                if view.declared_payload_length != 0
+                    && view.declared_payload_length > view.available_payload_length
+                {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-declared-payload-overflow",
+                    ));
+                }
+                if view.trailing_payload_length != 0 {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-invalid-payload-window",
+                    ));
+                }
+                if index == 0 && usize::from(view.packetized_sequence) != expected_frames {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-first-frame-count-mismatch",
+                    ));
+                }
+                if view.payload_length == 0 {
+                    if index == 0
+                        || view.available_payload_length != 0
+                        || view.declared_payload_length != 0
+                        || view.packetized_sequence != 0
+                        || view.frame_type != 0
+                        || (view.flags & !0x08) != 0
+                    {
+                        return Some(StrictDecision::quarantine(
+                            "M/verified-gameplay-stream-batch",
+                            "GameplayStream",
+                            "batch-member-invalid-empty-shell",
+                        ));
+                    }
+                    continue;
+                }
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return Some(StrictDecision::quarantine(
+                        "M/verified-gameplay-stream-batch",
+                        "GameplayStream",
+                        "batch-member-payload-overflow",
+                    ));
+                };
+                combined.extend_from_slice(payload);
+            }
+
+            let Some(inflated) = inflate_verified_deflated_combined_payload(&combined, None) else {
+                return Some(StrictDecision::quarantine(
+                    "M/verified-gameplay-stream-batch",
+                    "GameplayStream",
+                    "batch-deflated-inflate-failed",
+                ));
+            };
+            if verified_gameplay_stream_payload_valid(families, &inflated) {
+                return Some(StrictDecision::allow(
+                    "M/verified-gameplay-stream-batch",
+                    "GameplayStream",
+                    "verified-unit-proof-deflated-batch-high-level-shapes",
+                ));
+            }
+
+            Some(StrictDecision::quarantine(
+                "M/verified-gameplay-stream-batch",
+                "GameplayStream",
+                "batch-deflated-unit-proof-high-level-invalid-shape",
+            ))
+        }
+    }
+}
+
 fn inflate_verified_deflated_payload(
     bytes: &[u8],
     payload_length: usize,
@@ -525,21 +1075,24 @@ fn inflate_verified_deflated_combined_payload(
 }
 
 fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]) -> bool {
-    if let VerifiedFamily::ServerZlibStreamContinuation { owner } = family {
-        // Decompile-backed transport ownership: CNetLayerWindow stores full
-        // reliable-window frames and UnpacketizeFullMessages may append later
-        // zlib-stream bytes that do not begin with a CNW `P major minor`
-        // header. The translator has already consumed Diamond stream state and
-        // re-emitted these exact continuation bytes in a fresh EE zlib envelope.
-        // This family is intentionally valid only for non-empty no-header
-        // continuation payloads; high-level gameplay messages must use their
-        // exact semantic family instead.
-        tracing::debug!(
+    if let VerifiedFamily::ServerZlibStreamContinuation {
+        owner,
+        stream_epoch,
+        first_sequence,
+    } = family
+    {
+        // Remembered zlib-stream ownership is diagnostic context, not an allow
+        // proof. No-header bytes are not valid EE-facing gameplay by
+        // themselves; a future family-specific stream translator must rebuild
+        // a complete typed payload and emit that exact semantic family instead.
+        tracing::warn!(
             owner = owner.as_str(),
+            stream_epoch,
+            first_sequence,
             continuation_len = payload.len(),
-            "strict zlib continuation validated against remembered semantic owner"
+            "strict rejected standalone zlib-stream continuation proof without semantic payload"
         );
-        return !payload.is_empty() && HighLevel::parse(payload).is_none();
+        return false;
     }
 
     let Some(high) = HighLevel::parse(payload) else {
@@ -566,9 +1119,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::GuiQuickbar => {
             high.major == 0x1E && high.minor == 0x01 && quickbar_shape_valid(payload)
         }
-        VerifiedFamily::GuiQuickbarPlaceholder => {
-            high.major == 0x1E && high.minor == 0x01 && quickbar_shape_valid(payload)
-        }
+        VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
         VerifiedFamily::Inventory => {
             high.major == 0x0C
                 && matches!(high.minor, 0x01 | 0x02)
@@ -600,6 +1151,10 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                     0x01 | 0x03..=0x0E => party_cnw_wrapped_payload_shape_valid(payload),
                     _ => false,
                 }
+        }
+        VerifiedFamily::PlayModuleCharacterList => {
+            high.major == 0x31
+                && play_module_character_list::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::PlayerList => {
             high.major == 0x0A
@@ -644,9 +1199,9 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::ModuleInfo
             | VerifiedFamily::ModuleTime
             | VerifiedFamily::Party
+            | VerifiedFamily::PlayModuleCharacterList
             | VerifiedFamily::PlayerList
             | VerifiedFamily::SetCustomToken
-            | VerifiedFamily::ServerZlibStreamContinuation { .. }
             | VerifiedFamily::ServerStatusModuleResources
     )
 }
@@ -816,8 +1371,12 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x05, 0x02) => {
             HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload))
         }
+        (0x06, 0x01 | 0x03) => {
+            HighPayloadValidation::Exact(client_input::claim_payload_if_verified(payload).is_some())
+        }
         (0x09, 0x04 | 0x05) => HighPayloadValidation::Exact(chat_shape_valid(payload, high)),
         (0x0A, 0x01 | 0x02) => HighPayloadValidation::Exact(player_list_shape_valid(payload)),
+        (0x0D, 0x01) => HighPayloadValidation::Exact(gui_inventory_status_shape_valid(payload)),
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
@@ -831,6 +1390,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x1C, 0x0C) => HighPayloadValidation::Exact(journal_shape_valid(payload)),
         (0x1E, 0x01 | 0x02) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
         (0x31, 0x01 | 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x31, 0x03) => HighPayloadValidation::Exact(
+            play_module_character_list::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
         (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
         (0x02, 0x0A | 0x10 | 0x12) | (0x03, 0x0E) | (0x0C, 0x01) => {
@@ -861,6 +1423,19 @@ fn client_login_server_subdirectory_shape_valid(payload: &[u8]) -> bool {
         && identifier
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'.'))
+}
+
+fn gui_inventory_status_shape_valid(payload: &[u8]) -> bool {
+    // EE `GuiInventory_Status` minor `0x01` is exactly:
+    // high-level tag + CNW declared read size `11` + one OBJECTIDServer in the
+    // read buffer + one fragment byte carrying the open/close BOOL.
+    const DECLARED_BYTES: usize = 11;
+    const PAYLOAD_BYTES: usize = 12;
+    const OBJECT_ID_OFFSET: usize = 7;
+    payload.len() == PAYLOAD_BYTES
+        && read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+            == Some(DECLARED_BYTES)
+        && read_le_u32(payload, OBJECT_ID_OFFSET).is_some()
 }
 
 fn cnw_wrapped_payload_shape_valid(
@@ -1180,7 +1755,13 @@ fn area_client_area_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn live_object_shape_valid(payload: &[u8]) -> bool {
-    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 4096)
+    // A P05 CNW wrapper is not a semantic proof. HG captures can split a
+    // GameObjUpdate_LiveObject stream mid record; accepting only the declared
+    // length wrapper lets later no-header zlib bytes leak through as if the
+    // original live-object packet was fully understood. The exact validator
+    // walks decompile-backed live-object record boundaries and requires full
+    // cursor consumption before this family can be considered translated.
+    live_object_update::claim_payload_if_verified(payload).is_some()
 }
 
 fn player_list_shape_valid(payload: &[u8]) -> bool {
@@ -1209,7 +1790,38 @@ fn journal_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn quickbar_shape_valid(payload: &[u8]) -> bool {
-    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+    quickbar::ee_set_all_buttons_payload_shape_valid(payload)
+}
+
+fn quickbar_placeholder_shape_valid(payload: &[u8]) -> bool {
+    // Placeholder quickbars are a transport workaround, not a real semantic
+    // quickbar update. They may only validate as the exact all-blank
+    // SetAllButtons shape emitted by `m_frame::quickbar_stream` while buffering
+    // a fragmented legacy quickbar stream.
+    const PLACEHOLDER_READ_BYTES: usize = 36;
+    const PLACEHOLDER_DECLARED: usize = 3 + PLACEHOLDER_READ_BYTES;
+    const PLACEHOLDER_FRAGMENT_BYTE: u8 = 0x60;
+
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    if high.major != 0x1E || high.minor != 0x01 {
+        return false;
+    }
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared != PLACEHOLDER_DECLARED || payload.len() != 3 + 4 + PLACEHOLDER_READ_BYTES + 1 {
+        return false;
+    }
+    let read_start = 3 + 4;
+    let read_end = read_start + PLACEHOLDER_READ_BYTES;
+    payload
+        .get(read_start..read_end)
+        .map(|read| read.iter().all(|byte| *byte == 0))
+        .unwrap_or(false)
+        && payload.get(read_end).copied() == Some(PLACEHOLDER_FRAGMENT_BYTE)
 }
 
 fn loadbar_shape_valid(payload: &[u8]) -> bool {
@@ -1915,6 +2527,34 @@ fn consume_counted(bytes: &[u8], cursor: &mut usize) -> bool {
     }
     *cursor += len;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coalesced_login_feedback_records_have_exact_semantic_shapes() {
+        let feedback_with_two_dwords = [
+            0x50, 0x12, 0x0B, 0x11, 0x00, 0x00, 0x00, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x60,
+        ];
+        let feedback_id_only = [0x50, 0x12, 0x0B, 0x09, 0x00, 0x00, 0x00, 0xBE, 0x00, 0x60];
+        let login_confirm = [0x50, 0x02, 0x05];
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientSideMessage,
+            &feedback_with_two_dwords,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientSideMessage,
+            &feedback_id_only,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Login,
+            &login_confirm,
+        ));
+    }
 }
 
 fn validate_bnxr(packet: &BnPacket<'_>) -> StrictDecision {

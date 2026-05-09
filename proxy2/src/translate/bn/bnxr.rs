@@ -28,7 +28,9 @@ pub(super) fn rewrite_server_to_ee(
         return Ok(None);
     };
 
-    let mut rewritten = Vec::with_capacity(module_end + advert_section.len() + bytes.len().saturating_sub(suffix_start));
+    let mut rewritten = Vec::with_capacity(
+        module_end + advert_section.len() + bytes.len().saturating_sub(suffix_start),
+    );
     rewritten.extend_from_slice(&bytes[..module_end]);
     rewritten.extend_from_slice(&advert_section);
     rewritten.extend_from_slice(&bytes[suffix_start..]);
@@ -79,7 +81,8 @@ fn parse_module_name(bytes: &[u8]) -> Option<(String, usize)> {
         return None;
     }
 
-    let length_hint_end = MODULE_NAME_OFFSET.checked_add(*bytes.get(LENGTH_HINT_OFFSET)? as usize)?;
+    let length_hint_end =
+        MODULE_NAME_OFFSET.checked_add(*bytes.get(LENGTH_HINT_OFFSET)? as usize)?;
     if bytes.len() < length_hint_end {
         return None;
     }

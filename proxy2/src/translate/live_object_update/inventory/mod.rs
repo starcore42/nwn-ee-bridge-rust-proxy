@@ -38,6 +38,12 @@ pub(super) struct InventoryRecordClaim {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct InventoryRecordPrefixClaim {
+    pub read_end: usize,
+    pub fragment_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct GenericInventoryCandidate {
     cursor: usize,
     bits: usize,
@@ -127,11 +133,65 @@ pub(super) fn try_get_legacy_live_inventory_fragment_bit_count(
         return try_parse_inventory_2400_slot_update_shape(bytes, record_offset, record_end);
     }
 
-    if (mask & !GENERIC_INVENTORY_PARSE_MASK) == 0 && (mask & (0x0200 | 0x0800)) != 0 {
+    if (mask & !GENERIC_INVENTORY_PARSE_MASK) == 0 {
+        // Diamond and EE both walk the inventory mask in the fixed reader order
+        // modelled by the generic parser. Masks with 0x0200/0x0800 need the
+        // parser's branch search, but deterministic masks such as the HG self
+        // inventory D5FF packet are the same decompile-backed family and must
+        // not be excluded just because they do not contain an ambiguous branch.
         return try_parse_generic_inventory_with_branching(bytes, record_offset, record_end, mask);
     }
 
     None
+}
+
+pub(super) fn try_get_legacy_live_inventory_prefix_claim(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+) -> Option<InventoryRecordPrefixClaim> {
+    if record_offset > bytes.len()
+        || search_end > bytes.len()
+        || search_end <= record_offset
+        || search_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    if !matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
+        && !looks_like_legacy_live_object_id_value(object_id)
+    {
+        return None;
+    }
+
+    if (mask & !GENERIC_INVENTORY_PARSE_MASK) != 0 {
+        return None;
+    }
+
+    // This prefix proof is intentionally limited to deterministic inventory
+    // masks. Ambiguous 0x0200/0x0800 records need an exact candidate boundary
+    // to choose the byte shape, but large HG inventory state packets such as
+    // D5FF have a single decompile-owned read order. When a legacy zlib stream
+    // interleaves CNW fragment storage after that deterministic read body, the
+    // parser can prove the read-buffer end before the scanner reaches the next
+    // live-object opcode.
+    if (mask & (0x0200 | 0x0800)) != 0 {
+        return None;
+    }
+
+    let candidate =
+        try_parse_generic_inventory_prefix_with_branching(bytes, record_offset, search_end, mask)?;
+    if candidate.cursor <= record_offset + 7 || candidate.cursor >= search_end {
+        return None;
+    }
+
+    Some(InventoryRecordPrefixClaim {
+        read_end: candidate.cursor,
+        fragment_bits: candidate.bits,
+    })
 }
 
 fn try_parse_inventory_2400_slot_update_shape(

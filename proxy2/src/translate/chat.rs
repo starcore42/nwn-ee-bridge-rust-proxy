@@ -96,13 +96,8 @@ fn claim_chat_tell(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
     let (speaker_end, _) =
         read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_SPEAKER_BYTES)?;
     let exact_speaker_shape = speaker_end == declared
-        || read_bounded_cexo_string_end(
-            payload,
-            speaker_end,
-            declared,
-            MAX_CHAT_SPEAKER_BYTES,
-        )
-        .is_some_and(|(second_end, _)| second_end == declared);
+        || read_bounded_cexo_string_end(payload, speaker_end, declared, MAX_CHAT_SPEAKER_BYTES)
+            .is_some_and(|(second_end, _)| second_end == declared);
     if !exact_speaker_shape {
         return None;
     }

@@ -54,7 +54,8 @@ fn claim_party_list(payload: &[u8], minor: u8) -> Option<PartyClaimSummary> {
     }
 
     let count = usize::try_from(read_le_u32(payload, READ_START)?).ok()?;
-    let expected_read_bytes = PARTY_LIST_COUNT_BYTES.checked_add(count.checked_mul(OBJECT_ID_BYTES)?)?;
+    let expected_read_bytes =
+        PARTY_LIST_COUNT_BYTES.checked_add(count.checked_mul(OBJECT_ID_BYTES)?)?;
     if summary.read_bytes != expected_read_bytes {
         return None;
     }

@@ -124,7 +124,12 @@ impl ModuleResourceWriter {
     }
 
     fn finish(mut self) -> Option<(Vec<u8>, Vec<u8>, u32)> {
-        let declared = u32::try_from(self.read_buffer.len().checked_add(HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+        let declared = u32::try_from(
+            self.read_buffer
+                .len()
+                .checked_add(HIGH_LEVEL_HEADER_BYTES)?,
+        )
+        .ok()?;
         self.read_buffer[..CNW_LENGTH_BYTES].copy_from_slice(&declared.to_le_bytes());
         let fragments = pack_cnw_msb_bits(self.fragment_bits)?;
         Some((self.read_buffer, fragments, declared))
@@ -214,7 +219,10 @@ fn read_leading_string_from_read_buffer(read_buffer: &[u8]) -> Option<String> {
     if length > MAX_SERVER_STATUS_STRING || CNW_LENGTH_BYTES + 4 + length > read_buffer.len() {
         return None;
     }
-    Some(String::from_utf8_lossy(&read_buffer[CNW_LENGTH_BYTES + 4..CNW_LENGTH_BYTES + 4 + length]).to_string())
+    Some(
+        String::from_utf8_lossy(&read_buffer[CNW_LENGTH_BYTES + 4..CNW_LENGTH_BYTES + 4 + length])
+            .to_string(),
+    )
 }
 
 fn pack_cnw_msb_bits(mut bits: Vec<bool>) -> Option<Vec<u8>> {
@@ -246,4 +254,37 @@ fn is_resref_char(byte: u8) -> bool {
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_legacy_short_module_running_status_into_ee_resource_block() {
+        // Quarantined HG capture shape:
+        // P 01 03 + CNW declared length 0x0B, empty leading status string,
+        // and one legacy fragment byte. EE keeps the same high-level family
+        // but expects `CNWCModule::LoadModuleResources` data after the leading
+        // status string, so this must be claimed by the module-resource
+        // translator rather than allowed as an unowned raw status packet.
+        let mut payload = vec![
+            b'P', 0x01, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79,
+        ];
+
+        let summary = rewrite_server_status_module_resources_payload(
+            &mut payload,
+            &ModuleResourceRuntime::default(),
+        )
+        .expect("legacy module-running status should be rewritten");
+
+        assert_eq!(summary.old_declared, 0x0B);
+        assert_eq!(summary.status_module_name, "");
+        assert_eq!(summary.profile_name, "higher-ground");
+        assert_eq!(summary.hak_count, 24);
+        assert_eq!(summary.new_payload_length, payload.len());
+        assert_eq!(&payload[..3], &[b'P', 0x01, 0x03]);
+        assert_eq!(read_u32_le(&payload, 3), Some(summary.new_declared));
+        assert!(summary.new_declared > summary.old_declared);
+    }
 }

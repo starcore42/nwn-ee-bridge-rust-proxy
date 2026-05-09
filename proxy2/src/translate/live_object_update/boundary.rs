@@ -4,8 +4,11 @@
 //! records and it does not mutate read bytes or fragment bits.
 
 use super::{
-    gui, inventory, item, locstring, read_u32_le, DOOR_OBJECT_TYPE,
-    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
+    DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
+    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES,
+    LEGACY_UPDATE_SCALE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
+    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
+    creature, gui, inventory, item, locstring, read_u32_le, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -19,8 +22,31 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     if bytes.get(offset).copied() == Some(b'G') {
+        if let Some(record_end) = gui::try_get_legacy_live_gui_record_end(bytes, offset, scan_end) {
+            return record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'A') && bytes.get(offset + 1).copied() == Some(0x05) {
+        let record_end = offset.saturating_add(creature::EE_CREATURE_ADD_RECORD_BYTES);
+        if record_end <= scan_end
+            && creature::looks_like_ee_creature_add_record(bytes, offset, record_end)
+        {
+            return record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'A')
+        && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
+    {
+        if let Some(record_end) = trigger::try_get_trigger_add_record_end(bytes, offset, scan_end) {
+            return record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'P') && bytes.get(offset + 1).copied() == Some(0x05) {
         if let Some(record_end) =
-            gui::try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, scan_end)
+            appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end)
         {
             return record_end;
         }
@@ -35,12 +61,28 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         && looks_like_legacy_live_object_id_at(bytes, offset + 2)
     {
         if let Some(raw_mask) = read_u32_le(bytes, offset + 6) {
-            if matches!(raw_mask, 0x0000_0008 | 0x0000_0047 | 0x0000_8000) {
+            if matches!(
+                raw_mask,
+                0x0000_0008 | 0x0000_0047 | 0x0000_3967 | 0x0000_8000 | 0x0000_C408
+            ) {
                 // Decompile/capture-backed creature `U/5` numeric update shapes
                 // contain compact status/movement fields, not CExoString names.
                 // Mirroring the mature bridge, do not hide candidate live-object
                 // boundaries merely because bytes inside these numeric fields
                 // look like a one-byte inline string length plus an opcode.
+                // `0x0000_3967` does contain the decompiled identity-string
+                // branch, but its HG short-declared captures can also place a
+                // bounded CNW fragment-storage span before the next `A/5`
+                // boundary. Let the focused creature-update parser and
+                // `fragment_spans` proof accept or reject the exact split
+                // instead of letting generic inline-string suppression hide the
+                // following real record.
+                // `0x0000_C408` is the HG self/visibility status family:
+                // status-effect list, four SHORT stats, five+two visibility
+                // BOOLs, and three self-visibility BOOLs. Its next true
+                // submessage can be an `I` sentinel record immediately after
+                // the read cursor, so inline-string suppression would hide the
+                // real boundary.
                 suppress_inline_string_boundaries = false;
             }
         }
@@ -82,11 +124,13 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
         return 2;
     }
     match (bytes[offset], bytes[offset + 1]) {
+        (b'A', _) if appearance::looks_like_legacy_item_add_record_boundary(bytes, offset) => 9,
         (b'A', 0x05) => 32,
+        (b'A', TRIGGER_OBJECT_TYPE) => trigger::TRIGGER_ADD_MIN_RECORD_BYTES,
         (b'A', PLACEABLE_OBJECT_TYPE) => {
             let name_offset = offset + 6;
             if let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) {
-                return inline_end.saturating_add(5).saturating_sub(offset);
+                return inline_end.saturating_add(4).saturating_sub(offset);
             }
             11
         }
@@ -99,6 +143,28 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
                 return inline_end.saturating_add(2).saturating_sub(offset);
             }
             16
+        }
+        (b'U', PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) => {
+            let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
+                return LEGACY_UPDATE_HEADER_BYTES;
+            };
+            let mut minimum = LEGACY_UPDATE_HEADER_BYTES;
+            if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+                minimum += LEGACY_UPDATE_POSITION_READ_BYTES;
+            }
+            if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+                && (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK))
+                    != 0
+            {
+                // HG/Diamond door/placeable name updates can carry a
+                // decompile-backed nine-byte anchored generic tail at the name
+                // cursor: WORD facing, one legacy generic byte, FLOAT scale,
+                // WORD generic state. Bytes inside that tail can look like
+                // item/live-object opcodes (`I 00 <compact id>`), so never scan
+                // for the next submessage before this bounded tail is consumed.
+                minimum += 9;
+            }
+            minimum
         }
         (b'U' | b'P', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 10,
         (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
@@ -131,6 +197,10 @@ pub(super) fn looks_like_legacy_live_object_sub_message_boundary(
     if matches!(opcode, b'A' | b'D' | b'U' | b'P')
         && (typed_object_boundary || legacy_type5_sentinel_boundary)
     {
+        return true;
+    }
+
+    if opcode == b'A' && appearance::looks_like_legacy_item_add_record_boundary(bytes, offset) {
         return true;
     }
 

@@ -6,7 +6,7 @@
 
 use flate2::Decompress;
 
-use crate::translate::{ContinuationOwner, area, module_resources};
+use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources};
 
 use super::{
     live_stream, quickbar_stream,
@@ -20,8 +20,23 @@ pub(super) struct DeflateState {
     pub(super) server_reassembly: Option<ServerDeflatedReassembly>,
     pub(super) server_zlib_inflater: Option<Decompress>,
     pub(super) completed_server_stream_windows: Vec<CompletedDeflatedStreamWindow>,
+    pub(super) completed_coalesced_stream_records: Vec<CompletedCoalescedStreamRecord>,
     pub(super) server_zlib_stream_proxy_owned: bool,
     pub(super) server_zlib_stream_owner: Option<ContinuationOwner>,
+    pub(super) server_zlib_stream_epoch: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CompletedCoalescedStreamRecord {
+    pub(super) sequence: u16,
+    pub(super) offset: usize,
+    pub(super) payload_length: usize,
+    pub(super) inflated_length: usize,
+    pub(super) compressed: Vec<u8>,
+    pub(super) proof: VerifiedProof,
+    pub(super) record: Vec<u8>,
+    pub(super) dropped: bool,
+    pub(super) rewritten_deflated: bool,
 }
 
 #[derive(Debug, Default)]
@@ -40,6 +55,7 @@ pub(super) struct SequenceState {
     pub(super) latest_client_ack_from_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
+    pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Default)]

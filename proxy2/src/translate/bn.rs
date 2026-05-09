@@ -15,9 +15,10 @@
 //! them, then the dump/log path gives us a concrete packet to research against
 //! the EE and Diamond decompiles before adding a focused translator.
 
-mod bndp;
 mod bncr;
 mod bncs;
+mod bndm;
+mod bndp;
 mod bndr;
 mod bnds;
 mod bner;
@@ -25,10 +26,9 @@ mod bnes;
 mod bnlm;
 mod bnlr;
 mod bnvr;
-mod bndm;
-mod bnxr;
-mod bnxi;
 mod bnvs;
+mod bnxi;
+mod bnxr;
 mod wire;
 
 use crate::{
@@ -87,15 +87,15 @@ pub fn translate_client_to_server(
             anyhow::bail!("unknown BN control tag in client-to-server direction")
         }
         BnTag::Bncs => {
-        if bytes.len() >= 6 {
-            state.remember_bncs_udp_port(u16::from_le_bytes([bytes[4], bytes[5]]));
-        }
-        return bncs::rewrite_client_to_diamond(
-            bytes,
-            identity,
-            bncs_private_build,
-            bncs_build_field,
-        );
+            if bytes.len() >= 6 {
+                state.remember_bncs_udp_port(u16::from_le_bytes([bytes[4], bytes[5]]));
+            }
+            return bncs::rewrite_client_to_diamond(
+                bytes,
+                identity,
+                bncs_private_build,
+                bncs_build_field,
+            );
         }
         BnTag::Bndm => return bndm::rewrite_client_to_legacy_bnds(bytes, state),
         BnTag::Bnvs => return bnvs::rewrite_client_to_diamond(bytes, identity, state),
@@ -198,9 +198,5 @@ fn unclaimed_bn(tag: BnTag, direction: &'static str, len: usize) -> anyhow::Resu
         len,
         "BN packet quarantined before emit: no semantic translator claimed this tag/direction"
     );
-    anyhow::bail!(
-        "unclaimed BN packet {:?} in {} direction",
-        tag,
-        direction
-    )
+    anyhow::bail!("unclaimed BN packet {:?} in {} direction", tag, direction)
 }

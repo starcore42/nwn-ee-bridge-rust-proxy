@@ -9,8 +9,8 @@
 use crate::{
     packet::m::HighLevel,
     translate::{
-        client_area, client_char_list, client_login, client_module, client_server_status,
-        play_module_character_list,
+        client_area, client_char_list, client_gui_inventory, client_input, client_login,
+        client_module, client_server_status, party, play_module_character_list,
     },
 };
 
@@ -20,7 +20,9 @@ pub struct ClientHighClaimSummary {
     pub packet_name: &'static str,
 }
 
-pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientHighClaimSummary> {
+pub fn claim_or_rewrite_payload_if_verified(
+    payload: &mut Vec<u8>,
+) -> Option<ClientHighClaimSummary> {
     let high = HighLevel::parse(payload)?;
 
     if let Some(summary) = client_server_status::claim_payload_if_verified(payload) {
@@ -53,10 +55,40 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientHighClaimSummar
             packet_name: summary.packet_name,
         });
     }
+    if let Some(summary) = client_gui_inventory::claim_or_rewrite_payload_if_verified(payload) {
+        tracing::info!(
+            object_id = %format_args!("0x{:08X}", summary.object_id),
+            rewritten_self_object_id = summary.rewritten_self_object_id,
+            "client GuiInventory_Status payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientGuiInventory",
+            packet_name: summary.packet_name,
+        });
+    }
+    if let Some(summary) = client_input::claim_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = summary.packet_name,
+            object_id = %format_args!("0x{:08X}", summary.primary_object_id),
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client Input payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientInput",
+            packet_name: summary.packet_name,
+        });
+    }
     if let Some(summary) = client_area::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientArea",
             packet_name: summary.packet_name,
+        });
+    }
+    if let Some(_summary) = party::claim_payload_if_verified(payload) {
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientParty",
+            packet_name: high.name(),
         });
     }
 

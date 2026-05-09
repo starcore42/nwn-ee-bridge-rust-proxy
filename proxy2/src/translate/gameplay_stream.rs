@@ -9,7 +9,7 @@
 //! rejoin translated units, but it does not mutate packets or decide semantic
 //! ownership. Semantic translators still live in focused packet-family modules.
 
-use crate::packet::m::HighLevel;
+use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::VerifiedFamily;
 
@@ -57,30 +57,150 @@ pub fn split_inflated_gameplay(bytes: &[u8]) -> SplitResult<Vec<GameplayUnit<'_>
         };
     }
 
-    let Some(high) = HighLevel::parse(bytes) else {
-        return SplitResult {
-            units: vec![GameplayUnit::Continuation(bytes)],
-            complete: false,
+    let mut offset = 0usize;
+    let mut units = Vec::new();
+    let mut complete = true;
+
+    while offset < bytes.len() {
+        let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+            let tail = &bytes[offset..];
+            if offset == 0 {
+                units.push(GameplayUnit::Continuation(tail));
+            } else {
+                units.push(GameplayUnit::Unknown(tail));
+            }
+            complete = false;
+            break;
         };
-    };
 
-    let declared = bytes
-        .get(3..7)
-        .and_then(|slice| slice.try_into().ok())
-        .map(u32::from_le_bytes)
-        .and_then(|value| usize::try_from(value).ok());
+        let Some(end) = high_level_unit_end(bytes, offset, high) else {
+            units.push(GameplayUnit::PendingFragment(&bytes[offset..]));
+            complete = false;
+            break;
+        };
 
-    SplitResult {
-        units: vec![GameplayUnit::HighLevel(HighLevelMessage {
-            offset: 0,
-            envelope: bytes[0],
+        let declared = declared_cnw_length(bytes, offset, high);
+        units.push(GameplayUnit::HighLevel(HighLevelMessage {
+            offset,
+            envelope: high.envelope,
             major: high.major,
             minor: high.minor,
-            payload: bytes,
+            payload: &bytes[offset..end],
             declared,
-        })],
-        complete: true,
+        }));
+
+        if end <= offset {
+            units.push(GameplayUnit::Unknown(&bytes[offset..]));
+            complete = false;
+            break;
+        }
+        offset = end;
     }
+
+    SplitResult { units, complete }
+}
+
+fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<usize> {
+    if let Some(length) = fixed_high_level_length(high) {
+        return offset.checked_add(length).filter(|end| *end <= bytes.len());
+    }
+
+    let declared = declared_cnw_length(bytes, offset, high)?;
+    if declared < 3 || declared > MAX_REASONABLE_GAMEPLAY_PAYLOAD {
+        return None;
+    }
+
+    let candidates = declared_read_end_candidates(bytes, offset, declared);
+    if candidates.is_empty() {
+        return None;
+    }
+    for read_end in &candidates {
+        if *read_end == bytes.len() || HighLevel::parse(&bytes[*read_end..]).is_some() {
+            return Some(*read_end);
+        }
+    }
+
+    // CNW read-buffer lengths do not describe the compact BOOL fragment tail.
+    // When multiple gameplay messages are concatenated, the next `P major minor`
+    // begins after that fragment tail. We only split at a later offset if that
+    // offset itself can start a bounded high-level unit; otherwise this message
+    // conservatively owns the remaining bytes.
+    let scan_start = candidates
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(offset)
+        .saturating_add(1);
+    find_next_plausible_high_level_boundary(bytes, scan_start).or(Some(bytes.len()))
+}
+
+fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
+    match (high.major, high.minor) {
+        (0x01, 0x00)
+        | (0x02, 0x05 | 0x0C)
+        | (0x03, 0x02)
+        | (0x04, 0x03)
+        | (0x11, 0x01)
+        | (0x31, 0x01 | 0x02) => Some(3),
+        _ => None,
+    }
+}
+
+fn declared_cnw_length(bytes: &[u8], offset: usize, high: HighLevel) -> Option<usize> {
+    if fixed_high_level_length(high).is_some() {
+        return None;
+    }
+    let start = offset.checked_add(3)?;
+    let end = start.checked_add(4)?;
+    let slice: [u8; 4] = bytes.get(start..end)?.try_into().ok()?;
+    usize::try_from(u32::from_le_bytes(slice)).ok()
+}
+
+fn declared_read_end_candidates(bytes: &[u8], offset: usize, declared: usize) -> Vec<usize> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(end) = offset.checked_add(declared) {
+        if end <= bytes.len() {
+            candidates.push(end);
+        }
+    }
+    if let Some(end) = offset
+        .checked_add(4)
+        .and_then(|base| base.checked_add(declared))
+    {
+        if end <= bytes.len() && !candidates.contains(&end) {
+            candidates.push(end);
+        }
+    }
+    candidates
+}
+
+fn find_next_plausible_high_level_boundary(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut cursor = start;
+    while cursor < bytes.len() {
+        if HighLevel::parse(&bytes[cursor..]).is_some()
+            && boundary_has_plausible_unit(bytes, cursor)
+        {
+            return Some(cursor);
+        }
+        cursor = cursor.saturating_add(1);
+    }
+    None
+}
+
+fn boundary_has_plausible_unit(bytes: &[u8], offset: usize) -> bool {
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return false;
+    };
+    if let Some(length) = fixed_high_level_length(high) {
+        return offset
+            .checked_add(length)
+            .map(|end| end <= bytes.len())
+            .unwrap_or(false);
+    }
+    declared_cnw_length(bytes, offset, high)
+        .filter(|declared| *declared >= 3 && *declared <= MAX_REASONABLE_GAMEPLAY_PAYLOAD)
+        .map(|declared| !declared_read_end_candidates(bytes, offset, declared).is_empty())
+        .unwrap_or(false)
 }
 
 pub fn rejoin_translated_units(units: &[TranslatedGameplayUnit]) -> Option<Vec<u8>> {
@@ -118,4 +238,52 @@ where
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_fixed_empty_high_level_messages() {
+        let bytes = [b'P', 0x03, 0x02, b'P', 0x04, 0x03];
+        let split = split_inflated_gameplay(&bytes);
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x03);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected first high-level unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected second high-level unit"),
+        }
+    }
+
+    #[test]
+    fn splits_declared_message_before_next_high_level() {
+        let mut bytes = vec![b'P', 0x03, 0x03];
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        bytes.extend_from_slice(&[b'P', 0x04, 0x03]);
+        let split = split_inflated_gameplay(&bytes);
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.declared, Some(7));
+                assert_eq!(message.payload.len(), 7);
+            }
+            _ => panic!("expected declared high-level unit"),
+        }
+    }
 }

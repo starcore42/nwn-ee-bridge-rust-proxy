@@ -150,3 +150,4 @@ still experimental, not a finished public content pipeline.
 - Added runtime NWSync advertisement/serving, asset profile tooling, stricter validation profiles, and broader BN/high-level packet validators.
 - Split quickbar and live-object inventory translation into smaller modules, with new M-frame stream state and continuation helpers.
 - Added gameplay stream splitting, quickbar fixture scaffolding, and verified-family continuation validation refinements.
+- Expanded live-object, quickbar, client-input, and character-list proxy validation with new fixture-backed translators.

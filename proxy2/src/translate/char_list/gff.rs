@@ -37,6 +37,7 @@ pub(super) struct GffCanonicalizeSummary {
     pub bytes: Option<Vec<u8>>,
     pub old_layout: GffLayout,
     pub new_layout: GffLayout,
+    pub repaired_legacy_section_offsets: bool,
     pub clamped_struct_field_ranges: u32,
     pub normalized_locstring_fields: u32,
     pub normalized_variable_fields: u32,
@@ -64,7 +65,7 @@ struct CloneStats {
 }
 
 pub(super) fn canonicalize_bic_gff(gff: &[u8]) -> Result<GffCanonicalizeSummary, String> {
-    let old_layout = read_gff_layout(gff)?;
+    let (old_layout, repaired_legacy_section_offsets) = read_gff_layout(gff)?;
     let _section_only = build_canonical_layout(old_layout, gff.len())?;
     if old_layout.struct_count == 0 {
         return Err("GFF has no root structure".into());
@@ -110,7 +111,9 @@ pub(super) fn canonicalize_bic_gff(gff: &[u8]) -> Result<GffCanonicalizeSummary,
         &mut stats,
     )?;
     if root_new_struct != 0 {
-        return Err(format!("compacted GFF root was emitted at {root_new_struct}"));
+        return Err(format!(
+            "compacted GFF root was emitted at {root_new_struct}"
+        ));
     }
 
     let new_layout = build_rewritten_layout(
@@ -164,13 +167,14 @@ pub(super) fn canonicalize_bic_gff(gff: &[u8]) -> Result<GffCanonicalizeSummary,
         bytes: (!already_canonical).then_some(canonical),
         old_layout,
         new_layout,
+        repaired_legacy_section_offsets,
         clamped_struct_field_ranges: stats.clamped_struct_field_ranges,
         normalized_locstring_fields: stats.normalized_locstring_fields,
         normalized_variable_fields: stats.normalized_variable_fields,
     })
 }
 
-fn read_gff_layout(gff: &[u8]) -> Result<GffLayout, String> {
+fn read_gff_layout(gff: &[u8]) -> Result<(GffLayout, bool), String> {
     if gff.len() < GFF_HEADER_BYTES {
         return Err(format!(
             "size {} < GFF header {GFF_HEADER_BYTES}",
@@ -184,7 +188,7 @@ fn read_gff_layout(gff: &[u8]) -> Result<GffLayout, String> {
         return Err("unsupported GFF version".into());
     }
 
-    Ok(GffLayout {
+    let raw = GffLayout {
         struct_offset: read_u32(gff, 8)?,
         struct_count: read_u32(gff, 12)?,
         field_offset: read_u32(gff, 16)?,
@@ -197,15 +201,90 @@ fn read_gff_layout(gff: &[u8]) -> Result<GffLayout, String> {
         field_indices_count: read_u32(gff, 44)?,
         list_indices_offset: read_u32(gff, 48)?,
         list_indices_count: read_u32(gff, 52)?,
-    })
+    };
+
+    repair_legacy_contiguous_section_offsets(raw, gff.len())
+}
+
+fn repair_legacy_contiguous_section_offsets(
+    raw: GffLayout,
+    gff_size: usize,
+) -> Result<(GffLayout, bool), String> {
+    let struct_bytes = checked_section_bytes(raw.struct_count, GFF_STRUCT_BYTES)?;
+    let field_bytes = checked_section_bytes(raw.field_count, GFF_FIELD_BYTES)?;
+    let label_bytes = checked_section_bytes(raw.label_count, GFF_LABEL_BYTES)?;
+
+    let inferred_field_offset = usize::try_from(raw.struct_offset)
+        .map_err(|_| "struct offset overflow".to_string())?
+        .checked_add(struct_bytes)
+        .ok_or_else(|| "legacy inferred field offset overflow".to_string())?;
+    let inferred_label_offset = inferred_field_offset
+        .checked_add(field_bytes)
+        .ok_or_else(|| "legacy inferred label offset overflow".to_string())?;
+    let inferred_field_data_offset = inferred_label_offset
+        .checked_add(label_bytes)
+        .ok_or_else(|| "legacy inferred field-data offset overflow".to_string())?;
+
+    let inferred_field_offset_u32 =
+        checked_u32(inferred_field_offset, "legacy inferred field offset")?;
+    let inferred_label_offset_u32 =
+        checked_u32(inferred_label_offset, "legacy inferred label offset")?;
+    let inferred_field_data_offset_u32 = checked_u32(
+        inferred_field_data_offset,
+        "legacy inferred field-data offset",
+    )?;
+
+    // The EE server/client GFF reader treats these header entries as absolute
+    // byte offsets. Some legacy BICs observed inside 1.69
+    // CharList_UpdateCharResponse packets keep the actual struct, field, and
+    // label sections in the standard contiguous order, and the later
+    // field-data offset proves the exact boundary, but the field/label offset
+    // header entries themselves are not the absolute values the EE-side model
+    // expects. This repair is intentionally narrow: only the two table offsets
+    // are corrected, only when the inferred standard layout lands exactly on
+    // the declared field-data section, and only when every inferred section
+    // fits inside the BIC byte count.
+    let can_repair = raw.field_data_offset == inferred_field_data_offset_u32
+        && section_fits(gff_size, raw.struct_offset, struct_bytes)
+        && section_fits(gff_size, inferred_field_offset_u32, field_bytes)
+        && section_fits(gff_size, inferred_label_offset_u32, label_bytes)
+        && section_fits(
+            gff_size,
+            raw.field_data_offset,
+            usize::try_from(raw.field_data_count)
+                .map_err(|_| "field-data count overflow".to_string())?,
+        )
+        && section_fits(
+            gff_size,
+            raw.field_indices_offset,
+            usize::try_from(raw.field_indices_count)
+                .map_err(|_| "field-index count overflow".to_string())?,
+        )
+        && section_fits(
+            gff_size,
+            raw.list_indices_offset,
+            usize::try_from(raw.list_indices_count)
+                .map_err(|_| "list-index count overflow".to_string())?,
+        )
+        && (raw.field_offset != inferred_field_offset_u32
+            || raw.label_offset != inferred_label_offset_u32);
+
+    if !can_repair {
+        return Ok((raw, false));
+    }
+
+    let mut repaired = raw;
+    repaired.field_offset = inferred_field_offset_u32;
+    repaired.label_offset = inferred_label_offset_u32;
+    Ok((repaired, true))
 }
 
 fn build_canonical_layout(layout: GffLayout, gff_size: usize) -> Result<GffLayout, String> {
     let struct_bytes = checked_section_bytes(layout.struct_count, GFF_STRUCT_BYTES)?;
     let field_bytes = checked_section_bytes(layout.field_count, GFF_FIELD_BYTES)?;
     let label_bytes = checked_section_bytes(layout.label_count, GFF_LABEL_BYTES)?;
-    let field_data_bytes =
-        usize::try_from(layout.field_data_count).map_err(|_| "field-data count overflow".to_string())?;
+    let field_data_bytes = usize::try_from(layout.field_data_count)
+        .map_err(|_| "field-data count overflow".to_string())?;
     let field_indices_bytes = usize::try_from(layout.field_indices_count)
         .map_err(|_| "field-index count overflow".to_string())?;
     let list_indices_bytes = usize::try_from(layout.list_indices_count)
@@ -243,14 +322,24 @@ fn build_rewritten_layout(
     let mut cursor = GFF_HEADER_BYTES;
     let struct_offset = checked_u32(cursor, "struct offset")?;
     cursor = cursor
-        .checked_add(struct_count.checked_mul(GFF_STRUCT_BYTES).ok_or("struct bytes overflow")?)
+        .checked_add(
+            struct_count
+                .checked_mul(GFF_STRUCT_BYTES)
+                .ok_or("struct bytes overflow")?,
+        )
         .ok_or("struct cursor overflow")?;
     let field_offset = checked_u32(cursor, "field offset")?;
     cursor = cursor
-        .checked_add(field_count.checked_mul(GFF_FIELD_BYTES).ok_or("field bytes overflow")?)
+        .checked_add(
+            field_count
+                .checked_mul(GFF_FIELD_BYTES)
+                .ok_or("field bytes overflow")?,
+        )
         .ok_or("field cursor overflow")?;
     let label_offset = checked_u32(cursor, "label offset")?;
-    cursor = cursor.checked_add(label_bytes).ok_or("label cursor overflow")?;
+    cursor = cursor
+        .checked_add(label_bytes)
+        .ok_or("label cursor overflow")?;
     let field_data_offset = checked_u32(cursor, "field-data offset")?;
     cursor = cursor
         .checked_add(field_data_count)
@@ -308,15 +397,17 @@ fn clone_gff_struct_tree(
             "GFF struct clone depth exceeded at old struct {old_struct_index}"
         ));
     }
-    let active_index =
-        usize::try_from(old_struct_index).map_err(|_| "active struct index overflow".to_string())?;
+    let active_index = usize::try_from(old_struct_index)
+        .map_err(|_| "active struct index overflow".to_string())?;
     if active_old_structs
         .get(active_index)
         .copied()
         .ok_or_else(|| "active struct index out of bounds".to_string())?
         != 0
     {
-        return Err(format!("GFF struct cycle detected at old struct {old_struct_index}"));
+        return Err(format!(
+            "GFF struct cycle detected at old struct {old_struct_index}"
+        ));
     }
     if new_structs.len() >= MAX_REASONABLE_GFF_CLONE_RECORDS
         || new_fields.len() >= MAX_REASONABLE_GFF_CLONE_RECORDS
@@ -376,8 +467,11 @@ fn clone_gff_struct_tree(
                 new_field.value = child_new_struct;
             }
             12 => {
-                let (new_offset, normalized) =
-                    normalize_gff_locstring_field_data(old_field_data, new_field.value, new_field_data)?;
+                let (new_offset, normalized) = normalize_gff_locstring_field_data(
+                    old_field_data,
+                    new_field.value,
+                    new_field_data,
+                )?;
                 if normalized {
                     stats.normalized_locstring_fields =
                         stats.normalized_locstring_fields.saturating_add(1);
@@ -400,7 +494,10 @@ fn clone_gff_struct_tree(
             15 => {
                 let old_list_structs = read_gff_list_struct_ids(gff, old_layout, new_field.value)?;
                 let new_list_offset = checked_u32(new_list_indices.len(), "new list offset")?;
-                append_u32(new_list_indices, checked_u32(old_list_structs.len(), "list count")?);
+                append_u32(
+                    new_list_indices,
+                    checked_u32(old_list_structs.len(), "list count")?,
+                );
                 for old_list_struct in old_list_structs {
                     let child_new_struct = clone_gff_struct_tree(
                         gff,
@@ -455,7 +552,10 @@ fn read_gff_struct_record(
     index: u32,
 ) -> Result<GffStructRecord, String> {
     if index >= layout.struct_count {
-        return Err(format!("struct index {index} >= count {}", layout.struct_count));
+        return Err(format!(
+            "struct index {index} >= count {}",
+            layout.struct_count
+        ));
     }
     let offset = record_offset(layout.struct_offset, index, GFF_STRUCT_BYTES)?;
     let end = offset
@@ -477,7 +577,10 @@ fn read_gff_field_record(
     index: u32,
 ) -> Result<GffFieldRecord, String> {
     if index >= layout.field_count {
-        return Err(format!("field index {index} >= count {}", layout.field_count));
+        return Err(format!(
+            "field index {index} >= count {}",
+            layout.field_count
+        ));
     }
     let offset = record_offset(layout.field_offset, index, GFF_FIELD_BYTES)?;
     let end = offset
@@ -552,9 +655,11 @@ fn read_gff_struct_field_ids(
         ));
     }
 
-    let start = usize::try_from(table_offset).map_err(|_| "field-index offset overflow".to_string())?;
+    let start =
+        usize::try_from(table_offset).map_err(|_| "field-index offset overflow".to_string())?;
     let mut field_ids = Vec::with_capacity(
-        usize::try_from(effective_count).map_err(|_| "effective field count overflow".to_string())?,
+        usize::try_from(effective_count)
+            .map_err(|_| "effective field count overflow".to_string())?,
     );
     for index in 0..effective_count {
         let field_id = read_u32(
@@ -584,9 +689,7 @@ fn read_gff_list_struct_ids(
     layout: GffLayout,
     list_offset: u32,
 ) -> Result<Vec<u32>, String> {
-    if list_offset > layout.list_indices_count
-        || layout.list_indices_count - list_offset < 4
-    {
+    if list_offset > layout.list_indices_count || layout.list_indices_count - list_offset < 4 {
         return Err(format!(
             "list offset {list_offset} out of bounds table={}",
             layout.list_indices_count
@@ -602,7 +705,8 @@ fn read_gff_list_struct_ids(
             layout.list_indices_count
         ));
     }
-    let start = usize::try_from(table_offset).map_err(|_| "list table offset overflow".to_string())?;
+    let start =
+        usize::try_from(table_offset).map_err(|_| "list table offset overflow".to_string())?;
     let count = read_u32(gff, start)?;
     let ids_bytes = checked_section_bytes(count, 4)?;
     if ids_bytes
@@ -629,11 +733,7 @@ fn read_gff_list_struct_ids(
             gff,
             start
                 .checked_add(4)
-                .and_then(|offset| {
-                    offset.checked_add(
-                        usize::try_from(index).ok()?.checked_mul(4)?,
-                    )
-                })
+                .and_then(|offset| offset.checked_add(usize::try_from(index).ok()?.checked_mul(4)?))
                 .ok_or("list struct id offset overflow")?,
         )?;
         if struct_id >= layout.struct_count {
@@ -677,7 +777,8 @@ fn normalize_gff_locstring_field_data(
         let mut remaining = usize::try_from(declared_size)
             .map_err(|_| "locstring declared size overflow".to_string())?
             - 8;
-        if usize::try_from(declared_size).map_err(|_| "locstring declared size overflow".to_string())?
+        if usize::try_from(declared_size)
+            .map_err(|_| "locstring declared size overflow".to_string())?
             > available_after_size
         {
             structurally_valid = false;
@@ -695,7 +796,9 @@ fn normalize_gff_locstring_field_data(
             }
             let text_length = usize::try_from(read_u32(field_data, cursor + 4)?)
                 .map_err(|_| "locstring text length overflow".to_string())?;
-            if text_length > remaining - 8 || field_data.len().saturating_sub(cursor + 8) < text_length {
+            if text_length > remaining - 8
+                || field_data.len().saturating_sub(cursor + 8) < text_length
+            {
                 structurally_valid = false;
                 break;
             }
@@ -742,7 +845,8 @@ fn normalize_gff_variable_field_data(
     old_offset: u32,
     new_field_data: &mut Vec<u8>,
 ) -> Result<(u32, bool), String> {
-    let old = usize::try_from(old_offset).map_err(|_| "variable field offset overflow".to_string())?;
+    let old =
+        usize::try_from(old_offset).map_err(|_| "variable field offset overflow".to_string())?;
     let valid = match field_type {
         6 | 7 | 9 => old <= old_field_data.len() && old_field_data.len().saturating_sub(old) >= 8,
         10 | 13 => {
@@ -810,10 +914,10 @@ fn is_canonical_layout(layout: GffLayout, gff_size: usize) -> bool {
 }
 
 fn rewritten_layout_size(layout: GffLayout) -> Result<usize, String> {
-    let list_offset =
-        usize::try_from(layout.list_indices_offset).map_err(|_| "list offset overflow".to_string())?;
-    let list_count =
-        usize::try_from(layout.list_indices_count).map_err(|_| "list count overflow".to_string())?;
+    let list_offset = usize::try_from(layout.list_indices_offset)
+        .map_err(|_| "list offset overflow".to_string())?;
+    let list_count = usize::try_from(layout.list_indices_count)
+        .map_err(|_| "list count overflow".to_string())?;
     list_offset
         .checked_add(list_count)
         .ok_or_else(|| "layout size overflow".to_string())
@@ -880,4 +984,52 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) -> Result<(), String> 
 
 fn append_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repairs_legacy_contiguous_bic_field_and_label_offsets() {
+        let mut gff = Vec::new();
+        gff.extend_from_slice(b"BIC ");
+        gff.extend_from_slice(b"V3.2");
+        append_u32(&mut gff, 56); // struct offset
+        append_u32(&mut gff, 1); // struct count
+        append_u32(&mut gff, 0); // legacy-bad field offset; should be 68
+        append_u32(&mut gff, 1); // field count
+        append_u32(&mut gff, 40); // legacy-bad label offset; should be 80
+        append_u32(&mut gff, 1); // label count
+        append_u32(&mut gff, 96); // proves contiguous struct/field/label boundary
+        append_u32(&mut gff, 0); // field-data count
+        append_u32(&mut gff, 96); // field-indices offset
+        append_u32(&mut gff, 0); // field-indices count
+        append_u32(&mut gff, 96); // list-indices offset
+        append_u32(&mut gff, 0); // list-indices count
+
+        append_u32(&mut gff, 0xFFFF_FFFF); // root struct type
+        append_u32(&mut gff, 0); // one direct field id
+        append_u32(&mut gff, 1); // field count
+
+        append_u32(&mut gff, 0); // BYTE field type
+        append_u32(&mut gff, 0); // label index
+        append_u32(&mut gff, 7); // scalar value
+
+        let mut label = [0_u8; 16];
+        label[..4].copy_from_slice(b"Test");
+        gff.extend_from_slice(&label);
+        assert_eq!(gff.len(), 96);
+
+        let summary =
+            canonicalize_bic_gff(&gff).expect("legacy contiguous BIC should canonicalize");
+        assert!(summary.repaired_legacy_section_offsets);
+        let canonical = summary
+            .bytes
+            .expect("header offset repair must produce replacement bytes");
+
+        assert_eq!(read_u32(&canonical, 16).unwrap(), 68);
+        assert_eq!(read_u32(&canonical, 24).unwrap(), 80);
+        assert_eq!(read_u32(&canonical, 32).unwrap(), 96);
+    }
 }

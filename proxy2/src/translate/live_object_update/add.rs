@@ -8,8 +8,8 @@
 //! fragment-bit cursor; it never mutates bytes.
 
 use super::{
-    boundary, creature, cursor, locstring, read_u16_le, read_u32_le, DOOR_OBJECT_TYPE,
-    PLACEABLE_OBJECT_TYPE,
+    DOOR_OBJECT_TYPE, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, boundary, creature,
+    cursor, locstring, read_u16_le, read_u32_le, trigger,
 };
 
 pub(super) fn advance_verified_add_record(
@@ -22,26 +22,57 @@ pub(super) fn advance_verified_add_record(
     if offset + 6 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'A')
-        || !boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2)
+        || (!boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2)
+            && !appearance::looks_like_legacy_item_add_record_boundary(bytes, offset))
     {
         return false;
     }
 
     let original_bit_cursor = *bit_cursor;
-    let verified = match bytes[offset + 1] {
-        0x05 => creature::looks_like_legacy_creature_add_transform_fields(bytes, offset, record_end),
+    if appearance::advance_verified_ee_item_add_record(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        return true;
+    }
+    *bit_cursor = original_bit_cursor;
+
+    let shape_ok = match bytes[offset + 1] {
+        0x05 => creature::looks_like_ee_creature_add_record(bytes, offset, record_end),
+        TRIGGER_OBJECT_TYPE => trigger::verified_ee_trigger_add_record(bytes, offset, record_end),
         DOOR_OBJECT_TYPE => verified_ee_door_add_record(bytes, offset, record_end),
         PLACEABLE_OBJECT_TYPE => verified_ee_placeable_add_record(bytes, offset, record_end),
         _ => false,
-    } && cursor::advance_live_add_record_bit_cursor(
-        bytes,
-        fragment_bits,
-        offset,
-        record_end,
-        bit_cursor,
-    );
+    };
+    let cursor_ok = shape_ok
+        && cursor::advance_live_add_record_bit_cursor(
+            bytes,
+            fragment_bits,
+            offset,
+            record_end,
+            bit_cursor,
+        );
+    let verified = shape_ok && cursor_ok;
 
     if !verified {
+        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            eprintln!(
+                "live-object add claim rejected: offset={offset} record_end={record_end} marker=0x{:02X} bit_cursor={} shape_ok={shape_ok} cursor_ok={cursor_ok} next_bits={:?}",
+                bytes.get(offset + 1).copied().unwrap_or_default(),
+                original_bit_cursor,
+                fragment_bits
+                    .get(
+                        original_bit_cursor
+                            ..original_bit_cursor
+                                .saturating_add(12)
+                                .min(fragment_bits.len())
+                    )
+                    .unwrap_or(&[])
+            );
+        }
         *bit_cursor = original_bit_cursor;
     }
     verified
@@ -76,7 +107,8 @@ fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -
 
 fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
     let name_offset = offset + 6;
-    let tail_offset = locstring::inline_cexo_string_end(bytes, name_offset).unwrap_or(name_offset + 4);
+    let tail_offset =
+        locstring::inline_cexo_string_end(bytes, name_offset).unwrap_or(name_offset + 4);
     let Some(tail_end) = tail_offset.checked_add(1 + 2 + 2) else {
         return false;
     };

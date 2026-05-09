@@ -26,15 +26,11 @@ pub(super) struct TransportIdentityClaim {
     pub(super) reason: &'static str,
 }
 
-pub(super) fn claim_client_frame_if_verified(
-    view: &MFrameView,
-) -> Option<TransportIdentityClaim> {
+pub(super) fn claim_client_frame_if_verified(view: &MFrameView) -> Option<TransportIdentityClaim> {
     claim_frame_if_verified(view, DirectionKind::ClientToServer)
 }
 
-pub(super) fn claim_server_frame_if_verified(
-    view: &MFrameView,
-) -> Option<TransportIdentityClaim> {
+pub(super) fn claim_server_frame_if_verified(view: &MFrameView) -> Option<TransportIdentityClaim> {
     claim_frame_if_verified(view, DirectionKind::ServerToClient)
 }
 

@@ -5,14 +5,14 @@
 //! record and bit stream should be emitted?
 
 use super::{
-    bits, door, locstring, placeable, reader, read_u32_le, write_u32_le, writer,
     DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
     EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
     LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
     LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE,
+    TRIGGER_OBJECT_TYPE, bits, door, locstring, placeable, read_u32_le, reader, write_u32_le,
+    writer,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,6 +40,19 @@ pub(super) fn rewrite_update_record_for_ee(
     let object_type = live_bytes[record_offset + 1];
     let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+        if let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
+            live_bytes,
+            record_offset,
+            *record_end,
+            bits,
+            *bit_cursor,
+        ) {
+            *bit_cursor = claim.next_bit_cursor;
+            return Some(RecordRewrite::default());
+        }
+    }
+
     let mut translated_mask = translate_legacy_live_object_update_mask(object_type, raw_mask);
     let exact_empty_object_update = *record_end == record_offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut rewrite = RecordRewrite::default();
@@ -119,7 +132,7 @@ pub(super) fn rewrite_update_record_for_ee(
         }
     }
 
-    if !can_translate_read_buffer && translated_mask != raw_mask {
+    if !can_translate_read_buffer && translated_mask != raw_mask && !tail_ready {
         return None;
     }
 
@@ -139,21 +152,22 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     if tail_ready
-        && (translated_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0
+        && (translated_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK))
+            != 0
     {
         let tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-        if let Some(tail) =
-            reader::read_legacy_named_update_tail9(live_bytes, tail_offset, false)
-        {
+        if let Some(tail) = reader::read_legacy_named_update_tail9(live_bytes, tail_offset, false) {
             let ee_tail =
                 writer::build_ee_door_placeable_generic_update_bytes(tail, translated_mask);
             live_bytes.splice(tail_offset..tail_offset + 9, ee_tail.iter().copied());
             if ee_tail.len() >= 9 {
-                rewrite.bytes_inserted =
-                    rewrite.bytes_inserted.saturating_add((ee_tail.len() - 9) as u32);
+                rewrite.bytes_inserted = rewrite
+                    .bytes_inserted
+                    .saturating_add((ee_tail.len() - 9) as u32);
             } else {
-                rewrite.bytes_removed =
-                    rewrite.bytes_removed.saturating_add((9 - ee_tail.len()) as u32);
+                rewrite.bytes_removed = rewrite
+                    .bytes_removed
+                    .saturating_add((9 - ee_tail.len()) as u32);
             }
             *record_end = *record_end - 9 + ee_tail.len();
             can_translate_read_buffer = true;
@@ -161,7 +175,8 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     if tail_needs_empty_name && (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        let empty_name_offset = door_placeable_ee_update_name_cursor(record_offset, translated_mask);
+        let empty_name_offset =
+            door_placeable_ee_update_name_cursor(record_offset, translated_mask);
         if empty_name_offset <= *record_end {
             let removed = (*record_end).saturating_sub(empty_name_offset);
             live_bytes.drain(empty_name_offset..*record_end);
@@ -227,6 +242,46 @@ pub(super) fn rewrite_update_record_for_ee(
     Some(rewrite)
 }
 
+pub(super) fn advance_verified_update_record_for_ee(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) else {
+        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
+            && offset + 2 <= live_bytes.len()
+            && matches!(live_bytes[offset], b'U')
+            && matches!(
+                live_bytes[offset + 1],
+                PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+            )
+        {
+            eprintln!(
+                "live-object update claim rejected: offset={offset} record_end={record_end} marker=0x{:02X} bit_cursor={} next_bits={:?}",
+                live_bytes[offset + 1],
+                *bit_cursor,
+                fragment_bits
+                    .get(*bit_cursor..bit_cursor.saturating_add(20).min(fragment_bits.len()))
+                    .unwrap_or(&[])
+            );
+        }
+        return false;
+    };
+    if claim.read_end != record_end {
+        return false;
+    }
+    *bit_cursor = claim.next_bit_cursor;
+    true
+}
+
 fn translate_legacy_live_object_update_mask(object_type: u8, raw_mask: u32) -> u32 {
     match object_type {
         PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
@@ -279,7 +334,10 @@ fn can_rewrite_legacy_live_object_update_bits(
     bit_cursor: usize,
     name_payload_ready: bool,
 ) -> bool {
-    if !matches!(object_type, TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+    if !matches!(
+        object_type,
+        TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) {
         return true;
     }
 
@@ -322,7 +380,10 @@ fn erase_dropped_legacy_live_object_position_bits(
     bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<u32> {
-    if !matches!(object_type, TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+    if !matches!(
+        object_type,
+        TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) {
         return Some(0);
     }
     let raw_has_position = (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0;

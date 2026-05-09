@@ -116,7 +116,10 @@ impl AreaPlaceableContext {
             .any(|row| row.object_id == object_id)
     }
 
-    pub fn rows_with_placeable_id(&self, object_id: u32) -> impl Iterator<Item = &AreaPlaceableContextRow> {
+    pub fn rows_with_placeable_id(
+        &self,
+        object_id: u32,
+    ) -> impl Iterator<Item = &AreaPlaceableContextRow> {
         self.light_rows
             .iter()
             .chain(self.static_rows.iter())
@@ -201,9 +204,7 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     }
 
     if fragment_offset
-        < LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET
-            + LEGACY_AREA_OBJECT_ID_BYTES
-            + CRESREF_TEXT_BYTES
+        < LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES + CRESREF_TEXT_BYTES
     {
         tracing::warn!(
             declared,
@@ -218,7 +219,8 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         payload,
         LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
     )?;
-    if !legacy_area_object_id_plausible(legacy_area_object_id) || !area_resref_plausible(&area_resref)
+    if !legacy_area_object_id_plausible(legacy_area_object_id)
+        || !area_resref_plausible(&area_resref)
     {
         tracing::warn!(
             legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
@@ -424,10 +426,7 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
         cursor += record_length;
     }
 
-    if tile_count == 0
-        || tile_count >= MAX_REASONABLE_AREA_TILE_COUNT
-        || tile_count % width != 0
-    {
+    if tile_count == 0 || tile_count >= MAX_REASONABLE_AREA_TILE_COUNT || tile_count % width != 0 {
         return AreaTileStreamScan {
             layout,
             width,
@@ -508,12 +507,16 @@ fn collect_area_post_tile_placeable_context(
     for _ in 0..sound_count {
         const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
         const AREA_SOUND_BASE_BYTES: usize = 54;
-        let resref_count =
-            read_area_u16(payload, fragment_offset, cursor + AREA_SOUND_RESREF_COUNT_OFFSET)?;
+        let resref_count = read_area_u16(
+            payload,
+            fragment_offset,
+            cursor + AREA_SOUND_RESREF_COUNT_OFFSET,
+        )?;
         if resref_count > 64 {
             return None;
         }
-        let bytes = AREA_SOUND_BASE_BYTES.checked_add(resref_count as usize * CRESREF_TEXT_BYTES)?;
+        let bytes =
+            AREA_SOUND_BASE_BYTES.checked_add(resref_count as usize * CRESREF_TEXT_BYTES)?;
         cursor = cursor.checked_add(bytes)?;
         if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
             return None;
@@ -700,9 +703,7 @@ fn read_area_f32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> 
 fn start_fields_plausible(payload: &[u8]) -> bool {
     (0..4).all(|index| {
         read_f32_le(payload, START_X_PAYLOAD_OFFSET + index * 4)
-            .is_some_and(|value| {
-            value.is_finite() && (index == 3 || value.abs() <= 100_000.0)
-            })
+            .is_some_and(|value| value.is_finite() && (index == 3 || value.abs() <= 100_000.0))
     })
 }
 
@@ -733,7 +734,9 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
-    bytes.get_mut(offset..offset + 4)?.copy_from_slice(&value.to_le_bytes());
+    bytes
+        .get_mut(offset..offset + 4)?
+        .copy_from_slice(&value.to_le_bytes());
     Some(())
 }
 

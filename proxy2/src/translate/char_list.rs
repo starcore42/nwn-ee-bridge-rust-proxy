@@ -129,7 +129,8 @@ fn claim_list_response(payload: &[u8]) -> Option<CharListClaimSummary> {
 }
 
 fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaimSummary> {
-    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_RESPONSE_FIXED_PREFIX_BYTES
+    if payload.len()
+        < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_RESPONSE_FIXED_PREFIX_BYTES
     {
         return None;
     }
@@ -142,8 +143,10 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
         return None;
     }
 
-    let bic_size_offset =
-        HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_RESPONSE_STATUS_BYTES + C_RESREF_TEXT_BYTES;
+    let bic_size_offset = HIGH_LEVEL_HEADER_BYTES
+        + CNW_LENGTH_BYTES
+        + UPDATE_RESPONSE_STATUS_BYTES
+        + C_RESREF_TEXT_BYTES;
     let bic_offset = bic_size_offset.checked_add(UPDATE_RESPONSE_BIC_SIZE_BYTES)?;
     let old_bic_size = usize::try_from(read_le_u32(payload, bic_size_offset)?).ok()?;
     if old_bic_size < gff::GFF_HEADER_BYTES
@@ -178,13 +181,24 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
     }
 
     let old_payload_len = payload.len();
-    let mut rewritten =
-        Vec::with_capacity(old_payload_len.checked_add(canonical_bic.len())?.checked_sub(old_bic_size)?);
+    let mut rewritten = Vec::with_capacity(
+        old_payload_len
+            .checked_add(canonical_bic.len())?
+            .checked_sub(old_bic_size)?,
+    );
     rewritten.extend_from_slice(&payload[..bic_offset]);
     rewritten.extend_from_slice(&canonical_bic);
     rewritten.extend_from_slice(&payload[declared..]);
-    write_le_u32(&mut rewritten, HIGH_LEVEL_HEADER_BYTES, u32::try_from(new_declared).ok()?)?;
-    write_le_u32(&mut rewritten, bic_size_offset, u32::try_from(canonical_bic.len()).ok()?)?;
+    write_le_u32(
+        &mut rewritten,
+        HIGH_LEVEL_HEADER_BYTES,
+        u32::try_from(new_declared).ok()?,
+    )?;
+    write_le_u32(
+        &mut rewritten,
+        bic_size_offset,
+        u32::try_from(canonical_bic.len()).ok()?,
+    )?;
     *payload = rewritten;
 
     tracing::info!(
@@ -194,6 +208,7 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
         new_bic_size = canonical_bic.len(),
         old_layout = ?canonical.old_layout,
         new_layout = ?canonical.new_layout,
+        repaired_legacy_section_offsets = canonical.repaired_legacy_section_offsets,
         clamped_struct_field_ranges = canonical.clamped_struct_field_ranges,
         normalized_locstring_fields = canonical.normalized_locstring_fields,
         normalized_variable_fields = canonical.normalized_variable_fields,
@@ -216,7 +231,12 @@ fn advance_c_exo_string(payload: &[u8], cursor: usize, declared: usize) -> Optio
     if length > MAX_CHAR_LIST_STRING_BYTES {
         return None;
     }
-    advance_fixed(payload, cursor.checked_add(CNW_LENGTH_BYTES)?, declared, length)
+    advance_fixed(
+        payload,
+        cursor.checked_add(CNW_LENGTH_BYTES)?,
+        declared,
+        length,
+    )
 }
 
 fn advance_fixed(

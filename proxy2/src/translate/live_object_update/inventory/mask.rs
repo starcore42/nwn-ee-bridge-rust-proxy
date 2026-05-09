@@ -8,10 +8,38 @@ pub(super) fn try_parse_generic_inventory_with_branching(
     record_end: usize,
     mask: u16,
 ) -> Option<usize> {
-    let mut candidates = vec![GenericInventoryCandidate {
-        cursor: record_offset.checked_add(7)?,
-        bits: 0,
-    }];
+    generic_inventory_candidates_after_mask(bytes, record_offset, record_end, mask)
+        .into_iter()
+        .find(|candidate| candidate.cursor == record_end)
+        .map(|candidate| candidate.bits)
+}
+
+pub(super) fn try_parse_generic_inventory_prefix_with_branching(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+    mask: u16,
+) -> Option<GenericInventoryCandidate> {
+    let mut candidates =
+        generic_inventory_candidates_after_mask(bytes, record_offset, search_end, mask)
+            .into_iter()
+            .filter(|candidate| candidate.cursor <= search_end)
+            .collect::<Vec<_>>();
+    candidates.sort_by_key(|candidate| (candidate.cursor, candidate.bits));
+    candidates.dedup_by_key(|candidate| (candidate.cursor, candidate.bits));
+    (candidates.len() == 1).then(|| candidates[0])
+}
+
+fn generic_inventory_candidates_after_mask(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    mask: u16,
+) -> Vec<GenericInventoryCandidate> {
+    let Some(cursor) = record_offset.checked_add(7) else {
+        return Vec::new();
+    };
+    let mut candidates = vec![GenericInventoryCandidate { cursor, bits: 0 }];
 
     if (mask & 0x0001) != 0 {
         candidates = advance_candidates(&candidates, record_end, 10, 1);
@@ -64,9 +92,6 @@ pub(super) fn try_parse_generic_inventory_with_branching(
     }
 
     candidates
-        .into_iter()
-        .find(|candidate| candidate.cursor == record_end)
-        .map(|candidate| candidate.bits)
 }
 
 fn advance_candidates(

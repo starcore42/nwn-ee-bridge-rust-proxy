@@ -113,6 +113,7 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
     let mut memo =
         vec![QUICKBAR_UNKNOWN_SCORE; (LEGACY_QUICKBAR_BUTTON_COUNT + 1).checked_mul(memo_width)?];
     let mut opaque_item_slots_blanked = false;
+    let mut allow_fragment_tail_slack = false;
     for slot in 0..LEGACY_QUICKBAR_BUTTON_COUNT {
         if reader.cursor >= read_buffer.len() {
             buttons.extend(
@@ -127,35 +128,6 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
         let before_button = reader.clone();
         let button_start = reader.cursor;
         let ty = reader.read_byte()?;
-        if ty == 0 && looks_like_quickbar_item_object_body_at(&reader, true, model_types) {
-            // HG captures can lose the type-1 tag for the first item slot while
-            // leaving the following item-object body byte-aligned. The old C++
-            // proxy only recovered this as a semantic identity after the full
-            // item object, active-property tail, and 36-slot parse validated.
-            let mut trial = reader.clone();
-            if let Some((primary, secondary)) =
-                parse_legacy_quickbar_item_payload(&mut trial, model_types)
-            {
-                if primary.present && primary.active_props.is_some() {
-                    tracing::info!(
-                        slot,
-                        offset = reader.cursor.saturating_sub(1),
-                        object_id = format_args!("0x{:08X}", primary.object_id),
-                        base_item = primary.base_item,
-                        "server GuiQuickbar_SetAllButtons recovered missing item type tag"
-                    );
-                    reader = trial;
-                    buttons.push(QuickbarButton {
-                        kind: QuickbarButtonKind::Item {
-                            primary,
-                            secondary,
-                            recovered_type_tag: true,
-                        },
-                    });
-                    continue;
-                }
-            }
-        }
         if ty == 1 {
             let payload_start = reader.cursor;
             if let Some((primary, secondary)) =
@@ -173,6 +145,15 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                         choose_legacy_quickbar_item_end(read_buffer, slot, button_start, &mut memo)
                             .filter(|next_cursor| *next_cursor > payload_start);
                     if let Some(next_cursor) = next_cursor {
+                        tracing::info!(
+                            slot,
+                            button_start,
+                            payload_start,
+                            next_cursor,
+                            fragment_cursor = reader.fragment_cursor,
+                            fragment_bit = reader.fragment_bit,
+                            "server GuiQuickbar_SetAllButtons blanked item candidate after absent presence bits"
+                        );
                         reader = before_button;
                         reader.cursor = next_cursor;
                         opaque_item_slots_blanked = true;
@@ -201,11 +182,48 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                 // The shared fragment tail may contain only the skipped item
                 // BOOLs, so final fragment exhaustion is required only when no
                 // opaque item slot was blanked.
+                if let Some((next_cursor, primary, secondary)) =
+                    choose_legacy_quickbar_compact_item_end(
+                        read_buffer,
+                        slot,
+                        payload_start,
+                        model_types,
+                        &mut memo,
+                    )
+                {
+                    tracing::info!(
+                        slot,
+                        button_start,
+                        payload_start,
+                        next_cursor,
+                        fragment_cursor = reader.fragment_cursor,
+                        fragment_bit = reader.fragment_bit,
+                        "server GuiQuickbar_SetAllButtons translated compact byte-owned item tail after fragment-bit parse failure"
+                    );
+                    reader = before_button;
+                    reader.cursor = next_cursor;
+                    allow_fragment_tail_slack = true;
+                    buttons.push(QuickbarButton {
+                        kind: QuickbarButtonKind::Item {
+                            primary,
+                            secondary,
+                            recovered_type_tag: false,
+                        },
+                    });
+                    continue;
+                }
                 let next_cursor =
                     choose_legacy_quickbar_item_end(read_buffer, slot, button_start, &mut memo)
                         .filter(|next_cursor| *next_cursor > button_start);
                 let Some(next_cursor) = next_cursor else {
                     if quickbar_can_blank_remaining_after_source_parse_failure(&buttons, slot) {
+                        tracing::info!(
+                            slot,
+                            button_start,
+                            fragment_cursor = reader.fragment_cursor,
+                            fragment_bit = reader.fragment_bit,
+                            "server GuiQuickbar_SetAllButtons blanked remaining slots after unowned item parse failure"
+                        );
                         buttons.push(QuickbarButton {
                             kind: QuickbarButtonKind::ItemCandidate,
                         });
@@ -219,6 +237,14 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                     }
                     return None;
                 };
+                tracing::info!(
+                    slot,
+                    button_start,
+                    next_cursor,
+                    fragment_cursor = reader.fragment_cursor,
+                    fragment_bit = reader.fragment_bit,
+                    "server GuiQuickbar_SetAllButtons blanked item candidate after unowned item parse failure"
+                );
                 reader = before_button;
                 reader.cursor = next_cursor;
                 opaque_item_slots_blanked = true;
@@ -253,6 +279,17 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
             let resynced_type = reader.read_byte()?;
             parse_legacy_quickbar_non_item_from_reader(&mut reader, resynced_type)?
         };
+        if slot + 1 == LEGACY_QUICKBAR_BUTTON_COUNT
+            && ty == 18
+            && reader.cursor.checked_add(CNW_LENGTH_BYTES)? == read_buffer.len()
+        {
+            // HG command-line quickbar records have been observed with a final
+            // four-byte read-window suffix after Diamond's decompile-owned two
+            // CExoString payload. General command buttons are not emitted raw
+            // yet, so consume this exact final-slot suffix only to prove the
+            // 36-slot boundary, then let the writer emit a blank EE slot.
+            reader.skip_bytes(CNW_LENGTH_BYTES)?;
+        }
         buttons.push(QuickbarButton { kind });
     }
 
@@ -267,7 +304,11 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
         .checked_mul(8)?
         .checked_add(usize::from(reader.fragment_bit))?;
     let consumed_fragment_bytes = reader.fragment_cursor + usize::from(reader.fragment_bit != 0);
+    if allow_fragment_tail_slack && consumed_fragment_bytes != fragments.len() {
+        return None;
+    }
     if !opaque_item_slots_blanked
+        && !allow_fragment_tail_slack
         && (consumed_fragment_bytes != fragments.len()
             || reader.final_fragment_bits != u8::try_from(consumed_fragment_bits % 8).ok()?)
     {

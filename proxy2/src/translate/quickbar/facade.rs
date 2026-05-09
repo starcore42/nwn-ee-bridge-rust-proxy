@@ -21,8 +21,12 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
 ) -> Option<QuickbarRewriteSummary> {
     let old_payload_length = payload.len();
     let parsed = parse_cnw_quickbar_payload(payload)?;
+    dump_quickbar_payload("simple_before", payload);
     let old_declared = parsed.declared;
-    let rewritten = super::writer::build_ee_quickbar_payload(&parsed)?;
+    let rewritten = match super::writer::build_ee_quickbar_payload(&parsed) {
+        Some(rewritten) => rewritten,
+        None => return None,
+    };
     let summary = summarize_quickbar_rewrite(
         &parsed,
         old_payload_length,
@@ -30,6 +34,8 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
         old_declared,
         read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared),
     );
+    trace_quickbar_rewrite_summary("simple", &summary);
+    dump_quickbar_payload("simple_after", &rewritten);
     *payload = rewritten;
     Some(summary)
 }
@@ -60,6 +66,7 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
     let normalize = normalize_quickbar_payload_if_needed(payload)?;
     let old_payload_length = payload.len();
     let parsed = parse_cnw_quickbar_payload(payload)?;
+    dump_quickbar_payload("normalized_before", payload);
     let old_declared = parsed.declared;
     let rewritten = super::writer::build_ee_quickbar_payload(&parsed)?;
     let new_declared = read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared);
@@ -70,6 +77,8 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
         old_declared,
         new_declared,
     );
+    trace_quickbar_rewrite_summary("normalized", &summary);
+    dump_quickbar_payload("normalized_after", &rewritten);
     *payload = rewritten;
     Some((normalize, summary))
 }
@@ -80,39 +89,45 @@ pub fn rewrite_summary_needs_more_quickbar_bytes(summary: &QuickbarRewriteSummar
     // unsupported slots. If the cursor did not reach the declared read size, the
     // packet likely arrived split across deflated windows and should wait.
     //
-    // HG also emits long SetAllButtons streams whose first deflated chunk can be
-    // made to look self-contained by blanking a suspiciously large number of
-    // item-candidate records. The following no-header zlib windows still contain
-    // quickbar item strings/read-buffer bytes, so treating that first-chunk split
-    // as complete strands the continuations. Keep buffering while this looks like
-    // a truncated item-heavy candidate parse; the M-frame stream budget remains
-    // the hard stop before any final rewrite/quarantine decision.
-    (summary.trailing_read_bytes != 0 || summary.item_buttons_blanked > 12)
+    // Do not treat deliberately blanked item/unsupported slots as evidence that
+    // more zlib stream bytes are required. The quickbar reader has already
+    // proven a 36-slot decompile-owned boundary before the writer can emit
+    // blank EE slots for unowned source spans. Waiting solely because many
+    // source slots were blanked turns a valid partial semantic salvage into the
+    // visible `GuiQuickbarPlaceholder` regression that clears the whole bar.
+    summary.trailing_read_bytes != 0
         && summary.new_payload_length < MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
 }
 
-fn parse_cnw_quickbar_payload(payload: &[u8]) -> Option<QuickbarParse> {
-    if let Some(parsed) = parse_direct_opcode_quickbar_stream(payload) {
-        return Some(parsed);
-    }
+pub(in crate::translate::quickbar) fn parse_cnw_quickbar_payload(
+    payload: &[u8],
+) -> Option<QuickbarParse> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
-        return None;
+        return parse_direct_opcode_quickbar_stream(payload);
     }
     let high = HighLevel::parse(payload)?;
     if !is_quickbar_family(high) {
         return None;
     }
-    let declared = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?;
-    let declared_usize = usize::try_from(declared).ok()?;
+    let Some(declared) = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES) else {
+        return parse_direct_opcode_quickbar_stream(payload);
+    };
+    let Some(declared_usize) = usize::try_from(declared).ok() else {
+        return parse_direct_opcode_quickbar_stream(payload);
+    };
     if declared_usize < HIGH_LEVEL_HEADER_BYTES {
-        return None;
+        return parse_direct_opcode_quickbar_stream(payload);
     }
-    let read_size = declared_usize.checked_sub(HIGH_LEVEL_HEADER_BYTES)?;
+    let Some(read_size) = declared_usize.checked_sub(HIGH_LEVEL_HEADER_BYTES) else {
+        return parse_direct_opcode_quickbar_stream(payload);
+    };
     if read_size > MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES {
-        return None;
+        return parse_direct_opcode_quickbar_stream(payload);
     }
     let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
-    let read_end = read_start.checked_add(read_size)?;
+    let Some(read_end) = read_start.checked_add(read_size) else {
+        return parse_direct_opcode_quickbar_stream(payload);
+    };
     if read_end > payload.len() {
         return None;
     }
@@ -124,11 +139,11 @@ fn parse_cnw_quickbar_payload(payload: &[u8]) -> Option<QuickbarParse> {
     } else {
         0
     };
-    let (buttons, final_cursor) = if fragment_size != 0 {
-        parse_quickbar_read_buffer_with_fragments(read_buffer, fragments, cursor)?
+    let (buttons, final_cursor) = (if fragment_size != 0 {
+        parse_quickbar_read_buffer_with_fragments(read_buffer, fragments, cursor)
     } else {
-        parse_quickbar_read_buffer(read_buffer, cursor)?
-    };
+        parse_quickbar_read_buffer(read_buffer, cursor)
+    })?;
     Some(QuickbarParse {
         envelope: high.envelope,
         declared,
@@ -182,11 +197,11 @@ fn summarize_quickbar_rewrite(
         final_cursor: parsed.final_cursor,
         trailing_read_bytes: parsed.read_size.saturating_sub(parsed.final_cursor),
         direct_opcode_stream: parsed.direct_opcode_stream,
-        item_buttons_preserved: 0,
+        item_buttons_preserved: item_buttons_parsed,
         spells_preserved,
         general_buttons_preserved: 0,
         general_buttons_blanked: general_buttons_parsed,
-        item_buttons_blanked: item_buttons_parsed + item_candidate_buttons,
+        item_buttons_blanked: item_candidate_buttons,
         unsupported_buttons_blanked,
     }
 }
@@ -197,6 +212,28 @@ fn trace_quickbar_rewrite_skip(reason: &str, payload: &[u8]) {
         payload_len = payload.len(),
         prefix = %hex_prefix(payload, 24),
         "server GuiQuickbar_SetAllButtons rewrite skipped"
+    );
+}
+
+fn trace_quickbar_rewrite_summary(path: &str, summary: &QuickbarRewriteSummary) {
+    tracing::info!(
+        path,
+        old_payload_length = summary.old_payload_length,
+        new_payload_length = summary.new_payload_length,
+        old_declared = summary.old_declared,
+        new_declared = summary.new_declared,
+        read_size = summary.read_size,
+        fragment_size = summary.fragment_size,
+        final_cursor = summary.final_cursor,
+        trailing_read_bytes = summary.trailing_read_bytes,
+        direct_opcode_stream = summary.direct_opcode_stream,
+        item_buttons_preserved = summary.item_buttons_preserved,
+        spells_preserved = summary.spells_preserved,
+        general_buttons_preserved = summary.general_buttons_preserved,
+        general_buttons_blanked = summary.general_buttons_blanked,
+        item_buttons_blanked = summary.item_buttons_blanked,
+        unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+        "server GuiQuickbar_SetAllButtons rewrite summary"
     );
 }
 
@@ -212,8 +249,13 @@ fn dump_quickbar_payload(label: &str, payload: &[u8]) {
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     let filename = format!("quickbar_{label}_{millis}.bin");
-    if let Err(error) = fs::write(&filename, payload) {
-        tracing::warn!(%error, filename, "failed to dump quickbar payload");
+    let path = std::env::var("NWN_BRIDGE_QUICKBAR_DUMP_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(filename);
+    if let Err(error) = fs::write(&path, payload) {
+        tracing::warn!(%error, path = %path.display(), "failed to dump quickbar payload");
     }
 }
 

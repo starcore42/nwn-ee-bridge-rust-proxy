@@ -1,5 +1,6 @@
 # Rust build output.
 /target/
+/proxy2/target/
 
 # Local secrets and machine-specific paths.
 .env

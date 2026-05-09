@@ -1,9 +1,8 @@
 //! EE live-object update writers.
 
 use super::{
-    reader::LegacyNamedUpdateTail, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
-    EE_UPDATE_SCALE_STATE_READ_BYTES, LEGACY_UPDATE_ORIENTATION_MASK,
-    LEGACY_UPDATE_SCALE_STATE_MASK,
+    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_SCALE_STATE_MASK, reader::LegacyNamedUpdateTail,
 };
 
 pub(super) fn build_ee_door_placeable_generic_update_bytes(
@@ -26,6 +25,11 @@ pub(super) fn build_ee_door_placeable_generic_update_bytes(
 
 pub(super) fn encode_ee_scalar_orientation_from_legacy_facing(facing: u16) -> u16 {
     let degrees = f64::from(facing) * 360.0 / 65536.0;
-    let raw = (degrees * 10.0 + 0.000001).floor() as u32;
+    // Diamond and EE both add +pi/2 after reading the generic scalar branch.
+    // HG's anchored legacy tail stores the world-facing value consumed by the
+    // old bridge path, so the EE scalar must be pre-rotated by -90 degrees
+    // before EE applies its decompile-confirmed +90-degree basis correction.
+    let ee_degrees = (degrees + 270.0) % 360.0;
+    let raw = (ee_degrees * 10.0 + 0.000001).floor() as u32;
     raw.min(0x0FFF) as u16
 }

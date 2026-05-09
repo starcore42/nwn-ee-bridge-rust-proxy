@@ -24,57 +24,39 @@ pub(super) fn parse_legacy_quickbar_item_payload(
     Some((primary, secondary))
 }
 
+pub(super) fn parse_legacy_quickbar_compact_byte_item_payload(
+    read_buffer: &[u8],
+    payload_start: usize,
+    record_end: usize,
+    model_types: &[i8],
+) -> Option<(QuickbarItemObject, QuickbarItemObject)> {
+    let (primary, cursor) = parse_legacy_quickbar_compact_byte_item_object_body(
+        read_buffer,
+        payload_start,
+        record_end,
+        true,
+        model_types,
+    )?;
+    if cursor != record_end {
+        return None;
+    }
+    Some((primary, QuickbarItemObject::default()))
+}
+
 fn parse_legacy_quickbar_item_object(
     reader: &mut QuickbarPacketReader<'_>,
     include_int_param: bool,
     model_types: &[i8],
 ) -> Option<QuickbarItemObject> {
-    let before_present = reader.clone();
     let present = reader.read_bit()?;
     if !present {
-        if looks_like_quickbar_item_object_body_at(reader, include_int_param, model_types) {
-            // EE and Diamond both read primary/secondary item-object presence
-            // BOOLs before any item object body. HG captures can have the CNW
-            // fragment cursor shifted by a few already-consumed source bits;
-            // only resync when the byte-side object body and active-property
-            // tail validate completely.
-            for skipped_bits in 1..=MAX_QUICKBAR_ITEM_PRESENCE_RESYNC_BITS {
-                let mut trial = before_present.clone();
-                let mut candidate_present = false;
-                let mut bits_ok = true;
-                for _ in 0..=skipped_bits {
-                    match trial.read_bit() {
-                        Some(bit) => candidate_present = bit,
-                        None => {
-                            bits_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !bits_ok || !candidate_present {
-                    continue;
-                }
-                if let Some(mut item) = parse_legacy_quickbar_item_object_body(
-                    &mut trial,
-                    include_int_param,
-                    model_types,
-                ) {
-                    item.present = true;
-                    tracing::info!(
-                        skipped_bits,
-                        cursor = before_present.cursor,
-                        fragment_cursor = before_present.fragment_cursor,
-                        fragment_bit = before_present.fragment_bit,
-                        object_id = %format_args!("0x{:08X}", item.object_id),
-                        base_item = item.base_item,
-                        "server GuiQuickbar_SetAllButtons item presence bit resynced"
-                    );
-                    *reader = trial;
-                    return Some(item);
-                }
-            }
-            return None;
-        }
+        // Diamond `sub_469FD0` and EE `sub_14079DB00` both gate the item-object
+        // body strictly on this BOOL.  A false presence bit owns no read-buffer
+        // bytes; peeking ahead for an item-looking body is unsafe because the
+        // following spell/general slot bytes can coincidentally resemble an
+        // object id + base-item prefix.  If a capture ever presents a body after
+        // a false bit, that packet must be quarantined and researched rather than
+        // resynchronized heuristically.
         return Some(QuickbarItemObject::default());
     }
 
@@ -96,7 +78,8 @@ fn parse_legacy_quickbar_item_object_body(
     };
     let (base_item, appearance_type, appearance_bytes) =
         parse_legacy_quickbar_item_appearance(reader, model_types)?;
-    let active_props = parse_legacy_quickbar_active_item_properties(reader, base_item)?;
+    let active_props =
+        parse_legacy_quickbar_active_item_properties(reader, base_item, appearance_type == 2)?;
 
     Some(QuickbarItemObject {
         present: true,
@@ -107,6 +90,55 @@ fn parse_legacy_quickbar_item_object_body(
         active_props: Some(active_props),
         appearance_bytes,
     })
+}
+
+fn parse_legacy_quickbar_compact_byte_item_object_body(
+    read_buffer: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+    include_int_param: bool,
+    model_types: &[i8],
+) -> Option<(QuickbarItemObject, usize)> {
+    let object_id = read_u32_le(read_buffer, cursor)?;
+    cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+    let int_param = if include_int_param {
+        let value = i32::from_le_bytes(read_u32_le(read_buffer, cursor)?.to_le_bytes());
+        cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+        value
+    } else {
+        -1
+    };
+
+    let appearance_start = cursor;
+    let base_item = read_u32_le(read_buffer, cursor)?;
+    let appearance_type = *model_types.get(usize::try_from(base_item).ok()?)?;
+    let appearance_size = legacy_item_appearance_read_size(appearance_type)?;
+    let appearance_end = appearance_start.checked_add(appearance_size)?;
+    if appearance_end > record_end {
+        return None;
+    }
+    let appearance_bytes = read_buffer.get(appearance_start..appearance_end)?.to_vec();
+    cursor = appearance_end;
+    let (active_props, cursor) = parse_legacy_quickbar_active_item_properties_compact_byte_tail(
+        read_buffer,
+        cursor,
+        record_end,
+        base_item,
+        appearance_type == 2,
+    )?;
+
+    Some((
+        QuickbarItemObject {
+            present: true,
+            object_id,
+            int_param,
+            base_item,
+            appearance_type,
+            active_props: Some(active_props),
+            appearance_bytes,
+        },
+        cursor,
+    ))
 }
 
 fn parse_legacy_quickbar_item_appearance(
@@ -142,35 +174,8 @@ fn skip_legacy_quickbar_item_object(
     include_int_param: bool,
     model_types: &[i8],
 ) -> Option<()> {
-    let before_present = reader.clone();
     let present = reader.read_bit()?;
     if !present {
-        if looks_like_quickbar_item_object_body_at(reader, include_int_param, model_types) {
-            for skipped_bits in 1..=MAX_QUICKBAR_ITEM_PRESENCE_RESYNC_BITS {
-                let mut trial = before_present.clone();
-                let mut candidate_present = false;
-                let mut bits_ok = true;
-                for _ in 0..=skipped_bits {
-                    match trial.read_bit() {
-                        Some(bit) => candidate_present = bit,
-                        None => {
-                            bits_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !bits_ok || !candidate_present {
-                    continue;
-                }
-                if skip_legacy_quickbar_item_object_body(&mut trial, include_int_param, model_types)
-                    .is_some()
-                {
-                    *reader = trial;
-                    return Some(());
-                }
-            }
-            return None;
-        }
         return Some(());
     }
 

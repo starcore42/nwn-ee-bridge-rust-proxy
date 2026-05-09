@@ -44,10 +44,11 @@ pub(super) enum QuickbarSplitPolicy {
     /// The EE and Diamond handlers both consume a 36-slot quickbar record. When
     /// our item parser does not yet own one legacy item-object body, the reader
     /// may still prove the next slot boundary using the bounded scorer and the
-    /// writer emits an empty EE slot for that single `ItemCandidate` source
-    /// span. This is still strict translation: no raw candidate bytes are
-    /// forwarded, and generic `Unsupported`/tail-blanking may not claim the
-    /// packet because that would mask an incomplete stream.
+    /// writer emits empty EE slots for unowned `ItemCandidate`/`Unsupported`
+    /// source spans. This is still strict translation: no raw candidate bytes
+    /// are forwarded, and blanking can only claim the packet after at least one
+    /// decompile-owned item/spell slot proves the cursor phase and the read
+    /// buffer has no trailing bytes.
     DecompileOwnedBoundary,
 }
 
@@ -72,8 +73,7 @@ pub(super) fn choose_quickbar_split(
 
     for fragment_tail_len in 0..=max_tail {
         let read_body_len = body_and_tail.len().checked_sub(fragment_tail_len)?;
-        let mut read_buffer = Vec::with_capacity(read_body_len.checked_add(CNW_LENGTH_BYTES)?);
-        read_buffer.extend_from_slice(&[0, 0, 0, 0]);
+        let mut read_buffer = Vec::with_capacity(read_body_len);
         read_buffer.extend_from_slice(body_and_tail.get(..read_body_len)?);
 
         let mut fragments = Vec::with_capacity(
@@ -159,8 +159,6 @@ pub(super) fn choose_quickbar_split(
                     // one decompile-owned item or spell slot. This prevents a
                     // whole quickbar from collapsing into 36 blank EE slots.
                     Some("boundary-no-item-or-spell")
-                } else if unsupported_slots != 0 {
-                    Some("boundary-unsupported-slots")
                 } else if trailing_read_bytes != 0 {
                     Some("boundary-trailing-read-bytes")
                 } else {
@@ -219,8 +217,7 @@ fn choose_cursor_derived_quickbar_split(
     prefixed_fragment_bytes: &[u8],
     policy: QuickbarSplitPolicy,
 ) -> Option<QuickbarTransportSplit> {
-    let mut read_buffer = Vec::with_capacity(body_and_tail.len().checked_add(CNW_LENGTH_BYTES)?);
-    read_buffer.extend_from_slice(&[0, 0, 0, 0]);
+    let mut read_buffer = Vec::with_capacity(body_and_tail.len());
     read_buffer.extend_from_slice(body_and_tail);
 
     let fragments = prefixed_fragment_bytes.to_vec();
@@ -231,11 +228,11 @@ fn choose_cursor_derived_quickbar_split(
     ) else {
         return None;
     };
-    if final_cursor < LEGACY_QUICKBAR_READ_CURSOR_START || final_cursor > read_buffer.len() {
+    if final_cursor > read_buffer.len() {
         return None;
     }
 
-    let read_body_len = final_cursor.checked_sub(LEGACY_QUICKBAR_READ_CURSOR_START)?;
+    let read_body_len = final_cursor;
     let fragment_tail_len = body_and_tail.len().checked_sub(read_body_len)?;
     if fragment_tail_len <= MAX_DECOMPILE_OWNED_QUICKBAR_FRAGMENT_TAIL_SCAN_BYTES {
         return None;
@@ -285,8 +282,6 @@ fn choose_cursor_derived_quickbar_split(
         QuickbarSplitPolicy::DecompileOwnedBoundary => {
             if !split.preserves_decompile_owned_payload() {
                 Some("boundary-no-owned-payload")
-            } else if unsupported_slots != 0 {
-                Some("boundary-unsupported-slots")
             } else {
                 None
             }
@@ -361,6 +356,53 @@ pub(super) fn choose_legacy_quickbar_item_end(
     }
 
     if best_score < 0 { None } else { best_candidate }
+}
+
+pub(super) fn choose_legacy_quickbar_compact_item_end(
+    read_buffer: &[u8],
+    slot: usize,
+    payload_start: usize,
+    model_types: &[i8],
+    memo: &mut [i32],
+) -> Option<(usize, QuickbarItemObject, QuickbarItemObject)> {
+    let remaining_slots_after_this = LEGACY_QUICKBAR_BUTTON_COUNT.checked_sub(slot + 1)?;
+    let min_candidate = read_buffer.len().min(payload_start.checked_add(8)?);
+    let max_candidate = read_buffer.len().min(payload_start.checked_add(512)?);
+    let mut best_score = QUICKBAR_BAD_SCORE;
+    let mut best = None;
+
+    for candidate in min_candidate..=max_candidate {
+        if candidate.checked_add(remaining_slots_after_this)? > read_buffer.len() {
+            break;
+        }
+        if remaining_slots_after_this > 0
+            && (candidate >= read_buffer.len()
+                || !is_legacy_quickbar_plausible_type(read_buffer[candidate]))
+        {
+            continue;
+        }
+        let Some((primary, secondary)) = parse_legacy_quickbar_compact_byte_item_payload(
+            read_buffer,
+            payload_start,
+            candidate,
+            model_types,
+        ) else {
+            continue;
+        };
+
+        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
+        if score <= QUICKBAR_BAD_SCORE / 2 {
+            continue;
+        }
+        let consumed = candidate.saturating_sub(payload_start);
+        score += 120 - consumed.checked_div(16).unwrap_or(0).min(120) as i32;
+        if score > best_score {
+            best_score = score;
+            best = Some((candidate, primary, secondary));
+        }
+    }
+
+    if best_score < 0 { None } else { best }
 }
 
 fn score_legacy_quickbar_parse_from(

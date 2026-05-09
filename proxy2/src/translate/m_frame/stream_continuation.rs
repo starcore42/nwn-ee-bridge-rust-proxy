@@ -1,28 +1,37 @@
-//! Verified server zlib-stream continuation handling.
+//! Proxy-owned server zlib-stream continuation handling.
 //!
 //! A deflated M window that inflates to bytes without a `P major minor`
 //! high-level header is not a gameplay packet by itself. In Diamond/HG captures
-//! these windows can still be valid when they are part of the server's persistent
-//! zlib byte stream: the high-level semantic packet began in an earlier window,
-//! while this window carries continuation bytes from the same compressed stream.
+//! these windows can still be valid as continuation bytes from the server's
+//! persistent zlib stream after the proxy has already replaced an earlier stream
+//! window with an EE-safe recompressed payload.
 //!
-//! Once the proxy has rewritten any earlier server stream window, the EE client
-//! no longer shares the original Diamond zlib inflater state. The strict owner
-//! for these no-header chunks is therefore transport-level: consume the original
-//! server stream bytes into the proxy inflater, then emit the exact inflated
-//! continuation bytes in a fresh EE-facing zlib envelope. This is not raw
-//! passthrough; the M-frame continuation translator claims only the stream shape
-//! and rewrites the compression envelope while preserving the byte stream that
-//! the already-classified packet family owns.
+//! Strict bridge rule:
+//!
+//! - consume the Diamond zlib stream state in the proxy,
+//! - do not re-emit no-header bytes to EE as a standalone payload,
+//! - dump the bytes for fixture/decompile work,
+//! - emit an empty reliable progress shell so the receive window does not stall,
+//! - attach a typed continuation proof only when the current stream has a
+//!   remembered, non-unknown semantic owner.
+//!
+//! This module never passes the continuation bytes through. The proof is about
+//! consuming a proxy-owned transport tail, not about validating standalone
+//! gameplay semantics. Unknown owners stay noisy so they can be researched from
+//! captures and decompiles before being promoted to a family-specific claim.
+
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::translate::{ContinuationOwner, Emit, VerifiedFamily};
 
 use super::{
-    CNW_LENGTH_BYTES, SessionState,
-    deflate::deflate_zlib,
-    hex_prefix,
+    SessionState, hex_prefix,
     reassembly::{
-        CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
+        CompletedDeflatedReplay, ServerDeflatedReassembly, build_consumed_server_deflated_frames,
         remember_completed_server_stream_window,
     },
 };
@@ -33,41 +42,130 @@ pub(super) fn emit_verified_server_stream_continuation(
     source_compressed_length: usize,
     inflated: &[u8],
 ) -> anyhow::Result<Emit> {
-    let compressed = deflate_zlib(inflated)?;
-    let mut combined = Vec::with_capacity(CNW_LENGTH_BYTES + compressed.len());
-    combined.extend_from_slice(&(inflated.len() as u32).to_le_bytes());
-    combined.extend_from_slice(&compressed);
     let owner = state
         .deflate
         .server_zlib_stream_owner
         .unwrap_or(ContinuationOwner::UnknownProxyOwned);
-    let family = VerifiedFamily::ServerZlibStreamContinuation { owner };
+    let stream_epoch = state.deflate.server_zlib_stream_epoch;
+    let claimed_family =
+        proxy_owned_continuation_family(owner, stream_epoch, reassembly.first_sequence, inflated);
 
-    let mut outputs = build_server_deflated_output_frames(reassembly, &combined, 0x01, true)?;
+    dump_server_stream_continuation(
+        inflated,
+        reassembly.first_sequence,
+        owner,
+        stream_epoch,
+        if claimed_family.is_some() {
+            "claimed-server-zlib-stream-continuation"
+        } else {
+            "unclaimed-server-zlib-stream-continuation"
+        },
+    );
+
+    let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
+    let replay_family = claimed_family.unwrap_or(VerifiedFamily::ConsumedEmptyMFrame);
     remember_completed_server_stream_window(
         state,
         reassembly,
         source_compressed_length,
         CompletedDeflatedReplay::VerifiedPackets {
-            family,
+            family: replay_family,
             packets: outputs.clone(),
         },
     );
     outputs.extend(reassembly.interleaved_packets.clone());
 
-    tracing::info!(
-        frames = reassembly.frames.len(),
-        first_sequence = reassembly.first_sequence,
-        packetized_sequence = reassembly.packetized_sequence,
-        inflated = inflated.len(),
-        compressed = compressed.len(),
-        owner = owner.as_str(),
-        prefix = %hex_prefix(inflated, 32),
-        "server deflated zlib-stream continuation converted to EE one-shot envelope"
-    );
+    if claimed_family.is_some() {
+        tracing::info!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            stream_epoch,
+            packetized_sequence = reassembly.packetized_sequence,
+            inflated = inflated.len(),
+            owner = owner.as_str(),
+            prefix = %hex_prefix(inflated, 32),
+            "server deflated zlib-stream continuation claimed as proxy-owned semantic stream tail"
+        );
+    } else {
+        tracing::warn!(
+            frames = reassembly.frames.len(),
+            first_sequence = reassembly.first_sequence,
+            stream_epoch,
+            packetized_sequence = reassembly.packetized_sequence,
+            inflated = inflated.len(),
+            owner = owner.as_str(),
+            prefix = %hex_prefix(inflated, 32),
+            "server deflated zlib-stream continuation consumed: no remembered semantic stream owner claimed it"
+        );
+    }
 
     Ok(Emit::VerifiedPackets {
-        family,
+        family: replay_family,
         packets: outputs,
     })
+}
+
+fn proxy_owned_continuation_family(
+    owner: ContinuationOwner,
+    stream_epoch: u64,
+    first_sequence: u16,
+    inflated: &[u8],
+) -> Option<VerifiedFamily> {
+    if inflated.is_empty() || stream_epoch == 0 || owner == ContinuationOwner::UnknownProxyOwned {
+        return None;
+    }
+
+    // Decompile-backed transport distinction: EE's reliable-window receive path
+    // advances on data-frame sequence progress, but no-header zlib stream tails
+    // are not valid high-level gameplay packets. Once a previous zlib-stream
+    // window has been semantically rewritten and marked proxy-owned, later
+    // no-header tails for the same remembered owner are consumed and represented
+    // only as empty reliable progress shells.
+    Some(VerifiedFamily::ServerZlibStreamContinuation {
+        owner,
+        stream_epoch,
+        first_sequence,
+    })
+}
+
+fn dump_server_stream_continuation(
+    inflated: &[u8],
+    first_sequence: u16,
+    owner: ContinuationOwner,
+    stream_epoch: u64,
+    reason: &str,
+) {
+    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+        return;
+    };
+    if dir.trim().is_empty() {
+        return;
+    }
+
+    let mut path = PathBuf::from(dir);
+    if fs::create_dir_all(&path).is_err() {
+        return;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.push(format!(
+        "{reason}-{}-epoch{stream_epoch}-seq{first_sequence}-{nanos}.bin",
+        owner
+            .as_str()
+            .replace(['<', '>', '/', '\\', ':', '*', '?', '"', '|'], "_")
+    ));
+
+    if fs::write(&path, inflated).is_ok() {
+        tracing::info!(
+            path = %path.display(),
+            first_sequence,
+            owner = owner.as_str(),
+            stream_epoch,
+            inflated_length = inflated.len(),
+            reason,
+            "dumped server zlib-stream continuation for fixture/decompile work"
+        );
+    }
 }
