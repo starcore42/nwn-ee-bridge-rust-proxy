@@ -249,6 +249,34 @@ pub(super) fn legacy_3967_update_was_already_consumed_to_cursor(
     accepted
 }
 
+pub(super) fn legacy_3967_update_was_already_consumed_from_cursor(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    start_bit_cursor: usize,
+    bit_cursor: usize,
+) -> bool {
+    if start_bit_cursor >= bit_cursor
+        || offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+    {
+        return false;
+    }
+
+    let mut candidate_cursor = start_bit_cursor;
+    advance_verified_noop_creature_update_record_exact_cursor(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut candidate_cursor,
+    ) && candidate_cursor == bit_cursor
+}
+
 pub(super) fn repair_3967_action2_optional_float_bool_for_ee(
     bytes: &[u8],
     offset: usize,
@@ -265,6 +293,32 @@ pub(super) fn repair_3967_action2_optional_float_bool_for_ee(
         return false;
     }
 
+    let Some(optional_float_bit) = find_legacy_3967_action2_optional_float_bit_for_repair(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    ) else {
+        return false;
+    };
+    let Some(bit) = fragment_bits.get_mut(optional_float_bit) else {
+        return false;
+    };
+    if !*bit {
+        return false;
+    }
+    *bit = false;
+    true
+}
+
+fn find_legacy_3967_action2_optional_float_bit_for_repair(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
     let mut cursor = LegacyCreatureUpdateCursor {
         bytes,
         record_end,
@@ -277,64 +331,75 @@ pub(super) fn repair_3967_action2_optional_float_bool_for_ee(
         || cursor.read_unsigned_bits(16).is_none()
         || cursor.read_unsigned_bits(18).is_none()
     {
-        return false;
+        return None;
     }
 
-    let Some(vector_branch) = cursor.read_bool() else {
-        return false;
-    };
-    if vector_branch {
-        if cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-        {
-            return false;
+    let candidates =
+        build_legacy_creature_orientation_branch_candidate_states(LEGACY_CREATURE_UPDATE_3967_MASK, cursor)?;
+
+    let mut accepted: Option<usize> = None;
+    for mut candidate in candidates {
+        let Some(portrait_row) = candidate.read_u16() else {
+            continue;
+        };
+        if portrait_row >= 0xFFFE && candidate.read_cresref().is_none() {
+            continue;
         }
-    } else if cursor.read_unsigned_bits(12).is_none() {
-        return false;
-    }
 
-    let Some(has_target) = cursor.read_bool() else {
-        return false;
-    };
-    if has_target && cursor.read_u32().is_none() {
-        return false;
-    }
+        let Some(action_code) = simulate_legacy_creature_update_action_branch(&mut candidate) else {
+            continue;
+        };
+        if action_code != 2 || candidate.read_u8().is_none() {
+            continue;
+        }
+        let Some(followup_count) = candidate.read_u16() else {
+            continue;
+        };
+        if followup_count != 1 {
+            continue;
+        }
 
-    let Some(portrait_row) = cursor.read_u16() else {
-        return false;
-    };
-    if portrait_row >= 0xFFFE && cursor.read_cresref().is_none() {
-        return false;
+        // EE/Diamond `sub_140781E80` / `sub_44ADD0` action-code 2 movement
+        // follow-up reads this BOOL before the two 16-bit movement values. HG
+        // legacy captures proving this branch use the false path; when the
+        // existing bit is true, EE consumes four extra read-buffer bytes and
+        // shifts the later identity branch into the wrong subobject. Only
+        // repair the bit when the complete record then validates through the
+        // same exact cursor proof used by strict live-object claiming.
+        let optional_float_bit = candidate.bit_cursor;
+        if fragment_bits.get(optional_float_bit).copied() != Some(true) {
+            continue;
+        }
+        let mut trial_fragment_bits = fragment_bits.to_vec();
+        trial_fragment_bits[optional_float_bit] = false;
+        let mut trial_bit_cursor = bit_cursor;
+        let exact_record = advance_verified_noop_creature_update_record_exact_cursor(
+            bytes,
+            offset,
+            record_end,
+            &trial_fragment_bits,
+            &mut trial_bit_cursor,
+        );
+        let interleaved_span_record = if exact_record {
+            false
+        } else {
+            super::fragment_spans::verified_creature_update_3967_read_end_before_interleaved_fragment_span(
+                bytes,
+                offset,
+                record_end,
+                &trial_fragment_bits,
+                bit_cursor,
+            )
+            .is_some()
+        };
+        if !exact_record && !interleaved_span_record {
+            continue;
+        }
+        if accepted.replace(optional_float_bit).is_some() {
+            return None;
+        }
     }
-
-    let Some(action_code) = simulate_legacy_creature_update_action_branch(&mut cursor) else {
-        return false;
-    };
-    if action_code != 2 || cursor.read_u8().is_none() {
-        return false;
-    }
-    let Some(followup_count) = cursor.read_u16() else {
-        return false;
-    };
-    if followup_count != 1 {
-        return false;
-    }
-
-    // EE/Diamond `sub_140781E80` / `sub_44ADD0` action-code 2 movement
-    // follow-up reads this BOOL before the two 16-bit movement values. The HG
-    // `0x3967` records documented in the alignment reference use the false
-    // branch; a true value shifts the later identity branch into the following
-    // read-buffer bytes and produces the exact `RVA 0x7851EB` class of faults.
-    let optional_float_bit = cursor.bit_cursor;
-    let Some(bit) = fragment_bits.get_mut(optional_float_bit) else {
-        return false;
-    };
-    if !*bit {
-        return false;
-    }
-    *bit = false;
-    true
+    accepted
 }
 
 fn advance_verified_creature_update_c408(
@@ -489,10 +554,19 @@ fn simulate_legacy_live_creature_update_cursors(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let start_bit_cursor = *bit_cursor;
     let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
+        trace_creature_update_cursor_reject("missing-mask", 0, offset + 6, *bit_cursor, record_end);
         return false;
     };
     if !is_supported_legacy_creature_update_cursor_mask(raw_mask) {
+        trace_creature_update_cursor_reject(
+            "unsupported-mask",
+            raw_mask,
+            offset + 10,
+            *bit_cursor,
+            record_end,
+        );
         return false;
     }
 
@@ -509,119 +583,397 @@ fn simulate_legacy_live_creature_update_cursors(
             || cursor.read_unsigned_bits(16).is_none()
             || cursor.read_unsigned_bits(18).is_none())
     {
+        trace_creature_update_cursor_reject(
+            "position",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
         return false;
     }
 
-    if (raw_mask & 0x0000_0002) != 0 {
-        let Some(vector_branch) = cursor.read_bool() else {
+    let candidate_cursors = if (raw_mask & 0x0000_0002) != 0 {
+        let Some(candidates) =
+            build_legacy_creature_orientation_branch_candidate_states(raw_mask, cursor)
+        else {
             return false;
         };
-        if vector_branch {
-            if cursor.read_unsigned_bits(16).is_none()
-                || cursor.read_unsigned_bits(16).is_none()
-                || cursor.read_unsigned_bits(16).is_none()
-            {
-                return false;
-            }
-        } else if cursor.read_unsigned_bits(12).is_none() {
-            return false;
-        }
+        candidates
+    } else {
+        vec![cursor]
+    };
 
-        let Some(has_target) = cursor.read_bool() else {
-            return false;
+    let mut accepted: Option<LegacyCreatureUpdateCursor<'_>> = None;
+    for candidate in candidate_cursors {
+        let Some(candidate) = simulate_legacy_live_creature_update_tail_cursor(raw_mask, candidate)
+        else {
+            continue;
         };
-        if has_target && cursor.read_u32().is_none() {
-            return false;
+        if accepted
+            .as_ref()
+            .is_none_or(|accepted| orientation_candidate_is_more_specific(candidate, *accepted))
+        {
+            accepted = Some(candidate);
+        }
+    }
+    let Some(cursor) = accepted else {
+        return false;
+    };
+
+    trace_creature_update_cursor_accept(
+        raw_mask,
+        cursor.read_cursor,
+        start_bit_cursor,
+        cursor.bit_cursor,
+        record_end,
+    );
+    *bit_cursor = cursor.bit_cursor;
+    true
+}
+
+fn orientation_candidate_is_more_specific(
+    candidate: LegacyCreatureUpdateCursor<'_>,
+    accepted: LegacyCreatureUpdateCursor<'_>,
+) -> bool {
+    // The Diamond server writer has two exact 0x2-orientation shapes:
+    // target-accessor omitted entirely, or target-accessor present with a
+    // BOOL plus optional object id. If both full-record parses succeed, prefer
+    // the more specific branch that consumed the explicit target subbranch.
+    // The omitted branch remains available for records where that target
+    // subbranch cannot itself produce a complete decompile-backed parse.
+    (candidate.bit_cursor, candidate.read_cursor) > (accepted.bit_cursor, accepted.read_cursor)
+}
+
+fn build_legacy_creature_orientation_branch_candidate_states<'a>(
+    raw_mask: u32,
+    mut cursor: LegacyCreatureUpdateCursor<'a>,
+) -> Option<Vec<LegacyCreatureUpdateCursor<'a>>> {
+    let Some(vector_branch) = cursor.read_bool() else {
+        trace_creature_update_cursor_reject(
+            "orientation-branch-bit",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            cursor.record_end,
+        );
+        return None;
+    };
+    if vector_branch {
+        if cursor.read_unsigned_bits(16).is_none()
+            || cursor.read_unsigned_bits(16).is_none()
+            || cursor.read_unsigned_bits(16).is_none()
+        {
+            trace_creature_update_cursor_reject(
+                "orientation-vector",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                cursor.record_end,
+            );
+            return None;
+        }
+    } else if cursor.read_unsigned_bits(12).is_none() {
+        trace_creature_update_cursor_reject(
+            "orientation-scalar",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            cursor.record_end,
+        );
+        return None;
+    }
+
+    // Diamond server sub_44525B..sub_4453B3 writes the vector/scalar
+    // orientation branch unconditionally, but only writes the target
+    // BOOL/object-id subbranch when the server object exposes that target
+    // accessor. Model both exact server-emitted shapes and let the full
+    // bounded record parser below select a single complete parse.
+    let mut candidates = vec![cursor];
+    let mut target_cursor = cursor;
+    if let Some(has_target) = target_cursor.read_bool() {
+        if !has_target || target_cursor.read_u32().is_some() {
+            candidates.push(target_cursor);
+        } else {
+            trace_creature_update_cursor_reject(
+                "orientation-target-object",
+                raw_mask,
+                target_cursor.read_cursor,
+                target_cursor.bit_cursor,
+                target_cursor.record_end,
+            );
         }
     }
 
+    Some(candidates)
+}
+
+fn simulate_legacy_live_creature_update_tail_cursor(
+    raw_mask: u32,
+    mut cursor: LegacyCreatureUpdateCursor<'_>,
+) -> Option<LegacyCreatureUpdateCursor<'_>> {
+    let record_end = cursor.record_end;
+
     if (raw_mask & 0x0000_0020) != 0 {
         let Some(portrait_row) = cursor.read_u16() else {
-            return false;
+            trace_creature_update_cursor_reject(
+                "portrait-row",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         };
         if portrait_row >= 0xFFFE && cursor.read_cresref().is_none() {
-            return false;
+            trace_creature_update_cursor_reject(
+                "portrait-resref",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         }
     }
 
     if (raw_mask & 0x0000_0004) != 0 {
         let Some(action_code) = simulate_legacy_creature_update_action_branch(&mut cursor) else {
-            return false;
+            trace_creature_update_cursor_reject(
+                "action-branch",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         };
         if cursor.read_u8().is_none() {
-            return false;
+            trace_creature_update_cursor_reject(
+                "action-state-byte",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         }
         if !simulate_legacy_creature_update_action_post_state_followup(&mut cursor, action_code) {
-            return false;
+            trace_creature_update_cursor_reject(
+                "action-followup",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         }
     }
 
     if (raw_mask & 0x0000_0008) != 0
         && !simulate_legacy_creature_update_status_effect_helper_cursor(&mut cursor)
     {
-        return false;
+        trace_creature_update_cursor_reject(
+            "status-effects",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if (raw_mask & 0x0000_0040) != 0 {
         let Some(_first) = cursor.read_u16() else {
-            return false;
+            trace_creature_update_cursor_reject(
+                "branch40-first",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         };
         let Some(branch_mode) = cursor.read_u8() else {
-            return false;
+            trace_creature_update_cursor_reject(
+                "branch40-mode",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         };
         if cursor.read_u16().is_none() || cursor.read_u8().is_none() || cursor.read_bool().is_none()
         {
-            return false;
+            trace_creature_update_cursor_reject(
+                "branch40-body",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         }
         if branch_mode == 2 && cursor.read_u32().is_none() {
-            return false;
+            trace_creature_update_cursor_reject(
+                "branch40-object",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         }
     }
 
     if (raw_mask & 0x0000_0100) != 0
         && (cursor.read_unsigned_bits(32).is_none() || cursor.read_unsigned_bits(32).is_none())
     {
-        return false;
+        trace_creature_update_cursor_reject(
+            "branch100",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if (raw_mask & 0x0000_0200) != 0
         && (cursor.read_unsigned_bits(10).is_none() || cursor.read_unsigned_bits(10).is_none())
     {
-        return false;
+        trace_creature_update_cursor_reject(
+            "branch200",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if (raw_mask & 0x0000_0400) != 0 {
         for _ in 0..4 {
             if cursor.read_u16().is_none() {
-                return false;
+                trace_creature_update_cursor_reject(
+                    "branch400",
+                    raw_mask,
+                    cursor.read_cursor,
+                    cursor.bit_cursor,
+                    record_end,
+                );
+                return None;
             }
         }
     }
 
     if (raw_mask & 0x0002_0000) != 0 && cursor.read_u16().is_none() {
-        return false;
+        trace_creature_update_cursor_reject(
+            "branch20000",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if (raw_mask & 0x0000_0800) != 0 && cursor.read_u8().is_none() {
-        return false;
+        trace_creature_update_cursor_reject(
+            "branch800",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if (raw_mask & 0x0000_1000) != 0 {
         let Some(accepted) =
             try_simulate_legacy_creature_update_identity_optional_suffix(raw_mask, cursor)
         else {
-            return false;
+            trace_creature_update_cursor_reject(
+                "identity",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
         };
         cursor = accepted;
     } else if !simulate_legacy_creature_update_suffix_after_identity(raw_mask, &mut cursor) {
-        return false;
+        trace_creature_update_cursor_reject(
+            "suffix",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
     }
 
     if cursor.read_cursor != record_end {
+        trace_creature_update_cursor_reject(
+            "record-end",
+            raw_mask,
+            cursor.read_cursor,
+            cursor.bit_cursor,
+            record_end,
+        );
+        return None;
+    }
+    Some(cursor)
+}
+
+fn trace_creature_update_cursor_reject(
+    stage: &'static str,
+    raw_mask: u32,
+    read_cursor: usize,
+    bit_cursor: usize,
+    record_end: usize,
+) {
+    if !debug_creature_update_cursor_trace_enabled(raw_mask) {
+        return;
+    }
+    eprintln!(
+        "live-object creature update cursor rejected: stage={stage} raw_mask=0x{raw_mask:08X} read_cursor={read_cursor} bit_cursor={bit_cursor} record_end={record_end}"
+    );
+}
+
+fn trace_creature_update_cursor_accept(
+    raw_mask: u32,
+    read_cursor: usize,
+    start_bit_cursor: usize,
+    bit_cursor: usize,
+    record_end: usize,
+) {
+    if !debug_creature_update_cursor_trace_enabled(raw_mask) {
+        return;
+    }
+    eprintln!(
+        "live-object creature update cursor accepted: raw_mask=0x{raw_mask:08X} read_cursor={read_cursor} start_bit_cursor={start_bit_cursor} bit_cursor={bit_cursor} record_end={record_end}"
+    );
+}
+
+fn debug_creature_update_cursor_trace_enabled(raw_mask: u32) -> bool {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
         return false;
     }
-    *bit_cursor = cursor.bit_cursor;
-    true
+    let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_CREATURE_UPDATE_MASK") else {
+        return true;
+    };
+    filter.split(',').any(|part| {
+        let part = part.trim();
+        let parsed = part
+            .strip_prefix("0x")
+            .or_else(|| part.strip_prefix("0X"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .or_else(|| part.parse::<u32>().ok());
+        parsed.map(|value| value == raw_mask).unwrap_or(false)
+    })
 }
 
 pub(super) fn is_supported_legacy_creature_update_cursor_mask(raw_mask: u32) -> bool {
@@ -890,6 +1242,7 @@ fn simulate_legacy_creature_update_action_branch(
     cursor.read_unsigned_bits(32)?;
     cursor.read_unsigned_bits(16)?;
     let action_code = read_u16_le(cursor.bytes, cursor.read_cursor.checked_sub(2)?)?;
+    trace_creature_update_action_branch(action_code, cursor.read_cursor, cursor.bit_cursor);
 
     if action_code == 9 {
         let attack_count = cursor.read_unsigned_bits(2)?;
@@ -935,9 +1288,19 @@ fn simulate_legacy_creature_update_action_post_state_followup(
     cursor: &mut LegacyCreatureUpdateCursor<'_>,
     action_code: u16,
 ) -> bool {
+    let start_read_cursor = cursor.read_cursor;
+    let start_bit_cursor = cursor.bit_cursor;
     let Some(followup_count) = cursor.read_u16() else {
         return false;
     };
+    trace_creature_update_action_followup(
+        action_code,
+        followup_count,
+        start_read_cursor,
+        start_bit_cursor,
+        cursor.read_cursor,
+        cursor.bit_cursor,
+    );
     if followup_count > 256 {
         return false;
     }
@@ -960,6 +1323,31 @@ fn simulate_legacy_creature_update_action_post_state_followup(
         }
     }
     true
+}
+
+fn trace_creature_update_action_branch(action_code: u16, read_cursor: usize, bit_cursor: usize) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+    eprintln!(
+        "live-object creature update action branch: action_code=0x{action_code:04X} read_cursor={read_cursor} bit_cursor={bit_cursor}"
+    );
+}
+
+fn trace_creature_update_action_followup(
+    action_code: u16,
+    followup_count: u16,
+    start_read_cursor: usize,
+    start_bit_cursor: usize,
+    read_cursor: usize,
+    bit_cursor: usize,
+) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+    eprintln!(
+        "live-object creature update action followup: action_code=0x{action_code:04X} followup_count={followup_count} start_read_cursor={start_read_cursor} start_bit_cursor={start_bit_cursor} read_cursor={read_cursor} bit_cursor={bit_cursor}"
+    );
 }
 
 fn is_legacy_creature_update_movement_followup_action(action_code: u16) -> bool {

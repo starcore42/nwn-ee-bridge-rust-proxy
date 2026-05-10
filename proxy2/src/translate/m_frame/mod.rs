@@ -21,14 +21,16 @@ use std::{
 use crate::{
     crc::{encode_legacy_m_crc, read_le_u32, write_be_u16},
     packet::m::{HighLevel, MFrameView},
-    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area, module_resources},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area},
 };
 
 mod client_filters;
 mod coalesced;
+mod deferred_module_resources;
 mod deflate;
 mod live_stream;
 mod live_update;
+mod login_waypoint;
 mod local_ack;
 mod parse_window;
 mod quickbar_stream;
@@ -86,13 +88,22 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
         let synthetic_view = MFrameView::parse(&synthetic)
             .ok_or_else(|| anyhow::anyhow!("synthetic Area_AreaLoaded M frame failed to parse"))?;
         let synthetic = translate_client_to_server_packet(synthetic, &synthetic_view)?;
-        return Ok(Emit::Packets(vec![packet, synthetic]));
+        return Ok(Emit::MixedVerifiedPackets(vec![
+            (packet.family, packet.packet),
+            (synthetic.family, synthetic.packet),
+        ]));
     }
 
-    Ok(Emit::Packet(packet))
+    Ok(Emit::VerifiedPackets {
+        family: packet.family,
+        packets: vec![packet.packet],
+    })
 }
 
-fn translate_client_to_server_packet(bytes: Vec<u8>, view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+fn translate_client_to_server_packet(
+    bytes: Vec<u8>,
+    view: &MFrameView,
+) -> anyhow::Result<client_filters::ClientFrameTranslation> {
     client_filters::translate_client_frame(bytes, view)
 }
 
@@ -104,6 +115,12 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     let mut inbound = bytes.to_vec();
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
     let view = MFrameView::parse(&inbound).unwrap_or(view);
+    deferred_module_resources::capture_early_server_status_if_needed(
+        &inbound,
+        &view,
+        &state.module_resources,
+        &mut state.deferred_module_resources.pending,
+    );
 
     if let Some((proof, rewritten)) =
         coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)?
@@ -125,6 +142,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     } else if let Some(verified) =
         server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
     {
+        login_waypoint::maybe_queue_empty_waypoint_response(state, &inbound, &view)?;
         Emit::VerifiedProofPackets {
             proof: verified.proof,
             packets: vec![verified.packet],
@@ -895,6 +913,18 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
+    if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
+        if let Some(last_frame) = reassembly.frames.last() {
+            deferred_module_resources::queue_after_module_info_if_ready(
+                &mut state.deferred_module_resources.pending,
+                &mut state.synthetic_area.pending_server_to_client_packets,
+                &mut state.sequence.server_sequence_shifts,
+                last_frame.sequence,
+                last_frame.ack_sequence,
+                &state.module_resources,
+            )?;
+        }
+    }
     if used_server_stream {
         state.deflate.server_zlib_stream_proxy_owned = true;
         let owner = verified_proof

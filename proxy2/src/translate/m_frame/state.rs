@@ -9,6 +9,7 @@ use flate2::Decompress;
 use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources};
 
 use super::{
+    deferred_module_resources,
     live_stream, quickbar_stream,
     reassembly::{CompletedDeflatedStreamWindow, ServerDeflatedReassembly},
     sequence::SequenceShift,
@@ -59,9 +60,20 @@ pub(super) struct SequenceState {
 }
 
 #[derive(Debug, Default)]
+pub(super) struct LoginWaypointState {
+    pub(super) last_server_get_waypoint_sequence: Option<u16>,
+    pub(super) synthetic_empty_response_count: u32,
+}
+
+#[derive(Debug, Default)]
 pub(super) struct SyntheticAreaState {
     pub(super) pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
     pub(super) pending_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DeferredModuleResourcesSessionState {
+    pub(super) pending: deferred_module_resources::DeferredModuleResourcesState,
 }
 
 #[derive(Debug, Default)]
@@ -75,7 +87,9 @@ pub struct SessionState {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
+    pub(super) login_waypoint: LoginWaypointState,
     pub(super) synthetic_area: SyntheticAreaState,
+    pub(super) deferred_module_resources: DeferredModuleResourcesSessionState,
     pub(super) area_context: AreaContextState,
     pub(super) module_resources: module_resources::ModuleResourceRuntime,
 }

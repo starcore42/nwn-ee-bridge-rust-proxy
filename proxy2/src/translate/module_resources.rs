@@ -10,11 +10,18 @@
 //!   `CExoString` for high-level `0x01/0x03`, then calls
 //!   `CNWCModule::LoadModuleResources`.
 //! - `CNWCModule::LoadModuleResources` consumes a fragment BOOL for optional
-//!   NWSync advertisement data, then module resource name/description strings,
-//!   a HAK count byte, and fixed 16-byte HAK resrefs.
+//!   NWSync advertisement data, then the module custom-TLK string, a secondary
+//!   module-resource string, a HAK count byte, and fixed 16-byte HAK resrefs.
+//!   The first string is copied to the client module at `+0x28` and later used
+//!   by `CTlkTable::OpenFileAlternate`; it must be the server-declared
+//!   `Mod_CustomTlk` value, not an empty placeholder.
 //! - The legacy Diamond `Module_Info` HAK block is not part of EE's
 //!   `LoadModule` stream, so `translate::module` removes it. This packet is the
 //!   structured EE replacement for the same resource information.
+//! - Do not synthesize a server-specific HAK order here. Diamond's client reads
+//!   the module declaration byte count, then that many fixed 16-byte HAK
+//!   resrefs in order. The proxy records that exact server-provided order from
+//!   `Module_Info` and re-emits it in EE's `LoadModuleResources` shape.
 
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
@@ -23,10 +30,11 @@ const MODULE_RUNNING_MINOR: u8 = 0x03;
 const RESREF_BYTES: usize = 16;
 const MAX_SERVER_STATUS_STRING: usize = 4096;
 const MAX_MODULE_RESOURCES_PAYLOAD: usize = 4096;
+const MAX_OBSERVED_HAK_COUNT: usize = 255;
 
 use crate::nwsync::Advertisement;
 
-use super::profiles::{self, ModuleResourceProfile};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct ModuleResourcesRewriteSummary {
@@ -35,7 +43,9 @@ pub struct ModuleResourcesRewriteSummary {
     pub old_payload_length: usize,
     pub new_payload_length: usize,
     pub status_module_name: String,
-    pub profile_name: &'static str,
+    pub profile_name: String,
+    pub resource_source: &'static str,
+    pub custom_tlk: Option<String>,
     pub hak_count: usize,
     pub nwsync_advertised: bool,
 }
@@ -44,6 +54,13 @@ pub struct ModuleResourcesRewriteSummary {
 pub struct ModuleResourceRuntime {
     profile_name: String,
     nwsync_advertisement: Option<Advertisement>,
+    observed_declaration: Arc<Mutex<Option<ObservedModuleResourceDeclaration>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedModuleResourceDeclaration {
+    hak_order_top_first: Vec<String>,
+    custom_tlk: Option<String>,
 }
 
 impl ModuleResourceRuntime {
@@ -51,6 +68,21 @@ impl ModuleResourceRuntime {
         Self {
             profile_name,
             nwsync_advertisement,
+            observed_declaration: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Build a fresh runtime for one client session.
+    ///
+    /// The HAK/TLK declaration is observed from that session's Diamond
+    /// `Module_Info` packet.  Cloned translator templates keep the configured
+    /// NWSync advertisement, but must not share an observed module declaration
+    /// across different connections.
+    pub fn for_new_session(&self) -> Self {
+        Self {
+            profile_name: self.profile_name.clone(),
+            nwsync_advertisement: self.nwsync_advertisement.clone(),
+            observed_declaration: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -61,6 +93,35 @@ impl ModuleResourceRuntime {
     pub fn nwsync_advertisement(&self) -> Option<&Advertisement> {
         self.nwsync_advertisement.as_ref()
     }
+
+    pub fn observe_legacy_module_info_resources(
+        &self,
+        hak_order_top_first: &[String],
+        custom_tlk: Option<&str>,
+    ) -> bool {
+        if hak_order_top_first.len() > MAX_OBSERVED_HAK_COUNT
+            || !hak_order_top_first
+                .iter()
+                .all(|hak| fixed_resref_value_is_valid(hak))
+            || custom_tlk
+                .is_some_and(|tlk| !tlk.trim().is_empty() && !fixed_resref_value_is_valid(tlk))
+        {
+            return false;
+        }
+
+        let Ok(mut observed) = self.observed_declaration.lock() else {
+            return false;
+        };
+        *observed = Some(ObservedModuleResourceDeclaration {
+            hak_order_top_first: hak_order_top_first.to_vec(),
+            custom_tlk: custom_tlk.map(str::to_owned),
+        });
+        true
+    }
+
+    fn observed_module_resource_declaration(&self) -> Option<ObservedModuleResourceDeclaration> {
+        self.observed_declaration.lock().ok()?.clone()
+    }
 }
 
 impl Default for ModuleResourceRuntime {
@@ -68,6 +129,7 @@ impl Default for ModuleResourceRuntime {
         Self {
             profile_name: "higher-ground".to_string(),
             nwsync_advertisement: None,
+            observed_declaration: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -148,14 +210,14 @@ pub fn rewrite_server_status_module_resources_payload(
         return None;
     }
 
-    let profile = profiles::module_resources_profile(runtime.profile_name());
-    rewrite_payload_for_profile(payload, profile, runtime.nwsync_advertisement())
+    let observed = runtime.observed_module_resource_declaration()?;
+    rewrite_payload_for_observed_declaration(payload, runtime, observed)
 }
 
-fn rewrite_payload_for_profile(
+fn rewrite_payload_for_observed_declaration(
     payload: &mut Vec<u8>,
-    profile: ModuleResourceProfile,
-    nwsync_advertisement: Option<&Advertisement>,
+    runtime: &ModuleResourceRuntime,
+    observed: ObservedModuleResourceDeclaration,
 ) -> Option<ModuleResourcesRewriteSummary> {
     let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     let declared = usize::try_from(old_declared).ok()?;
@@ -170,17 +232,21 @@ fn rewrite_payload_for_profile(
     let mut writer = ModuleResourceWriter::new();
     writer.write_string(&status_module_name)?;
 
-    if let Some(advertisement) = nwsync_advertisement {
+    if let Some(advertisement) = runtime.nwsync_advertisement() {
         writer.write_bit(true);
         writer.write_nwsync_advertisement(advertisement)?;
     } else {
         writer.write_bit(false);
     }
 
+    writer.write_string(observed.custom_tlk.as_deref().unwrap_or(""))?;
+    // EE's writer emits a second resource string after the custom TLK and the
+    // client passes it through `sub_1406ACA00`. Diamond's 1.69 Module_Info does
+    // not carry an equivalent field in the decompile-backed resource block we
+    // consume here, so keep it empty rather than inventing server-specific data.
     writer.write_string("")?;
-    writer.write_string("")?;
-    writer.write_byte(u8::try_from(profile.hak_order_top_first.len()).ok()?);
-    for hak in profile.hak_order_top_first {
+    writer.write_byte(u8::try_from(observed.hak_order_top_first.len()).ok()?);
+    for hak in &observed.hak_order_top_first {
         writer.write_fixed_resref16(hak)?;
     }
 
@@ -203,9 +269,11 @@ fn rewrite_payload_for_profile(
         old_payload_length: payload.len(),
         new_payload_length: rewritten.len(),
         status_module_name,
-        profile_name: profile.name,
-        hak_count: profile.hak_order_top_first.len(),
-        nwsync_advertised: nwsync_advertisement.is_some(),
+        profile_name: runtime.profile_name().to_string(),
+        resource_source: "observed-diamond-module-info",
+        custom_tlk: observed.custom_tlk,
+        hak_count: observed.hak_order_top_first.len(),
+        nwsync_advertised: runtime.nwsync_advertisement().is_some(),
     };
     *payload = rewritten;
     Some(summary)
@@ -251,6 +319,11 @@ fn is_resref_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
+fn fixed_resref_value_is_valid(value: &str) -> bool {
+    let value = value.trim().strip_suffix(".tlk").unwrap_or(value.trim());
+    !value.is_empty() && value.len() <= RESREF_BYTES && value.bytes().all(is_resref_char)
+}
+
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -271,17 +344,23 @@ mod tests {
         let mut payload = vec![
             b'P', 0x01, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79,
         ];
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &[
+                "cep2_custom".to_string(),
+                "cep2_top_v23".to_string(),
+            ],
+            Some("cep23_v1"),
+        ));
 
-        let summary = rewrite_server_status_module_resources_payload(
-            &mut payload,
-            &ModuleResourceRuntime::default(),
-        )
-        .expect("legacy module-running status should be rewritten");
+        let summary = rewrite_server_status_module_resources_payload(&mut payload, &runtime)
+            .expect("legacy module-running status should be rewritten");
 
         assert_eq!(summary.old_declared, 0x0B);
         assert_eq!(summary.status_module_name, "");
         assert_eq!(summary.profile_name, "higher-ground");
-        assert_eq!(summary.hak_count, 24);
+        assert_eq!(summary.resource_source, "observed-diamond-module-info");
+        assert_eq!(summary.hak_count, 2);
         assert_eq!(summary.new_payload_length, payload.len());
         assert_eq!(&payload[..3], &[b'P', 0x01, 0x03]);
         assert_eq!(read_u32_le(&payload, 3), Some(summary.new_declared));

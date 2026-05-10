@@ -90,6 +90,11 @@ pub(super) fn canonicalize_bic_gff(gff: &[u8]) -> Result<GffCanonicalizeSummary,
     let mut new_field_data = old_field_data.clone();
     let mut new_field_indices = Vec::new();
     let mut new_list_indices = Vec::new();
+    let mut old_to_new_structs = vec![
+        None;
+        usize::try_from(old_layout.struct_count)
+            .map_err(|_| "struct count overflow".to_string())?
+    ];
     let mut active_old_structs = vec![
         0_u8;
         usize::try_from(old_layout.struct_count)
@@ -101,6 +106,7 @@ pub(super) fn canonicalize_bic_gff(gff: &[u8]) -> Result<GffCanonicalizeSummary,
         old_layout,
         0,
         0,
+        &mut old_to_new_structs,
         &mut active_old_structs,
         &mut new_structs,
         &mut new_fields,
@@ -377,6 +383,7 @@ fn clone_gff_struct_tree(
     old_layout: GffLayout,
     old_struct_index: u32,
     depth: u32,
+    old_to_new_structs: &mut [Option<u32>],
     active_old_structs: &mut [u8],
     new_structs: &mut Vec<GffStructRecord>,
     new_fields: &mut Vec<GffFieldRecord>,
@@ -399,6 +406,13 @@ fn clone_gff_struct_tree(
     }
     let active_index = usize::try_from(old_struct_index)
         .map_err(|_| "active struct index overflow".to_string())?;
+    if let Some(existing_new_struct) = old_to_new_structs
+        .get(active_index)
+        .copied()
+        .ok_or_else(|| "struct map index out of bounds".to_string())?
+    {
+        return Ok(existing_new_struct);
+    }
     if active_old_structs
         .get(active_index)
         .copied()
@@ -406,7 +420,7 @@ fn clone_gff_struct_tree(
         != 0
     {
         return Err(format!(
-            "GFF struct cycle detected at old struct {old_struct_index}"
+            "GFF active struct {old_struct_index} had no mapped clone"
         ));
     }
     if new_structs.len() >= MAX_REASONABLE_GFF_CLONE_RECORDS
@@ -422,6 +436,7 @@ fn clone_gff_struct_tree(
     let old_struct = read_gff_struct_record(gff, old_layout, old_struct_index)?;
     let current_new_struct_index = checked_u32(new_structs.len(), "new struct index")?;
     new_structs.push(GffStructRecord::default());
+    old_to_new_structs[active_index] = Some(current_new_struct_index);
     active_old_structs[active_index] = 1;
 
     let (old_field_ids, clamped) = read_gff_struct_field_ids(gff, old_layout, old_struct_index)?;
@@ -455,6 +470,7 @@ fn clone_gff_struct_tree(
                     old_layout,
                     new_field.value,
                     depth + 1,
+                    old_to_new_structs,
                     active_old_structs,
                     new_structs,
                     new_fields,
@@ -504,6 +520,7 @@ fn clone_gff_struct_tree(
                         old_layout,
                         old_list_struct,
                         depth + 1,
+                        old_to_new_structs,
                         active_old_structs,
                         new_structs,
                         new_fields,
@@ -674,10 +691,13 @@ fn read_gff_struct_field_ids(
                 .ok_or("field id offset overflow")?,
         )?;
         if field_id >= layout.field_count {
-            return Err(format!(
-                "struct {struct_index} field-index[{index}]={field_id} >= field count {}",
-                layout.field_count
-            ));
+            if field_ids.is_empty() {
+                return Err(format!(
+                    "struct {struct_index} field-index[{index}]={field_id} >= field count {}",
+                    layout.field_count
+                ));
+            }
+            return Ok((field_ids, true));
         }
         field_ids.push(field_id);
     }
@@ -1031,5 +1051,57 @@ mod tests {
         assert_eq!(read_u32(&canonical, 16).unwrap(), 68);
         assert_eq!(read_u32(&canonical, 24).unwrap(), 80);
         assert_eq!(read_u32(&canonical, 32).unwrap(), 96);
+    }
+
+    #[test]
+    fn truncates_legacy_struct_field_index_tail_at_first_invalid_field_id() {
+        let mut gff = Vec::new();
+        gff.extend_from_slice(b"BIC ");
+        gff.extend_from_slice(b"V3.2");
+        append_u32(&mut gff, 56); // struct offset
+        append_u32(&mut gff, 1); // struct count
+        append_u32(&mut gff, 68); // field offset
+        append_u32(&mut gff, 2); // field count
+        append_u32(&mut gff, 92); // label offset
+        append_u32(&mut gff, 2); // label count
+        append_u32(&mut gff, 124); // field-data offset
+        append_u32(&mut gff, 0); // field-data count
+        append_u32(&mut gff, 124); // field-indices offset
+        append_u32(&mut gff, 12); // three DWORD entries
+        append_u32(&mut gff, 136); // list-indices offset
+        append_u32(&mut gff, 0); // list-indices count
+
+        append_u32(&mut gff, 0xFFFF_FFFF); // root struct type
+        append_u32(&mut gff, 0); // field-index byte offset
+        append_u32(&mut gff, 3); // legacy count includes one invalid tail id
+
+        append_u32(&mut gff, 0); // BYTE field type
+        append_u32(&mut gff, 0); // label index
+        append_u32(&mut gff, 7); // scalar value
+        append_u32(&mut gff, 0); // BYTE field type
+        append_u32(&mut gff, 1); // label index
+        append_u32(&mut gff, 9); // scalar value
+
+        let mut label = [0_u8; 16];
+        label[..3].copy_from_slice(b"One");
+        gff.extend_from_slice(&label);
+        let mut label = [0_u8; 16];
+        label[..3].copy_from_slice(b"Two");
+        gff.extend_from_slice(&label);
+
+        append_u32(&mut gff, 0);
+        append_u32(&mut gff, 1);
+        append_u32(&mut gff, 999);
+        assert_eq!(gff.len(), 136);
+
+        let summary = canonicalize_bic_gff(&gff)
+            .expect("legacy invalid field-index tail should canonicalize by truncating the tail");
+        assert_eq!(summary.clamped_struct_field_ranges, 1);
+        let canonical = summary
+            .bytes
+            .expect("field-index tail truncation must rewrite the BIC");
+        assert_eq!(read_u32(&canonical, 64).unwrap(), 2);
+        assert_eq!(read_u32(&canonical, 44).unwrap(), 8);
+        assert_eq!(rewritten_layout_size(read_gff_layout(&canonical).unwrap().0).unwrap(), 132);
     }
 }

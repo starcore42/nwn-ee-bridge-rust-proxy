@@ -151,3 +151,4 @@ still experimental, not a finished public content pipeline.
 - Split quickbar and live-object inventory translation into smaller modules, with new M-frame stream state and continuation helpers.
 - Added gameplay stream splitting, quickbar fixture scaffolding, and verified-family continuation validation refinements.
 - Expanded live-object, quickbar, client-input, and character-list proxy validation with new fixture-backed translators.
+- Added deferred module-resource/login waypoint handling, broader asset-profile tooling, more live-object/quickbar capture coverage, and refined EE item-create matching.

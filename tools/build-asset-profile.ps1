@@ -433,6 +433,85 @@ function Patch-TileBlockLine {
     }
 }
 
+function Get-2daClassPackageReferences {
+    param(
+        [string]$Text,
+        [string[]]$Columns
+    )
+
+    $lines = $Text -split "\r?\n"
+    $headerIndex = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $trimmed = $lines[$i].Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed -ieq "2DA V2.0") {
+            continue
+        }
+        $headerIndex = $i
+        break
+    }
+    if ($headerIndex -lt 0) {
+        throw "classes.2da has no header row"
+    }
+
+    $headers = @($lines[$headerIndex].Trim() -split "\s+")
+    $columnIndexes = @{}
+    foreach ($column in $Columns) {
+        for ($i = 0; $i -lt $headers.Count; $i++) {
+            if ($headers[$i] -ieq $column) {
+                $columnIndexes[$column] = $i
+                break
+            }
+        }
+        if (-not $columnIndexes.ContainsKey($column)) {
+            throw "classes.2da does not contain requested package column '$column'"
+        }
+    }
+
+    $references = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    for ($lineIndex = $headerIndex + 1; $lineIndex -lt $lines.Count; $lineIndex++) {
+        $line = $lines[$lineIndex].Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("//")) {
+            continue
+        }
+        $cells = @($line -split "\s+")
+        if ($cells.Count -lt 2 -or $cells[0] -notmatch '^\d+$') {
+            continue
+        }
+
+        foreach ($column in $Columns) {
+            # Data rows include the numeric 2DA row id before the first header
+            # column, so header index N maps to cell N+1.
+            $cellIndex = [int]$columnIndexes[$column] + 1
+            if ($cellIndex -ge $cells.Count) {
+                continue
+            }
+            $value = $cells[$cellIndex]
+            if ([string]::IsNullOrWhiteSpace($value) -or $value -eq "****") {
+                continue
+            }
+            if ($value -like "CLS_*") {
+                [void]$references.Add($value.ToUpperInvariant())
+            }
+        }
+    }
+    return $references
+}
+
+function New-EmptyClassPackage2daText {
+    param([string]$ResourceName)
+
+    $upper = ([System.IO.Path]::GetFileNameWithoutExtension($ResourceName)).ToUpperInvariant()
+    $columns = switch -Regex ($upper) {
+        '^CLS_SKILL_' { "SkillIndex"; break }
+        '^CLS_FEAT_' { "FeatIndex"; break }
+        '^CLS_BFEAT_' { "FeatIndex"; break }
+        '^CLS_PRES_' { "ReqType ReqParam1 ReqParam2"; break }
+        default { "Value"; break }
+    }
+
+    return "2DA V2.0`r`n`r`n        $columns`r`n"
+}
+
 function Apply-CompatibilityFixes {
     param(
         [object]$Profile,
@@ -448,6 +527,51 @@ function Apply-CompatibilityFixes {
     }
 
     foreach ($fix in $Profile.compatibilityFixes) {
+        if ($fix.kind -eq "generatedMissingClassPackage2das") {
+            $sourceHak = Find-StagedFile -FileName $fix.sourceHak -Roots $LookupRoots
+            if (-not $sourceHak) {
+                throw "Could not find source HAK '$($fix.sourceHak)' for compatibility fix '$($fix.id)'"
+            }
+
+            $sourceResource = if ($fix.sourceResource) { [string]$fix.sourceResource } else { "classes.2da" }
+            $bytes = Read-ErfResource -ContainerPath $sourceHak -ResourceName $sourceResource
+            $encoding = [System.Text.Encoding]::GetEncoding(1252)
+            $references = Get-2daClassPackageReferences -Text ($encoding.GetString($bytes)) -Columns ([string[]]$fix.resourceColumns)
+
+            $generated = @()
+            foreach ($resourceName in ([string[]]$fix.resourceNames)) {
+                $upper = ([System.IO.Path]::GetFileNameWithoutExtension($resourceName)).ToUpperInvariant()
+                if (-not $references.Contains($upper)) {
+                    throw "Compatibility fix '$($fix.id)' asked to generate '$upper', but '$sourceResource' in '$sourceHak' does not reference it."
+                }
+
+                $fileName = "$($upper.ToLowerInvariant()).2da"
+                $text = New-EmptyClassPackage2daText -ResourceName $fileName
+                $sourceOut = Join-Path $FixRoot "sources\generated-class-package-2das\$fileName"
+                $overrideOut = Join-Path $StageRoot "override\$fileName"
+                Ensure-Directory (Split-Path -Parent $sourceOut)
+                Ensure-Directory (Split-Path -Parent $overrideOut)
+                if ($Force -or -not (Test-Path -LiteralPath $sourceOut)) {
+                    [System.IO.File]::WriteAllBytes($sourceOut, ([System.Text.Encoding]::ASCII.GetBytes($text)))
+                }
+                Link-Or-Copy -Source $sourceOut -Destination $overrideOut -Force:$Force
+                $generated += [pscustomobject]@{
+                    resource = $fileName
+                    stagedPath = $overrideOut
+                    sha256 = Get-FileSha256 $overrideOut
+                }
+            }
+
+            $outputs += [pscustomobject]@{
+                id = $fix.id
+                sourceHak = $sourceHak
+                sourceResource = $sourceResource
+                generated = $generated
+                evidence = $fix.evidence
+            }
+            continue
+        }
+
         if ($fix.kind -ne "erfTextResourcePatch") {
             throw "Unsupported compatibility fix kind '$($fix.kind)' in profile '$($Profile.id)'"
         }
@@ -670,7 +794,13 @@ if (-not $SkipNwsync -and $Apply) {
     Ensure-Directory $repoRoot
 
     $specs = New-Object System.Collections.Generic.List[string]
-    $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
+# Profiles declare the module/HAK list in the same top-first order Diamond
+# stores in module metadata. Diamond activates that list from the end back
+# toward the front, while `nwsync_write --help` documents that later specs
+# shadow earlier specs. Feed NWSync the profile-derived reverse order so the
+# final/highest-precedence HAK remains the same without hard-coding any HG
+# server-specific ordering in the builder.
+$hakOrderBottomFirst = @($profile.hakOrderTopFirst)
     [array]::Reverse($hakOrderBottomFirst)
     foreach ($hak in $hakOrderBottomFirst) {
         $path = Join-Path $stageRoot "hak\$hak.hak"

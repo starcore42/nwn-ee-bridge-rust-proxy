@@ -275,6 +275,7 @@ fn try_handle_http_client(stream: &mut TcpStream, root: &Path) -> anyhow::Result
     let len = stream.read(&mut request)?;
     let text = String::from_utf8_lossy(&request[..len]);
     let Some(first_line) = text.lines().next() else {
+        tracing::warn!(status = 400u16, "NWSync HTTP malformed empty request");
         write_response(stream, 400, "Bad Request", b"", false)?;
         return Ok(());
     };
@@ -282,20 +283,48 @@ fn try_handle_http_client(stream: &mut TcpStream, root: &Path) -> anyhow::Result
     let method = parts.next().unwrap_or_default();
     let raw_path = parts.next().unwrap_or_default();
     if method != "GET" && method != "HEAD" {
+        tracing::warn!(
+            method,
+            raw_path,
+            status = 405u16,
+            "NWSync HTTP rejected unsupported method"
+        );
         write_response(stream, 405, "Method Not Allowed", b"", false)?;
         return Ok(());
     }
 
     let Some(relative) = sanitize_http_path(raw_path) else {
+        tracing::warn!(
+            method,
+            raw_path,
+            status = 400u16,
+            "NWSync HTTP rejected unsafe path"
+        );
         write_response(stream, 400, "Bad Request", b"", false)?;
         return Ok(());
     };
     let path = root.join(relative);
     if !path.is_file() {
+        tracing::warn!(
+            method,
+            raw_path,
+            resolved = %path.display(),
+            status = 404u16,
+            "NWSync HTTP missing repository object"
+        );
         write_response(stream, 404, "Not Found", b"", false)?;
         return Ok(());
     }
     let body = fs::read(&path)?;
+    tracing::info!(
+        method,
+        raw_path,
+        resolved = %path.display(),
+        status = 200u16,
+        bytes = body.len(),
+        headers_only = method == "HEAD",
+        "NWSync HTTP served repository object"
+    );
     write_response(stream, 200, "OK", &body, method == "HEAD")?;
     Ok(())
 }

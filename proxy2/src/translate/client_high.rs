@@ -10,7 +10,8 @@ use crate::{
     packet::m::HighLevel,
     translate::{
         client_area, client_char_list, client_gui_inventory, client_input, client_login,
-        client_module, client_server_status, party, play_module_character_list,
+        client_module, client_quickbar, client_server_status, party, play_module_character_list,
+        VerifiedFamily,
     },
 };
 
@@ -18,6 +19,7 @@ use crate::{
 pub struct ClientHighClaimSummary {
     pub family_name: &'static str,
     pub packet_name: &'static str,
+    pub verified_family: VerifiedFamily,
 }
 
 pub fn claim_or_rewrite_payload_if_verified(
@@ -29,30 +31,35 @@ pub fn claim_or_rewrite_payload_if_verified(
         return Some(ClientHighClaimSummary {
             family_name: "ClientServerStatus",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientServerStatus,
         });
     }
     if let Some(summary) = client_char_list::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientCharList",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientCharList,
         });
     }
     if let Some(summary) = play_module_character_list::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "PlayModuleCharacterList",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::PlayModuleCharacterList,
         });
     }
     if let Some(summary) = client_login::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientLogin",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientLogin,
         });
     }
     if let Some(summary) = client_module::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientModule",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientModule,
         });
     }
     if let Some(summary) = client_gui_inventory::claim_or_rewrite_payload_if_verified(payload) {
@@ -64,6 +71,7 @@ pub fn claim_or_rewrite_payload_if_verified(
         return Some(ClientHighClaimSummary {
             family_name: "ClientGuiInventory",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientGuiInventory,
         });
     }
     if let Some(summary) = client_input::claim_payload_if_verified(payload) {
@@ -77,18 +85,35 @@ pub fn claim_or_rewrite_payload_if_verified(
         return Some(ClientHighClaimSummary {
             family_name: "ClientInput",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientInput,
+        });
+    }
+    if let Some(summary) = client_quickbar::claim_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = summary.packet_name,
+            slot = summary.slot,
+            button_type = summary.button_type,
+            body_kind = ?summary.body_kind,
+            "client GuiQuickbar_SetButton payload validated as Diamond/1.69 receiver-compatible"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientQuickbar",
+            packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientQuickbar,
         });
     }
     if let Some(summary) = client_area::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientArea",
             packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientArea,
         });
     }
     if let Some(_summary) = party::claim_payload_if_verified(payload) {
         return Some(ClientHighClaimSummary {
             family_name: "ClientParty",
             packet_name: high.name(),
+            verified_family: VerifiedFamily::ClientParty,
         });
     }
 

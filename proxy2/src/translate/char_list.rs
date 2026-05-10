@@ -157,7 +157,18 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
     }
 
     let bic = payload.get(bic_offset..declared)?;
-    let canonical = gff::canonicalize_bic_gff(bic).ok()?;
+    let canonical = match gff::canonicalize_bic_gff(bic) {
+        Ok(summary) => summary,
+        Err(reason) => {
+            tracing::warn!(
+                declared,
+                old_bic_size,
+                reason = %reason,
+                "CharList_UpdateCharResponse BIC GFF rejected by exact canonicalizer"
+            );
+            return None;
+        }
+    };
     let Some(canonical_bic) = canonical.bytes else {
         return Some(CharListClaimSummary {
             kind: CharListClaimKind::UpdateCharResponse,
@@ -261,4 +272,52 @@ fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     let target = bytes.get_mut(offset..offset.checked_add(CNW_LENGTH_BYTES)?)?;
     target.copy_from_slice(&value.to_le_bytes());
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starcore5_update_response_fixture_canonicalizes_sparse_bic() {
+        let mut payload = include_bytes!(
+            "../../fixtures/char_list/starcore5_update_char_response_sparse_bic.bin"
+        )
+        .to_vec();
+        let old_len = payload.len();
+
+        let summary = match claim_payload_if_verified(&mut payload) {
+            Some(summary) => summary,
+            None => {
+                let declared = usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap())
+                    .unwrap();
+                let bic_size_offset = HIGH_LEVEL_HEADER_BYTES
+                    + CNW_LENGTH_BYTES
+                    + UPDATE_RESPONSE_STATUS_BYTES
+                    + C_RESREF_TEXT_BYTES;
+                let bic_offset = bic_size_offset + UPDATE_RESPONSE_BIC_SIZE_BYTES;
+                let old_bic_size = usize::try_from(read_le_u32(&payload, bic_size_offset).unwrap())
+                    .unwrap();
+                let reason = gff::canonicalize_bic_gff(&payload[bic_offset..declared])
+                    .err()
+                    .unwrap_or_else(|| "outer CharList envelope rejected after GFF accepted".into());
+                panic!(
+                    "captured Starcore5 UpdateCharResponse should be claimed: bic_size={old_bic_size} reason={reason}"
+                );
+            }
+        };
+
+        assert_eq!(summary.kind, CharListClaimKind::UpdateCharResponse);
+        assert_eq!(summary.old_bic_size, 45_255);
+        assert!(summary.bic_rewritten);
+        assert!(summary.new_bic_size < summary.old_bic_size);
+        assert!(payload.len() < old_len);
+
+        let mut second_pass = payload.clone();
+        let second = claim_payload_if_verified(&mut second_pass)
+            .expect("canonicalized UpdateCharResponse should still validate exactly");
+        assert_eq!(second.kind, CharListClaimKind::UpdateCharResponse);
+        assert!(!second.bic_rewritten);
+        assert_eq!(second.old_bic_size, summary.new_bic_size);
+    }
 }

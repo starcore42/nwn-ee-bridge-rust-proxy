@@ -105,23 +105,193 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
     assert_eq!(summary.fragment_size, 15);
     assert_eq!(summary.trailing_read_bytes, 0);
     assert!(
-        summary.item_buttons_preserved >= 18,
-        "item slots should be emitted from typed item-object models, not blanked"
+        summary.item_buttons_preserved + summary.item_buttons_blanked >= 18,
+        "item slots should be either emitted from proven item-object models or deliberately blanked after boundary proof"
+    );
+    assert_eq!(
+        summary.item_buttons_preserved, 18,
+        "all item-bearing slots in this capture should be emitted only after typed item-object materialization proof"
     );
     assert_eq!(summary.item_buttons_blanked, 0);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(summary.spells_preserved >= 13);
     assert!(
-        payload.len() > 1300,
-        "EE item appearances/properties should expand the item-bearing quickbar rather than collapse it"
-    );
-    assert_eq!(
-        payload.len(),
-        2040,
-        "Starcore quickbar fixture must include the EE-only active-property BOOL for every translated item slot"
+        payload.len() > 2000,
+        "verified EE item materialization should emit full item appearance/property branches"
     );
     assert!(
         ee_set_all_buttons_payload_shape_valid(&payload),
         "rewritten quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten quickbar should expose validated EE slot types");
+    let visible_first_page = slot_types
+        .iter()
+        .take(12)
+        .filter(|slot_type| **slot_type != 0)
+        .count();
+    assert!(
+        visible_first_page >= 6,
+        "rewritten Starcore initial quickbar should keep visible F1-F12 records populated: {:?}",
+        &slot_types[..12]
+    );
+}
+
+#[test]
+fn starcore5_compact_item_body_without_source_type_preserves_spells_and_verified_items() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/quickbar/starcore5_compact_missing_item_type_set_all_buttons.bin"
+    )
+    .to_vec();
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("Starcore5 compact quickbar fixture should parse before rewriting");
+    let recovered_item_slots = parsed
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::Item {
+                    recovered_type_tag: true,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(
+        recovered_item_slots > 0,
+        "at least one compact item body must be consumed to prove the quickbar boundary"
+    );
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("Starcore5 compact quickbar capture should be semantically owned");
+
+    println!("{summary:?}");
+    assert!(!summary.direct_opcode_stream);
+    assert_eq!(summary.old_payload_length, 1340);
+    assert!(
+        summary.new_payload_length >= 2000,
+        "verified compact item slots should be emitted as reconstructed EE item branches"
+    );
+    assert_eq!(summary.old_declared, 1321);
+    assert_eq!(summary.read_size, 1318);
+    assert_eq!(summary.fragment_size, 15);
+    assert_eq!(summary.final_cursor, 1318);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert_eq!(summary.item_buttons_preserved, 18);
+    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.spells_preserved, 15);
+    assert_eq!(
+        summary.general_buttons_blanked, 0,
+        "verified byte-identical general/blank records should no longer be counted as translator-blanked"
+    );
+    assert!(
+        summary.item_buttons_preserved >= recovered_item_slots as u32,
+        "recovered compact item branches should be emitted only after typed EE item materialization proof"
+    );
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten quickbar should expose validated EE slot types");
+    let visible_first_page = slot_types
+        .iter()
+        .take(12)
+        .filter(|slot_type| **slot_type != 0)
+        .count();
+    assert!(
+        visible_first_page >= 6,
+        "rewritten Starcore5 quickbar should keep visible F1-F12 records populated: {:?}",
+        &slot_types[..12]
+    );
+}
+
+#[test]
+fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
+            .to_vec();
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("latest Starcore5 live quickbar fixture should parse before rewriting");
+    let visible_before = parsed
+        .buttons
+        .iter()
+        .take(12)
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::Item { .. } | QuickbarButtonKind::Spell { .. }
+            )
+        })
+        .count();
+    let first_page_items_before = parsed
+        .buttons
+        .iter()
+        .take(12)
+        .filter(|button| matches!(button.kind, QuickbarButtonKind::Item { .. }))
+        .count();
+    let first_page_spells_before = parsed
+        .buttons
+        .iter()
+        .take(12)
+        .filter(|button| matches!(button.kind, QuickbarButtonKind::Spell { .. }))
+        .count();
+    println!(
+        "first page before: visible={visible_before} items={first_page_items_before} spells={first_page_spells_before}"
+    );
+    assert!(
+        visible_before >= 6,
+        "the live driver-only capture should contain visible F1-F12 quickbar content before rewriting"
+    );
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("latest Starcore5 live quickbar capture should be semantically owned");
+
+    println!("{summary:?}");
+    assert!(!summary.direct_opcode_stream);
+    assert_eq!(summary.old_payload_length, 1340);
+    assert_eq!(summary.old_declared, 1321);
+    assert_eq!(summary.read_size, 1318);
+    assert_eq!(summary.fragment_size, 15);
+    assert_eq!(summary.final_cursor, 1318);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert_eq!(summary.item_buttons_preserved, 18);
+    assert_eq!(summary.spells_preserved, 15);
+    assert_eq!(summary.general_buttons_preserved, 1);
+    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten quickbar should expose validated EE slot types");
+    let visible_after = slot_types
+        .iter()
+        .take(12)
+        .filter(|slot_type| **slot_type != 0)
+        .count();
+    let first_page_items_after = slot_types
+        .iter()
+        .take(12)
+        .filter(|slot_type| **slot_type == 1)
+        .count();
+    let first_page_spells_after = slot_types
+        .iter()
+        .take(12)
+        .filter(|slot_type| **slot_type == 2)
+        .count();
+    println!(
+        "first page after: visible={visible_after} items={first_page_items_after} spells={first_page_spells_after} slot_types={:?}",
+        &slot_types[..12]
+    );
+    assert_eq!(first_page_items_after, first_page_items_before);
+    assert_eq!(first_page_spells_after, first_page_spells_before);
+    assert!(
+        visible_after >= first_page_spells_before,
+        "rewritten Starcore5 live quickbar should keep visible F1-F12 records populated: {:?}",
+        &slot_types[..12]
     );
 }

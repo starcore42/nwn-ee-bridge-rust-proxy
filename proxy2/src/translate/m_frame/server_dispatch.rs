@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-use super::{live_update, parse_window};
+use super::{deferred_module_resources, live_update, parse_window};
 use std::{
     fs,
     path::PathBuf,
@@ -202,6 +202,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "GameObjUpdate_LiveObjectPrefixedFragments",
         verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
         translate: translate_live_object_prefixed_fragments,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectDeclaredLengthRepair",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_declared_length_repair,
     },
     ServerToClientTranslator {
         family_name: "GameObjUpdate_LiveObjectExactRecords",
@@ -688,8 +693,31 @@ fn translate_live_object_prefixed_fragments(
         latest_area_placeables,
     );
     let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    // Update translation can shrink conservative legacy `U` record windows and
+    // expose following `A` door/placeable records that were intentionally not
+    // split while the update shape was still unproven. Run the same exact
+    // add-record translator once more after update finalization; this is not a
+    // passthrough fallback, it is the focused add-family owner claiming records
+    // that become visible only after the update-family owner has emitted EE.
+    let _ = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate);
+    // Add-name bit repair can expose following records at their final EE bit
+    // cursor. Re-run the exact add/update translators after that repair so
+    // ownership remains typed instead of treating the adjusted payload as a
+    // raw/passive frame.
+    let _ = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut candidate,
+        latest_area_placeables,
+    );
+    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
     if live_update::claim_payload_if_verified(&candidate).is_some() {
+        dump_accepted_live_object_payload_if_enabled(
+            &candidate,
+            "accepted-live-object-prefixed-fragments",
+        );
         *payload = candidate;
         claimed()
     } else {
@@ -706,6 +734,55 @@ fn translate_live_object_prefixed_fragments(
         );
         ServerTranslatorOutcome::None
     }
+}
+
+fn translate_live_object_declared_length_repair(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    // Decompile-backed transport repair, not a passthrough fallback:
+    // EE reaches live-object handling through `P 05 01`, then calls
+    // `CNWMessage::SetReadMessage` with the declared byte window and reads the
+    // compact BOOL fragment stream from the remaining tail. Some HG/1.69 bursts
+    // carry a stale packetized declared value that lands inside an otherwise
+    // legal live-object `A/U/W/...` read stream. The candidate search only
+    // proposes possible read-window/tail splits; this translator claims a packet
+    // only after the focused live-object semantic rewriters and exact validator
+    // accept the fully repaired payload.
+    for repair in live_object::declared_length_repair_candidates(payload) {
+        let mut candidate = payload.clone();
+        let Some(declared_slot) = candidate.get_mut(3..7) else {
+            continue;
+        };
+        declared_slot.copy_from_slice(&repair.new_declared.to_le_bytes());
+
+        let claimed_by_rewrite = matches!(
+            translate_live_object_records_if_verified(
+                &mut candidate,
+                latest_area_placeables,
+                "live-object-declared-length-repair",
+            ),
+            ServerTranslatorOutcome::Claim(_)
+        );
+        let exact_claim = live_update::claim_payload_if_verified(&candidate).is_some();
+        if claimed_by_rewrite || exact_claim {
+            tracing::info!(
+                old_declared = repair.old_declared,
+                repaired_declared = repair.new_declared,
+                old_payload_length = repair.old_payload_length,
+                read_bytes = repair.read_bytes_length,
+                fragment_bytes = repair.fragment_bytes_length,
+                changed_by_semantic_rewrite = claimed_by_rewrite,
+                "server live-object declared length repaired by exact semantic proof in dispatch"
+            );
+            *payload = candidate;
+            return claimed();
+        }
+    }
+
+    ServerTranslatorOutcome::None
 }
 
 fn translate_live_object_add_records(
@@ -728,6 +805,7 @@ fn translate_live_object_exact_records(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if live_update::claim_payload_if_verified(payload).is_some() {
+        dump_accepted_live_object_payload_if_enabled(payload, "accepted-live-object-exact-records");
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -748,59 +826,76 @@ fn translate_live_object_records_if_verified(
     let update_post_summary = live_update::rewrite_payload_if_needed(&mut candidate);
     let add_name_bit_summary =
         live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate);
+    let add_after_add_name_summary =
+        live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut candidate,
+            latest_area_placeables,
+        );
+    let update_after_add_name_summary = live_update::rewrite_payload_if_needed(&mut candidate);
 
     if add_summary.is_none()
         && update_pre_summary.is_none()
         && update_post_summary.is_none()
         && add_name_bit_summary.is_none()
+        && add_after_add_name_summary.is_none()
+        && update_after_add_name_summary.is_none()
     {
         return ServerTranslatorOutcome::None;
     }
 
     if live_update::claim_payload_if_verified(&candidate).is_some() {
+        dump_accepted_live_object_payload_if_enabled(&candidate, source);
         *payload = candidate;
         claimed()
     } else {
         let (add_records_examined, maps_inserted, add_bytes_inserted, add_bytes_removed) =
-            [add_summary.as_ref()].into_iter().flatten().fold(
-                (0u32, 0u32, 0u32, 0u32),
-                |acc, summary| {
+            [add_summary.as_ref(), add_after_add_name_summary.as_ref()]
+                .into_iter()
+                .flatten()
+                .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
                     (
                         acc.0.saturating_add(summary.records_examined),
                         acc.1.saturating_add(summary.maps_inserted),
                         acc.2.saturating_add(summary.bytes_inserted),
                         acc.3.saturating_add(summary.bytes_removed),
                     )
-                },
-            );
+                });
         let (
             update_records_examined,
             update_records_rewritten,
             update_bytes_inserted,
             update_bytes_removed,
-        ) = [update_pre_summary.as_ref(), update_post_summary.as_ref()]
-            .into_iter()
-            .flatten()
-            .map(|summary| {
-                (
-                    summary.update_records_examined,
-                    summary.update_records_rewritten,
-                    summary.bytes_inserted,
-                    summary.bytes_removed,
-                )
-            })
-            .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
-                (
-                    acc.0.saturating_add(summary.0),
-                    acc.1.saturating_add(summary.1),
-                    acc.2.saturating_add(summary.2),
-                    acc.3.saturating_add(summary.3),
-                )
-            });
+        ) = [
+            update_pre_summary.as_ref(),
+            update_post_summary.as_ref(),
+            update_after_add_name_summary.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|summary| {
+            (
+                summary.update_records_examined,
+                summary.update_records_rewritten,
+                summary.bytes_inserted,
+                summary.bytes_removed,
+            )
+        })
+        .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
+            (
+                acc.0.saturating_add(summary.0),
+                acc.1.saturating_add(summary.1),
+                acc.2.saturating_add(summary.2),
+                acc.3.saturating_add(summary.3),
+            )
+        });
         tracing::debug!(
             source,
-            add_changed = add_summary.is_some() || add_name_bit_summary.is_some(),
-            update_changed = update_pre_summary.is_some() || update_post_summary.is_some(),
+            add_changed = add_summary.is_some()
+                || add_after_add_name_summary.is_some()
+                || add_name_bit_summary.is_some(),
+            update_changed = update_pre_summary.is_some()
+                || update_post_summary.is_some()
+                || update_after_add_name_summary.is_some(),
             add_records_examined,
             maps_inserted,
             add_bytes_inserted,
@@ -813,6 +908,13 @@ fn translate_live_object_records_if_verified(
         );
         ServerTranslatorOutcome::None
     }
+}
+
+fn dump_accepted_live_object_payload_if_enabled(payload: &[u8], source: &str) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DUMP_ACCEPTED_LIVE_OBJECT").is_none() {
+        return;
+    }
+    crate::translate::live_object_update::dump_live_object_fixture_candidate(payload, source);
 }
 
 fn translate_live_object_update_records(
@@ -880,12 +982,36 @@ fn translate_module_info(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
-    _: Option<&module_resources::ModuleResourceRuntime>,
+    module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if !matches!(scope, SemanticScope::DeflatedReassembly) {
         return ServerTranslatorOutcome::None;
     }
-    if module::rewrite_module_info_payload(payload).is_some() {
+    let mut candidate = payload.clone();
+    if let Some(summary) = module::rewrite_module_info_payload(&mut candidate) {
+        if let Some(runtime) = module_resource_runtime {
+            if !runtime.observe_legacy_module_info_resources(
+                &summary.hak_order_top_first,
+                summary.custom_tlk.as_deref(),
+            ) {
+                tracing::warn!(
+                    hak_count = summary.hak_count,
+                    hak_order_top_first = ?summary.hak_order_top_first,
+                    custom_tlk = summary.custom_tlk.as_deref().unwrap_or(""),
+                    "server Module_Info resource declaration was not accepted by runtime"
+                );
+                return ServerTranslatorOutcome::None;
+            }
+        }
+        *payload = candidate;
+        tracing::info!(
+            hak_count = summary.hak_count,
+            hak_order_top_first = ?summary.hak_order_top_first,
+            custom_tlk = summary.custom_tlk.as_deref().unwrap_or(""),
+            custom_tlk_converted_to_resref = summary.custom_tlk_converted_to_resref,
+            module_resref = summary.module_resref.as_deref().unwrap_or(""),
+            "server Module_Info legacy resource declaration recorded for EE module resources"
+        );
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -1028,6 +1154,16 @@ pub(super) fn rewrite_direct_frame_if_needed(
             packet: rewritten,
         }));
     }
+    if let Some(consumed) = consume_deferred_server_status_module_running_frame_if_needed(
+        bytes,
+        view,
+        module_resource_runtime,
+    )? {
+        return Ok(Some(VerifiedPacket {
+            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+            packet: consumed,
+        }));
+    }
     // Keep direct `GameObjUpdate_LiveObject` frames on the same strict path as
     // deflated/coalesced gameplay payloads. A legacy live-object frame can mix
     // compact `A` add records with translated `U` update records; update-only
@@ -1095,30 +1231,55 @@ fn rewrite_direct_semantic_frame_if_claimed(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_length_repair_claims_stale_live_object_fixture() {
+        let mut payload =
+            include_bytes!("../../../fixtures/live_object/docks_placeable_boards_stale_declared.bin")
+                .to_vec();
+        let area_context = area::AreaPlaceableContext {
+            area_resref: "zdl_docks".to_string(),
+            static_rows: vec![area::AreaPlaceableContextRow {
+                object_id: 0x8000_35C8,
+                appearance: 0x0E60,
+                x: 89.0,
+                y: 9.0,
+                z: 0.8,
+                dir_x: 0.0,
+                dir_y: -1.0,
+                dir_z: 0.0,
+                has_direction: true,
+            }],
+            light_rows: Vec::new(),
+        };
+
+        let outcome = translate_live_object_declared_length_repair(
+            &mut payload,
+            Some(&area_context),
+            SemanticScope::CoalescedSpan,
+            None,
+        );
+
+        assert!(matches!(outcome, ServerTranslatorOutcome::Claim(_)));
+        let claim = live_update::claim_payload_if_verified(&payload)
+            .expect("declared-length repaired payload should be exact live-object shape");
+        let emitted_declared = u32::from_le_bytes(payload[3..7].try_into().unwrap()) as usize;
+        assert_eq!(claim.declared, emitted_declared);
+        assert!(claim.add_records > 0);
+        assert!(claim.update_records > 0);
+    }
+}
+
 fn consume_untranslated_direct_frame(
     bytes: &[u8],
     view: &MFrameView,
     high: HighLevel,
     reason: &'static str,
 ) -> anyhow::Result<Vec<u8>> {
-    if view.uses_extended_packet_length {
-        anyhow::bail!("cannot consume untranslated extended-length direct M frame yet");
-    }
-
-    let mut rewritten = bytes.to_vec();
-    rewritten.truncate(crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
-    if rewritten.len() > 7 {
-        // This is a semantic quarantine shell, not a packetized payload. Keep
-        // the sequence/ack bytes intact, but clear stream/packetized/deflate
-        // delivery bits before setting the payload length to zero.
-        rewritten[7] &= !0x07;
-    }
-    write_be_u16(&mut rewritten, 10, 0)
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("failed to clear untranslated direct M payload length"))?;
-    encode_legacy_m_crc(&mut rewritten)
-        .then_some(())
-        .ok_or_else(|| anyhow::anyhow!("failed to repair untranslated direct M CRC"))?;
+    let rewritten = build_consumed_empty_direct_frame(bytes, view)?;
 
     tracing::warn!(
         reason,
@@ -1134,6 +1295,75 @@ fn consume_untranslated_direct_frame(
         "server direct M frame quarantined: semantic translator did not claim required family"
     );
 
+    Ok(rewritten)
+}
+
+fn consume_deferred_server_status_module_running_frame_if_needed(
+    bytes: &[u8],
+    view: &MFrameView,
+    module_resource_runtime: &module_resources::ModuleResourceRuntime,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(high) = view.high else {
+        return Ok(None);
+    };
+    if high.major != 0x01 || high.minor != 0x03 || view.payload_length == 0 {
+        return Ok(None);
+    }
+
+    let Some(payload) = parse_window::primary_payload(bytes, view) else {
+        return Ok(None);
+    };
+
+    // If runtime already has Module_Info's HAK/TLK declaration, the immediate
+    // ServerStatus_ModuleResources translator above should own and emit this
+    // packet. This path is only for the startup gap where the focused deferred
+    // module has captured the legacy short status shape and will emit a verified
+    // EE resource packet after Module_Info arrives.
+    let mut immediate_probe = payload.to_vec();
+    if module_resources::rewrite_server_status_module_resources_payload(
+        &mut immediate_probe,
+        module_resource_runtime,
+    )
+    .is_some()
+    {
+        return Ok(None);
+    }
+
+    let Some(shape) = deferred_module_resources::LegacyStatusShape::parse(payload) else {
+        return Ok(None);
+    };
+
+    let rewritten = build_consumed_empty_direct_frame(bytes, view)?;
+    tracing::info!(
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        declared = shape.declared,
+        status_string_len = shape.status_string_len,
+        fragment_tail_len = shape.fragment_tail_len,
+        "server ServerStatus_ModuleRunning consumed as verified deferred module-resource status"
+    );
+    Ok(Some(rewritten))
+}
+
+fn build_consumed_empty_direct_frame(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+    if view.uses_extended_packet_length {
+        anyhow::bail!("cannot consume extended-length direct M frame yet");
+    }
+
+    let mut rewritten = bytes.to_vec();
+    rewritten.truncate(crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
+    if rewritten.len() > 7 {
+        // This is a semantic consumption shell, not a packetized payload. Keep
+        // the sequence/ack bytes intact, but clear stream/packetized/deflate
+        // delivery bits before setting the payload length to zero.
+        rewritten[7] &= !0x07;
+    }
+    write_be_u16(&mut rewritten, 10, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear consumed direct M payload length"))?;
+    encode_legacy_m_crc(&mut rewritten)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair consumed direct M CRC"))?;
     Ok(rewritten)
 }
 
@@ -1173,6 +1403,8 @@ fn rewrite_server_status_module_resources_frame_if_needed(
         new_payload_length = summary.new_payload_length,
         status_module_name = %summary.status_module_name,
         profile_name = summary.profile_name,
+        resource_source = summary.resource_source,
+        custom_tlk = summary.custom_tlk.as_deref().unwrap_or(""),
         hak_count = summary.hak_count,
         nwsync_advertised = summary.nwsync_advertised,
         "server ServerStatus_ModuleRunning module resources rewritten for EE"

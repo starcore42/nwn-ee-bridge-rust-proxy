@@ -6,7 +6,7 @@
 
 use super::{
     LEGACY_UPDATE_HEADER_BYTES, MAX_LIVE_OBJECT_NAME_BYTES, read_u32_le,
-    record::door_placeable_update_name_cursor,
+    record::door_placeable_legacy_inline_name_cursor,
 };
 
 pub(super) fn legacy_live_update_name_payload_ready(
@@ -20,7 +20,7 @@ pub(super) fn legacy_live_update_name_payload_ready(
     let Some(raw_mask) = read_u32_le(bytes, record_offset + 6) else {
         return false;
     };
-    let legacy_name_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
+    let legacy_name_offset = door_placeable_legacy_inline_name_cursor(record_offset, raw_mask);
     inline_cexo_string_end(bytes, legacy_name_offset)
         .map(|end| end <= record_end)
         .unwrap_or(false)
@@ -55,6 +55,24 @@ pub(super) fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usiz
         .all(|byte| matches!(*byte, 0x20..=0x7E | b'\t'))
     {
         Some(end)
+    } else {
+        None
+    }
+}
+
+pub(super) fn tlk_locstring_ref_end(bytes: &[u8], offset: usize) -> Option<usize> {
+    const TLK_LOCSTRING_REF_BYTES: usize = 1 + 4;
+    if bytes.len().saturating_sub(offset) < TLK_LOCSTRING_REF_BYTES {
+        return None;
+    }
+
+    // EE's shared client locstring reader (`sub_1409735F0`) consumes an inner
+    // BOOL. When that BOOL is true it reads `ReadBYTE(1, 1)` followed by
+    // `ReadDWORD(32)` instead of an inline CExoString. The byte is the observed
+    // client TLK selector in HG captures; keeping it to 0/1 avoids turning this
+    // into an arbitrary non-string byte escape hatch.
+    if matches!(bytes[offset], 0 | 1) && read_u32_le(bytes, offset + 1).is_some() {
+        Some(offset + TLK_LOCSTRING_REF_BYTES)
     } else {
         None
     }

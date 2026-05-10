@@ -256,6 +256,7 @@ impl HighLevel {
             (0x02, 0x05) => "Login_Confirm",
             (0x02, 0x0A) => "Login_CharacterQuery",
             (0x02, 0x0C) => "Login_GetWaypoint",
+            (0x02, 0x0D) => "Login_WaypointResponse",
             (0x02, 0x10) => "Login_NeedCharacter",
             (0x02, 0x11) => "Login_ServerSubDirectoryCharacter",
             (0x02, 0x12) => "Login_Fail",
@@ -292,13 +293,15 @@ impl HighLevel {
             (0x06, 0x11) => "Input_UnMemorizeSpell",
             (0x06, 0x12) => "Input_CastSpell",
             // Chat family confirmed from EE's packet-name table:
-            // 0x0904 = Chat_Tell and 0x0905 = Chat_ServerTell. These are
-            // normal CNWMessage-backed server-to-player payloads in
-            // CNWSMessage::SendServerToPlayerChatMessage and the dedicated
-            // ServerTell helper, so strict mode may classify them as known
-            // without rewriting their payload bytes.
+            // 0x0904 = Chat_Tell, 0x0905 = Chat_ServerTell, and
+            // 0x090B/0x090C = Chat_TokenTalk variants. These are normal
+            // CNWMessage-backed server-to-player payloads in the decompiled
+            // chat senders, so strict mode may classify them as known only
+            // when the focused chat translator proves the exact byte shape.
             (0x09, 0x04) => "Chat_Tell",
             (0x09, 0x05) => "Chat_ServerTell",
+            (0x09, 0x0B) => "Chat_TokenTalk",
+            (0x09, 0x0C) => "Chat_TokenTalkNoBubble",
             (0x0A, 0x01) => "PlayerList_All",
             (0x0A, 0x02) => "PlayerList_Add",
             // Inventory family confirmed from EE's packet-name table and

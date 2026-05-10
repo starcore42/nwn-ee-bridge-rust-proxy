@@ -24,12 +24,41 @@ pub(super) fn build_ee_door_placeable_generic_update_bytes(
 }
 
 pub(super) fn encode_ee_scalar_orientation_from_legacy_facing(facing: u16) -> u16 {
-    let degrees = f64::from(facing) * 360.0 / 65536.0;
-    // Diamond and EE both add +pi/2 after reading the generic scalar branch.
-    // HG's anchored legacy tail stores the world-facing value consumed by the
-    // old bridge path, so the EE scalar must be pre-rotated by -90 degrees
-    // before EE applies its decompile-confirmed +90-degree basis correction.
-    let ee_degrees = (degrees + 270.0) % 360.0;
-    let raw = (ee_degrees * 10.0 + 0.000001).floor() as u32;
+    const LEGACY_FULL_TURN_UNITS: f64 = 65536.0;
+    const FULL_TURN_DEGREES: f64 = 360.0;
+    const EE_READER_BASIS_DEGREES: f64 = 90.0;
+    const EE_TENTHS_PER_DEGREE: f64 = 10.0;
+
+    let legacy_degrees = f64::from(facing) * FULL_TURN_DEGREES / LEGACY_FULL_TURN_UNITS;
+    // Decompile-backed orientation rule:
+    // - EE server `WriteGameObjUpdate_UpdateObject` computes `Yaw(Vector)` in
+    //   degrees, writes a scalar-orientation branch BOOL `false`, then emits
+    //   `CNWMessage::WriteFLOAT(yaw_degrees, 10.0f, 12)`.
+    // - `CNWMessage::WriteFLOAT(value, scale, bits)` writes
+    //   `floor(value * scale)`, and `ReadFLOAT(scale, bits)` returns
+    //   `raw / scale`.
+    // - The EE/Diamond generic door/placeable update reader then applies its
+    //   model-basis conversion by adding +90 degrees (`+pi/2`) before storing
+    //   the orientation vector.
+    //
+    // HG's legacy anchored tail stores the pre-basis legacy facing turn. To
+    // make EE end at that same facing after its reader adds the basis, the
+    // packet scalar must be pre-compensated by -90 degrees here.
+    let ee_packet_degrees =
+        (legacy_degrees - EE_READER_BASIS_DEGREES).rem_euclid(FULL_TURN_DEGREES);
+    let raw = (ee_packet_degrees * EE_TENTHS_PER_DEGREE + 0.000001).floor() as u32;
     raw.min(0x0FFF) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_ee_scalar_orientation_from_legacy_facing;
+
+    #[test]
+    fn ee_scalar_orientation_precompensates_reader_basis_for_legacy_cardinals() {
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x0000), 2700);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x4000), 0);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x8000), 900);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0xC000), 1800);
+    }
 }

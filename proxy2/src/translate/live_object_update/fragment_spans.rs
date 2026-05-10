@@ -17,6 +17,12 @@ const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
 // but large enough for that proven shape. The exact creature cursor simulator
 // below must still consume the shortened read buffer before any span is moved.
 const MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES: usize = 32;
+// HG seq41 carries two zero bytes after a verified creature appearance record
+// on the read-buffer side. Those bytes decode as empty CNW fragment-storage
+// padding and are not a live-object submessage. Keep this deliberately tiny:
+// any larger or non-zero trailing span should quarantine until a capture and
+// decompile-backed owner prove the exact shape.
+const MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES: usize = 2;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +48,18 @@ pub(super) struct PromotedCreatureUpdateFragmentSpan {
     pub bits_promoted: usize,
     pub start_bit_cursor: usize,
     pub end_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PromotedAppearanceFollowingCreatureSpan {
+    pub old_record_end: usize,
+    pub bytes_promoted: usize,
+    pub bits_promoted: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RemovedTrailingFragmentStorage {
+    pub bytes_removed: usize,
 }
 
 pub(super) fn promote_inventory_interleaved_fragment_span_for_ee(
@@ -158,6 +176,98 @@ pub(super) fn verified_creature_update_3967_read_end_before_interleaved_fragment
         CreatureUpdateFragmentSpanCursorPolicy::Exact,
     )
     .map(|proof| proof.read_end)
+}
+
+pub(super) fn promote_appearance_following_creature_update_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    span_start: usize,
+    bit_cursor: usize,
+) -> Option<PromotedAppearanceFollowingCreatureSpan> {
+    if span_start >= live_bytes.len()
+        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
+    {
+        return None;
+    }
+
+    let span_end = find_interleaved_fragment_span_end(live_bytes, span_start, live_bytes.len(), 1)?;
+    if span_end <= span_start
+        || span_end.saturating_sub(span_start) > MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES
+        || live_bytes.get(span_end).copied()? != b'U'
+        || live_bytes.get(span_end + 1).copied()? != 0x05
+        || read_u32_le(live_bytes, span_end + 6)? != LEGACY_CREATURE_UPDATE_3967_MASK
+    {
+        return None;
+    }
+
+    let promoted_bits =
+        unpack_promoted_fragment_span_payload_bits(live_bytes.get(span_start..span_end)?)?;
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        live_bytes,
+        span_end,
+        live_bytes.len(),
+    );
+    if following_end <= span_end {
+        return None;
+    }
+
+    let mut proof_bits = fragment_bits.clone();
+    bits::insert_msb_bits(&mut proof_bits, bit_cursor, &promoted_bits)?;
+    let mut proof_cursor = bit_cursor;
+    if !creature::advance_verified_noop_creature_update_record_exact_cursor(
+        live_bytes,
+        span_end,
+        following_end,
+        &proof_bits,
+        &mut proof_cursor,
+    ) {
+        return None;
+    }
+
+    bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+    live_bytes.drain(span_start..span_end);
+    Some(PromotedAppearanceFollowingCreatureSpan {
+        old_record_end: span_end,
+        bytes_promoted: span_end.saturating_sub(span_start),
+        bits_promoted: promoted_bits.len(),
+    })
+}
+
+pub(super) fn remove_trailing_zero_fragment_storage_after_verified_record_for_ee(
+    live_bytes: &mut Vec<u8>,
+    span_start: usize,
+) -> Option<RemovedTrailingFragmentStorage> {
+    if span_start >= live_bytes.len()
+        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
+    {
+        return None;
+    }
+
+    let span_end = if live_bytes.len().saturating_sub(span_start)
+        <= MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES
+    {
+        live_bytes.len()
+    } else {
+        find_interleaved_fragment_span_end(live_bytes, span_start, live_bytes.len(), 1)?
+    };
+    let span = live_bytes.get(span_start..span_end)?;
+    if span.is_empty() || span.len() > MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES {
+        return None;
+    }
+
+    let decoded_bits = bits::decode_msb_valid_bits(span, 3)?;
+    if decoded_bits.iter().skip(3).any(|bit| *bit) {
+        return None;
+    }
+
+    let bytes_removed = span.len();
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object zero fragment storage removed: span_start={span_start} span_end={span_end} bytes_removed={bytes_removed}"
+        );
+    }
+    live_bytes.drain(span_start..span_end);
+    Some(RemovedTrailingFragmentStorage { bytes_removed })
 }
 
 struct CreatureUpdateFragmentSpanProof {

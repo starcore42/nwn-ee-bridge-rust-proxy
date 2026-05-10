@@ -73,8 +73,33 @@ pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8
             QuickbarButtonKind::Item {
                 primary,
                 secondary,
-                recovered_type_tag: _,
+                recovered_type_tag,
             } => {
+                if !quickbar_item_button_has_verified_ee_materialization(
+                    primary,
+                    secondary,
+                    *recovered_type_tag,
+                ) {
+                    // EE `CNWCMessage::HandleServerToPlayerGuiQuickbar_SetButton`
+                    // does more than consume bytes for type-1 buttons: after
+                    // `sub_14079FAC0` reads the item-object body, the receiver
+                    // resolves or creates a client item object and aborts the
+                    // all-buttons application if that object materialization
+                    // fails. Diamond's server writer similarly emits the item
+                    // branch only after resolving a real `CNWSItem`.
+                    //
+                    // The parser below owns the legacy item bytes well enough
+                    // to prove the 36-slot quickbar boundary, but the bridge
+                    // does not yet have an exact decompile-backed proof that
+                    // every captured item appearance/active-property subobject
+                    // can be materialized by EE. A type-0 blank is therefore
+                    // the strict translation for item slots until that focused
+                    // item-materialization translator exists. This preserves
+                    // later spell/general slots instead of letting one unproven
+                    // item poison the entire SetAllButtons packet.
+                    writer.write_byte(0);
+                    continue;
+                }
                 // Type 1 is the decompile-owned item button branch for both
                 // Diamond and EE SetAllButtons. The source bytes were already
                 // parsed into bounded item-object models, so emission is not a
@@ -97,12 +122,17 @@ pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8
                 writer.write_byte(*metamagic);
                 writer.write_byte(*domain);
             }
-            QuickbarButtonKind::General { bytes: _ } => {
-                // General quickbar buttons are structurally diverse. The sender
-                // decompile gives us their byte widths, but until each general
-                // family has an EE receiver-backed validator, strict translation
-                // preserves only spells and emits blank slots for these records.
-                writer.write_byte(0);
+            QuickbarButtonKind::General { bytes } => {
+                if quickbar_general_bytes_are_verified_ee_identical(bytes) {
+                    // These general slot records are byte-identical between
+                    // Diamond's `sub_469FD0` receiver and EE's
+                    // `SendServerToPlayerGuiQuickbar_SetButton` writer. The
+                    // model is still typed and bounded by the reader; this is
+                    // not an unknown raw passthrough.
+                    writer.read_buffer.extend_from_slice(bytes);
+                } else {
+                    writer.write_byte(0);
+                }
             }
             QuickbarButtonKind::ItemCandidate | QuickbarButtonKind::Unsupported => {
                 writer.write_byte(0);
@@ -157,6 +187,51 @@ pub fn build_blank_set_all_buttons_payload(envelope: u8) -> Option<Vec<u8>> {
     };
 
     build_ee_quickbar_payload(&parsed)
+}
+
+pub(super) fn quickbar_item_button_has_verified_ee_materialization(
+    primary: &QuickbarItemObject,
+    secondary: &QuickbarItemObject,
+    recovered_type_tag: bool,
+) -> bool {
+    // EE's server writer only emits a type-1 quickbar item branch after it has
+    // resolved a real CNWSItem, then writes a BOOL-gated primary item object and
+    // a BOOL-gated secondary item object. The client receiver consumes those
+    // same BOOL-gated objects and sets the quickbar slot from the object id(s).
+    //
+    // The bridge cannot resolve CNWSItem pointers, but it can prove the same
+    // wire materialization from the already-typed legacy model:
+    //   object id + optional int param
+    //   AddItemAppearanceToMessage-compatible appearance bytes
+    //   EE identity visual-transform expansion
+    //   AddActiveItemPropertiesToMessage-compatible active-property bytes
+    //
+    // This is deliberately stricter than "the slot parsed": both item objects
+    // must either be absent or have a complete bounded subobject model. Compact
+    // recovered source tags are acceptable only because the writer restores the
+    // explicit EE type byte and the final packet is validated by
+    // `ee_set_all_buttons_payload_shape_valid`.
+    let _source_had_missing_type_tag = recovered_type_tag;
+    (primary.present || secondary.present)
+        && quickbar_item_object_has_verified_ee_materialization(primary)
+        && quickbar_item_object_has_verified_ee_materialization(secondary)
+}
+
+fn quickbar_item_object_has_verified_ee_materialization(item: &QuickbarItemObject) -> bool {
+    if !item.present {
+        return true;
+    }
+    if item.object_id == NWN_OBJECT_INVALID {
+        return false;
+    }
+    if item.active_props.is_none() {
+        return false;
+    }
+    let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
+        return false;
+    };
+    item.appearance_bytes.len() == expected_legacy
+        && read_u32_le(&item.appearance_bytes, 0) == Some(item.base_item)
 }
 
 fn write_quickbar_item_object(

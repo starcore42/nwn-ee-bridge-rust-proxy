@@ -59,6 +59,29 @@
   ],
   "compatibilityFixes": [
     {
+      "id": "hg-ee-generated-missing-class-package-2das",
+      "kind": "generatedMissingClassPackage2das",
+      "sourceHak": "cep2_custom.hak",
+      "sourceResource": "classes.2da",
+      "resourceColumns": [
+        "FeatsTable",
+        "SkillsTable",
+        "BonusFeatsTable",
+        "PreReqTable"
+      ],
+      "resourceNames": [
+        "CLS_FEAT_EYEOFG",
+        "CLS_SKILL_EYEOFG",
+        "CLS_BFEAT_EYEOFG",
+        "CLS_PRES_EYEOFG",
+        "CLS_FEAT_SHOUDI",
+        "CLS_SKILL_SHOUDI",
+        "CLS_BFEAT_SHOUDI",
+        "CLS_PRES_SHOUDI"
+      ],
+      "evidence": "HG cep2_custom.hak classes.2da references these CEP prestige-package tables, but the provided HG/CEP required files do not contain them. EE demands the referenced class package 2DAs during module load; Diamond tolerates the absent resources for existing characters. Generate empty package tables as loader-safe EE compatibility resources without adding feats, skills, or prerequisites."
+    },
+    {
       "id": "hg-ee-ttr01-orientation",
       "kind": "erfTextResourcePatch",
       "sourceHak": "cep2_ext_tiles.hak",

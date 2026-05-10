@@ -323,6 +323,7 @@ pub(super) fn choose_legacy_quickbar_item_end(
     read_buffer: &[u8],
     slot: usize,
     cursor: usize,
+    model_types: &[i8],
     memo: &mut [i32],
 ) -> Option<usize> {
     let remaining_slots_after_this = LEGACY_QUICKBAR_BUTTON_COUNT.checked_sub(slot + 1)?;
@@ -336,14 +337,17 @@ pub(super) fn choose_legacy_quickbar_item_end(
         if candidate.checked_add(remaining_slots_after_this)? > read_buffer.len() {
             break;
         }
-        if remaining_slots_after_this > 0
-            && (candidate >= read_buffer.len()
-                || !is_legacy_quickbar_plausible_type(read_buffer[candidate]))
-        {
+        if remaining_slots_after_this > 0 && candidate >= read_buffer.len() {
             continue;
         }
 
-        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
+        let mut score = score_legacy_quickbar_parse_from(
+            read_buffer,
+            slot + 1,
+            candidate,
+            model_types,
+            memo,
+        );
         if score <= QUICKBAR_BAD_SCORE / 2 {
             continue;
         }
@@ -375,10 +379,7 @@ pub(super) fn choose_legacy_quickbar_compact_item_end(
         if candidate.checked_add(remaining_slots_after_this)? > read_buffer.len() {
             break;
         }
-        if remaining_slots_after_this > 0
-            && (candidate >= read_buffer.len()
-                || !is_legacy_quickbar_plausible_type(read_buffer[candidate]))
-        {
+        if remaining_slots_after_this > 0 && candidate >= read_buffer.len() {
             continue;
         }
         let Some((primary, secondary)) = parse_legacy_quickbar_compact_byte_item_payload(
@@ -390,7 +391,13 @@ pub(super) fn choose_legacy_quickbar_compact_item_end(
             continue;
         };
 
-        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
+        let mut score = score_legacy_quickbar_parse_from(
+            read_buffer,
+            slot + 1,
+            candidate,
+            model_types,
+            memo,
+        );
         if score <= QUICKBAR_BAD_SCORE / 2 {
             continue;
         }
@@ -409,6 +416,7 @@ fn score_legacy_quickbar_parse_from(
     read_buffer: &[u8],
     slot: usize,
     cursor: usize,
+    model_types: &[i8],
     memo: &mut [i32],
 ) -> i32 {
     if cursor > read_buffer.len() || slot > LEGACY_QUICKBAR_BUTTON_COUNT {
@@ -448,15 +456,17 @@ fn score_legacy_quickbar_parse_from(
             if candidate.saturating_add(remaining_slots_after_this) > read_buffer.len() {
                 break;
             }
-            if remaining_slots_after_this > 0
-                && (candidate >= read_buffer.len()
-                    || !is_legacy_quickbar_plausible_type(read_buffer[candidate]))
-            {
+            if remaining_slots_after_this > 0 && candidate >= read_buffer.len() {
                 continue;
             }
 
-            let mut score =
-                score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, memo);
+            let mut score = score_legacy_quickbar_parse_from(
+                read_buffer,
+                slot + 1,
+                candidate,
+                model_types,
+                memo,
+            );
             if score <= QUICKBAR_BAD_SCORE / 2 {
                 continue;
             }
@@ -464,9 +474,58 @@ fn score_legacy_quickbar_parse_from(
             score += 12 - skipped.checked_div(16).unwrap_or(0).min(120) as i32;
             best_score = best_score.max(score);
         }
-    } else if let Some((button, next_cursor)) = parse_legacy_quickbar_non_item(read_buffer, cursor)
+    } else {
+        // HG/Diamond captures can contain compact item bodies at a 36-slot
+        // button boundary without the explicit source type-1 byte.  This is
+        // not treated as passthrough: a candidate only scores if the typed
+        // compact item-object parser owns the full candidate window and the
+        // remaining slots also parse to a complete quickbar stream.  The
+        // reader will later re-emit this model through the EE writer, which
+        // restores the decompile-required type byte.
+        let min_candidate = read_buffer.len().min(cursor.saturating_add(8));
+        let max_candidate = read_buffer.len().min(cursor.saturating_add(512));
+        for candidate in min_candidate..=max_candidate {
+            if candidate.saturating_add(remaining_slots_after_this) > read_buffer.len() {
+                break;
+            }
+            if remaining_slots_after_this > 0 && candidate >= read_buffer.len() {
+                continue;
+            }
+
+            let Some((_primary, _secondary)) = parse_legacy_quickbar_compact_byte_item_payload(
+                read_buffer,
+                cursor,
+                candidate,
+                model_types,
+            ) else {
+                continue;
+            };
+            let mut score = score_legacy_quickbar_parse_from(
+                read_buffer,
+                slot + 1,
+                candidate,
+                model_types,
+                memo,
+            );
+            if score <= QUICKBAR_BAD_SCORE / 2 {
+                continue;
+            }
+            let consumed = candidate.saturating_sub(cursor);
+            score += 100 - consumed.checked_div(16).unwrap_or(0).min(100) as i32;
+            best_score = best_score.max(score);
+        }
+    }
+
+    if ty != 1
+        && let Some((button, next_cursor)) = parse_legacy_quickbar_non_item(read_buffer, cursor)
     {
-        let mut score = score_legacy_quickbar_parse_from(read_buffer, slot + 1, next_cursor, memo);
+        let mut score = score_legacy_quickbar_parse_from(
+            read_buffer,
+            slot + 1,
+            next_cursor,
+            model_types,
+            memo,
+        );
         if score > QUICKBAR_BAD_SCORE / 2 {
             match button.kind {
                 QuickbarButtonKind::Spell { .. } => score += 60,
@@ -486,7 +545,7 @@ fn score_legacy_quickbar_parse_from(
                 }
                 QuickbarButtonKind::ItemCandidate => {}
             }
-            best_score = score;
+            best_score = best_score.max(score);
         }
     }
 

@@ -4,11 +4,12 @@
 //! records and it does not mutate read bytes or fragment bits.
 
 use super::{
-    DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
-    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES,
-    LEGACY_UPDATE_SCALE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
-    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
-    creature, gui, inventory, item, locstring, read_u32_le, trigger,
+    DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
+    LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
+    LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID,
+    PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item,
+    locstring, read_u32_le, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -47,6 +48,20 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     if bytes.get(offset).copied() == Some(b'P') && bytes.get(offset + 1).copied() == Some(0x05) {
         if let Some(record_end) =
             appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+    }
+
+    if matches!(
+        (bytes.get(offset).copied(), bytes.get(offset + 1).copied()),
+        (
+            Some(b'U'),
+            Some(PLACEABLE_OBJECT_TYPE) | Some(DOOR_OBJECT_TYPE)
+        )
+    ) {
+        if let Some(record_end) =
+            try_get_ee_door_placeable_update_record_end(bytes, offset, scan_end)
         {
             return record_end;
         }
@@ -119,6 +134,94 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     scan_end
 }
 
+fn try_get_ee_door_placeable_update_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end
+        || offset + LEGACY_UPDATE_HEADER_BYTES > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || !matches!(
+            bytes.get(offset + 1).copied()?,
+            PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+        )
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    let mask = read_u32_le(bytes, offset + 6)?;
+    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_NAME_MASK;
+    if mask == 0 || (mask & !allowed_mask) != 0 {
+        return None;
+    }
+
+    // EE `WriteGameObjUpdate_UpdateObject` emits read-buffer fields in this
+    // fixed order for door/placeable updates: position bytes, scalar
+    // orientation bytes, scale/state bytes, then an inline name when the name
+    // mask is set. State-only fields live in CNW fragment bits and do not move
+    // the read cursor. Once a bridge packet is in this EE shape, the stream
+    // boundary is decompile-owned and must not be discovered by scanning for an
+    // interior byte that happens to look like a live-object opcode.
+    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+    }
+    if read_cursor > scan_end || read_cursor > bytes.len() {
+        return None;
+    }
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        if let Some(name_end) = locstring::inline_cexo_string_end(bytes, read_cursor) {
+            read_cursor = name_end;
+        } else if is_bridge_empty_state_update_mask(mask) {
+            // Bridge-created cleanup shape, not a Diamond/EE server shape:
+            // after add/visual-map rewrites, a legacy all-fields door/placeable
+            // update can be reduced to state-only semantics while still carrying
+            // the previously translated EE mask. EE's reader cannot consume the
+            // position/orientation/name bits without their read-buffer fields.
+            //
+            // Decompile-backed rule: state lives entirely in fragment BOOLs; the
+            // dropped position/orientation/name fields require read bytes. If the
+            // byte immediately after the update header is a real next live-object
+            // boundary and the full EE inline-name form did not parse, the current
+            // record's bounded read span is exactly the ten-byte update header.
+            let header_end = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+            if header_end <= scan_end
+                && looks_like_legacy_live_object_sub_message_boundary(bytes, header_end)
+            {
+                return Some(header_end);
+            }
+            return None;
+        } else {
+            return None;
+        }
+    }
+    if read_cursor <= scan_end && read_cursor <= bytes.len() {
+        Some(read_cursor)
+    } else {
+        None
+    }
+}
+
+fn is_bridge_empty_state_update_mask(mask: u32) -> bool {
+    let ee_supported_all = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK;
+    mask == ee_supported_all || mask == (ee_supported_all | LEGACY_UPDATE_NAME_MASK)
+}
+
 fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> usize {
     if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
         return 2;
@@ -166,6 +269,7 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
             }
             minimum
         }
+        (b'U', 0x05) => minimum_legacy_creature_update_record_length_at(bytes, offset),
         (b'U' | b'P', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 10,
         (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
         (b'G', b'Q') => 3,
@@ -173,6 +277,34 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
         (b'W', marker) if marker <= 0x0F && bytes.get(offset + 2) == Some(&0x0E) => 3,
         _ => 2,
     }
+}
+
+fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) -> usize {
+    let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
+        return LEGACY_UPDATE_HEADER_BYTES;
+    };
+
+    if raw_mask == 0x0000_0047 {
+        // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` writes this
+        // creature update family as:
+        //
+        //   header + mask
+        //   0x0001 position: WORD, WORD, WORD plus two fragment bits
+        //   0x0002 orientation: scalar form is one read byte plus fragment bits
+        //   0x0004 action: FLOAT + WORD action code, state BYTE,
+        //                  movement-followup WORD
+        //   0x0040 state: WORD, BYTE, WORD, BYTE plus one fragment BOOL
+        //
+        // The read-buffer lower bound is therefore 32 bytes even before
+        // optional target/object/float/path branches. HG captured a legal
+        // position word pair `0x49 0x18` at offset +12; the generic scanner
+        // mistook that interior byte sequence for an `I` live-object boundary.
+        // Keep this as a mask-specific boundary floor and let the focused
+        // creature cursor validator prove the exact final cursor and bits.
+        return 32;
+    }
+
+    LEGACY_UPDATE_HEADER_BYTES
 }
 
 pub(super) fn looks_like_legacy_live_object_sub_message_boundary(

@@ -162,20 +162,69 @@ fn summarize_quickbar_rewrite(
     old_declared: u32,
     new_declared: u32,
 ) -> QuickbarRewriteSummary {
-    let item_buttons_parsed = parsed
+    let item_buttons_emitted = parsed
         .buttons
         .iter()
-        .filter(|button| matches!(button.kind, QuickbarButtonKind::Item { .. }))
+        .filter(|button| {
+            matches!(
+                &button.kind,
+                QuickbarButtonKind::Item {
+                    primary,
+                    secondary,
+                    recovered_type_tag,
+                } if super::writer::quickbar_item_button_has_verified_ee_materialization(
+                    primary,
+                    secondary,
+                    *recovered_type_tag,
+                )
+            )
+        })
+        .count() as u32;
+    let item_buttons_blanked_by_policy = parsed
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                &button.kind,
+                QuickbarButtonKind::Item {
+                    primary,
+                    secondary,
+                    recovered_type_tag,
+                } if !super::writer::quickbar_item_button_has_verified_ee_materialization(
+                    primary,
+                    secondary,
+                    *recovered_type_tag,
+                )
+            )
+        })
         .count() as u32;
     let spells_preserved = parsed
         .buttons
         .iter()
         .filter(|button| matches!(button.kind, QuickbarButtonKind::Spell { .. }))
         .count() as u32;
-    let general_buttons_parsed = parsed
+    let general_buttons_preserved = parsed
         .buttons
         .iter()
-        .filter(|button| matches!(button.kind, QuickbarButtonKind::General { .. }))
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::General { ref bytes }
+                    if quickbar_general_bytes_are_verified_ee_identical(bytes)
+                        && !(bytes.len() == 1 && bytes[0] == 0)
+            )
+        })
+        .count() as u32;
+    let general_buttons_blanked = parsed
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::General { ref bytes }
+                    if !quickbar_general_bytes_are_verified_ee_identical(bytes)
+            )
+        })
         .count() as u32;
     let item_candidate_buttons = parsed
         .buttons
@@ -197,11 +246,11 @@ fn summarize_quickbar_rewrite(
         final_cursor: parsed.final_cursor,
         trailing_read_bytes: parsed.read_size.saturating_sub(parsed.final_cursor),
         direct_opcode_stream: parsed.direct_opcode_stream,
-        item_buttons_preserved: item_buttons_parsed,
+        item_buttons_preserved: item_buttons_emitted,
         spells_preserved,
-        general_buttons_preserved: 0,
-        general_buttons_blanked: general_buttons_parsed,
-        item_buttons_blanked: item_candidate_buttons,
+        general_buttons_preserved,
+        general_buttons_blanked,
+        item_buttons_blanked: item_candidate_buttons.saturating_add(item_buttons_blanked_by_policy),
         unsupported_buttons_blanked,
     }
 }
@@ -254,6 +303,12 @@ fn dump_quickbar_payload(label: &str, payload: &[u8]) {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(filename);
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            tracing::warn!(%error, path = %parent.display(), "failed to create quickbar dump directory");
+            return;
+        }
+    }
     if let Err(error) = fs::write(&path, payload) {
         tracing::warn!(%error, path = %path.display(), "failed to dump quickbar payload");
     }

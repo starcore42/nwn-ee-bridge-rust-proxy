@@ -11,9 +11,10 @@
 //! packet, while HG/1.69 expects Diamond's shorter two-string form.
 
 mod area;
+pub(crate) mod baseitems;
 mod bn;
 pub(crate) mod char_list;
-mod chat;
+pub(crate) mod chat;
 mod client_area;
 mod client_char_list;
 mod client_gui_inventory;
@@ -21,6 +22,7 @@ mod client_high;
 pub(crate) mod client_input;
 mod client_login;
 mod client_module;
+pub(crate) mod client_quickbar;
 mod client_server_status;
 pub(crate) mod client_side_message;
 mod cnw_message;
@@ -98,6 +100,15 @@ pub enum VerifiedFamily {
     AreaClientArea,
     CharList,
     Chat,
+    ClientArea,
+    ClientCharList,
+    ClientGuiInventory,
+    ClientInput,
+    ClientLogin,
+    ClientModule,
+    ClientParty,
+    ClientQuickbar,
+    ClientServerStatus,
     ClientSideMessage,
     CoalescedWindow,
     ConsumedEmptyMFrame,
@@ -130,6 +141,15 @@ impl VerifiedFamily {
             Self::AreaClientArea => "Area_ClientArea",
             Self::CharList => "CharList",
             Self::Chat => "Chat",
+            Self::ClientArea => "ClientArea",
+            Self::ClientCharList => "ClientCharList",
+            Self::ClientGuiInventory => "ClientGuiInventory",
+            Self::ClientInput => "ClientInput",
+            Self::ClientLogin => "ClientLogin",
+            Self::ClientModule => "ClientModule",
+            Self::ClientParty => "ClientParty",
+            Self::ClientQuickbar => "ClientQuickbar",
+            Self::ClientServerStatus => "ClientServerStatus",
             Self::ClientSideMessage => "ClientSideMessage",
             Self::CoalescedWindow => "CoalescedWindow",
             Self::ConsumedEmptyMFrame => "ConsumedEmptyMFrame",
@@ -263,7 +283,7 @@ impl Translator {
         SessionTranslator {
             template: self.clone(),
             bn_state: bn::SessionState::default(),
-            m_state: m_frame::SessionState::new(self.module_resources.clone()),
+            m_state: m_frame::SessionState::new(self.module_resources.for_new_session()),
         }
     }
 }

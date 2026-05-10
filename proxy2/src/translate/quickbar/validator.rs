@@ -9,45 +9,51 @@ use super::*;
 /// transform map. The validator is therefore a post-translation proof, not a
 /// generic "known opcode" allow-list.
 pub(crate) fn ee_set_all_buttons_payload_shape_valid(payload: &[u8]) -> bool {
+    ee_set_all_buttons_slot_types_if_valid(payload).is_some()
+}
+
+pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
+    payload: &[u8],
+) -> Option<Vec<u8>> {
     let Some(high) = HighLevel::parse(payload) else {
-        return false;
+        return None;
     };
     if high.major != QUICKBAR_MAJOR || high.minor != SET_ALL_BUTTONS_MINOR {
-        return false;
+        return None;
     }
 
     let Some(declared) =
         read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok())
     else {
-        return false;
+        return None;
     };
     if declared < HIGH_LEVEL_HEADER_BYTES {
-        return false;
+        return None;
     }
 
     let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
     let Some(read_size) = declared.checked_sub(HIGH_LEVEL_HEADER_BYTES) else {
-        return false;
+        return None;
     };
     let Some(read_end) = read_start.checked_add(read_size) else {
-        return false;
+        return None;
     };
     if read_end >= payload.len() {
-        return false;
+        return None;
     }
 
     let Some(read_buffer) = payload.get(read_start..read_end) else {
-        return false;
+        return None;
     };
     let Some(fragments) = payload.get(read_end..) else {
-        return false;
+        return None;
     };
     if fragments.is_empty() {
-        return false;
+        return None;
     }
 
     let Some(model_types) = quickbar_base_item_model_types() else {
-        return false;
+        return None;
     };
     let mut reader = QuickbarPacketReader {
         read_buffer,
@@ -59,46 +65,57 @@ pub(crate) fn ee_set_all_buttons_payload_shape_valid(payload: &[u8]) -> bool {
     };
     let Some(final_fragment_bits) = reader.read_bits(3).and_then(|bits| u8::try_from(bits).ok())
     else {
-        return false;
+        return None;
     };
     reader.final_fragment_bits = final_fragment_bits;
 
+    let mut slot_types = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
     for _slot in 0..LEGACY_QUICKBAR_BUTTON_COUNT {
         let Some(ty) = reader.read_byte() else {
-            return false;
+            return None;
         };
+        slot_types.push(ty);
         match ty {
             0 => {}
             1 => {
                 if !validate_ee_quickbar_item_object(&mut reader, true, model_types) {
-                    return false;
+                    return None;
                 }
                 if !validate_ee_quickbar_item_object(&mut reader, false, model_types) {
-                    return false;
+                    return None;
                 }
             }
             2 => {
                 if reader.skip_bytes(1 + CNW_LENGTH_BYTES + 1 + 1).is_none() {
-                    return false;
+                    return None;
                 }
             }
-            _ => return false,
+            _ => {
+                if !validate_ee_quickbar_general_button(&mut reader, ty) {
+                    return None;
+                }
+            }
         }
     }
 
     if reader.cursor != reader.read_buffer.len() {
-        return false;
+        return None;
     }
     let Some(consumed_fragment_bits) = reader
         .fragment_cursor
         .checked_mul(8)
         .and_then(|bits| bits.checked_add(usize::from(reader.fragment_bit)))
     else {
-        return false;
+        return None;
     };
     let consumed_fragment_bytes = reader.fragment_cursor + usize::from(reader.fragment_bit != 0);
-    consumed_fragment_bytes == reader.fragments.len()
+    if consumed_fragment_bytes == reader.fragments.len()
         && reader.final_fragment_bits == u8::try_from(consumed_fragment_bits % 8).unwrap_or(0)
+    {
+        Some(slot_types)
+    } else {
+        None
+    }
 }
 
 fn validate_ee_quickbar_item_object(

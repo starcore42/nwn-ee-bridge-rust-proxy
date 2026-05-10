@@ -95,11 +95,15 @@ fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -
     // EE `AddDoorAppearanceToMessage` writes one/two DWORDs, then
     // `ObjectVisualTransformData::Write`, then the existing door name branch.
     // The old Diamond-only optional model token is removed by
-    // `translate::live_object`; after that, a legal EE door add ends with either
-    // an inline CExoString plus the two-byte state tail, or the compact
-    // four-byte empty-name token plus that same two-byte tail.
+    // `translate::live_object`; after that, a legal EE door add ends with an
+    // inline CExoString, a TLK-backed locstring ref, or the compact four-byte
+    // empty-name token, followed by the two-byte door state tail.
     if let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) {
         return inline_end + 2 == record_end && read_u16_le(bytes, inline_end).is_some();
+    }
+
+    if let Some(tlk_end) = locstring::tlk_locstring_ref_end(bytes, name_offset) {
+        return tlk_end + 2 == record_end && read_u16_le(bytes, tlk_end).is_some();
     }
 
     name_offset + 6 == record_end && read_u16_le(bytes, name_offset + 4).is_some()
@@ -122,10 +126,23 @@ fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usi
     }
 
     // EE `AddPlaceableAppearanceToMessage` reads the name/type/appearance/static
-    // tail, several BOOLs from the fragment stream, then
-    // `ObjectVisualTransformData::Write`. A translated placeable add is
-    // therefore claimable only when the identity map is present exactly at the
-    // decompiled post-tail cursor and consumes the rest of the record.
-    creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, record_end)
+    // tail, then a fragment BOOL guarding an optional OBJECTID, then more BOOLs
+    // from the fragment stream, then `ObjectVisualTransformData::Write`.
+    // Diamond's placeable reader has the same optional-object branch. The byte
+    // validator therefore accepts either exact cursor: no guarded object id, or
+    // a four-byte guarded OBJECTID immediately before the EE visual map. The
+    // fragment cursor validator ties the chosen byte cursor back to the BOOL.
+    if creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, record_end)
         && tail_end + 40 == record_end
+    {
+        return true;
+    }
+
+    let Some(optional_object_end) = tail_end.checked_add(4) else {
+        return false;
+    };
+    optional_object_end <= record_end
+        && read_u32_le(bytes, tail_end).is_some()
+        && creature::has_ee_identity_visual_transform_map_at(bytes, optional_object_end, record_end)
+        && optional_object_end + 40 == record_end
 }

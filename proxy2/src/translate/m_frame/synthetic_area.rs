@@ -272,7 +272,7 @@ fn arm_area_loaded_fallback(
     );
 }
 
-fn build_synthetic_gameplay_frame(
+pub(super) fn build_synthetic_gameplay_frame(
     sequence: u16,
     ack_sequence: u16,
     payload: &[u8],

@@ -8,7 +8,7 @@
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
-    translate::client_high,
+    translate::{client_high, VerifiedFamily},
 };
 
 use super::transport_identity;
@@ -16,7 +16,16 @@ use super::transport_identity;
 const DEVICE_ADVERTISE_PROPERTY_MAJOR: u8 = 0x36;
 const DEVICE_ADVERTISE_PROPERTY_MINOR: u8 = 0x01;
 
-pub(super) fn translate_client_frame(bytes: Vec<u8>, view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+#[derive(Debug, Clone)]
+pub(super) struct ClientFrameTranslation {
+    pub family: VerifiedFamily,
+    pub packet: Vec<u8>,
+}
+
+pub(super) fn translate_client_frame(
+    bytes: Vec<u8>,
+    view: &MFrameView,
+) -> anyhow::Result<ClientFrameTranslation> {
     let Some(high) = view.high else {
         if let Some(summary) = transport_identity::claim_client_frame_if_verified(view) {
             tracing::info!(
@@ -29,7 +38,10 @@ pub(super) fn translate_client_frame(bytes: Vec<u8>, view: &MFrameView) -> anyho
                 payload_len = view.payload_length,
                 "client M transport-only frame semantically claimed as verified no-op"
             );
-            return Ok(bytes);
+            return Ok(ClientFrameTranslation {
+                family: VerifiedFamily::ConsumedEmptyMFrame,
+                packet: bytes,
+            });
         }
         anyhow::bail!("client M frame has no high-level translator or transport identity owner");
     };
@@ -69,7 +81,10 @@ pub(super) fn translate_client_frame(bytes: Vec<u8>, view: &MFrameView) -> anyho
             payload_rewritten,
             "client high-level payload semantically claimed for Diamond/1.69"
         );
-        return Ok(out);
+        return Ok(ClientFrameTranslation {
+            family: summary.verified_family,
+            packet: out,
+        });
     }
 
     return consume_unclaimed_client_high_level(&bytes, view);
@@ -100,7 +115,10 @@ fn replace_client_payload_and_repair_crc(
     Ok(rewritten)
 }
 
-fn consume_unclaimed_client_high_level(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+fn consume_unclaimed_client_high_level(
+    bytes: &[u8],
+    view: &MFrameView,
+) -> anyhow::Result<ClientFrameTranslation> {
     if view.uses_extended_packet_length {
         anyhow::bail!("cannot consume unclaimed extended-length client M frame yet");
     }
@@ -132,10 +150,16 @@ fn consume_unclaimed_client_high_level(bytes: &[u8], view: &MFrameView) -> anyho
         "client high-level M frame quarantined: semantic translator did not claim payload"
     );
 
-    Ok(rewritten)
+    Ok(ClientFrameTranslation {
+        family: VerifiedFamily::ConsumedEmptyMFrame,
+        packet: rewritten,
+    })
 }
 
-fn consume_device_advertise_property(bytes: &[u8], view: &MFrameView) -> anyhow::Result<Vec<u8>> {
+fn consume_device_advertise_property(
+    bytes: &[u8],
+    view: &MFrameView,
+) -> anyhow::Result<ClientFrameTranslation> {
     if view.uses_extended_packet_length {
         anyhow::bail!("cannot consume extended-length Device_AdvertiseProperty frame yet");
     }
@@ -162,5 +186,8 @@ fn consume_device_advertise_property(bytes: &[u8], view: &MFrameView) -> anyhow:
         "client Device_AdvertiseProperty consumed as empty reliable M payload"
     );
 
-    Ok(rewritten)
+    Ok(ClientFrameTranslation {
+        family: VerifiedFamily::ConsumedEmptyMFrame,
+        packet: rewritten,
+    })
 }

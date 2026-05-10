@@ -115,7 +115,12 @@ fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<u
         return None;
     }
     for read_end in &candidates {
-        if *read_end == bytes.len() || HighLevel::parse(&bytes[*read_end..]).is_some() {
+        // CNW declared lengths bound the read-buffer window, not the trailing
+        // compact BOOL fragment storage. Fragment bytes can legitimately begin
+        // with `0x50` (`P`) and arbitrary major/minor-looking bytes; do not
+        // split there unless the following span proves a complete high-level
+        // unit of its own.
+        if *read_end == bytes.len() || boundary_has_plausible_unit(bytes, *read_end) {
             return Some(*read_end);
         }
     }
@@ -284,6 +289,25 @@ mod tests {
                 assert_eq!(message.payload.len(), 7);
             }
             _ => panic!("expected declared high-level unit"),
+        }
+    }
+
+    #[test]
+    fn live_object_fragment_tail_starting_with_p_is_not_split_as_high_level() {
+        let bytes = include_bytes!(
+            "../../fixtures/live_object/hg_area_entry_door_signs_mixed_liveobject.bin"
+        );
+        let split = split_inflated_gameplay(bytes);
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.major, 0x05);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.declared, Some(600));
+                assert_eq!(message.payload.len(), bytes.len());
+            }
+            _ => panic!("expected one live-object high-level unit"),
         }
     }
 }

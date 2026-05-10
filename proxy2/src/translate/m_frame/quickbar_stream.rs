@@ -56,6 +56,16 @@ fn build_blank_quickbar_placeholder_frames(
     build_server_deflated_output_frames(reassembly, &combined, 0x01, true)
 }
 
+fn rewrite_quickbar_payload_for_stream(
+    payload: &mut Vec<u8>,
+) -> Option<quickbar::QuickbarRewriteSummary> {
+    if let Some((_, summary)) = quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload)
+    {
+        return Some(summary);
+    }
+    quickbar::rewrite_simple_quickbar_payload_if_possible(payload)
+}
+
 pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
     state: &mut SessionState,
     reassembly: &ServerDeflatedReassembly,
@@ -73,8 +83,8 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         let target_length = quickbar::full_set_all_buttons_target_length(bytes);
         if target_length.is_none() {
             let mut probe = bytes.to_vec();
-            match quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe) {
-                Some((_, summary)) => {
+            match rewrite_quickbar_payload_for_stream(&mut probe) {
+                Some(summary) => {
                     if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
                         return Ok(None);
                     }
@@ -180,13 +190,12 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         }
     } else {
         let mut rewritten_payload = pending.payload.clone();
-        let rewrite =
-            quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut rewritten_payload);
+        let rewrite = rewrite_quickbar_payload_for_stream(&mut rewritten_payload);
         let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
             && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
         let should_wait = rewrite
             .as_ref()
-            .map(|(_, summary)| {
+            .map(|summary| {
                 let claimable_minimum_stream =
                     pending.chunks >= 3 && summary.trailing_read_bytes == 0;
                 quickbar::rewrite_summary_needs_more_quickbar_bytes(summary)
@@ -243,7 +252,7 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
         && pending.duplicate_replays >= MAX_PENDING_QUICKBAR_DUPLICATE_REPLAYS_BEFORE_CLAIM
         && {
             let mut probe = pending.payload.clone();
-            quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe).is_some()
+            rewrite_quickbar_payload_for_stream(&mut probe).is_some()
         };
     tracing::warn!(
         first_sequence = pending.first_sequence,
@@ -298,6 +307,17 @@ fn dump_unclaimable_pending_quickbar_stream(pending: &PendingQuickbarStream) {
         "quickbar_pending_unclaimable_seq{}_chunks{}_{}.bin",
         pending.first_sequence, pending.chunks, millis
     ));
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            tracing::warn!(
+                error = %err,
+                path = %parent.display(),
+                buffered = pending.payload.len(),
+                "failed to create quickbar dump directory"
+            );
+            return;
+        }
+    }
     if let Err(err) = fs::write(&path, &pending.payload) {
         tracing::warn!(
             error = %err,
@@ -334,7 +354,7 @@ fn flush_pending_server_quickbar_stream(
         pending.payload.clone()
     };
     let quickbar_rewrite =
-        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut quickbar_payload);
+        rewrite_quickbar_payload_for_stream(&mut quickbar_payload);
     let trailing_bytes = pending
         .target_length
         .map(|target_length| pending.payload.len().saturating_sub(target_length))
@@ -385,7 +405,7 @@ fn flush_pending_server_quickbar_stream(
     );
     outputs.extend(reassembly.interleaved_packets.clone());
 
-    if let Some((_, summary)) = quickbar_rewrite.as_ref() {
+    if let Some(summary) = quickbar_rewrite.as_ref() {
         tracing::info!(
             first_sequence = pending.first_sequence,
             current_sequence = reassembly.first_sequence,
@@ -442,6 +462,12 @@ fn dump_quickbar_payload_for_diagnostics(label: &str, payload: &[u8]) {
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     let path = std::path::Path::new(&dir).join(format!("quickbar_{label}_{millis}.bin"));
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            tracing::warn!(%error, path = %parent.display(), "failed to create quickbar dump directory");
+            return;
+        }
+    }
     if let Err(error) = std::fs::write(&path, payload) {
         tracing::warn!(%error, path = %path.display(), "failed to dump quickbar payload");
     } else {

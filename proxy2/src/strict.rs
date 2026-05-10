@@ -15,12 +15,18 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, char_list, client_input, gameplay_stream,
-        journal, live_object_update, play_module_character_list, quickbar,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, char_list, chat, client_input,
+        client_quickbar, gameplay_stream, journal, live_object_update, play_module_character_list,
+        quickbar,
     },
 };
 use flate2::read::ZlibDecoder;
-use std::io::Read;
+use std::{
+    fs,
+    io::Read,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -106,6 +112,34 @@ pub fn decide(direction: Direction, bytes: &[u8], profile: StrictProfile) -> Str
                     "known-deflated-window-continuation",
                 );
             }
+            if let Some(deflated) = &view.deflated {
+                // The M transport flag is the authoritative owner of this
+                // payload shape. A little-endian inflated length can begin
+                // with byte 0x50 (`P`) and the next two bytes can look like a
+                // high-level family/minor pair, as happened with a rewritten
+                // live-object window whose length was 0x00000350. The
+                // decompiled window path enters the compressed/extended branch
+                // from the frame flags before CNW high-level dispatch, so
+                // strict validation must do the same and never let an
+                // accidental `P xx yy` length prefix win over a plausible
+                // deflated envelope.
+                if deflated.plausible {
+                    return StrictDecision::allow(
+                        "M/deflated",
+                        "validated deflated envelope",
+                        if has_trailing {
+                            "known-deflated-envelope-with-window-spans"
+                        } else {
+                            "known-deflated-envelope"
+                        },
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/deflated",
+                    "invalid deflated envelope",
+                    "invalid-deflated-envelope",
+                );
+            }
             if let Some(high) = view.high {
                 if high.is_known() {
                     let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
@@ -138,24 +172,6 @@ pub fn decide(direction: Direction, bytes: &[u8], profile: StrictProfile) -> Str
                     "M/high",
                     high.name(),
                     "unknown-high-level-payload",
-                );
-            }
-            if let Some(deflated) = &view.deflated {
-                if deflated.plausible {
-                    return StrictDecision::allow(
-                        "M/deflated",
-                        "validated deflated envelope",
-                        if has_trailing {
-                            "known-deflated-envelope-with-window-spans"
-                        } else {
-                            "known-deflated-envelope"
-                        },
-                    );
-                }
-                return StrictDecision::quarantine(
-                    "M/deflated",
-                    "invalid deflated envelope",
-                    "invalid-deflated-envelope",
                 );
             }
             if view.payload_length == 0 {
@@ -275,30 +291,6 @@ pub fn decide_verified_translated(
                 );
             }
 
-            if let Some(high) = view.high {
-                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
-                let payload_end = payload_start + view.payload_length;
-                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
-                    return StrictDecision::quarantine(
-                        "M/verified-high",
-                        family.as_str(),
-                        "verified-high-payload-overflow",
-                    );
-                };
-                if verified_family_inflated_payload_valid(family, payload) {
-                    return StrictDecision::allow(
-                        "M/verified-high",
-                        family.as_str(),
-                        "verified-family-exact-high-level-shape",
-                    );
-                }
-                return StrictDecision::quarantine(
-                    "M/verified-high",
-                    high.name(),
-                    "verified-family-high-level-invalid-shape",
-                );
-            }
-
             if let Some(deflated) = &view.deflated {
                 if !deflated.plausible {
                     return StrictDecision::quarantine(
@@ -346,6 +338,30 @@ pub fn decide_verified_translated(
                     "M/verified-deflated",
                     family.as_str(),
                     "verified-family-deflated-high-level-invalid-shape",
+                );
+            }
+
+            if let Some(high) = view.high {
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-high",
+                        family.as_str(),
+                        "verified-high-payload-overflow",
+                    );
+                };
+                if verified_family_inflated_payload_valid(family, payload) {
+                    return StrictDecision::allow(
+                        "M/verified-high",
+                        family.as_str(),
+                        "verified-family-exact-high-level-shape",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-high",
+                    high.name(),
+                    "verified-family-high-level-invalid-shape",
                 );
             }
 
@@ -448,30 +464,6 @@ fn decide_verified_gameplay_stream_translated(
                 );
             }
 
-            if view.high.is_some() {
-                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
-                let payload_end = payload_start + view.payload_length;
-                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
-                    return StrictDecision::quarantine(
-                        "M/verified-gameplay-stream",
-                        "GameplayStream",
-                        "high-payload-overflow",
-                    );
-                };
-                if verified_gameplay_stream_payload_valid(families, payload) {
-                    return StrictDecision::allow(
-                        "M/verified-gameplay-stream",
-                        "GameplayStream",
-                        "verified-unit-proof-high-level-shapes",
-                    );
-                }
-                return StrictDecision::quarantine(
-                    "M/verified-gameplay-stream",
-                    "GameplayStream",
-                    "unit-proof-high-level-invalid-shape",
-                );
-            }
-
             if let Some(deflated) = &view.deflated {
                 if !deflated.plausible {
                     return StrictDecision::quarantine(
@@ -512,6 +504,30 @@ fn decide_verified_gameplay_stream_translated(
                     "M/verified-gameplay-stream",
                     "GameplayStream",
                     "deflated-unit-proof-high-level-invalid-shape",
+                );
+            }
+
+            if view.high.is_some() {
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "high-payload-overflow",
+                    );
+                };
+                if verified_gameplay_stream_payload_valid(families, payload) {
+                    return StrictDecision::allow(
+                        "M/verified-gameplay-stream",
+                        "GameplayStream",
+                        "verified-unit-proof-high-level-shapes",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-gameplay-stream",
+                    "GameplayStream",
+                    "unit-proof-high-level-invalid-shape",
                 );
             }
 
@@ -704,21 +720,37 @@ fn coalesced_family_payload_valid(
     if payload.is_empty() {
         return family == VerifiedFamily::ConsumedEmptyMFrame;
     }
-    if HighLevel::parse(payload).is_some() {
-        return verified_family_inflated_payload_valid(family, payload);
+
+    if let Some((plausible, inflated_length)) = deflated {
+        if !plausible {
+            return false;
+        }
+        let Some(inflated) =
+            inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
+        else {
+            dump_strict_coalesced_inflated_reject(
+                family,
+                payload,
+                None,
+                "coalesced-deflated-inflate-failed",
+            );
+            return false;
+        };
+        let valid = verified_family_inflated_payload_valid(family, &inflated);
+        if !valid {
+            dump_strict_coalesced_inflated_reject(
+                family,
+                payload,
+                Some(&inflated),
+                "coalesced-deflated-family-invalid",
+            );
+        }
+        return valid;
     }
 
-    let Some((plausible, inflated_length)) = deflated else {
-        return false;
-    };
-    if !plausible {
-        return false;
-    }
-    let Some(inflated) = inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
-    else {
-        return false;
-    };
-    verified_family_inflated_payload_valid(family, &inflated)
+    HighLevel::parse(payload)
+        .map(|_| verified_family_inflated_payload_valid(family, payload))
+        .unwrap_or(false)
 }
 
 fn coalesced_gameplay_stream_payload_valid(
@@ -729,21 +761,101 @@ fn coalesced_gameplay_stream_payload_valid(
     if payload.is_empty() {
         return false;
     }
-    if HighLevel::parse(payload).is_some() {
-        return verified_gameplay_stream_payload_valid(families, payload);
+
+    if let Some((plausible, inflated_length)) = deflated {
+        if !plausible {
+            return false;
+        }
+        let Some(inflated) =
+            inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
+        else {
+            dump_strict_gameplay_stream_reject(
+                families,
+                payload,
+                None,
+                "coalesced-gameplay-stream-inflate-failed",
+            );
+            return false;
+        };
+        let valid = verified_gameplay_stream_payload_valid(families, &inflated);
+        if !valid {
+            dump_strict_gameplay_stream_reject(
+                families,
+                payload,
+                Some(&inflated),
+                "coalesced-gameplay-stream-family-invalid",
+            );
+        }
+        return valid;
     }
 
-    let Some((plausible, inflated_length)) = deflated else {
-        return false;
-    };
-    if !plausible {
-        return false;
+    HighLevel::parse(payload)
+        .map(|_| verified_gameplay_stream_payload_valid(families, payload))
+        .unwrap_or(false)
+}
+
+fn dump_strict_coalesced_inflated_reject(
+    family: VerifiedFamily,
+    deflated_payload: &[u8],
+    inflated: Option<&[u8]>,
+    reason: &str,
+) {
+    let name = family.as_str();
+    dump_strict_payload_reject(name, deflated_payload, inflated, reason);
+}
+
+fn dump_strict_gameplay_stream_reject(
+    families: &[VerifiedFamily],
+    deflated_payload: &[u8],
+    inflated: Option<&[u8]>,
+    reason: &str,
+) {
+    let mut name = String::from("GameplayStream");
+    for family in families.iter().take(4) {
+        name.push('-');
+        name.push_str(family.as_str());
     }
-    let Some(inflated) = inflate_verified_deflated_combined_payload(payload, Some(inflated_length))
-    else {
-        return false;
+    dump_strict_payload_reject(&name, deflated_payload, inflated, reason);
+}
+
+fn dump_strict_payload_reject(
+    name: &str,
+    deflated_payload: &[u8],
+    inflated: Option<&[u8]>,
+    reason: &str,
+) {
+    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+        return;
     };
-    verified_gameplay_stream_payload_valid(families, &inflated)
+    if dir.trim().is_empty() {
+        return;
+    }
+
+    let mut path = PathBuf::from(dir);
+    if fs::create_dir_all(&path).is_err() {
+        return;
+    }
+
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let safe_name = name.replace(['<', '>', '/', '\\', ':', '*', '?', '"', '|'], "_");
+    path.push(format!("strict-{reason}-{safe_name}-{millis}.bin"));
+
+    let bytes = inflated.unwrap_or(deflated_payload);
+    if fs::write(&path, bytes).is_ok() {
+        tracing::warn!(
+            path = %path.display(),
+            reason,
+            family = safe_name,
+            deflated_len = deflated_payload.len(),
+            inflated_len = inflated.map(|bytes| bytes.len()).unwrap_or(0),
+            inflated = inflated.is_some(),
+            prefix = %hex_prefix(bytes, 64),
+            "strict dumped rejected coalesced semantic payload for fixture analysis"
+        );
+    }
 }
 fn verified_gameplay_stream_payload_valid(families: &[VerifiedFamily], payload: &[u8]) -> bool {
     let split = gameplay_stream::split_inflated_gameplay(payload);
@@ -1105,6 +1217,47 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::CharList => high.major == 0x11 && char_list_shape_valid(payload),
         VerifiedFamily::Chat => high.major == 0x09 && chat_shape_valid(payload, high),
+        VerifiedFamily::ClientArea => {
+            high.major == 0x04 && high.minor == 0x03 && empty_high_level_shape_valid(payload)
+        }
+        VerifiedFamily::ClientCharList => {
+            high.major == 0x11
+                && match high.minor {
+                    0x01 => empty_high_level_shape_valid(payload),
+                    0x03 => char_list_request_update_char_shape_valid(payload),
+                    _ => false,
+                }
+        }
+        VerifiedFamily::ClientGuiInventory => {
+            high.major == 0x0D && high.minor == 0x01 && gui_inventory_status_shape_valid(payload)
+        }
+        VerifiedFamily::ClientInput => {
+            high.major == 0x06
+                && matches!(high.minor, 0x01 | 0x03 | 0x0B)
+                && client_input::claim_payload_if_verified(payload).is_some()
+        }
+        VerifiedFamily::ClientLogin => {
+            high.major == 0x02
+                && match high.minor {
+                    0x0D => client_login_waypoint_response_shape_valid(payload),
+                    0x11 => client_login_server_subdirectory_shape_valid(payload),
+                    _ => false,
+                }
+        }
+        VerifiedFamily::ClientModule => {
+            high.major == 0x03 && high.minor == 0x02 && empty_high_level_shape_valid(payload)
+        }
+        VerifiedFamily::ClientParty => {
+            high.major == 0x0E && high.minor == 0x02 && party_get_list_payload_shape_valid(payload)
+        }
+        VerifiedFamily::ClientQuickbar => {
+            high.major == 0x1E
+                && high.minor == 0x02
+                && client_quickbar::set_button_payload_shape_valid(payload)
+        }
+        VerifiedFamily::ClientServerStatus => {
+            high.major == 0x01 && high.minor == 0x00 && empty_high_level_shape_valid(payload)
+        }
         VerifiedFamily::ClientSideMessage => {
             high.major == 0x12 && high.minor == 0x0B && client_side_feedback_shape_valid(payload)
         }
@@ -1359,6 +1512,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload))
         }
         (0x02, 0x05 | 0x0C) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x02, 0x0D) => {
+            HighPayloadValidation::Exact(client_login_waypoint_response_shape_valid(payload))
+        }
         (0x02, 0x11) => {
             HighPayloadValidation::Exact(client_login_server_subdirectory_shape_valid(payload))
         }
@@ -1371,10 +1527,12 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x05, 0x02) => {
             HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload))
         }
-        (0x06, 0x01 | 0x03) => {
+        (0x06, 0x01 | 0x03 | 0x0B) => {
             HighPayloadValidation::Exact(client_input::claim_payload_if_verified(payload).is_some())
         }
-        (0x09, 0x04 | 0x05) => HighPayloadValidation::Exact(chat_shape_valid(payload, high)),
+        (0x09, 0x04 | 0x05 | 0x0B | 0x0C) => {
+            HighPayloadValidation::Exact(chat_shape_valid(payload, high))
+        }
         (0x0A, 0x01 | 0x02) => HighPayloadValidation::Exact(player_list_shape_valid(payload)),
         (0x0D, 0x01) => HighPayloadValidation::Exact(gui_inventory_status_shape_valid(payload)),
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
@@ -1388,7 +1546,10 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         }
         (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
         (0x1C, 0x0C) => HighPayloadValidation::Exact(journal_shape_valid(payload)),
-        (0x1E, 0x01 | 0x02) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
+        (0x1E, 0x01) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
+        (0x1E, 0x02) => {
+            HighPayloadValidation::Exact(client_quickbar::set_button_payload_shape_valid(payload))
+        }
         (0x31, 0x01 | 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x31, 0x03) => HighPayloadValidation::Exact(
             play_module_character_list::claim_payload_if_verified(payload).is_some(),
@@ -1423,6 +1584,23 @@ fn client_login_server_subdirectory_shape_valid(payload: &[u8]) -> bool {
         && identifier
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'.'))
+}
+
+fn client_login_waypoint_response_shape_valid(payload: &[u8]) -> bool {
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(tag_len) = read_le_u32(payload, 7).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let expected_declared = 11usize.saturating_add(tag_len);
+    declared == expected_declared
+        && tag_len <= 0x20
+        && declared < payload.len()
+        && payload.len() == declared + 1
+        && payload[declared] == 0x60
 }
 
 fn gui_inventory_status_shape_valid(payload: &[u8]) -> bool {
@@ -1591,12 +1769,18 @@ fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     //
     // EE `CNWSMessage::SendServerToPlayerChat_Tell` writes object id,
     // `CExoString`, three FLOATs, then one BOOL fragment selecting the speaker
-    // name branch before sending family 0x09/minor 0x04. This exact validator
-    // owns only those two chat shapes; other chat minors still need their own
-    // semantic translators before strict mode should allow them.
+    // name branch before sending family 0x09/minor 0x04.
+    //
+    // EE `CNWSMessage::SendServerToPlayerChatMultiLangMessage` writes the
+    // token-talk payload as two OBJECTIDs, a localized/string body, fixed
+    // CResRef, BOOL, and final OBJECTID before sending family 0x09/minor 0x0B
+    // or 0x0C. Strict delegates those subcases to the focused chat translator
+    // so the same decompile-backed cursor proof gates direct and verified
+    // frames.
     match high.minor {
         0x04 => chat_tell_shape_valid(payload),
         0x05 => chat_server_tell_shape_valid(payload),
+        0x0B | 0x0C => chat::claim_payload_if_verified(payload).is_some(),
         _ => false,
     }
 }
@@ -1715,6 +1899,10 @@ fn read_le_f32(payload: &[u8], offset: usize) -> Option<f32> {
 }
 
 fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
+    cnw_fragment_tail_can_hold_bools(fragment, 1)
+}
+
+fn cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize) -> bool {
     const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 
     let Some(first) = fragment.first().copied() else {
@@ -1730,7 +1918,7 @@ fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
             .saturating_mul(8)
             .saturating_add(final_bits)
     };
-    valid_bits > CNW_FRAGMENT_HEADER_BITS
+    valid_bits >= CNW_FRAGMENT_HEADER_BITS.saturating_add(semantic_bool_count)
 }
 
 fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
@@ -1746,7 +1934,106 @@ fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn module_info_shape_valid(payload: &[u8]) -> bool {
-    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+    const READ_START: usize = 3 + 4;
+    const MAX_MODULE_INFO_STRING: usize = 4096;
+    const MAX_AREA_NAME_STRING: usize = 512;
+    const MAX_AREA_COUNT: u32 = 4096;
+    const RESREF_BYTES: usize = 16;
+    const MAX_FRAGMENT_BYTES: usize = 64;
+
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    if high.major != 0x03 || high.minor != 0x01 {
+        return false;
+    }
+
+    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    if declared < READ_START
+        || declared > payload.len()
+        || payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES
+    {
+        return false;
+    }
+
+    let mut cursor = READ_START;
+    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_INFO_STRING) {
+        Some(cursor) => cursor,
+        None => return false,
+    };
+    // EE's writer uses `WriteCExoLocStringServer(..., 0)` here, and the client
+    // reader consumes the common raw-string branch through the fragment-bit
+    // discriminator. There is no inline marker byte in the read buffer for this
+    // observed Module_Info shape, so cursor validation treats it as the bounded
+    // CExoString payload the decompiled writer places in the read window.
+    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_INFO_STRING) {
+        Some(cursor) => cursor,
+        None => return false,
+    };
+
+    if cursor >= declared {
+        return false;
+    }
+    cursor += 1;
+
+    let Some(module_resref) = payload.get(cursor..cursor + RESREF_BYTES) else {
+        return false;
+    };
+    if !fixed_resref16_shape_valid(module_resref, true) {
+        return false;
+    }
+    cursor += RESREF_BYTES;
+
+    let Some(area_count) = read_le_u32(payload, cursor) else {
+        return false;
+    };
+    if area_count > MAX_AREA_COUNT {
+        return false;
+    }
+    cursor += 4;
+
+    for _ in 0..area_count {
+        let Some(area_id) = read_le_u32(payload, cursor) else {
+            return false;
+        };
+        if (area_id & 0x8000_0000) == 0 || area_id == 0xffff_ffff {
+            return false;
+        }
+        cursor += 4;
+        cursor = match cnw_string_end(payload, cursor, declared, MAX_AREA_NAME_STRING) {
+            Some(cursor) => cursor,
+            None => return false,
+        };
+    }
+
+    let Some(official_campaign) = payload.get(cursor).copied() else {
+        return false;
+    };
+    if official_campaign > 1 {
+        return false;
+    }
+    cursor += 1;
+
+    cursor == declared && cnw_fragment_tail_can_hold_bools(&payload[declared..], 2)
+}
+
+fn fixed_resref16_shape_valid(bytes: &[u8], allow_empty: bool) -> bool {
+    if bytes.len() != 16 {
+        return false;
+    }
+
+    let mut cursor = 0;
+    while cursor < bytes.len() && bytes[cursor] != 0 {
+        if !matches!(bytes[cursor], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-') {
+            return false;
+        }
+        cursor += 1;
+    }
+
+    allow_empty || cursor != 0
 }
 
 fn area_client_area_shape_valid(payload: &[u8]) -> bool {
@@ -2532,6 +2819,9 @@ fn consume_counted(bytes: &[u8], cursor: &mut usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crc::{encode_legacy_m_crc, write_be_u16};
+    use flate2::{Compression, write::ZlibEncoder};
+    use std::io::Write;
 
     #[test]
     fn coalesced_login_feedback_records_have_exact_semantic_shapes() {
@@ -2554,6 +2844,51 @@ mod tests {
             VerifiedFamily::Login,
             &login_confirm,
         ));
+    }
+
+    #[test]
+    fn strict_prefers_deflated_envelope_over_accidental_p_major_minor_length() {
+        // Regression for rewritten live-object zlib windows whose EE-facing
+        // inflated length was 0x00000350. The first four payload bytes are the
+        // little-endian length (`50 03 00 00`), which also looks like an
+        // unknown high-level `P 03/00` header if strict checks HighLevel before
+        // the M-frame deflate flag. The decompiled reliable-window branch is
+        // flag-driven, so this must remain a deflated envelope.
+        let packet = build_m_deflated_packet_with_inflated_len(0x350);
+
+        let decision = decide(
+            Direction::ServerToClient,
+            &packet,
+            StrictProfile::Player,
+        );
+        assert_eq!(decision.verdict, Verdict::Allow);
+        assert_eq!(decision.family, "M/deflated");
+
+        let verified = decide_verified_translated(
+            Direction::ServerToClient,
+            VerifiedFamily::SemanticDeflated,
+            &packet,
+        );
+        assert_eq!(verified.verdict, Verdict::Quarantine);
+        assert_eq!(verified.family, "M/verified-deflated");
+        assert_eq!(verified.reason, "verified-deflated-missing-semantic-family");
+    }
+
+    fn build_m_deflated_packet_with_inflated_len(inflated_len: usize) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        let inflated = vec![0u8; inflated_len];
+        encoder.write_all(&inflated).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut payload = Vec::with_capacity(4 + compressed.len());
+        payload.extend_from_slice(&(inflated_len as u32).to_le_bytes());
+        payload.extend_from_slice(&compressed);
+
+        let mut packet = vec![b'M', 0, 0, 0, 1, 0, 0, 0x0E, 0, 1, 0, 0];
+        packet.extend_from_slice(&payload);
+        write_be_u16(&mut packet, 10, payload.len() as u16);
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
     }
 }
 
@@ -2718,8 +3053,19 @@ fn m_window_diagnostic(bytes: &[u8]) -> Option<String> {
     };
     let view = frame.parsed?;
     let primary = view
-        .high
-        .map(|high| format!("{:02X}/{:02X} {}", high.major, high.minor, high.name()))
+        .deflated
+        .as_ref()
+        .filter(|deflated| deflated.plausible)
+        .map(|deflated| {
+            format!(
+                "deflated(inflated={} compressed={})",
+                deflated.inflated_length, deflated.compressed_length
+            )
+        })
+        .or_else(|| {
+            view.high
+                .map(|high| format!("{:02X}/{:02X} {}", high.major, high.minor, high.name()))
+        })
         .unwrap_or_else(|| "-".to_string());
     let mut parts = vec![format!(
         "seq={} ack={} flags=0x{:02X} pktseq={} decl={} payload={} avail={} trail={} primary={}",

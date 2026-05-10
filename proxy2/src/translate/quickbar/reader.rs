@@ -41,6 +41,7 @@ pub(super) fn parse_quickbar_read_buffer(
     read_buffer: &[u8],
     mut cursor: usize,
 ) -> Option<(Vec<QuickbarButton>, usize)> {
+    let model_types = quickbar_base_item_model_types()?;
     let mut buttons = Vec::with_capacity(LEGACY_QUICKBAR_BUTTON_COUNT);
     let memo_width = read_buffer.len().checked_add(1)?;
     let mut memo =
@@ -60,9 +61,15 @@ pub(super) fn parse_quickbar_read_buffer(
             buttons.push(QuickbarButton {
                 kind: QuickbarButtonKind::ItemCandidate,
             });
-            cursor = choose_legacy_quickbar_item_end(read_buffer, slot, cursor, &mut memo)
-                .filter(|next_cursor| *next_cursor > cursor)
-                .unwrap_or_else(|| cursor.saturating_add(1));
+            cursor = choose_legacy_quickbar_item_end(
+                read_buffer,
+                slot,
+                cursor,
+                model_types,
+                &mut memo,
+            )
+            .filter(|next_cursor| *next_cursor > cursor)
+            .unwrap_or_else(|| cursor.saturating_add(1));
             continue;
         }
 
@@ -141,9 +148,14 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                 // Blank this unowned item instead of continuing out of phase or
                 // forwarding unknown bytes.
                 if !primary.present && !secondary.present && reader.cursor == payload_start {
-                    let next_cursor =
-                        choose_legacy_quickbar_item_end(read_buffer, slot, button_start, &mut memo)
-                            .filter(|next_cursor| *next_cursor > payload_start);
+                    let next_cursor = choose_legacy_quickbar_item_end(
+                        read_buffer,
+                        slot,
+                        button_start,
+                        model_types,
+                        &mut memo,
+                    )
+                    .filter(|next_cursor| *next_cursor > payload_start);
                     if let Some(next_cursor) = next_cursor {
                         tracing::info!(
                             slot,
@@ -212,9 +224,14 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                     });
                     continue;
                 }
-                let next_cursor =
-                    choose_legacy_quickbar_item_end(read_buffer, slot, button_start, &mut memo)
-                        .filter(|next_cursor| *next_cursor > button_start);
+                let next_cursor = choose_legacy_quickbar_item_end(
+                    read_buffer,
+                    slot,
+                    button_start,
+                    model_types,
+                    &mut memo,
+                )
+                .filter(|next_cursor| *next_cursor > button_start);
                 let Some(next_cursor) = next_cursor else {
                     if quickbar_can_blank_remaining_after_source_parse_failure(&buttons, slot) {
                         tracing::info!(
@@ -257,6 +274,46 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
         let kind = if let Some(kind) = parse_legacy_quickbar_non_item_from_reader(&mut reader, ty) {
             kind
         } else {
+            // Compatibility transform for an HG/Diamond compact item source
+            // shape observed in captured `P 1E 01` SetAllButtons streams:
+            // after earlier empty slots, the item object body can begin at the
+            // next slot boundary without Diamond's explicit type-1 byte.  EE's
+            // decompiled writer always emits the slot type byte before the
+            // case-1 item BOOL/object/appearance/property branches, so the
+            // bridge must not forward this source shape raw.  Instead, only
+            // accept it when the existing compact item parser proves a bounded
+            // item model and the remaining 36-slot quickbar scorer proves the
+            // next button boundary; the EE writer then restores the explicit
+            // type tag from the typed model.
+            if let Some((next_cursor, primary, secondary)) =
+                choose_legacy_quickbar_compact_item_end(
+                    read_buffer,
+                    slot,
+                    button_start,
+                    model_types,
+                    &mut memo,
+                )
+            {
+                tracing::info!(
+                    slot,
+                    button_start,
+                    next_cursor,
+                    fragment_cursor = reader.fragment_cursor,
+                    fragment_bit = reader.fragment_bit,
+                    "server GuiQuickbar_SetAllButtons recovered compact item body with missing source type tag"
+                );
+                reader = before_button;
+                reader.cursor = next_cursor;
+                allow_fragment_tail_slack = true;
+                buttons.push(QuickbarButton {
+                    kind: QuickbarButtonKind::Item {
+                        primary,
+                        secondary,
+                        recovered_type_tag: true,
+                    },
+                });
+                continue;
+            }
             let Some(resync_cursor) = find_legacy_quickbar_resync(read_buffer, slot, button_start)
             else {
                 if quickbar_can_blank_remaining_after_source_parse_failure(&buttons, slot) {
@@ -297,14 +354,31 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
         return None;
     }
     if !opaque_item_slots_blanked && reader.cursor != read_buffer.len() {
-        return None;
+        if allow_fragment_tail_slack
+            && legacy_quickbar_trailing_command_tail_is_discardable(read_buffer, reader.cursor)
+        {
+            tracing::info!(
+                cursor = reader.cursor,
+                read_len = read_buffer.len(),
+                trailing = read_buffer.len().saturating_sub(reader.cursor),
+                "server GuiQuickbar_SetAllButtons discarded extra legacy command tail after compact item recovery"
+            );
+            reader.cursor = read_buffer.len();
+        } else {
+            return None;
+        }
     }
     let consumed_fragment_bits = reader
         .fragment_cursor
         .checked_mul(8)?
         .checked_add(usize::from(reader.fragment_bit))?;
     let consumed_fragment_bytes = reader.fragment_cursor + usize::from(reader.fragment_bit != 0);
-    if allow_fragment_tail_slack && consumed_fragment_bytes != fragments.len() {
+    // Compact byte-owned HG item records use a verified compatibility parser
+    // for active-property BOOL fields that Diamond/EE normally read from the
+    // fragment stream. The writer discards the legacy fragment tail and emits
+    // fresh EE bits from the typed model, so unused source bits are allowed
+    // here; reading beyond the tail is still invalid.
+    if allow_fragment_tail_slack && consumed_fragment_bytes > fragments.len() {
         return None;
     }
     if !opaque_item_slots_blanked
@@ -336,6 +410,38 @@ fn quickbar_can_blank_remaining_after_source_parse_failure(
                     | QuickbarButtonKind::ItemCandidate
             )
         })
+}
+
+fn legacy_quickbar_trailing_command_tail_is_discardable(
+    read_buffer: &[u8],
+    cursor: usize,
+) -> bool {
+    // HG captures can end the recovered compact-item read window with one
+    // Diamond command-line quickbar record that was not part of the 36 slots
+    // selected by the typed scorer. The decompile-owned command shape is type
+    // 18 followed by two CExoString fields; existing code already treats the
+    // final four-byte HG suffix after that shape as a boundary-only artifact.
+    // General command buttons are never emitted raw by this translator, so this
+    // exact tail may be consumed only to prove the SetAllButtons boundary.
+    let mut probe = QuickbarPacketReader {
+        read_buffer,
+        fragments: &[],
+        cursor,
+        fragment_cursor: 0,
+        fragment_bit: 0,
+        final_fragment_bits: 0,
+    };
+    if probe.read_byte() != Some(18) {
+        return false;
+    }
+    if probe.skip_string().is_none() || probe.skip_string().is_none() {
+        return false;
+    }
+    probe.cursor == read_buffer.len()
+        || probe
+            .cursor
+            .checked_add(CNW_LENGTH_BYTES)
+            .is_some_and(|end| end == read_buffer.len())
 }
 
 fn parse_legacy_quickbar_non_item_from_reader(
@@ -548,14 +654,14 @@ pub(super) fn legacy_quickbar_type_has_no_payload(ty: u8) -> bool {
     )
 }
 
-fn legacy_quickbar_type_has_int_payload(ty: u8) -> bool {
+pub(super) fn legacy_quickbar_type_has_int_payload(ty: u8) -> bool {
     matches!(
         ty,
         3 | 4 | 8 | 10 | 27 | 28 | 31 | 32 | 33 | 34 | 37 | 42 | 43 | 45 | 46 | 47 | 48
     )
 }
 
-fn legacy_quickbar_int_payload_is_valid_for_ee(ty: u8, value: u32) -> bool {
+pub(super) fn legacy_quickbar_int_payload_is_valid_for_ee(ty: u8, value: u32) -> bool {
     match ty {
         // EE's quickbar case 8 reads `ReadINT(32)`, then calls `sub_14086B160`.
         // That path reaches `sub_140866C90`, which stores the value and indexes

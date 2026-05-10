@@ -12,7 +12,10 @@ use crate::{
     config::Config,
     ee_crypto::{ClientPacket, EeCrypto},
     nwsync,
-    packet::Direction,
+    packet::{
+        Direction,
+        m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
+    },
     translate::{Emit, SessionTranslator, Translator},
 };
 
@@ -174,6 +177,7 @@ fn drain_server_sockets(
                         .translator
                         .translate(Direction::ServerToClient, bytes);
                     for outbound in session.translator.take_pending_client_to_server_packets() {
+                        log_proxy_generated_client_packet(session.client, server, &outbound);
                         session
                             .upstream
                             .send_to(&outbound, server)
@@ -293,4 +297,29 @@ fn expire_sessions(config: &Config, sessions: &mut HashMap<SocketAddr, Session>)
         }
         alive
     });
+}
+
+fn log_proxy_generated_client_packet(client: SocketAddr, server: SocketAddr, bytes: &[u8]) {
+    let parsed = MFrameView::parse(bytes);
+    let high = parsed
+        .as_ref()
+        .and_then(|view| {
+            let end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET.saturating_add(view.payload_length);
+            bytes
+                .get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..end)
+                .and_then(crate::packet::m::HighLevel::parse)
+        });
+    tracing::info!(
+        %client,
+        %server,
+        len = bytes.len(),
+        sequence = parsed.as_ref().map(|view| view.sequence),
+        ack_sequence = parsed.as_ref().map(|view| view.ack_sequence),
+        payload_length = parsed.as_ref().map(|view| view.payload_length),
+        crc_valid = parsed.as_ref().map(|view| view.crc_valid),
+        high_major = high.as_ref().map(|high| high.major),
+        high_minor = high.as_ref().map(|high| high.minor),
+        high_name = high.as_ref().map(|high| high.name()),
+        "sending proxy-generated client-to-server packet"
+    );
 }
