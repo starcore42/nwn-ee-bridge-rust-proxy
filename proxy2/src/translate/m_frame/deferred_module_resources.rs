@@ -71,6 +71,22 @@ pub(super) fn capture_early_server_status_if_needed(
         return;
     };
 
+    let _ = capture_early_status_payload_if_needed(
+        payload,
+        view.sequence,
+        view.ack_sequence,
+        runtime,
+        state,
+    );
+}
+
+pub(super) fn capture_early_status_payload_if_needed(
+    payload: &[u8],
+    sequence: u16,
+    ack_sequence: u16,
+    runtime: &module_resources::ModuleResourceRuntime,
+    state: &mut DeferredModuleResourcesState,
+) -> Option<LegacyStatusShape> {
     // If the module-resource runtime can already rewrite this packet, the
     // normal semantic translator should own it immediately. Deferral is only
     // for the strict startup gap before legacy Module_Info has supplied the
@@ -82,45 +98,46 @@ pub(super) fn capture_early_server_status_if_needed(
     )
     .is_some()
     {
-        return;
+        return None;
     }
 
     let Some(shape) = LegacyStatusShape::parse(payload) else {
         tracing::warn!(
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
+            sequence,
+            ack_sequence,
             payload_len = payload.len(),
             "early ServerStatus_ModuleRunning was not deferred: payload is not the legacy short status shape"
         );
-        return;
+        return None;
     };
 
     if state.pending_status.is_some() {
         tracing::debug!(
-            sequence = view.sequence,
-            ack_sequence = view.ack_sequence,
+            sequence,
+            ack_sequence,
             declared = shape.declared,
             "early ServerStatus_ModuleRunning deferral already has a pending status payload"
         );
-        return;
+        return Some(shape);
     }
 
     state.pending_status = Some(DeferredStatusPayload {
         payload: payload.to_vec(),
-        sequence: view.sequence,
-        ack_sequence: view.ack_sequence,
+        sequence,
+        ack_sequence,
         declared: shape.declared,
         status_string_len: shape.status_string_len,
         fragment_tail_len: shape.fragment_tail_len,
     });
     tracing::info!(
-        sequence = view.sequence,
-        ack_sequence = view.ack_sequence,
+        sequence,
+        ack_sequence,
         declared = shape.declared,
         status_string_len = shape.status_string_len,
         fragment_tail_len = shape.fragment_tail_len,
         "early ServerStatus_ModuleRunning captured for deferred EE module-resource rewrite"
     );
+    Some(shape)
 }
 
 pub(super) fn queue_after_module_info_if_ready(

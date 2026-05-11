@@ -14,7 +14,6 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -44,11 +43,11 @@ mod transport_identity;
 
 use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
 use reassembly::{
-    CompletedDeflatedReplay, CompletedDeflatedStreamWindow, InflatedGameplayPayload,
-    ServerDeflatedReassembly,
+    CompletedDeflatedReplay, InflatedGameplayPayload, ServerDeflatedReassembly,
 };
 use sequence::{
-    SequenceShift, shift_sequence_for_peer, trim_sequence_shifts, unshift_ack_for_origin,
+    SequenceShift, sequence_at_or_after, shift_sequence_for_peer, trim_sequence_shifts,
+    unshift_ack_for_origin,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -61,33 +60,72 @@ pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Ve
     std::mem::take(&mut state.sequence.pending_client_to_server_packets)
 }
 
+pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> Emit {
+    if state.synthetic_area.server_hold_gate.is_some()
+        || state
+            .synthetic_area
+            .held_server_to_client_packets
+            .is_empty()
+    {
+        return Emit::Consumed;
+    }
+
+    let packets = state
+        .synthetic_area
+        .held_server_to_client_packets
+        .drain(..)
+        .map(|pending| {
+            tracing::info!(
+                proof = pending.proof.as_str(),
+                reason = pending.reason,
+                len = pending.packet.len(),
+                "server-to-client held packet released after area-load ACK gate opened"
+            );
+            (pending.proof, pending.packet)
+        })
+        .collect::<Vec<_>>();
+    let emit = Emit::MixedVerifiedProofPacketsPreShifted(packets);
+    record_server_emit_window_state(state, &emit);
+    emit
+}
+
 pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("client M frame failed reliable-window parse");
     };
     observe_client_window_state(state, &view);
+    synthetic_area::observe_server_hold_gate_client_ack(
+        &mut state.synthetic_area.server_hold_gate,
+        view.ack_sequence,
+    );
 
     if synthetic_area::is_native_area_loaded(view.high) {
         synthetic_area::clear_pending_area_loaded(&mut state.synthetic_area.pending_area_loaded);
+        synthetic_area::clear_in_flight_area_loaded(
+            &mut state.synthetic_area.in_flight_area_loaded,
+        );
     }
 
     let mut outbound = bytes.to_vec();
     unshift_client_ack_for_server(state, &mut outbound, &view)?;
     let ack_adjusted_view = MFrameView::parse(&outbound).unwrap_or_else(|| view.clone());
     shift_client_sequence_for_server(state, &mut outbound, &ack_adjusted_view)?;
+    let origin_client_ack_sequence = ack_adjusted_view.ack_sequence;
     let shifted_view = MFrameView::parse(&outbound).unwrap_or(ack_adjusted_view);
     let synthetic_area_loaded = synthetic_area::maybe_build_area_loaded_client_packet(
         &mut state.synthetic_area.pending_area_loaded,
+        &mut state.synthetic_area.in_flight_area_loaded,
         &mut state.sequence.latest_client_sequence_from_client,
         &mut state.sequence.client_sequence_shifts,
         view.ack_sequence,
+        origin_client_ack_sequence,
     )?;
 
-    let packet = translate_client_to_server_packet(outbound, &shifted_view)?;
+    let packet = translate_client_to_server_packet(state, outbound, &shifted_view)?;
     if let Some(synthetic) = synthetic_area_loaded {
         let synthetic_view = MFrameView::parse(&synthetic)
             .ok_or_else(|| anyhow::anyhow!("synthetic Area_AreaLoaded M frame failed to parse"))?;
-        let synthetic = translate_client_to_server_packet(synthetic, &synthetic_view)?;
+        let synthetic = translate_client_to_server_packet(state, synthetic, &synthetic_view)?;
         return Ok(Emit::MixedVerifiedPackets(vec![
             (packet.family, packet.packet),
             (synthetic.family, synthetic.packet),
@@ -101,16 +139,24 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
 }
 
 fn translate_client_to_server_packet(
+    state: &mut SessionState,
     bytes: Vec<u8>,
     view: &MFrameView,
 ) -> anyhow::Result<client_filters::ClientFrameTranslation> {
-    client_filters::translate_client_frame(bytes, view)
+    let translated = client_filters::translate_client_frame(bytes, view)?;
+    observe_verified_client_m_packet(state, translated.family, &translated.packet);
+    Ok(translated)
 }
 
 pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> anyhow::Result<Emit> {
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("server M frame failed reliable-window parse");
     };
+    synthetic_area::maybe_queue_area_loaded_retransmit(
+        &mut state.synthetic_area.in_flight_area_loaded,
+        &mut state.sequence.pending_client_to_server_packets,
+        view.ack_sequence,
+    );
     let pending_count_before = state.synthetic_area.pending_server_to_client_packets.len();
     let mut inbound = bytes.to_vec();
     unshift_server_ack_for_client(state, &mut inbound, &view)?;
@@ -125,6 +171,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     if let Some((proof, rewritten)) =
         coalesced::rewrite_server_window_spans_if_needed(&inbound, &view, state)?
     {
+        observe_verified_server_m_packet(state, &proof, &rewritten);
         return finalize_server_to_client_emit(
             state,
             Emit::VerifiedProofPackets {
@@ -143,6 +190,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
     {
         login_waypoint::maybe_queue_empty_waypoint_response(state, &inbound, &view)?;
+        observe_verified_server_m_packet(state, &verified.proof, &verified.packet);
         Emit::VerifiedProofPackets {
             proof: verified.proof,
             packets: vec![verified.packet],
@@ -172,6 +220,65 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     };
 
     finalize_server_to_client_emit(state, emit, pending_count_before)
+}
+
+fn observe_verified_server_m_packet(
+    state: &mut SessionState,
+    proof: &VerifiedProof,
+    packet: &[u8],
+) {
+    let Some(view) = MFrameView::parse(packet) else {
+        return;
+    };
+    let Some(payload) = parse_window::primary_payload(packet, &view) else {
+        return;
+    };
+    crate::translate::semantic::observe_verified_payload(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClient,
+        proof,
+        payload,
+    );
+}
+
+fn observe_verified_client_m_packet(
+    state: &mut SessionState,
+    family: VerifiedFamily,
+    packet: &[u8],
+) {
+    let Some(view) = MFrameView::parse(packet) else {
+        return;
+    };
+    let Some(payload) = parse_window::primary_payload(packet, &view) else {
+        return;
+    };
+    let proof = VerifiedProof::family(family);
+    crate::translate::semantic::observe_verified_payload(
+        &mut state.semantic,
+        crate::packet::Direction::ClientToServer,
+        &proof,
+        payload,
+    );
+}
+
+fn observe_verified_synthetic_server_m_packet(
+    state: &mut SessionState,
+    family: VerifiedFamily,
+    packet: &[u8],
+) {
+    let Some(view) = MFrameView::parse(packet) else {
+        return;
+    };
+    let Some(payload) = parse_window::primary_payload(packet, &view) else {
+        return;
+    };
+    let proof = VerifiedProof::family(family);
+    crate::translate::semantic::observe_verified_payload(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClientSynthetic,
+        &proof,
+        payload,
+    );
 }
 
 fn observe_client_window_state(state: &mut SessionState, view: &MFrameView) {
@@ -351,12 +458,15 @@ fn finalize_server_to_client_emit(
     let mut prefix = Vec::new();
     let mut suffix = Vec::new();
     let mut kept = Vec::new();
+    let mut released_synthetic_loadbar_end = false;
 
-    for (index, pending) in state
+    let pending_packets = state
         .synthetic_area
         .pending_server_to_client_packets
         .drain(..)
         .enumerate()
+        .collect::<Vec<_>>();
+    for (index, pending) in pending_packets
     {
         if pending.due_at > now {
             kept.push(pending);
@@ -368,6 +478,15 @@ fn finalize_server_to_client_emit(
             due_ms_ago = now.saturating_duration_since(pending.due_at).as_millis(),
             "server synthetic M packet released"
         );
+        state.semantic.synthetic.server_synthetic_packets =
+            state.semantic.synthetic.server_synthetic_packets.saturating_add(1);
+        observe_verified_synthetic_server_m_packet(state, pending.family, &pending.packet);
+        if pending.reason == "Area_ClientArea synthetic LoadBar_End" {
+            released_synthetic_loadbar_end = true;
+            tracing::info!(
+                "client synthetic Area_AreaLoaded remains gated until EE ACKs synthetic LoadBar_End"
+            );
+        }
         if index < pending_count_before {
             prefix.push((pending.family, pending.packet));
         } else {
@@ -375,12 +494,26 @@ fn finalize_server_to_client_emit(
         }
     }
     state.synthetic_area.pending_server_to_client_packets = kept;
+    if released_synthetic_loadbar_end {
+        synthetic_area::arm_server_hold_gate_until_client_ack(
+            &mut state.synthetic_area.server_hold_gate,
+            state.synthetic_area.pending_area_loaded.as_ref(),
+        );
+    }
 
-    match emit {
+    let finalized = match emit {
         Emit::Consumed => {
             prefix.extend(suffix);
             if prefix.is_empty() {
                 Ok(Emit::Consumed)
+            } else {
+                Ok(Emit::MixedVerifiedPackets(prefix))
+            }
+        }
+        Emit::ConsumedRetireSession { reason } => {
+            prefix.extend(suffix);
+            if prefix.is_empty() {
+                Ok(Emit::ConsumedRetireSession { reason })
             } else {
                 Ok(Emit::MixedVerifiedPackets(prefix))
             }
@@ -398,35 +531,71 @@ fn finalize_server_to_client_emit(
             if prefix.is_empty() && suffix.is_empty() {
                 Ok(Emit::Packet(packet))
             } else {
-                let mut plain = prefix
-                    .into_iter()
-                    .map(|(_, packet)| packet)
-                    .collect::<Vec<_>>();
-                plain.push(packet);
-                plain.extend(suffix.into_iter().map(|(_, packet)| packet));
-                Ok(Emit::Packets(plain))
+                let Some(family) = transport_only_verified_family_for_plain_server_packet(&packet)
+                else {
+                    tracing::warn!(
+                        pending_verified_prefix = prefix.len(),
+                        pending_verified_suffix = suffix.len(),
+                        packet_len = packet.len(),
+                        "server pending verified packets could not be combined with unverified plain packet"
+                    );
+                    return Ok(Emit::Drop);
+                };
+                let mut mixed = Vec::with_capacity(prefix.len() + 1 + suffix.len());
+                mixed.extend(prefix);
+                mixed.push((family, packet));
+                mixed.extend(suffix);
+                Ok(Emit::MixedVerifiedPackets(mixed))
             }
         }
         Emit::Packets(mut packets) => {
             for packet in &mut packets {
                 shift_server_sequence_for_client(state, packet)?;
             }
-            let mut plain = prefix
-                .into_iter()
-                .map(|(_, packet)| packet)
-                .collect::<Vec<_>>();
-            plain.extend(packets);
-            plain.extend(suffix.into_iter().map(|(_, packet)| packet));
-            Ok(Emit::Packets(plain))
+            if prefix.is_empty() && suffix.is_empty() {
+                Ok(Emit::Packets(packets))
+            } else {
+                let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+                mixed.extend(prefix);
+                for packet in packets {
+                    let Some(family) =
+                        transport_only_verified_family_for_plain_server_packet(&packet)
+                    else {
+                        tracing::warn!(
+                            pending_verified_suffix = suffix.len(),
+                            packet_len = packet.len(),
+                            "server pending verified packets could not be combined with unverified plain packet batch"
+                        );
+                        return Ok(Emit::Drop);
+                    };
+                    mixed.push((family, packet));
+                }
+                mixed.extend(suffix);
+                Ok(Emit::MixedVerifiedPackets(mixed))
+            }
         }
-        Emit::PacketsPreShifted(mut packets) => {
-            let mut plain = prefix
-                .into_iter()
-                .map(|(_, packet)| packet)
-                .collect::<Vec<_>>();
-            plain.extend(packets);
-            plain.extend(suffix.into_iter().map(|(_, packet)| packet));
-            Ok(Emit::PacketsPreShifted(plain))
+        Emit::PacketsPreShifted(packets) => {
+            if prefix.is_empty() && suffix.is_empty() {
+                Ok(Emit::PacketsPreShifted(packets))
+            } else {
+                let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+                mixed.extend(prefix);
+                for packet in packets {
+                    let Some(family) =
+                        transport_only_verified_family_for_plain_server_packet(&packet)
+                    else {
+                        tracing::warn!(
+                            pending_verified_suffix = suffix.len(),
+                            packet_len = packet.len(),
+                            "server pending verified packets could not be combined with unverified pre-shifted packet batch"
+                        );
+                        return Ok(Emit::Drop);
+                    };
+                    mixed.push((family, packet));
+                }
+                mixed.extend(suffix);
+                Ok(Emit::MixedVerifiedPackets(mixed))
+            }
         }
         Emit::MixedVerifiedPackets(mut packets) => {
             for (_, packet) in &mut packets {
@@ -449,6 +618,21 @@ fn finalize_server_to_client_emit(
                     .map(|(family, packet)| (VerifiedProof::family(family), packet)),
             );
             mixed.extend(packets);
+            mixed.extend(
+                suffix
+                    .into_iter()
+                    .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+            );
+            Ok(Emit::MixedVerifiedProofPackets(mixed))
+        }
+        Emit::MixedVerifiedProofPacketsPreShifted(mut packets) => {
+            let mut mixed = Vec::with_capacity(prefix.len() + packets.len() + suffix.len());
+            mixed.extend(
+                prefix
+                    .into_iter()
+                    .map(|(family, packet)| (VerifiedProof::family(family), packet)),
+            );
+            mixed.append(&mut packets);
             mixed.extend(
                 suffix
                     .into_iter()
@@ -534,7 +718,185 @@ fn finalize_server_to_client_emit(
                 Ok(Emit::MixedVerifiedProofPackets(mixed))
             }
         }
+    };
+    let finalized = finalized.and_then(|finalized_emit| {
+        if released_synthetic_loadbar_end {
+            Ok(finalized_emit)
+        } else {
+            hold_server_emit_until_area_load_ack(state, finalized_emit)
+        }
+    });
+    if let Ok(ref finalized_emit) = finalized {
+        record_server_emit_window_state(state, finalized_emit);
     }
+    finalized
+}
+
+fn record_server_emit_window_state(state: &mut SessionState, emit: &Emit) {
+    match emit {
+        Emit::Packet(packet) => {
+            record_server_packet_window_state(state, packet);
+        }
+        Emit::Packets(packets)
+        | Emit::PacketsPreShifted(packets)
+        | Emit::VerifiedPackets { packets, .. }
+        | Emit::VerifiedPacketsPreShifted { packets, .. }
+        | Emit::VerifiedProofPackets { packets, .. }
+        | Emit::VerifiedProofPacketsPreShifted { packets, .. } => {
+            for packet in packets {
+                record_server_packet_window_state(state, packet);
+            }
+        }
+        Emit::MixedVerifiedPackets(packets) => {
+            for (_, packet) in packets {
+                record_server_packet_window_state(state, packet);
+            }
+        }
+        Emit::MixedVerifiedProofPackets(packets)
+        | Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
+            for (_, packet) in packets {
+                record_server_packet_window_state(state, packet);
+            }
+        }
+        Emit::Consumed
+        | Emit::ConsumedRetireSession { .. }
+        | Emit::Drop => {}
+    }
+}
+
+fn hold_server_emit_until_area_load_ack(
+    state: &mut SessionState,
+    emit: Emit,
+) -> anyhow::Result<Emit> {
+    let Some(gate) = state.synthetic_area.server_hold_gate.as_ref() else {
+        return Ok(emit);
+    };
+
+    match emit {
+        Emit::VerifiedPackets { family, packets }
+        | Emit::VerifiedPacketsPreShifted { family, packets } => {
+            hold_server_packets(
+                state,
+                VerifiedProof::family(family),
+                packets,
+                "post-area server packet held until EE ACKs synthetic LoadBar_End",
+            );
+            Ok(Emit::Consumed)
+        }
+        Emit::VerifiedProofPackets { proof, packets }
+        | Emit::VerifiedProofPacketsPreShifted { proof, packets } => {
+            hold_server_packets(
+                state,
+                proof,
+                packets,
+                "post-area server packet held until EE ACKs synthetic LoadBar_End",
+            );
+            Ok(Emit::Consumed)
+        }
+        Emit::MixedVerifiedPackets(packets) => {
+            for (family, packet) in packets {
+                hold_one_server_packet(
+                    state,
+                    VerifiedProof::family(family),
+                    packet,
+                    "post-area mixed server packet held until EE ACKs synthetic LoadBar_End",
+                );
+            }
+            Ok(Emit::Consumed)
+        }
+        Emit::MixedVerifiedProofPackets(packets)
+        | Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
+            for (proof, packet) in packets {
+                hold_one_server_packet(
+                    state,
+                    proof,
+                    packet,
+                    "post-area mixed server packet held until EE ACKs synthetic LoadBar_End",
+                );
+            }
+            Ok(Emit::Consumed)
+        }
+        Emit::Packet(packet) => {
+            if transport_only_verified_family_for_plain_server_packet(&packet).is_some() {
+                Ok(Emit::Packet(packet))
+            } else {
+                tracing::warn!(
+                    release_client_ack_sequence = gate.release_client_ack_sequence,
+                    packet_len = packet.len(),
+                    "non-verified server packet encountered while area-load hold gate is active; dropping instead of buffering without proof"
+                );
+                Ok(Emit::Drop)
+            }
+        }
+        other => Ok(other),
+    }
+}
+
+fn hold_server_packets(
+    state: &mut SessionState,
+    proof: VerifiedProof,
+    packets: Vec<Vec<u8>>,
+    reason: &'static str,
+) {
+    for packet in packets {
+        hold_one_server_packet(state, proof.clone(), packet, reason);
+    }
+}
+
+fn hold_one_server_packet(
+    state: &mut SessionState,
+    proof: VerifiedProof,
+    packet: Vec<u8>,
+    reason: &'static str,
+) {
+    let release_client_ack_sequence = state
+        .synthetic_area
+        .server_hold_gate
+        .as_ref()
+        .map(|gate| gate.release_client_ack_sequence);
+    tracing::info!(
+        proof = proof.as_str(),
+        release_client_ack_sequence,
+        len = packet.len(),
+        reason,
+        held_packets = state.synthetic_area.held_server_to_client_packets.len() + 1,
+        "server-to-client verified packet held behind area-load ACK gate"
+    );
+    state
+        .synthetic_area
+        .held_server_to_client_packets
+        .push(synthetic_area::PendingVerifiedServerPacket {
+            proof,
+            packet,
+            reason,
+        });
+}
+
+fn record_server_packet_window_state(state: &mut SessionState, packet: &[u8]) {
+    let Some(view) = MFrameView::parse(packet) else {
+        return;
+    };
+    if view.sequence == 0 {
+        return;
+    }
+
+    let should_update = state
+        .sequence
+        .latest_server_sequence_to_client
+        .map(|latest| sequence_at_or_after(view.sequence, latest))
+        .unwrap_or(true);
+    if should_update {
+        state.sequence.latest_server_sequence_to_client = Some(view.sequence);
+    }
+}
+
+fn transport_only_verified_family_for_plain_server_packet(packet: &[u8]) -> Option<VerifiedFamily> {
+    let view = MFrameView::parse(packet)?;
+    if view.payload_length == 0 && view.trailing_payload_length == 0 {
+        return Some(VerifiedFamily::ConsumedEmptyMFrame);
+    }
+
+    None
 }
 
 fn retarget_completed_reassembly_emit_after_progress_shells(
@@ -585,6 +947,46 @@ fn retarget_completed_reassembly_emit_after_progress_shells(
         }
         other => Ok(other),
     }
+}
+
+fn record_extra_deflated_output_sequence_shift(
+    state: &mut SessionState,
+    reassembly: &ServerDeflatedReassembly,
+    output_count: usize,
+) -> anyhow::Result<()> {
+    let original_count = reassembly.frames.len();
+    let inserted_extra_packets = output_count.saturating_sub(original_count);
+    if inserted_extra_packets == 0 {
+        return Ok(());
+    }
+    if inserted_extra_packets > u16::MAX as usize {
+        anyhow::bail!("deflated output inserted too many reliable frames");
+    }
+    let base = reassembly.first_sequence.wrapping_add(original_count as u16);
+    state.sequence.server_sequence_shifts.push(SequenceShift {
+        base,
+        delta: inserted_extra_packets as u16,
+    });
+    trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+    tracing::info!(
+        first_sequence = reassembly.first_sequence,
+        original_frames = original_count,
+        output_frames = output_count,
+        shift_base = base,
+        inserted_extra_packets,
+        "server deflated rewrite inserted reliable M frames; future server sequences shifted"
+    );
+    Ok(())
+}
+
+fn pre_shift_current_server_packets(
+    state: &SessionState,
+    packets: &mut [Vec<u8>],
+) -> anyhow::Result<()> {
+    for packet in packets {
+        shift_server_sequence_for_client(state, packet)?;
+    }
+    Ok(())
 }
 
 fn retarget_completed_reassembly_packets_after_progress_shells(
@@ -683,7 +1085,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             let interleaved_packets = reassembly.interleaved_packets;
             return match replay {
                 CompletedDeflatedReplay::Packets(mut packets) => {
-                    packets.extend(interleaved_packets);
+                    packets.extend(interleaved_packets.into_iter().map(|packet| packet.packet));
                     tracing::info!(
                         frames = packets.len(),
                         first_sequence = window_first_sequence,
@@ -699,9 +1101,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                     family,
                     packets: mut packets,
                 } => {
-                    packets.extend(interleaved_packets);
                     tracing::info!(
-                        frames = packets.len(),
+                        frames = packets.len() + interleaved_packets.len(),
                         first_sequence = window_first_sequence,
                         packetized_sequence = window_packetized_sequence,
                         inflated_length = window_inflated_length,
@@ -709,15 +1110,18 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                         replay = "verified-packets",
                         "server deflated M stream duplicate replayed without advancing inflater"
                     );
-                    Ok(Emit::VerifiedPackets { family, packets })
+                    Ok(reassembly::emit_family_packets_with_interleaved(
+                        family,
+                        packets,
+                        interleaved_packets,
+                    ))
                 }
                 CompletedDeflatedReplay::VerifiedProofPackets {
                     proof,
                     packets: mut packets,
                 } => {
-                    packets.extend(interleaved_packets);
                     tracing::info!(
-                        frames = packets.len(),
+                        frames = packets.len() + interleaved_packets.len(),
                         first_sequence = window_first_sequence,
                         packetized_sequence = window_packetized_sequence,
                         inflated_length = window_inflated_length,
@@ -725,7 +1129,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                         replay = "verified-proof-packets",
                         "server deflated M stream duplicate replayed without advancing inflater"
                     );
-                    Ok(Emit::VerifiedProofPackets { proof, packets })
+                    Ok(reassembly::emit_proof_packets_with_interleaved(
+                        proof,
+                        packets,
+                        interleaved_packets,
+                    ))
                 }
             };
         }
@@ -775,7 +1183,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             return Ok(emit);
         }
         dump_invalid_inflated_payload(&bytes, &reassembly, "no-high-level");
-        let mut outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
+        let outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
         if used_server_stream {
             reassembly::remember_completed_server_stream_window(
                 state,
@@ -787,7 +1195,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 },
             );
         }
-        outputs.extend(reassembly.interleaved_packets);
+        let interleaved_packets = reassembly.interleaved_packets;
         tracing::warn!(
             frames = reassembly.frames.len(),
             first_sequence = reassembly.first_sequence,
@@ -798,10 +1206,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             proxy_owned_stream = state.deflate.server_zlib_stream_proxy_owned,
             "server deflated payload consumed because it has no high-level packet header"
         );
-        return Ok(Emit::VerifiedPackets {
-            family: VerifiedFamily::ConsumedEmptyMFrame,
-            packets: outputs,
-        });
+        return Ok(reassembly::emit_family_packets_with_interleaved(
+            VerifiedFamily::ConsumedEmptyMFrame,
+            outputs,
+            interleaved_packets,
+        ));
     }
 
     let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
@@ -816,7 +1225,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             .quarantine_reason
             .unwrap_or("untranslated-required-semantic-family");
         dump_invalid_inflated_payload(&bytes, &reassembly, reason);
-        let mut outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
+        let outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
         if used_server_stream {
             reassembly::remember_completed_server_stream_window(
                 state,
@@ -828,7 +1237,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 },
             );
         }
-        outputs.extend(reassembly.interleaved_packets);
+        let interleaved_packets = reassembly.interleaved_packets;
         tracing::warn!(
             frames = reassembly.frames.len(),
             first_sequence = reassembly.first_sequence,
@@ -838,14 +1247,15 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             prefix = %hex_prefix(&bytes, 32),
             "server deflated high-level payload consumed because required semantic translation is missing"
         );
-        return Ok(Emit::VerifiedPackets {
-            family: VerifiedFamily::ConsumedEmptyMFrame,
-            packets: outputs,
-        });
+        return Ok(reassembly::emit_family_packets_with_interleaved(
+            VerifiedFamily::ConsumedEmptyMFrame,
+            outputs,
+            interleaved_packets,
+        ));
     }
     if !inflated_cnw_fragment_offset_valid(&bytes) {
         dump_invalid_inflated_payload(&bytes, &reassembly, "invalid-cnw-fragment-offset");
-        let mut outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
+        let outputs = reassembly::build_consumed_server_deflated_frames(&reassembly)?;
         if used_server_stream {
             reassembly::remember_completed_server_stream_window(
                 state,
@@ -857,7 +1267,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 },
             );
         }
-        outputs.extend(reassembly.interleaved_packets);
+        let interleaved_packets = reassembly.interleaved_packets;
         tracing::warn!(
             frames = reassembly.frames.len(),
             first_sequence = reassembly.first_sequence,
@@ -866,10 +1276,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             prefix = %hex_prefix(&bytes, 32),
             "server deflated high-level payload consumed because CNW fragment offset is invalid"
         );
-        return Ok(Emit::VerifiedPackets {
-            family: VerifiedFamily::ConsumedEmptyMFrame,
-            packets: outputs,
-        });
+        return Ok(reassembly::emit_family_packets_with_interleaved(
+            VerifiedFamily::ConsumedEmptyMFrame,
+            outputs,
+            interleaved_packets,
+        ));
     }
     if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
         state.area_context.latest_area_placeables = summary.placeable_context.clone();
@@ -902,7 +1313,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
                 CompletedDeflatedReplay::Packets(packets.clone()),
             );
         }
-        packets.extend(reassembly.interleaved_packets);
+        packets.extend(
+            reassembly
+                .interleaved_packets
+                .into_iter()
+                .map(|packet| packet.packet),
+        );
         tracing::debug!(
             frames = packets.len(),
             inflated_length = old_inflated_length,
@@ -913,6 +1329,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
+    crate::translate::semantic::observe_verified_payload(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClient,
+        &verified_proof,
+        &bytes,
+    );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let Some(last_frame) = reassembly.frames.last() {
             deferred_module_resources::queue_after_module_info_if_ready(
@@ -945,6 +1367,11 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let mut outputs =
         reassembly::build_server_deflated_output_frames(&reassembly, &combined, 0x01, true)?;
+    let inserted_extra_output_frames = outputs.len() > reassembly.frames.len();
+    if inserted_extra_output_frames {
+        pre_shift_current_server_packets(state, &mut outputs)?;
+        record_extra_deflated_output_sequence_shift(state, &reassembly, outputs.len())?;
+    }
     if used_server_stream {
         reassembly::remember_completed_server_stream_window(
             state,
@@ -956,7 +1383,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             },
         );
     }
-    outputs.extend(reassembly.interleaved_packets);
+    let interleaved_packets = reassembly.interleaved_packets;
 
     server_dispatch::log_deflated_semantic_rewrite(
         &semantic_rewrite_summary,
@@ -972,10 +1399,36 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         },
     );
 
-    Ok(Emit::VerifiedProofPackets {
-        proof: verified_proof,
-        packets: outputs,
-    })
+    if inserted_extra_output_frames {
+        if !interleaved_packets.is_empty() {
+            let mut mixed = outputs
+                .into_iter()
+                .map(|packet| (verified_proof.clone(), packet))
+                .collect::<Vec<_>>();
+            for mut interleaved in interleaved_packets {
+                shift_server_sequence_for_client(state, &mut interleaved.packet)?;
+                mixed.push((interleaved.proof, interleaved.packet));
+            }
+            tracing::info!(
+                frames = mixed.len(),
+                first_sequence = reassembly.first_sequence,
+                original_frames = reassembly.frames.len(),
+                output_frames = mixed.len(),
+                "expanded deflated output emitted with typed pre-shifted interleaved proofs"
+            );
+            return Ok(Emit::MixedVerifiedProofPacketsPreShifted(mixed));
+        }
+        Ok(Emit::VerifiedProofPacketsPreShifted {
+            proof: verified_proof,
+            packets: outputs,
+        })
+    } else {
+        Ok(reassembly::emit_proof_packets_with_interleaved(
+            verified_proof,
+            outputs,
+            interleaved_packets,
+        ))
+    }
 }
 
 pub(super) fn try_emit_salvaged_incomplete_server_deflated_reassembly(
@@ -1175,11 +1628,10 @@ fn dump_invalid_inflated_payload(
     reassembly: &ServerDeflatedReassembly,
     reason: &str,
 ) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
 
-    let dir = PathBuf::from(dir);
     if let Err(error) = fs::create_dir_all(&dir) {
         tracing::warn!(
             path = %dir.display(),
@@ -1231,11 +1683,10 @@ fn dump_module_info_candidate(
     module_offset: usize,
     reassembly: &ServerDeflatedReassembly,
 ) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
 
-    let dir = PathBuf::from(dir);
     if let Err(error) = fs::create_dir_all(&dir) {
         tracing::warn!(
             path = %dir.display(),

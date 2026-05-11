@@ -42,6 +42,9 @@ pub struct SessionState {
     latest_bncs_udp_port: Option<u16>,
     latest_bncr_status: Option<u8>,
     latest_cd_key_challenge: Vec<u8>,
+    nwsync_advertised_to_client: bool,
+    server_bnvr_accept_seen: bool,
+    nwsync_handoff_bndm_consumed: bool,
 }
 
 impl SessionState {
@@ -72,6 +75,34 @@ impl SessionState {
         self.latest_bncr_status = None;
         self.latest_cd_key_challenge.clear();
     }
+
+    pub(crate) fn remember_nwsync_advertised_to_client(&mut self) {
+        self.nwsync_advertised_to_client = true;
+        self.nwsync_handoff_bndm_consumed = false;
+    }
+
+    pub(crate) fn remember_bnvr_result(&mut self, accepted: bool) {
+        self.server_bnvr_accept_seen = accepted;
+        if !accepted {
+            self.nwsync_handoff_bndm_consumed = false;
+        }
+    }
+
+    pub(crate) fn should_consume_nwsync_handoff_bndm(&self) -> bool {
+        self.nwsync_advertised_to_client
+            && self.server_bnvr_accept_seen
+            && !self.nwsync_handoff_bndm_consumed
+    }
+
+    pub(crate) fn remember_nwsync_handoff_bndm_consumed(&mut self) {
+        self.nwsync_handoff_bndm_consumed = true;
+    }
+}
+
+pub enum ClientTranslation {
+    Packet(Vec<u8>),
+    Consumed,
+    ConsumedRetireSession { reason: &'static str },
 }
 
 pub fn translate_client_to_server(
@@ -80,7 +111,7 @@ pub fn translate_client_to_server(
     bncs_private_build: u32,
     bncs_build_field: u16,
     state: &mut SessionState,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<ClientTranslation> {
     let packet = BnPacket::parse(bytes);
     match packet.tag {
         BnTag::Unknown => {
@@ -90,33 +121,48 @@ pub fn translate_client_to_server(
             if bytes.len() >= 6 {
                 state.remember_bncs_udp_port(u16::from_le_bytes([bytes[4], bytes[5]]));
             }
-            return bncs::rewrite_client_to_diamond(
+            return Ok(ClientTranslation::Packet(bncs::rewrite_client_to_diamond(
                 bytes,
                 identity,
                 bncs_private_build,
                 bncs_build_field,
-            );
+            )?));
         }
-        BnTag::Bndm => return bndm::rewrite_client_to_legacy_bnds(bytes, state),
-        BnTag::Bnvs => return bnvs::rewrite_client_to_diamond(bytes, identity, state),
+        BnTag::Bndm => {
+            return match bndm::translate_client_bndm(bytes, state)? {
+                bndm::BndmTranslation::LegacyDisconnect(packet) => {
+                    Ok(ClientTranslation::Packet(packet))
+                }
+                bndm::BndmTranslation::NwsyncHandoffConsumedRetireSession => {
+                    Ok(ClientTranslation::ConsumedRetireSession {
+                        reason: "nwsync-handoff-bndm",
+                    })
+                }
+            };
+        }
+        BnTag::Bnvs => {
+            return Ok(ClientTranslation::Packet(bnvs::rewrite_client_to_diamond(
+                bytes, identity, state,
+            )?));
+        }
         BnTag::Bnds => {
             if bnds::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_noop(bytes, "BNDS", "verified legacy disconnect datagram");
+                return claimed_client_noop(bytes, "BNDS", "verified legacy disconnect datagram");
             }
         }
         BnTag::Bnes => {
             if bnes::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_noop(bytes, "BNES", "verified server-enumerate request");
+                return claimed_client_noop(bytes, "BNES", "verified server-enumerate request");
             }
         }
         BnTag::Bnlm => {
             if bnlm::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_noop(bytes, "BNLM", "verified latency/list request");
+                return claimed_client_noop(bytes, "BNLM", "verified latency/list request");
             }
         }
         BnTag::Bnxi => {
             if bnxi::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_noop(bytes, "BNXI", "verified extended-info request");
+                return claimed_client_noop(bytes, "BNXI", "verified extended-info request");
             }
         }
         _ => {}
@@ -142,6 +188,7 @@ pub fn translate_server_to_client(
         }
         BnTag::Bnvr => {
             if bnvr::claim_server_to_ee_if_verified(bytes).is_some() {
+                state.remember_bnvr_result(bytes.get(4).copied() == Some(b'A'));
                 return claimed_noop(bytes, "BNVR", "verified legacy verifier result");
             }
         }
@@ -153,10 +200,14 @@ pub fn translate_server_to_client(
         BnTag::Bnxr => {
             if let Some(advertisement) = nwsync_advertisement {
                 if let Some(rewritten) = bnxr::rewrite_server_to_ee(bytes, advertisement)? {
+                    state.remember_nwsync_advertised_to_client();
                     return Ok(rewritten);
                 }
             }
             if bnxr::claim_server_to_ee_if_verified(bytes).is_some() {
+                if nwsync_advertisement.is_some() {
+                    state.remember_nwsync_advertised_to_client();
+                }
                 return claimed_noop(bytes, "BNXR", "verified extended server response");
             }
         }
@@ -178,7 +229,7 @@ pub fn translate_server_to_client(
         _ => {}
     };
 
-    unclaimed_bn(packet.tag, "server-to-client", bytes.len())
+    unclaimed_bn_server(packet.tag, "server-to-client", bytes.len())
 }
 
 fn claimed_noop(bytes: &[u8], tag: &'static str, reason: &'static str) -> anyhow::Result<Vec<u8>> {
@@ -191,7 +242,35 @@ fn claimed_noop(bytes: &[u8], tag: &'static str, reason: &'static str) -> anyhow
     Ok(bytes.to_vec())
 }
 
-fn unclaimed_bn(tag: BnTag, direction: &'static str, len: usize) -> anyhow::Result<Vec<u8>> {
+fn claimed_client_noop(
+    bytes: &[u8],
+    tag: &'static str,
+    reason: &'static str,
+) -> anyhow::Result<ClientTranslation> {
+    tracing::info!(
+        tag,
+        reason,
+        len = bytes.len(),
+        "BN packet semantically claimed as verified no-op translation"
+    );
+    Ok(ClientTranslation::Packet(bytes.to_vec()))
+}
+
+fn unclaimed_bn(
+    tag: BnTag,
+    direction: &'static str,
+    len: usize,
+) -> anyhow::Result<ClientTranslation> {
+    tracing::warn!(
+        direction,
+        tag = tag.name(),
+        len,
+        "BN packet quarantined before emit: no semantic translator claimed this tag/direction"
+    );
+    anyhow::bail!("unclaimed BN packet {:?} in {} direction", tag, direction)
+}
+
+fn unclaimed_bn_server(tag: BnTag, direction: &'static str, len: usize) -> anyhow::Result<Vec<u8>> {
     tracing::warn!(
         direction,
         tag = tag.name(),

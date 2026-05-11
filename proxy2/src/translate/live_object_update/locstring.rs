@@ -33,7 +33,8 @@ pub(super) fn candidate_inside_inline_string(
 ) -> bool {
     let mut string_offset = search_start;
     while string_offset + 4 <= candidate && string_offset < bytes.len() {
-        if let Some(string_end) = inline_cexo_string_end(bytes, string_offset) {
+        if let Some(string_end) = inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
+        {
             if string_offset + 4 <= candidate && candidate < string_end {
                 return true;
             }
@@ -43,21 +44,28 @@ pub(super) fn candidate_inside_inline_string(
     false
 }
 
+fn inline_cexo_string_end_for_boundary_suppression(
+    bytes: &[u8],
+    offset: usize,
+) -> Option<usize> {
+    let end = inline_cexo_string_end(bytes, offset)?;
+    let text = bytes.get(offset + 4..end)?;
+    if text.iter().all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e)) {
+        Some(end)
+    } else {
+        None
+    }
+}
+
 pub(super) fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     let length = usize::try_from(read_u32_le(bytes, offset)?).ok()?;
     if length > MAX_LIVE_OBJECT_NAME_BYTES || bytes.len().saturating_sub(offset + 4) < length {
         return None;
     }
-    let text_start = offset + 4;
-    let end = text_start + length;
-    if bytes[text_start..end]
-        .iter()
-        .all(|byte| matches!(*byte, 0x20..=0x7E | b'\t'))
-    {
-        Some(end)
-    } else {
-        None
-    }
+    // `CNWMessage::ReadCExoString(32)` is length-bounded byte storage. Do not
+    // add display-string restrictions here: direct sign/placeable names may
+    // contain embedded NUL padding while still being a valid reader shape.
+    Some(offset + 4 + length)
 }
 
 pub(super) fn tlk_locstring_ref_end(bytes: &[u8], offset: usize) -> Option<usize> {

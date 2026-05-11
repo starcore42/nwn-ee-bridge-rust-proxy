@@ -6,7 +6,7 @@
 
 use flate2::Decompress;
 
-use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources};
+use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources, semantic};
 
 use super::{
     deferred_module_resources,
@@ -54,6 +54,12 @@ pub(super) struct LiveObjectStreamState {
 pub(super) struct SequenceState {
     pub(super) latest_client_sequence_from_client: Option<u16>,
     pub(super) latest_client_ack_from_client: Option<u16>,
+    /// Latest server-origin reliable sequence emitted toward the EE client,
+    /// after any proxy-owned sequence shifts have been applied. This is
+    /// gateway transport state, not game truth: synthetic client M frames use
+    /// it only to carry a coherent receive-window ACK when no native client
+    /// packet is available to piggyback on.
+    pub(super) latest_server_sequence_to_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
@@ -69,6 +75,9 @@ pub(super) struct LoginWaypointState {
 pub(super) struct SyntheticAreaState {
     pub(super) pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
     pub(super) pending_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
+    pub(super) in_flight_area_loaded: Option<synthetic_area::InFlightAreaLoaded>,
+    pub(super) server_hold_gate: Option<synthetic_area::ServerHoldGate>,
+    pub(super) held_server_to_client_packets: Vec<synthetic_area::PendingVerifiedServerPacket>,
 }
 
 #[derive(Debug, Default)]
@@ -92,6 +101,7 @@ pub struct SessionState {
     pub(super) deferred_module_resources: DeferredModuleResourcesSessionState,
     pub(super) area_context: AreaContextState,
     pub(super) module_resources: module_resources::ModuleResourceRuntime,
+    pub(super) semantic: semantic::SemanticSessionState,
 }
 
 impl SessionState {

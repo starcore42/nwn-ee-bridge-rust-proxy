@@ -152,3 +152,7 @@ still experimental, not a finished public content pipeline.
 - Added gameplay stream splitting, quickbar fixture scaffolding, and verified-family continuation validation refinements.
 - Expanded live-object, quickbar, client-input, and character-list proxy validation with new fixture-backed translators.
 - Added deferred module-resource/login waypoint handling, broader asset-profile tooling, more live-object/quickbar capture coverage, and refined EE item-create matching.
+- Added verified semantic session tracking, selectable NWSync advertisement, manifest sharding metadata, and stricter PlayerList/live-object fixtures.
+- Removed the synthetic area-load delay so loadbar fallback packets emit before post-area live-object traffic.
+- Expanded public class/base-item fallback rows so captured appearance tests do not require local 2DA files.
+- Added an EE ACK-gated hold for post-area server packets after synthetic LoadBar_End to reduce load-transition races.

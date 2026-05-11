@@ -19,7 +19,6 @@ use crate::{
 use super::{deferred_module_resources, live_update, parse_window};
 use std::{
     fs,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1057,11 +1056,7 @@ fn untranslated_semantic_quarantine_reason(high: HighLevel) -> &'static str {
 }
 
 fn dump_unrewritten_semantic_payload(payload: &[u8], reason: &str) -> Option<String> {
-    let dir = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR").ok()?;
-    if dir.trim().is_empty() {
-        return None;
-    }
-    let mut path = PathBuf::from(dir);
+    let mut path = crate::translate::diagnostics::diagnostic_dump_dir()?;
     fs::create_dir_all(&path).ok()?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -410,10 +410,35 @@ fn creature_status_visibility_update_does_not_swallow_following_inventory_record
         false, false, // 0x4000 final two BOOLs.
         false, false, false, // 0x8000 self-visibility BOOLs.
     ];
-    let mut bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    let mut stock_bit_cursor = 3;
     assert!(
         super::creature::advance_verified_noop_creature_update_record(
             live,
+            update_offset,
+            inventory_offset,
+            &fragment_bits,
+            &mut stock_bit_cursor,
+        ),
+        "valid stock c408 record should consume exactly to the following inventory record"
+    );
+    assert_eq!(stock_bit_cursor, 13);
+
+    let mut rewritten_live = live.to_vec();
+    rewritten_live[update_offset + 10] = 0;
+    rewritten_live[update_offset + 11] = 0;
+    let c408_rewrite = super::creature::repair_legacy_c408_visual_effect_count_for_ee(
+        &mut rewritten_live,
+        update_offset,
+        inventory_offset,
+    )
+    .expect("HG malformed c408 zero-count capture should be normalized before EE validation");
+    assert_eq!(c408_rewrite.entries, 3);
+    assert_eq!(c408_rewrite.bytes_rewritten, 2);
+    assert_eq!(&rewritten_live[update_offset + 10..update_offset + 12], &[3, 0]);
+    let mut bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    assert!(
+        super::creature::advance_verified_noop_creature_update_record(
+            &rewritten_live,
             update_offset,
             inventory_offset,
             &fragment_bits,
@@ -475,6 +500,52 @@ fn inventory_0400_delta_requires_exact_fragment_cursor_consumption() {
     ));
 
     assert!(super::claim_payload_if_verified(&payload_with_extra_fragment_bit).is_none());
+}
+
+#[test]
+fn inventory_2000_zero_count_trailing_pair_keeps_following_live_boundary() {
+    let live = [
+        b'I', 0xAD, 0xFF, 0xFF, 0xFF, // inventory owner object id
+        0x00, 0x20, // mask 0x2000: feature-25 inventory object lists
+        0x00, 0x00, 0x00, 0x00, // first list count
+        0x00, 0x00, 0x00, 0x00, // second list count
+        0x8B, 0x75, 0x01, 0x80, // captured Diamond compatibility tail object
+        0x91, 0x75, 0x01, 0x80, // captured Diamond compatibility tail object
+        b'U', 0x05, 0x9D, 0x75, 0x01, 0x80, // next live-object update boundary
+        0x00, 0x00, 0x00, 0x00,
+    ];
+
+    assert_eq!(
+        super::inventory::try_get_legacy_live_inventory_fragment_bit_count(&live, 0, 23),
+        Some(0),
+        "zero-count 0x2000 legacy compatibility tail owns no fragment BOOLs"
+    );
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len(),
+        ),
+        23,
+        "validated inventory 0x2000 tail must not swallow the following U/5 record"
+    );
+}
+
+#[test]
+fn placeable_looping_effect_updates_expand_identity_visual_maps() {
+    let mut payload =
+        include_bytes!("../../../fixtures/live_object/placeable_effect_list_two_records_legacy.bin")
+            .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy placeable looping-effect update list should expand for EE");
+    assert_eq!(rewrite.update_records_rewritten, 2);
+    assert_eq!(rewrite.bytes_inserted, 80);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("expanded looping-effect updates should validate exactly");
+    assert_eq!(claim.records_examined, 2);
+    assert_eq!(claim.update_records, 2);
 }
 
 #[test]
@@ -614,6 +685,116 @@ fn area_entry_door_and_signs_rewrite_to_exact_ee_shape() {
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten area-entry door/sign burst should validate exactly");
+    assert!(claim.add_records >= 7);
+    assert!(claim.update_records >= 7);
+}
+#[test]
+fn captured_hg_self_c408_inventory_stream_is_claimed_after_boundary_floor() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_self_c408_inventory_unclaimed.bin"
+    )
+    .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
+    assert!(
+        rewrite.is_some(),
+        "captured HG C408 self/status stream should rewrite through the exact live-object path"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload);
+    assert!(
+        claim.is_some(),
+        "rewritten HG C408 self/status stream should be exactly claimable"
+    );
+}
+
+#[test]
+fn captured_hg_transition_seq48_delete_inventory_door_stream_is_claimed() {
+    let mut payload = include_bytes!("../../../fixtures/live_object/hg_transition_seq48_delete_inventory_door.bin").to_vec();
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
+    eprintln!("rewrite={rewrite:?}");
+    assert!(
+        rewrite
+            .as_ref()
+            .map(|summary| summary.bytes_removed > 0 && summary.update_records_rewritten > 0)
+            .unwrap_or(false),
+        "captured transition stream should first normalize its legacy inventory/update records"
+    );
+    let add_rewrite =
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        );
+    assert!(
+        add_rewrite
+            .as_ref()
+            .map(|summary| summary.maps_inserted > 0)
+            .unwrap_or(false),
+        "captured transition door add should receive the EE visual-transform map"
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let claim = super::claim_payload_if_verified(&payload);
+    assert!(
+        claim.is_some(),
+        "captured transition delete/inventory/door live-object stream should rewrite and claim"
+    );
+}
+
+#[test]
+fn captured_hg_starc5_seq48_door_sign_transition_stream_is_claimed() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_seq48_door_sign_transition_unclaimed.bin"
+    )
+    .to_vec();
+
+    let first_rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
+    assert!(
+        first_rewrite
+            .as_ref()
+            .map(|summary| summary.update_records_rewritten >= 7 && summary.bytes_removed > 0)
+            .unwrap_or(false),
+        "captured Starcore5 door/sign stream should first normalize legacy update records"
+    );
+    let first_add_rewrite =
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        );
+    assert!(
+        first_add_rewrite
+            .as_ref()
+            .map(|summary| summary.maps_inserted >= 7)
+            .unwrap_or(false),
+        "captured Starcore5 door/sign adds should receive EE visual-transform maps"
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let second_add_rewrite =
+        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            None,
+        );
+    assert!(
+        second_add_rewrite.is_some(),
+        "captured Starcore5 door/sign add bits should be revisited after update bit repair"
+    );
+    let final_rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
+    assert!(
+        final_rewrite
+            .as_ref()
+            .map(|summary| summary.update_records_rewritten > 0)
+            .unwrap_or(false),
+        "captured Starcore5 door/sign stream should finish update bit repair"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("captured Starcore5 door/sign transition live-object stream should claim");
     assert!(claim.add_records >= 7);
     assert!(claim.update_records >= 7);
 }

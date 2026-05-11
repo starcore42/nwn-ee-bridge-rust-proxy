@@ -9,8 +9,22 @@ use flate2::{Decompress, FlushDecompress};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MAX_REASONABLE_GAMEPLAY_PAYLOAD, MFrameView},
-    translate::{Emit, VerifiedFamily, VerifiedProof},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedPacket, VerifiedProof},
 };
+
+// Decompile note: EE's CNetLayerWindow::FrameReceive stores reliable data frames
+// by the incoming datagram size and only advances the receive window through
+// accepted in-order frames. When a semantic rewrite makes a deflated payload
+// larger than the legacy packet's original datagram budget, we must packetize it
+// into additional reliable M frames instead of emitting one oversized datagram.
+//
+// The observed accepted HG/EE gameplay window cap is a 960-byte datagram
+// (12-byte legacy M header + 948 payload bytes). Keeping rewritten deflated
+// output at or below that cap avoids ACK starvation while preserving the exact
+// translated high-level payload.
+const EE_SAFE_M_FRAME_DATAGRAM_BYTES: usize = 960;
+const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
+    EE_SAFE_M_FRAME_DATAGRAM_BYTES - LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
 
 use super::{
     MAX_INTERLEAVED_PACKETS, MAX_REASSEMBLY_FRAMES, SessionState,
@@ -26,7 +40,7 @@ pub(super) struct ServerDeflatedReassembly {
     pub(super) packetized_sequence: u16,
     pub(super) zlib_stream: bool,
     pub(super) frames: Vec<BufferedFrame>,
-    pub(super) interleaved_packets: Vec<Vec<u8>>,
+    pub(super) interleaved_packets: Vec<VerifiedPacket>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +84,37 @@ pub(super) enum CompletedDeflatedReplay {
 pub(super) struct InflatedGameplayPayload {
     pub(super) bytes: Vec<u8>,
     pub(super) used_server_stream: bool,
+}
+
+pub(super) fn emit_family_packets_with_interleaved(
+    family: VerifiedFamily,
+    packets: Vec<Vec<u8>>,
+    interleaved: Vec<VerifiedPacket>,
+) -> Emit {
+    emit_proof_packets_with_interleaved(VerifiedProof::family(family), packets, interleaved)
+}
+
+pub(super) fn emit_proof_packets_with_interleaved(
+    proof: VerifiedProof,
+    packets: Vec<Vec<u8>>,
+    interleaved: Vec<VerifiedPacket>,
+) -> Emit {
+    if interleaved.is_empty() {
+        return Emit::VerifiedProofPackets { proof, packets };
+    }
+
+    let mut mixed = Vec::with_capacity(packets.len() + interleaved.len());
+    mixed.extend(
+        packets
+            .into_iter()
+            .map(|packet| (proof.clone(), packet)),
+    );
+    mixed.extend(
+        interleaved
+            .into_iter()
+            .map(|packet| (packet.proof, packet.packet)),
+    );
+    Emit::MixedVerifiedProofPackets(mixed)
 }
 
 pub(super) fn should_start_server_deflated_reassembly(view: &MFrameView) -> bool {
@@ -267,7 +312,7 @@ fn claim_or_consume_interleaved_server_packet(
     bytes: &[u8],
     view: &MFrameView,
     state: &mut SessionState,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<VerifiedPacket> {
     if let Some(rewritten) =
         server_dispatch::rewrite_direct_frame_if_needed(bytes, view, &state.module_resources)?
     {
@@ -279,7 +324,7 @@ fn claim_or_consume_interleaved_server_packet(
             payload_len = view.payload_length,
             "interleaved server M packet semantically claimed while deflated reassembly is pending"
         );
-        return Ok(rewritten.packet);
+        return Ok(rewritten);
     }
 
     if let Some(summary) = transport_identity::claim_server_frame_if_verified(view) {
@@ -293,7 +338,7 @@ fn claim_or_consume_interleaved_server_packet(
             payload_len = view.payload_length,
             "interleaved server M transport-only packet claimed as verified no-op"
         );
-        return Ok(bytes.to_vec());
+        return claim_interleaved_transport_packet(bytes, view, state);
     }
 
     tracing::warn!(
@@ -304,7 +349,56 @@ fn claim_or_consume_interleaved_server_packet(
         payload_len = view.payload_length,
         "interleaved server M packet consumed: no semantic translator or transport identity owner"
     );
-    consume_interleaved_unclaimed_server_packet(bytes)
+    Ok(VerifiedPacket {
+        proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+        packet: consume_interleaved_unclaimed_server_packet(bytes)?,
+    })
+}
+
+fn claim_interleaved_transport_packet(
+    bytes: &[u8],
+    view: &MFrameView,
+    state: &SessionState,
+) -> anyhow::Result<VerifiedPacket> {
+    if view.payload_length == 0 && view.trailing_payload_length == 0 {
+        return Ok(VerifiedPacket {
+            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+            packet: bytes.to_vec(),
+        });
+    }
+
+    let owner = state
+        .deflate
+        .server_zlib_stream_owner
+        .unwrap_or(ContinuationOwner::UnknownProxyOwned);
+    let stream_epoch = state.deflate.server_zlib_stream_epoch;
+    let family = if state.deflate.server_zlib_stream_proxy_owned
+        && owner != ContinuationOwner::UnknownProxyOwned
+        && stream_epoch != 0
+    {
+        VerifiedFamily::ServerZlibStreamContinuation {
+            owner,
+            stream_epoch,
+            first_sequence: view.sequence,
+        }
+    } else {
+        tracing::warn!(
+            sequence = view.sequence,
+            ack_sequence = view.ack_sequence,
+            flags = view.flags,
+            packetized_sequence = view.packetized_sequence,
+            payload_len = view.payload_length,
+            owner = owner.as_str(),
+            stream_epoch,
+            "interleaved server M transport-only payload consumed without known semantic stream owner"
+        );
+        VerifiedFamily::ConsumedEmptyMFrame
+    };
+
+    Ok(VerifiedPacket {
+        proof: VerifiedProof::family(family),
+        packet: consume_interleaved_unclaimed_server_packet(bytes)?,
+    })
 }
 
 fn consume_interleaved_unclaimed_server_packet(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -367,25 +461,32 @@ pub(super) fn build_server_deflated_output_frames(
     clear_first_frame_flags: u8,
     set_first_packetized_sequence_to_output_count: bool,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
-    let mut outputs = Vec::with_capacity(reassembly.frames.len());
-    let mut cursor = 0;
+    if reassembly.frames.is_empty() {
+        anyhow::bail!("cannot rebuild deflated output without source frames");
+    }
 
-    for (index, frame) in reassembly.frames.iter().enumerate() {
+    let output_count = deflated_output_frame_count(reassembly, combined_payload.len())?;
+    let mut outputs = Vec::with_capacity(output_count);
+    let mut cursor = 0usize;
+
+    for index in 0..output_count {
         if cursor > combined_payload.len() {
             anyhow::bail!("deflated output cursor exceeded combined payload");
         }
 
-        let final_frame = index + 1 == reassembly.frames.len();
+        let frame = template_frame_for_output(reassembly, index);
+        let final_frame = index + 1 == output_count;
         let remaining = combined_payload.len() - cursor;
-        let frames_left = reassembly.frames.len() - index;
+        let frames_left = output_count - index;
         let minimum_reserved_for_later = frames_left.saturating_sub(1);
         let max_this_frame = remaining.saturating_sub(minimum_reserved_for_later);
+        let frame_capacity = deflated_output_frame_capacity(reassembly, index);
         let chunk_length = if final_frame {
             remaining
         } else if remaining >= frames_left {
-            frame.payload_length.min(max_this_frame).max(1)
+            frame_capacity.min(max_this_frame).max(1)
         } else {
-            frame.payload_length.min(remaining)
+            frame_capacity.min(remaining)
         };
         if chunk_length > u16::MAX as usize {
             anyhow::bail!("deflated output chunk too large for legacy packetized length");
@@ -393,10 +494,18 @@ pub(super) fn build_server_deflated_output_frames(
 
         let mut out_packet = frame.packet.clone();
         out_packet.resize(LEGACY_GAMEPLAY_PAYLOAD_OFFSET + chunk_length, 0);
+        let output_sequence = reassembly.first_sequence.wrapping_add(index as u16);
+        write_be_u16(&mut out_packet, 3, output_sequence)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("failed to update rewritten M sequence"))?;
+
         if chunk_length != 0 {
             out_packet
                 [LEGACY_GAMEPLAY_PAYLOAD_OFFSET..LEGACY_GAMEPLAY_PAYLOAD_OFFSET + chunk_length]
                 .copy_from_slice(&combined_payload[cursor..cursor + chunk_length]);
+            if index > 0 && out_packet.len() > 7 {
+                out_packet[7] = continuation_frame_flags(out_packet[7]);
+            }
         } else if out_packet.len() > 7 {
             // Empty replacement tails still need to be reliable-data frames so
             // the EE receive window advances. Clear the deflate/stream bits and
@@ -408,6 +517,11 @@ pub(super) fn build_server_deflated_output_frames(
 
         if index == 0 && clear_first_frame_flags != 0 && out_packet.len() > 7 {
             out_packet[7] &= !clear_first_frame_flags;
+        }
+        if index > 0 {
+            write_be_u16(&mut out_packet, 8, 0)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("failed to clear continuation packetized sequence"))?;
         }
         write_be_u16(&mut out_packet, 10, chunk_length as u16)
             .then_some(())
@@ -440,7 +554,71 @@ pub(super) fn build_server_deflated_output_frames(
             .ok_or_else(|| anyhow::anyhow!("failed to repair first M CRC"))?;
     }
 
+    if outputs.len() > reassembly.frames.len() {
+        tracing::info!(
+            first_sequence = reassembly.first_sequence,
+            original_frames = reassembly.frames.len(),
+            output_frames = outputs.len(),
+            combined_payload_len = combined_payload.len(),
+            safe_payload_bytes = EE_SAFE_M_FRAME_PAYLOAD_BYTES,
+            "server deflated rewrite repacketized into extra reliable M frames"
+        );
+    }
+
     Ok(outputs)
+}
+
+fn deflated_output_frame_count(
+    reassembly: &ServerDeflatedReassembly,
+    combined_payload_len: usize,
+) -> anyhow::Result<usize> {
+    let mut count = reassembly.frames.len();
+    let mut capacity = 0usize;
+    for index in 0..reassembly.frames.len() {
+        capacity = capacity.saturating_add(deflated_output_frame_capacity(reassembly, index));
+    }
+
+    while capacity < combined_payload_len {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("deflated output frame count overflow"))?;
+        if count > u16::MAX as usize {
+            anyhow::bail!("deflated output frame count exceeds packetized sequence range");
+        }
+        capacity = capacity.saturating_add(EE_SAFE_M_FRAME_PAYLOAD_BYTES);
+    }
+
+    Ok(count)
+}
+
+fn deflated_output_frame_capacity(reassembly: &ServerDeflatedReassembly, index: usize) -> usize {
+    if index < reassembly.frames.len() {
+        // The source frame's legacy datagram size is not a reader-owned
+        // boundary in EE.  EE `CNetLayerWindow::FrameReceive` accepts the
+        // incoming datagram and advances the reliable window by sequence, while
+        // the packetized length field bounds the copied gameplay bytes.  Use
+        // the proven EE-safe datagram cap for rewritten server->client frames
+        // so a small semantic expansion does not manufacture extra reliable
+        // frames and sequence shifts.  New spill frames use the same cap.
+        EE_SAFE_M_FRAME_PAYLOAD_BYTES
+    } else {
+        EE_SAFE_M_FRAME_PAYLOAD_BYTES
+    }
+}
+
+fn template_frame_for_output(
+    reassembly: &ServerDeflatedReassembly,
+    index: usize,
+) -> &BufferedFrame {
+    reassembly
+        .frames
+        .get(index)
+        .or_else(|| reassembly.frames.last())
+        .expect("deflated output requires at least one source frame")
+}
+
+fn continuation_frame_flags(flags: u8) -> u8 {
+    (flags & 0x08) | 0x40
 }
 
 pub(super) fn build_consumed_server_deflated_frames(
@@ -470,6 +648,134 @@ pub(super) fn build_consumed_server_deflated_frames(
         outputs.push(out_packet);
     }
     Ok(outputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_reassembly(first_sequence: u16, payload_lengths: &[usize]) -> ServerDeflatedReassembly {
+        let frames = payload_lengths
+            .iter()
+            .enumerate()
+            .map(|(index, payload_length)| {
+                let sequence = first_sequence.wrapping_add(index as u16);
+                let mut packet = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + payload_length];
+                packet[0] = b'M';
+                write_be_u16(&mut packet, 3, sequence);
+                write_be_u16(&mut packet, 5, 75);
+                packet[7] = if index == 0 { 0x0D } else { 0x48 };
+                write_be_u16(&mut packet, 8, payload_lengths.len() as u16);
+                write_be_u16(&mut packet, 10, *payload_length as u16);
+                encode_legacy_m_crc(&mut packet);
+                BufferedFrame {
+                    packet,
+                    payload_length: *payload_length,
+                    sequence,
+                    ack_sequence: 75,
+                    compressed_chunk: Vec::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        ServerDeflatedReassembly {
+            inflated_length: 4096,
+            expected_frames: payload_lengths.len(),
+            first_sequence,
+            packetized_sequence: payload_lengths.len() as u16,
+            zlib_stream: true,
+            frames,
+            interleaved_packets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn splits_grown_one_frame_rewrite_into_safe_reliable_frames() {
+        let reassembly = make_reassembly(5, &[EE_SAFE_M_FRAME_PAYLOAD_BYTES]);
+        let combined = vec![0xA5; EE_SAFE_M_FRAME_PAYLOAD_BYTES + 100];
+
+        let outputs =
+            build_server_deflated_output_frames(&reassembly, &combined, 0x01, true).unwrap();
+
+        assert_eq!(outputs.len(), 2);
+        for output in &outputs {
+            assert!(output.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES);
+            let view = MFrameView::parse(output).unwrap();
+            assert!(view.crc_valid);
+        }
+
+        let first = MFrameView::parse(&outputs[0]).unwrap();
+        let second = MFrameView::parse(&outputs[1]).unwrap();
+        assert_eq!(first.sequence, 5);
+        assert_eq!(first.packetized_sequence, 2);
+        assert_eq!(first.declared_payload_length, EE_SAFE_M_FRAME_PAYLOAD_BYTES);
+        assert_eq!(second.sequence, 6);
+        assert_eq!(second.packetized_sequence, 0);
+        assert_eq!(second.declared_payload_length, 100);
+        assert_eq!(second.frame_type, 0);
+        assert_eq!(second.flags & 0x40, 0x40);
+        assert_eq!(second.flags & 0x04, 0);
+    }
+
+    #[test]
+    fn keeps_small_growth_in_original_reliable_frame_when_ee_safe() {
+        let reassembly = make_reassembly(45, &[251]);
+        let combined = vec![0xA5; 294];
+
+        let outputs =
+            build_server_deflated_output_frames(&reassembly, &combined, 0x01, true).unwrap();
+
+        assert_eq!(outputs.len(), 1);
+        let first = MFrameView::parse(&outputs[0]).unwrap();
+        assert!(first.crc_valid);
+        assert_eq!(first.sequence, 45);
+        assert_eq!(first.packetized_sequence, 1);
+        assert_eq!(first.declared_payload_length, 294);
+        assert!(outputs[0].len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES);
+    }
+
+    #[test]
+    fn keeps_expanded_area_stream_in_original_frame_count_when_ee_safe() {
+        let reassembly = make_reassembly(37, &[960, 960, 960, 960, 323]);
+        let combined = vec![0x5A; 4167];
+
+        let outputs =
+            build_server_deflated_output_frames(&reassembly, &combined, 0x01, true).unwrap();
+
+        assert_eq!(outputs.len(), 5);
+        let sequences = outputs
+            .iter()
+            .map(|packet| MFrameView::parse(packet).unwrap().sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![37, 38, 39, 40, 41]);
+        assert_eq!(MFrameView::parse(&outputs[0]).unwrap().packetized_sequence, 5);
+        assert!(outputs
+            .iter()
+            .all(|packet| packet.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES));
+        assert!(outputs
+            .iter()
+            .all(|packet| MFrameView::parse(packet).unwrap().crc_valid));
+    }
+
+    #[test]
+    fn preserves_original_reliable_window_count_when_payload_shrinks() {
+        let reassembly = make_reassembly(2, &[500, 500, 500]);
+        let combined = vec![0x5A; 700];
+
+        let outputs =
+            build_server_deflated_output_frames(&reassembly, &combined, 0x01, true).unwrap();
+
+        assert_eq!(outputs.len(), 3);
+        let sequences = outputs
+            .iter()
+            .map(|packet| MFrameView::parse(packet).unwrap().sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![2, 3, 4]);
+        assert_eq!(MFrameView::parse(&outputs[0]).unwrap().packetized_sequence, 3);
+        assert!(outputs
+            .iter()
+            .all(|packet| MFrameView::parse(packet).unwrap().crc_valid));
+    }
 }
 
 pub(super) fn inflate_gameplay_payload(

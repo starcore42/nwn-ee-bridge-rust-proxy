@@ -10,7 +10,7 @@
 //! layout. `BNCS` is the first example: stock EE sends a longer connection
 //! packet, while HG/1.69 expects Diamond's shorter two-string form.
 
-mod area;
+pub(crate) mod area;
 pub(crate) mod baseitems;
 mod bn;
 pub(crate) mod char_list;
@@ -20,13 +20,14 @@ mod client_char_list;
 mod client_gui_inventory;
 mod client_high;
 pub(crate) mod client_input;
-mod client_login;
+pub(crate) mod client_login;
 mod client_module;
 pub(crate) mod client_quickbar;
 mod client_server_status;
 pub(crate) mod client_side_message;
 mod cnw_message;
 mod custom_token;
+pub(crate) mod diagnostics;
 mod game_obj_update;
 pub(crate) mod gameplay_stream;
 mod inventory;
@@ -41,9 +42,10 @@ mod module_resources;
 mod module_time;
 mod party;
 pub(crate) mod play_module_character_list;
-mod player_list;
+pub(crate) mod player_list;
 mod profiles;
 pub(crate) mod quickbar;
+pub(crate) mod semantic;
 
 use crate::{
     config::{Config, StrictProfile},
@@ -61,6 +63,7 @@ pub enum ContinuationOwner {
     GuiQuickbar,
     ModuleInfo,
     PlayModuleCharacterList,
+    PlayerList,
     ServerStatusModuleResources,
     UnknownProxyOwned,
 }
@@ -76,6 +79,7 @@ impl ContinuationOwner {
             }
             VerifiedFamily::ModuleInfo => Self::ModuleInfo,
             VerifiedFamily::PlayModuleCharacterList => Self::PlayModuleCharacterList,
+            VerifiedFamily::PlayerList => Self::PlayerList,
             VerifiedFamily::ServerStatusModuleResources => Self::ServerStatusModuleResources,
             _ => Self::UnknownProxyOwned,
         }
@@ -89,6 +93,7 @@ impl ContinuationOwner {
             Self::GuiQuickbar => "GuiQuickbar",
             Self::ModuleInfo => "Module_Info",
             Self::PlayModuleCharacterList => "PlayModuleCharacterList",
+            Self::PlayerList => "PlayerList",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
             Self::UnknownProxyOwned => "UnknownProxyOwned",
         }
@@ -240,7 +245,9 @@ pub enum Emit {
         packets: Vec<Vec<u8>>,
     },
     MixedVerifiedProofPackets(Vec<(VerifiedProof, Vec<u8>)>),
+    MixedVerifiedProofPacketsPreShifted(Vec<(VerifiedProof, Vec<u8>)>),
     Consumed,
+    ConsumedRetireSession { reason: &'static str },
     Drop,
 }
 
@@ -251,6 +258,7 @@ pub struct Translator {
     diamond_identity: DiamondIdentity,
     bncs_private_build: u32,
     bncs_build_field: u16,
+    bnxr_nwsync_advertisement: Option<nwsync::Advertisement>,
     module_resources: module_resources::ModuleResourceRuntime,
 }
 
@@ -263,11 +271,14 @@ pub struct SessionTranslator {
 
 impl Translator {
     pub fn new(config: &Config, nwsync_runtime: Option<nwsync::Runtime>) -> anyhow::Result<Self> {
+        let nwsync_advertisement = nwsync_runtime
+            .as_ref()
+            .map(|runtime| runtime.advertisement().clone());
         let module_resource_runtime = module_resources::ModuleResourceRuntime::new(
             config.asset_profile.clone(),
-            nwsync_runtime
-                .as_ref()
-                .map(|runtime| runtime.advertisement().clone()),
+            nwsync_advertisement
+                .clone()
+                .filter(|_| config.nwsync_advertise_mode.advertises_module_resources()),
         );
         Ok(Self {
             strict_translate: config.strict_translate,
@@ -275,6 +286,8 @@ impl Translator {
             diamond_identity: DiamondIdentity::load(config),
             bncs_private_build: config.bncs_private_build,
             bncs_build_field: config.bncs_build_field,
+            bnxr_nwsync_advertisement: nwsync_advertisement
+                .filter(|_| config.nwsync_advertise_mode.advertises_bnxr()),
             module_resources: module_resource_runtime,
         })
     }
@@ -291,6 +304,11 @@ impl Translator {
 impl SessionTranslator {
     pub fn take_pending_client_to_server_packets(&mut self) -> Vec<Vec<u8>> {
         m_frame::take_pending_client_to_server_packets(&mut self.m_state)
+    }
+
+    pub fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
+        let emit = m_frame::take_pending_server_to_client_packets(&mut self.m_state);
+        packets_from_emit(self.validate_emit(Direction::ServerToClientSynthetic, emit))
     }
 
     pub fn translate(&mut self, direction: Direction, bytes: &[u8]) -> Emit {
@@ -322,13 +340,19 @@ impl SessionTranslator {
                     self.template.bncs_build_field,
                     &mut self.bn_state,
                 )?;
-                Ok(Emit::Packet(translated))
+                match translated {
+                    bn::ClientTranslation::Packet(packet) => Ok(Emit::Packet(packet)),
+                    bn::ClientTranslation::Consumed => Ok(Emit::Consumed),
+                    bn::ClientTranslation::ConsumedRetireSession { reason } => {
+                        Ok(Emit::ConsumedRetireSession { reason })
+                    }
+                }
             }
             (Direction::ServerToClient, Packet::Bn(_)) => {
                 let translated = bn::translate_server_to_client(
                     bytes,
                     &mut self.bn_state,
-                    self.template.module_resources.nwsync_advertisement(),
+                    self.template.bnxr_nwsync_advertisement.as_ref(),
                 )?;
                 Ok(Emit::Packet(translated))
             }
@@ -364,11 +388,13 @@ impl SessionTranslator {
                     match self.validate_packet(direction, packet) {
                         Emit::Packet(packet) => validated.push(packet),
                         Emit::Consumed
+                        | Emit::ConsumedRetireSession { .. }
                         | Emit::Drop
                         | Emit::Packets(_)
                         | Emit::PacketsPreShifted(_)
                         | Emit::MixedVerifiedPackets(_)
                         | Emit::MixedVerifiedProofPackets(_)
+                        | Emit::MixedVerifiedProofPacketsPreShifted(_)
                         | Emit::VerifiedPackets { .. }
                         | Emit::VerifiedPacketsPreShifted { .. }
                         | Emit::VerifiedProofPackets { .. }
@@ -386,7 +412,8 @@ impl SessionTranslator {
 
                 self.validate_mixed_verified_packets(direction, packets)
             }
-            Emit::MixedVerifiedProofPackets(packets) => {
+            Emit::MixedVerifiedProofPackets(packets)
+            | Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
                 if packets.is_empty() {
                     return Emit::Drop;
                 }
@@ -452,6 +479,7 @@ impl SessionTranslator {
                 self.validate_verified_proof_packets(direction, proof, packets)
             }
             Emit::Consumed => Emit::Consumed,
+            Emit::ConsumedRetireSession { reason } => Emit::ConsumedRetireSession { reason },
             Emit::Drop => Emit::Drop,
         }
     }
@@ -556,11 +584,13 @@ impl SessionTranslator {
             match self.validate_packet(direction, packet) {
                 Emit::Packet(packet) => validated_suffix.push(packet),
                 Emit::Consumed
+                | Emit::ConsumedRetireSession { .. }
                 | Emit::Drop
                 | Emit::Packets(_)
                 | Emit::PacketsPreShifted(_)
                 | Emit::MixedVerifiedPackets(_)
                 | Emit::MixedVerifiedProofPackets(_)
+                | Emit::MixedVerifiedProofPacketsPreShifted(_)
                 | Emit::VerifiedPackets { .. }
                 | Emit::VerifiedPacketsPreShifted { .. }
                 | Emit::VerifiedProofPackets { .. }
@@ -616,11 +646,13 @@ impl SessionTranslator {
             match self.validate_packet(direction, packet) {
                 Emit::Packet(packet) => validated_suffix.push(packet),
                 Emit::Consumed
+                | Emit::ConsumedRetireSession { .. }
                 | Emit::Drop
                 | Emit::Packets(_)
                 | Emit::PacketsPreShifted(_)
                 | Emit::MixedVerifiedPackets(_)
                 | Emit::MixedVerifiedProofPackets(_)
+                | Emit::MixedVerifiedProofPacketsPreShifted(_)
                 | Emit::VerifiedPackets { .. }
                 | Emit::VerifiedPacketsPreShifted { .. }
                 | Emit::VerifiedProofPackets { .. }
@@ -768,5 +800,25 @@ impl SessionTranslator {
         } else {
             Emit::Packet(packet)
         }
+    }
+}
+
+fn packets_from_emit(emit: Emit) -> Vec<Vec<u8>> {
+    match emit {
+        Emit::Packet(packet) => vec![packet],
+        Emit::Packets(packets)
+        | Emit::PacketsPreShifted(packets)
+        | Emit::VerifiedPackets { packets, .. }
+        | Emit::VerifiedPacketsPreShifted { packets, .. }
+        | Emit::VerifiedProofPackets { packets, .. }
+        | Emit::VerifiedProofPacketsPreShifted { packets, .. } => packets,
+        Emit::MixedVerifiedPackets(packets) => {
+            packets.into_iter().map(|(_, packet)| packet).collect()
+        }
+        Emit::MixedVerifiedProofPackets(packets)
+        | Emit::MixedVerifiedProofPacketsPreShifted(packets) => {
+            packets.into_iter().map(|(_, packet)| packet).collect()
+        }
+        Emit::Consumed | Emit::ConsumedRetireSession { .. } | Emit::Drop => Vec::new(),
     }
 }

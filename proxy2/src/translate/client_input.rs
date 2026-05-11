@@ -26,9 +26,15 @@
 //!   to open-door and all other states to close-door action.
 //! - EE server reader case `0x0B` in
 //!   `CNWSMessage::HandlePlayerToServerInputMessage`
-//!   (`nwn ee decompile.txt:1657750`, case block at `0x140453ACB`) reads
-//!   OBJECTID plus two fragment-buffer BOOLs, checks overflow/underflow, then
-//!   calls `CNWSObject::AddUseObjectAction(uint)` with the object id.
+//!   (`nwn ee decompile.txt:1652827`, group-input case block at
+//!   `0x140450081`) reads OBJECTID plus one fragment-buffer BOOL, checks
+//!   overflow/underflow, optionally marks inventory GUI state from that BOOL,
+//!   then calls `CNWSObject::AddUseObjectAction(uint)` with the object id.
+//! - EE client sender `sub_1407C07C0` (`nwn ee decompile.txt:2942660`)
+//!   writes `Input_UseObject` as OBJECTID followed by two `WriteBOOL` calls
+//!   before sending family `0x06`, minor `0x0B`. The second writer BOOL is
+//!   retained and validated as part of the EE sender envelope, but it is not a
+//!   separate server-side use-object semantic field.
 //!
 //! The Diamond/1.69 text decompile available in this workspace is stripped for
 //! these handler names. The live HG 1.69 server accepts the same CNW layouts
@@ -52,7 +58,7 @@ const WORD_BYTES: usize = 2;
 const BYTE_BYTES: usize = 1;
 const FRAGMENT_HEADER_BITS: usize = 3;
 const WALK_BOOL_BITS: usize = 2;
-const USE_OBJECT_BOOL_BITS: usize = 2;
+const USE_OBJECT_EE_WRITER_BOOL_BITS: usize = 2;
 const WALK_READ_BODY_BYTES: usize =
     OBJECT_ID_BYTES + (3 * FLOAT_BYTES) + BYTE_BYTES + BYTE_BYTES + OBJECT_ID_BYTES;
 const DOOR_READ_BODY_BYTES: usize = OBJECT_ID_BYTES + WORD_BYTES;
@@ -101,8 +107,8 @@ pub struct ChangeDoorState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UseObject {
     pub object_id: u32,
-    pub first_bool: bool,
-    pub second_bool: bool,
+    pub server_consumed_bool: bool,
+    pub ee_writer_aux_bool: bool,
 }
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientInputClaimSummary> {
@@ -212,12 +218,17 @@ pub fn parse_use_object(payload: &[u8]) -> Option<UseObject> {
     if high.major != INPUT_MAJOR || high.minor != USE_OBJECT_MINOR {
         return None;
     }
-    require_declared_and_fragment_bits(payload, USE_OBJECT_DECLARED_BYTES, USE_OBJECT_BOOL_BITS)?;
+    require_declared_and_fragment_bits(
+        payload,
+        USE_OBJECT_DECLARED_BYTES,
+        USE_OBJECT_EE_WRITER_BOOL_BITS,
+    )?;
 
     let mut cursor = READ_CURSOR_START;
     let object_id = read_u32_at(payload, cursor)?;
     cursor += OBJECT_ID_BYTES;
-    let (first_bool, second_bool) = read_two_fragment_bools(&payload[USE_OBJECT_DECLARED_BYTES..])?;
+    let (server_consumed_bool, ee_writer_aux_bool) =
+        read_two_fragment_bools(&payload[USE_OBJECT_DECLARED_BYTES..])?;
 
     if cursor != USE_OBJECT_DECLARED_BYTES || object_id == INVALID_OBJECT_ID {
         return None;
@@ -225,8 +236,8 @@ pub fn parse_use_object(payload: &[u8]) -> Option<UseObject> {
 
     Some(UseObject {
         object_id,
-        first_bool,
-        second_bool,
+        server_consumed_bool,
+        ee_writer_aux_bool,
     })
 }
 
@@ -297,6 +308,31 @@ mod tests {
     }
 
     #[test]
+    fn walk_to_waypoint_object_click_fixtures_match_decompile_cursor_shape() {
+        let door =
+            include_bytes!("../../fixtures/client_input/walk_to_waypoint_door_action_click.bin");
+        let trigger =
+            include_bytes!("../../fixtures/client_input/walk_to_waypoint_trigger_action_click.bin");
+
+        let door = parse_walk_to_waypoint(door).expect("door click fixture should parse");
+        assert_eq!(door.area_id, 0x8000_34CB);
+        assert_eq!(door.input_byte, 0);
+        assert!(door.first_bool);
+        assert!(!door.second_bool);
+        assert_eq!(door.action_byte, 0);
+        assert_eq!(door.action_object_id, 0x8000_34D1);
+
+        let trigger =
+            parse_walk_to_waypoint(trigger).expect("trigger click fixture should parse");
+        assert_eq!(trigger.area_id, 0x8000_34CB);
+        assert_eq!(trigger.input_byte, 0);
+        assert!(trigger.first_bool);
+        assert!(!trigger.second_bool);
+        assert_eq!(trigger.action_byte, 0);
+        assert_eq!(trigger.action_object_id, 0x8000_35FD);
+    }
+
+    #[test]
     fn change_door_state_fixture_matches_decompile_cursor_shape() {
         let fixture = include_bytes!("../../fixtures/client_input/change_door_state_open.bin");
         let summary = claim_payload_if_verified(fixture).expect("door fixture should be claimed");
@@ -322,8 +358,8 @@ mod tests {
         assert_eq!(summary.declared, USE_OBJECT_DECLARED_BYTES);
         assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
         assert_eq!(parsed.object_id, 0x8000_34CB);
-        assert!(parsed.first_bool);
-        assert!(!parsed.second_bool);
+        assert!(parsed.server_consumed_bool);
+        assert!(!parsed.ee_writer_aux_bool);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{OnceLock, RwLock},
 };
 
 const BASEITEMS_2DA_NAME: &str = "baseitems.2da";
@@ -27,6 +27,26 @@ const NWN_BASE_ITEM_CLOAK: usize = 0x50;
 const CEP_HG_FASHION_ACCESSORY: usize = 0x13A;
 
 static BASE_ITEM_MODEL_TYPES: OnceLock<Option<Vec<i8>>> = OnceLock::new();
+static OBSERVED_HAK_ORDER_TOP_FIRST: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
+
+/// Records the module HAK stack exactly as it arrived in the legacy
+/// `Module_Info` resource block.
+///
+/// Diamond `CNWSModule::LoadModuleStart` reads `Mod_HakList` in module order
+/// and then mounts the stored list from the last entry back toward the first.
+/// EE `CNWCModule::LoadModuleResources` does the same with the packet-provided
+/// HAK vector. Resource-table helpers therefore prefer this observed runtime
+/// order over any HG fallback profile so item appearance parsing follows the
+/// active module instead of a stale hard-coded list.
+pub(crate) fn observe_hak_order_top_first(hak_order_top_first: &[String]) {
+    if hak_order_top_first.is_empty() {
+        return;
+    }
+    let observed = OBSERVED_HAK_ORDER_TOP_FIRST.get_or_init(|| RwLock::new(Vec::new()));
+    if let Ok(mut observed) = observed.write() {
+        *observed = hak_order_top_first.to_vec();
+    }
+}
 
 pub(crate) fn base_item_model_types() -> Option<&'static [i8]> {
     BASE_ITEM_MODEL_TYPES
@@ -241,12 +261,26 @@ fn configured_hak_order_top_first() -> Vec<String> {
         }
     }
 
+    if let Some(order) = observed_hak_order_top_first() {
+        return order;
+    }
+
     let profile_name = configured_asset_profile_name().unwrap_or_else(|| "generic-169".to_owned());
     crate::translate::profiles::module_resources_profile(&profile_name)
         .hak_order_top_first
         .iter()
         .map(|hak| (*hak).to_owned())
         .collect()
+}
+
+fn observed_hak_order_top_first() -> Option<Vec<String>> {
+    let observed = OBSERVED_HAK_ORDER_TOP_FIRST.get()?;
+    let observed = observed.read().ok()?;
+    if observed.is_empty() {
+        None
+    } else {
+        Some(observed.clone())
+    }
 }
 
 fn configured_asset_profile_name() -> Option<String> {
@@ -418,7 +452,26 @@ fn fallback_baseitems_model_types() -> Vec<i8> {
     // only used when no module resource table is available; live bridge runs
     // should load the HAK/resource-backed table above.
     for (row, model_type) in [
+        // Stock weapon/projectile/tool rows seen in captured appearance
+        // fixtures. These keep public tests deterministic when local 2DA/HAK
+        // assets are not available.
+        (0x00, 2),
         (NWN_BASE_ITEM_WEAPON, 2),
+        (0x02, 2),
+        (0x03, 2),
+        (0x04, 2),
+        (0x06, 2),
+        (0x07, 2),
+        (0x08, 2),
+        (0x0B, 2),
+        (0x12, 2),
+        (0x14, 2),
+        (0x1C, 2),
+        (0x20, 2),
+        (0x2A, 2),
+        (0x3F, 2),
+        (0x5F, 2),
+        (0x68, 2),
         (NWN_BASE_ITEM_ARMOR, 3),
         (NWN_BASE_ITEM_MAGIC_STAFF, 2),
         (NWN_BASE_ITEM_SHIELD, 0),

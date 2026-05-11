@@ -41,7 +41,6 @@
     "cep2_core1",
     "cep2_core0",
     "cep2_add_doors",
-    "cep2_add_tiles3",
     "cep2_add_tiles2",
     "cep2_add_tiles1",
     "cep2_ext_tiles",
@@ -92,17 +91,6 @@
       "evidence": "EE tileset loader requires Orientation in each TILE block; CEP legacy ttr01.set TILE625 omits it."
     }
   ],
-  "nwsyncSanitizers": [
-    {
-      "id": "cep2-add-tiles3-drop-type0",
-      "kind": "dropErfResourceTypes",
-      "hak": "cep2_add_tiles3.hak",
-      "dropResourceTypes": [
-        0
-      ],
-      "reason": "NWSync cannot expose resource type 0 entries such as tfa01.0; type 0 is not a valid NWN resource type for EE mounting."
-    }
-  ],
   "nwsync": {
     "name": "HG Bridge Required Assets",
     "description": "Higher Ground required assets plus EE compatibility resources for the NWN EE bridge.",
@@ -110,6 +98,7 @@
     "url": "http://127.0.0.1:5122/",
     "repositoryPath": "C:/nwnbridge/nwsync/higher-ground/repository",
     "limitFileSizeMB": 1024,
+    "maxManifestTotalBytes": 3900000000,
     "compression": "none",
     "writeOrigins": true
   }

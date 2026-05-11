@@ -17,6 +17,7 @@
 //!   focused here instead of folding it into `m_frame`.
 
 mod add;
+mod add_guard;
 mod appearance;
 mod bits;
 mod boundary;
@@ -25,6 +26,7 @@ mod creature;
 mod creature_add;
 mod cursor;
 mod door;
+mod effects;
 mod fragment_spans;
 mod gui;
 mod inventory;
@@ -1198,6 +1200,20 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
+                if let Some(placeable_guard_changed) =
+                    add_guard::repair_verified_ee_placeable_add_guard_bits(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &mut fragment_bits,
+                        &mut bit_cursor,
+                    )
+                {
+                    changed |= placeable_guard_changed;
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
+
                 if !appearance::advance_verified_ee_item_add_record(
                     &live_bytes,
                     offset,
@@ -1480,6 +1496,17 @@ pub fn rewrite_update_records_payload_if_possible(
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                 }
+                if creature::repair_legacy_c408_visual_effect_count_for_ee(
+                    &mut live_bytes,
+                    offset,
+                    record_end,
+                )
+                .is_some()
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                }
                 if let Some(promotion) =
                     fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
                         &mut live_bytes,
@@ -1622,6 +1649,19 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         if inventory::owns_fragment_tail(opcode) {
+            if let Some(inventory_rewrite) =
+                inventory::rewrite_legacy_inventory_record_for_ee(
+                    &mut live_bytes,
+                    offset,
+                    &mut record_end,
+                )
+            {
+                changed = true;
+                summary.bytes_removed = summary.bytes_removed.saturating_add(
+                    u32::try_from(inventory_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                );
+            }
+
             if bit_cursor_reliable {
                 if let Some(promotion) =
                     fragment_spans::promote_inventory_interleaved_fragment_span_for_ee(
@@ -1849,14 +1889,12 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 /// translator rather than as ad-hoc test output.  The strict bridge treats a
 /// no-op live-object claim as provisional evidence: captured payloads should be
 /// promoted into fixtures and then either assigned to an exact translator or
-/// rejected.  Set HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR to enable capture.
+/// rejected. Set `NWN_BRIDGE_QUARANTINE_DIR` to enable capture. The older
+/// `HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR` name is still accepted as a fallback.
 pub fn dump_live_object_fixture_candidate(payload: &[u8], reason: &str) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
-    if dir.trim().is_empty() {
-        return;
-    }
 
     let sanitized_reason: String = reason
         .chars()
@@ -1872,7 +1910,7 @@ pub fn dump_live_object_fixture_candidate(payload: &[u8], reason: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let mut path = std::path::PathBuf::from(dir);
+    let mut path = dir;
     if std::fs::create_dir_all(&path).is_err() {
         return;
     }

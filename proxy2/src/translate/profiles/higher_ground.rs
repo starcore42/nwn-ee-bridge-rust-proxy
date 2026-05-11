@@ -6,7 +6,12 @@
 
 use super::ModuleResourceProfile;
 
-const HAK_ORDER_TOP_FIRST: [&str; 24] = [
+// Fallback-only copy of the currently observed HG `Module_Info` HAK stack.
+// Runtime packet translation records the server-provided list from
+// `Module_Info` and does not synthesize from this profile. Keep this fallback
+// conservative so offline resource-table probes do not mount HAKs the server
+// did not declare.
+const HAK_ORDER_TOP_FIRST: [&str; 23] = [
     "cep2_custom",
     "cep2_top_v23",
     "cep2_add_phenos5",
@@ -25,7 +30,6 @@ const HAK_ORDER_TOP_FIRST: [&str; 24] = [
     "cep2_core1",
     "cep2_core0",
     "cep2_add_doors",
-    "cep2_add_tiles3",
     "cep2_add_tiles2",
     "cep2_add_tiles1",
     "cep2_ext_tiles",

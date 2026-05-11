@@ -11,7 +11,7 @@ use super::{
     LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, door, locstring, placeable, read_u32_le, reader, trigger,
+    TRIGGER_OBJECT_TYPE, bits, door, effects, locstring, placeable, read_u32_le, reader, trigger,
     write_u32_le, writer,
 };
 
@@ -55,6 +55,20 @@ pub(super) fn rewrite_update_record_for_ee(
     let object_type = live_bytes[record_offset + 1];
     let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && raw_mask == effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK
+    {
+        let effect_rewrite = effects::rewrite_legacy_looping_visual_effect_update_for_ee(
+            live_bytes,
+            record_offset,
+            record_end,
+        )?;
+        return Some(RecordRewrite {
+            rewritten: effect_rewrite.bytes_inserted != 0,
+            bytes_inserted: effect_rewrite.bytes_inserted,
+            ..RecordRewrite::default()
+        });
+    }
     if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
         if let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
             live_bytes,
@@ -397,6 +411,11 @@ pub(super) fn advance_verified_update_record_for_ee(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end)
+    {
+        return true;
+    }
+
     if let Some(next_bit_cursor) = trigger::advance_verified_ee_trigger_update_record(
         live_bytes,
         offset,

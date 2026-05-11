@@ -47,6 +47,32 @@ impl Default for StrictProfile {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NwsyncAdvertiseMode {
+    /// Advertise NWSync in both the direct BNXR pre-connect response and the
+    /// EE ServerStatus_ModuleRunning module-resource packet.
+    Both,
+    /// Advertise only in the EE module-resource packet. This avoids EE's native
+    /// pre-connect BNDM downloader handoff while still mounting assets through
+    /// the decompile-backed `CNWCModule::LoadModuleResources` reader.
+    ModuleOnly,
+    /// Advertise only in BNXR. Useful for isolating EE's native downloader path.
+    BnxrOnly,
+    /// Serve any configured repository but do not advertise it in translated
+    /// packets. `--disable-nwsync` still disables both advertisement and HTTP.
+    Off,
+}
+
+impl NwsyncAdvertiseMode {
+    pub fn advertises_bnxr(self) -> bool {
+        matches!(self, Self::Both | Self::BnxrOnly)
+    }
+
+    pub fn advertises_module_resources(self) -> bool {
+        matches!(self, Self::Both | Self::ModuleOnly)
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(name = "hgbridge_proxy2")]
 #[command(about = "Structured strict-translation NWN EE <-> 1.69 bridge proxy")]
@@ -112,6 +138,10 @@ pub struct Config {
     /// Disable NWSync advertisement and local repository serving.
     #[arg(long)]
     pub disable_nwsync: bool,
+
+    /// Select which decompile-backed EE packet path advertises NWSync.
+    #[arg(long, value_enum, default_value_t = NwsyncAdvertiseMode::Both)]
+    pub nwsync_advertise_mode: NwsyncAdvertiseMode,
 
     /// Explicit local bind address for the built-in NWSync HTTP server.
     #[arg(long)]

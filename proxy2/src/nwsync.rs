@@ -22,6 +22,7 @@ const DEFAULT_ENV_PATH: &str = "hg-bridge-nwsync.env";
 const ENV_ROOT: &str = "HG_BRIDGE_NWSYNC_ROOT";
 const ENV_HASH: &str = "HG_BRIDGE_NWSYNC_HASH";
 const ENV_URL: &str = "HG_BRIDGE_NWSYNC_URL";
+const ENV_MANIFESTS: &str = "HG_BRIDGE_NWSYNC_MANIFESTS";
 
 #[derive(Debug, Clone)]
 pub struct ManifestAdvert {
@@ -128,11 +129,9 @@ impl Runtime {
             return Ok(None);
         };
 
-        let advertisement = Advertisement::new(
-            root_hash.trim().to_string(),
-            url.trim().to_string(),
-            Vec::new(),
-        )?;
+        let root_hash = root_hash.trim().to_string();
+        let manifests = parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash)?;
+        let advertisement = Advertisement::new(root_hash, url.trim().to_string(), manifests)?;
         Ok(Some(Self {
             root,
             advertisement,
@@ -155,6 +154,72 @@ fn default_env_path() -> Option<PathBuf> {
         cwd.parent().map(|parent| parent.join(DEFAULT_ENV_PATH))?,
     ];
     candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn parse_manifest_adverts(
+    raw: Option<&String>,
+    root_hash: &str,
+) -> anyhow::Result<Vec<ManifestAdvert>> {
+    let Some(raw) = raw.map(String::as_str).map(str::trim).filter(|value| !value.is_empty()) else {
+        // EE's pre-module NWSync path receives the byte-oriented BNXR
+        // advertisement and uses the manifest list as the client-content work
+        // set. Default to the root manifest as required client content. The
+        // module-resources writer filters this duplicate root entry back out,
+        // because CNWCModule::LoadModuleResources calls AddManifest(root)
+        // before it iterates advertisement manifests.
+        return Ok(vec![ManifestAdvert {
+            hash: root_hash.to_string(),
+            flags: 1,
+            language: 0xFF,
+        }]);
+    };
+
+    let mut manifests = Vec::new();
+    for (index, entry) in raw.split([',', ';']).enumerate() {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        let mut fields = entry.split(':').map(str::trim);
+        let hash = fields
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("empty NWSync manifest hash at entry {}", index + 1))?;
+        let flags = match fields.next().filter(|value| !value.is_empty()) {
+            Some(value) => parse_u8_field("NWSync manifest flags", value)?,
+            None => 1,
+        };
+        let language = match fields.next().filter(|value| !value.is_empty()) {
+            Some(value) => parse_u8_field("NWSync manifest language", value)?,
+            None => 0xFF,
+        };
+        if fields.next().is_some() {
+            return Err(anyhow!(
+                "too many fields in NWSync manifest advert entry {}",
+                index + 1
+            ));
+        }
+        manifests.push(ManifestAdvert {
+            hash: hash.to_string(),
+            flags,
+            language,
+        });
+    }
+
+    Ok(manifests)
+}
+
+fn parse_u8_field(label: &str, value: &str) -> anyhow::Result<u8> {
+    let parsed = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u8::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u8>()
+    };
+    parsed.with_context(|| format!("parsing {label} value '{value}'"))
 }
 
 pub struct HttpServerGuard {

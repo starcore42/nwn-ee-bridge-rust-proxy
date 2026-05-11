@@ -78,6 +78,7 @@ fn drain_client_socket(
                     continue;
                 }
                 let bytes = &recv_buf[..len];
+                let mut retire_session_after_emit: Option<&'static str> = None;
                 let session = ensure_session(config, translator_template, sessions, client)?;
                 session.last_seen = Instant::now();
                 let plain = match session.ee_crypto.preprocess_client_packet(bytes) {
@@ -139,7 +140,8 @@ fn drain_client_socket(
                                 })?;
                         }
                     }
-                    Emit::MixedVerifiedProofPackets(outbounds) => {
+                    Emit::MixedVerifiedProofPackets(outbounds)
+                    | Emit::MixedVerifiedProofPacketsPreShifted(outbounds) => {
                         for (_, outbound) in outbounds {
                             session
                                 .upstream
@@ -149,7 +151,20 @@ fn drain_client_socket(
                                 })?;
                         }
                     }
-                    Emit::Consumed | Emit::Drop => {}
+                    Emit::Consumed => {}
+                    Emit::ConsumedRetireSession { reason } => {
+                        retire_session_after_emit = Some(reason);
+                    }
+                    Emit::Drop => {}
+                }
+                send_pending_server_to_client_packets(listen, session)?;
+                if let Some(reason) = retire_session_after_emit {
+                    tracing::info!(
+                        %client,
+                        reason,
+                        "retiring proxy2 session after consumed client control packet"
+                    );
+                    sessions.remove(&client);
                 }
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(()),
@@ -185,6 +200,7 @@ fn drain_server_sockets(
                                 format!("sending local consumed-frame ACK to server {server}")
                             })?;
                     }
+                    send_pending_server_to_client_packets(listen, session)?;
                     match emit {
                         Emit::Packet(outbound) => {
                             let outbound = session
@@ -230,7 +246,8 @@ fn drain_server_sockets(
                                 })?;
                             }
                         }
-                        Emit::MixedVerifiedProofPackets(outbounds) => {
+                        Emit::MixedVerifiedProofPackets(outbounds)
+                        | Emit::MixedVerifiedProofPacketsPreShifted(outbounds) => {
                             for (_, outbound) in outbounds {
                                 let outbound = session
                                     .ee_crypto
@@ -242,6 +259,14 @@ fn drain_server_sockets(
                             }
                         }
                         Emit::Consumed => {}
+                        Emit::ConsumedRetireSession { reason } => {
+                            tracing::warn!(
+                                %server,
+                                client = %session.client,
+                                reason,
+                                "server path requested session retirement; ignoring"
+                            );
+                        }
                         Emit::Drop => {
                             tracing::warn!(%server, client = %session.client, "server datagram quarantined");
                         }
@@ -251,6 +276,22 @@ fn drain_server_sockets(
                 Err(err) => return Err(err).context("receiving from upstream server socket"),
             }
         }
+    }
+    Ok(())
+}
+
+fn send_pending_server_to_client_packets(listen: &UdpSocket, session: &mut Session) -> Result<()> {
+    for outbound in session.translator.take_pending_server_to_client_packets() {
+        let outbound = session
+            .ee_crypto
+            .encrypt_server_packet_if_needed(&outbound)
+            .context("encrypting pending server packet for EE client")?;
+        listen.send_to(&outbound, session.client).with_context(|| {
+            format!(
+                "sending pending server datagram to client {}",
+                session.client
+            )
+        })?;
     }
     Ok(())
 }

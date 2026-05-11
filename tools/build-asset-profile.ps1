@@ -90,6 +90,37 @@ function Invoke-ArchiveExtract {
     }
 }
 
+function Remove-StaleProfileFiles {
+    param(
+        [string]$StageRoot,
+        [string]$Subdir,
+        [string]$Extension,
+        [string[]]$KeepNames
+    )
+
+    $dir = Join-Path $StageRoot $Subdir
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+        return
+    }
+
+    $stageFull = [System.IO.Path]::GetFullPath($StageRoot)
+    $dirFull = [System.IO.Path]::GetFullPath($dir)
+    if (-not $dirFull.StartsWith($stageFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean staged profile files outside stage root: $dirFull"
+    }
+
+    $keep = @{}
+    foreach ($name in $KeepNames) {
+        $keep[$name.ToLowerInvariant()] = $true
+    }
+
+    Get-ChildItem -LiteralPath $dir -File -Filter "*$Extension" | ForEach-Object {
+        if (-not $keep.ContainsKey($_.Name.ToLowerInvariant())) {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
+    }
+}
+
 function Copy-ExtractedAssetsToStage {
     param([string]$ExtractRoot, [string]$StageRoot, [switch]$Force)
 
@@ -614,6 +645,141 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $PathValue -Encoding UTF8
 }
 
+function Get-NwsyncMaxManifestBytes {
+    param([object]$Profile)
+
+    # EE parses NWSync manifest JSON total_bytes through a 32-bit path before it
+    # downloads data blobs. Keep each advertised manifest comfortably below that
+    # reader limit. Profiles may lower this to force smaller shards, but they
+    # must not raise it beyond the EE parser's range.
+    $defaultMax = [uint64]3900000000
+    $max = $defaultMax
+    if ($Profile.nwsync -and $null -ne $Profile.nwsync.maxManifestTotalBytes) {
+        $max = [uint64]$Profile.nwsync.maxManifestTotalBytes
+    }
+    if ($max -gt [uint64]4294967295) {
+        throw "Profile '$($Profile.id)' sets nwsync.maxManifestTotalBytes above EE's 32-bit manifest metadata limit."
+    }
+    if ($max -lt [uint64](64 * 1024 * 1024)) {
+        throw "Profile '$($Profile.id)' sets nwsync.maxManifestTotalBytes too low for practical manifest sharding."
+    }
+    return $max
+}
+
+function Get-NwsyncSpecEstimatedBytes {
+    param([string]$PathValue)
+
+    $item = Get-Item -LiteralPath $PathValue -ErrorAction Stop
+    if ($item.PSIsContainer) {
+        $sum = (Get-ChildItem -LiteralPath $item.FullName -Recurse -File | Measure-Object Length -Sum).Sum
+        if ($null -eq $sum) {
+            return [uint64]0
+        }
+        return [uint64]$sum
+    }
+    return [uint64]$item.Length
+}
+
+function New-NwsyncSpec {
+    param(
+        [string]$PathValue,
+        [string]$Kind,
+        [string]$Name
+    )
+
+    $item = Get-Item -LiteralPath $PathValue -ErrorAction Stop
+    return [pscustomobject]@{
+        path = $item.FullName
+        kind = $Kind
+        name = $Name
+        estimatedBytes = Get-NwsyncSpecEstimatedBytes -PathValue $item.FullName
+    }
+}
+
+function New-NwsyncShard {
+    param(
+        [int]$Index,
+        [object[]]$Specs,
+        [uint64]$EstimatedBytes
+    )
+
+    return [pscustomobject]@{
+        index = $Index
+        estimatedBytes = $EstimatedBytes
+        specs = @($Specs)
+    }
+}
+
+function Split-NwsyncSpecsIntoShards {
+    param(
+        [object[]]$Specs,
+        [uint64]$MaxManifestBytes
+    )
+
+    $shards = New-Object System.Collections.Generic.List[object]
+    $current = New-Object System.Collections.Generic.List[object]
+    $currentBytes = [uint64]0
+    $index = 1
+
+    foreach ($spec in $Specs) {
+        $specBytes = [uint64]$spec.estimatedBytes
+        if ($specBytes -gt $MaxManifestBytes) {
+            throw "NWSync spec '$($spec.path)' is estimated at $specBytes bytes, which exceeds the per-manifest limit $MaxManifestBytes."
+        }
+        if ($current.Count -gt 0 -and ($currentBytes + $specBytes) -gt $MaxManifestBytes) {
+            $shards.Add((New-NwsyncShard -Index $index -Specs $current.ToArray() -EstimatedBytes $currentBytes))
+            $current = New-Object System.Collections.Generic.List[object]
+            $currentBytes = [uint64]0
+            $index++
+        }
+        $current.Add($spec)
+        $currentBytes += $specBytes
+    }
+
+    if ($current.Count -gt 0) {
+        $shards.Add((New-NwsyncShard -Index $index -Specs $current.ToArray() -EstimatedBytes $currentBytes))
+    }
+
+    return @($shards.ToArray())
+}
+
+function New-NwsyncWriteArgs {
+    param(
+        [object]$Profile,
+        [string]$Name,
+        [string]$Description,
+        [string]$RepositoryRoot,
+        [string[]]$SpecPaths
+    )
+
+    $args = @(
+        "--name", $Name,
+        "--description", $Description,
+        "--group-id", [string]$Profile.nwsync.groupId,
+        "--limit-file-size", [string]$Profile.nwsync.limitFileSizeMB,
+        "--compression", [string]$Profile.nwsync.compression
+    )
+    if ($Profile.nwsync.writeOrigins) {
+        $args += "--write-origins"
+    }
+    $args += $RepositoryRoot
+    $args += $SpecPaths
+    return $args
+}
+
+function Read-NwsyncManifestMetadata {
+    param(
+        [string]$RepositoryRoot,
+        [string]$Hash
+    )
+
+    $jsonPath = Join-Path $RepositoryRoot "manifests\$Hash.json"
+    if (-not (Test-Path -LiteralPath $jsonPath)) {
+        return $null
+    }
+    return Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
+}
+
 $profilePathResolved = Resolve-ProjectPath $ProfilePath
 $profile = Read-JsonProfile $profilePathResolved
 if (-not $RequiredRoot) {
@@ -642,6 +808,13 @@ Ensure-Directory $stageRoot
 Ensure-Directory $extractRoot
 Ensure-Directory $fixRoot
 Ensure-Directory $buildRoot
+
+if ($Apply -and $Force) {
+    $profileHakNames = @($profile.hakOrderTopFirst | ForEach-Object { "$_.hak" })
+    $profileTlkNames = @($profile.tlkFiles | ForEach-Object { "$_" })
+    Remove-StaleProfileFiles -StageRoot $stageRoot -Subdir "hak" -Extension ".hak" -KeepNames $profileHakNames
+    Remove-StaleProfileFiles -StageRoot $stageRoot -Subdir "tlk" -Extension ".tlk" -KeepNames $profileTlkNames
+}
 
 $sourceManifest = @()
 foreach ($archiveSpec in $profile.sourceArchives) {
@@ -793,7 +966,7 @@ if (-not $SkipNwsync -and $Apply) {
     }
     Ensure-Directory $repoRoot
 
-    $specs = New-Object System.Collections.Generic.List[string]
+    $specs = New-Object System.Collections.Generic.List[object]
 # Profiles declare the module/HAK list in the same top-first order Diamond
 # stores in module metadata. Diamond activates that list from the end back
 # toward the front, while `nwsync_write --help` documents that later specs
@@ -807,55 +980,84 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Staged HAK missing before NWSync build: $path"
         }
-        $specs.Add($path)
+        $specs.Add((New-NwsyncSpec -PathValue $path -Kind "hak" -Name "$hak.hak"))
     }
     $tlkRoot = Join-Path $stageRoot "tlk"
     if (Test-Path -LiteralPath $tlkRoot) {
-        Get-ChildItem -LiteralPath $tlkRoot -File | Sort-Object Name | ForEach-Object { $specs.Add($_.FullName) }
+        Get-ChildItem -LiteralPath $tlkRoot -File | Sort-Object Name | ForEach-Object {
+            $specs.Add((New-NwsyncSpec -PathValue $_.FullName -Kind "tlk" -Name $_.Name))
+        }
     }
     $overrideRoot = Join-Path $stageRoot "override"
     if (Test-Path -LiteralPath $overrideRoot) {
-        $specs.Add($overrideRoot)
+        $specs.Add((New-NwsyncSpec -PathValue $overrideRoot -Kind "override" -Name "override"))
     }
 
-    $args = @(
-        "--name", $profile.nwsync.name,
-        "--description", $profile.nwsync.description,
-        "--group-id", [string]$profile.nwsync.groupId,
-        "--limit-file-size", [string]$profile.nwsync.limitFileSizeMB,
-        "--compression", [string]$profile.nwsync.compression
-    )
-    if ($profile.nwsync.writeOrigins) {
-        $args += "--write-origins"
-    }
-    $args += $repoRoot
-    $args += $specs.ToArray()
-
-    & $NwsyncTool @args
-    if ($LASTEXITCODE -ne 0) {
-        throw "nwsync_write failed with exit code $LASTEXITCODE"
+    $maxManifestBytes = Get-NwsyncMaxManifestBytes -Profile $profile
+    $shards = Split-NwsyncSpecsIntoShards -Specs $specs.ToArray() -MaxManifestBytes $maxManifestBytes
+    if ($shards.Count -eq 0) {
+        throw "Profile '$($profile.id)' produced no NWSync specs."
     }
 
     $latestPath = Join-Path $repoRoot "latest"
-    if (-not (Test-Path -LiteralPath $latestPath)) {
-        throw "NWSync repository did not produce a latest pointer at $latestPath"
+    $writtenManifests = @()
+    foreach ($shard in $shards) {
+        $suffix = $(if ($shards.Count -gt 1) { " shard $($shard.index) of $($shards.Count)" } else { "" })
+        $manifestName = "$($profile.nwsync.name)$suffix"
+        $manifestDescription = "$($profile.nwsync.description)$suffix"
+        $specPaths = @($shard.specs | ForEach-Object { [string]$_.path })
+        $args = New-NwsyncWriteArgs -Profile $profile -Name $manifestName -Description $manifestDescription -RepositoryRoot $repoRoot -SpecPaths $specPaths
+
+        Write-Host "Writing NWSync manifest $($shard.index)/$($shards.Count): $($shard.estimatedBytes) estimated bytes, $($specPaths.Count) specs"
+        & $NwsyncTool @args
+        if ($LASTEXITCODE -ne 0) {
+            throw "nwsync_write failed with exit code $LASTEXITCODE for shard $($shard.index)"
+        }
+        if (-not (Test-Path -LiteralPath $latestPath)) {
+            throw "NWSync repository did not produce a latest pointer at $latestPath"
+        }
+
+        $hash = (Get-Content -LiteralPath $latestPath -Raw).Trim()
+        $metadata = Read-NwsyncManifestMetadata -RepositoryRoot $repoRoot -Hash $hash
+        if ($metadata -and $null -ne $metadata.total_bytes -and [uint64]$metadata.total_bytes -gt [uint64]4294967295) {
+            throw "NWSync manifest $hash reports total_bytes=$($metadata.total_bytes), which exceeds EE's 32-bit manifest metadata reader."
+        }
+
+        $writtenManifests += [pscustomobject]@{
+            index = $shard.index
+            hash = $hash
+            role = $(if ($shard.index -eq 1) { "root" } else { "advertised" })
+            flags = 1
+            language = 255
+            estimatedBytes = $shard.estimatedBytes
+            totalBytes = $(if ($metadata -and $null -ne $metadata.total_bytes) { [uint64]$metadata.total_bytes } else { $null })
+            totalFiles = $(if ($metadata -and $null -ne $metadata.total_files) { [uint64]$metadata.total_files } else { $null })
+            specs = @($shard.specs)
+        }
     }
-    $rootHash = (Get-Content -LiteralPath $latestPath -Raw).Trim()
+
+    $rootHash = [string]$writtenManifests[0].hash
     $nwsyncManifest = [pscustomobject]@{
         profile = $profile.id
         generatedUtc = [DateTime]::UtcNow.ToString("o")
         repositoryRoot = $repoRoot
         rootHash = $rootHash
         url = $profile.nwsync.url
-        specs = $specs
+        maxManifestTotalBytes = $maxManifestBytes
+        loadOrder = "root manifest first, then advertised manifests in listed order"
+        specs = @($specs.ToArray())
+        manifests = $writtenManifests
     }
     Write-JsonFile -PathValue (Join-Path $buildRoot "nwsync-manifest.json") -Value $nwsyncManifest
+
+    $advertisedManifestText = ($writtenManifests | ForEach-Object { "$($_.hash):$($_.flags):0x$('{0:X2}' -f [int]$_.language)" }) -join ","
 
     $envText = @(
         "HG_BRIDGE_ASSET_PROFILE=$($profile.id)",
         "HG_BRIDGE_NWSYNC_ROOT=$repoRoot",
         "HG_BRIDGE_NWSYNC_HASH=$rootHash",
-        "HG_BRIDGE_NWSYNC_URL=$($profile.nwsync.url)"
+        "HG_BRIDGE_NWSYNC_URL=$($profile.nwsync.url)",
+        "HG_BRIDGE_NWSYNC_MANIFESTS=$advertisedManifestText"
     ) -join "`r`n"
     $envText += "`r`n"
     Set-Content -LiteralPath (Join-Path $buildRoot "nwsync.env") -Value $envText -Encoding ASCII

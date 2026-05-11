@@ -44,6 +44,11 @@ pub(super) struct InventoryRecordPrefixClaim {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct InventoryRecordRewrite {
+    pub bytes_removed: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct GenericInventoryCandidate {
     cursor: usize,
     bits: usize,
@@ -104,7 +109,7 @@ pub(super) fn try_get_legacy_live_inventory_fragment_bit_count(
     }
 
     if mask == 0x2000 {
-        let feature25 = try_parse_feature25_record(bytes, record_offset, record_end)?;
+        let feature25 = try_parse_inventory_2000_record(bytes, record_offset, record_end)?;
         return Some(
             usize::try_from(feature25.second_count)
                 .ok()?
@@ -192,6 +197,39 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
         read_end: candidate.cursor,
         fragment_bits: candidate.bits,
     })
+}
+
+pub(super) fn rewrite_legacy_inventory_record_for_ee(
+    bytes: &mut Vec<u8>,
+    record_offset: usize,
+    record_end: &mut usize,
+) -> Option<InventoryRecordRewrite> {
+    if record_offset > bytes.len()
+        || *record_end > bytes.len()
+        || *record_end <= record_offset
+        || *record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    let feature25_cursor = match mask {
+        0x2000 => record_offset.checked_add(7)?,
+        0x2008 => {
+            // Diamond and EE both consume the low 0x0008 inventory branch before
+            // the feature-25 0x2000 branch (`sub_455940` / `sub_1407B4F70`).
+            // This exact HG transition capture has that 0x0008 DWORD set to
+            // zero, then a legacy 0x2000 zero-first/sentinel object tail. EE has
+            // no reader for that tail, so normalize only this proved branch
+            // cursor to EE's exact zero/zero feature-25 list shape.
+            record_offset.checked_add(7)?.checked_add(4)?
+        }
+        _ => return None,
+    };
+
+    normalize_legacy_feature25_tail_for_ee(bytes, feature25_cursor, record_end)
+        .map(|bytes_removed| InventoryRecordRewrite { bytes_removed })
 }
 
 fn try_parse_inventory_2400_slot_update_shape(

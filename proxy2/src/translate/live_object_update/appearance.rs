@@ -45,6 +45,36 @@ const LEGACY_APPEARANCE_MAX_ITEM_NAME_TAIL_BYTES: usize = 96;
 // when the fully rewritten EE appearance validator accepts the exact record, so
 // this bound controls search cost rather than semantic acceptance.
 const LEGACY_APPEARANCE_MAX_ZERO_FRAGMENT_PADDING_BITS: usize = 64;
+
+fn legacy_full_appearance_body_table_padding(
+    bytes: &[u8],
+    cursor: usize,
+    limit: usize,
+) -> Option<usize> {
+    // Diamond's appearance reader consumes a count byte before the full
+    // 19-byte body table.  Captured HG full-state creature appearances expose
+    // two legacy compact-scalar layouts before that exact count byte:
+    //
+    //   * +4: previously verified HG full-appearance compact scalar block.
+    //   * +5: empty-name/current-player capture where the scalar block has an
+    //     extra zero byte before the same decompiled 0x13 body-table count.
+    //
+    // This is deliberately not a scan.  Only the decompile-owned count byte
+    // positions are accepted, and the following table must fit inside the
+    // bounded record window before the visible-equipment parser can claim it.
+    for padding in [0usize, 4, 5] {
+        let part_cursor = cursor.checked_add(padding)?;
+        if bytes.get(part_cursor).copied() != Some(LEGACY_APPEARANCE_BODY_PART_COUNT) {
+            continue;
+        }
+        let after_table =
+            part_cursor.checked_add(1 + usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT))?;
+        if after_table <= limit {
+            return Some(padding);
+        }
+    }
+    None
+}
 const LEGACY_APPEARANCE_ACTIVE_PROPERTY_BYTES: usize = 7;
 const LEGACY_APPEARANCE_ACTIVE_PROPERTY_TRAILER_BYTES: usize = 10;
 const LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS: usize = 4;
@@ -848,7 +878,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         }
         Some(record)
     };
-    let record = parse_exact_record(name_shape)
+    let mut record = parse_exact_record(name_shape)
         .inspect(|_| {
             record_from_fragment_proof = true;
         })
@@ -886,6 +916,15 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         // creature update, translate the bit to match the byte shape instead of
         // forwarding a raw overflowing `P` record.
         *fragment_bits.get_mut(bit_cursor)? = repaired.fragment_bit();
+    }
+    if !record_from_fragment_proof {
+        if let Some(delta) = proven_name_fragment_delta_for_byte_only_appearance_parse(
+            record_name_shape,
+            fragment_bits,
+            bit_cursor,
+        ) {
+            apply_name_fragment_delta_to_appearance_record(&mut record, delta)?;
+        }
     }
     let mut bits_removed = 0usize;
     if !record_from_fragment_proof {
@@ -2079,6 +2118,100 @@ fn legacy_full_appearance_preceding_fence_bits_are_proven(
     fence.iter().all(|bit| *bit)
 }
 
+fn proven_name_fragment_delta_for_byte_only_appearance_parse(
+    name_shape: AppearanceNameShape,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    let actual = proven_appearance_name_fragment_bits(name_shape, fragment_bits, bit_cursor)?;
+    let assumed = byte_only_appearance_name_fragment_bits(name_shape);
+    actual.checked_sub(assumed)
+}
+
+fn byte_only_appearance_name_fragment_bits(name_shape: AppearanceNameShape) -> usize {
+    match name_shape {
+        AppearanceNameShape::CExoString => 1,
+        AppearanceNameShape::LocStringPair => 3,
+    }
+}
+
+fn proven_appearance_name_fragment_bits(
+    name_shape: AppearanceNameShape,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    match name_shape {
+        AppearanceNameShape::CExoString => fragment_bits
+            .get(bit_cursor)
+            .copied()
+            .filter(|selector| !*selector)
+            .map(|_| 1),
+        AppearanceNameShape::LocStringPair => {
+            fragment_bits
+                .get(bit_cursor)
+                .copied()
+                .filter(|selector| *selector)?;
+            let mut cursor = bit_cursor.checked_add(1)?;
+            cursor = advance_proven_locstring_component_bits(fragment_bits, cursor)?;
+            cursor = advance_proven_locstring_component_bits(fragment_bits, cursor)?;
+            cursor.checked_sub(bit_cursor)
+        }
+    }
+}
+
+fn advance_proven_locstring_component_bits(
+    fragment_bits: &[bool],
+    component_bit_cursor: usize,
+) -> Option<usize> {
+    let inner_is_tlk_token = *fragment_bits.get(component_bit_cursor)?;
+    if inner_is_tlk_token {
+        fragment_bits.get(component_bit_cursor.checked_add(1)?)?;
+        component_bit_cursor.checked_add(2)
+    } else {
+        component_bit_cursor.checked_add(1)
+    }
+}
+
+fn apply_name_fragment_delta_to_appearance_record(
+    record: &mut LegacyAppearanceRecord,
+    delta: usize,
+) -> Option<()> {
+    if delta == 0 {
+        return Some(());
+    }
+
+    // The byte-only fallback below mirrors Diamond's read-buffer walk when the
+    // full fragment proof has already drifted. For a localized creature name it
+    // historically assumed the two `CExoLocString` components each consumed the
+    // inline-string branch's one BOOL. Diamond `sub_53E700` and EE's matching
+    // locstring reader consume two BOOLs for a TLK-token component, though: the
+    // inner token selector plus the language selector. When the current
+    // fragment stream proves that wider locstring prefix, shift every later
+    // visible-equipment active-property insert by the same amount instead of
+    // placing EE's extra `sub_14076BD30` BOOL inside a legacy field.
+    record.fragment_bits_consumed = record.fragment_bits_consumed.checked_add(delta)?;
+    record.ee_fragment_bits_consumed = record.ee_fragment_bits_consumed.checked_add(delta)?;
+    for offset in record.ee_extra_insert_offsets.iter_mut() {
+        *offset = offset.checked_add(delta)?;
+    }
+    record.preferred_zero_padding_relative_start =
+        checked_shift_optional_relative(record.preferred_zero_padding_relative_start, delta)?;
+    record.token_selector_padding_repair_relative_start =
+        checked_shift_optional_relative(record.token_selector_padding_repair_relative_start, delta)?;
+    record.inline_active_name_fence_repair_relative_start = checked_shift_optional_relative(
+        record.inline_active_name_fence_repair_relative_start,
+        delta,
+    )?;
+    Some(())
+}
+
+fn checked_shift_optional_relative(value: Option<usize>, delta: usize) -> Option<Option<usize>> {
+    match value {
+        Some(value) => Some(Some(value.checked_add(delta)?)),
+        None => Some(None),
+    }
+}
+
 fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
     if object_id == 0 || object_id == u32::MAX {
         return false;
@@ -2193,17 +2326,9 @@ fn parse_legacy_creature_appearance_record(
     cursor = advance_legacy_scalar_appearance_fields(bytes, cursor, limit, mask)?;
 
     if mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK {
-        if bytes.get(cursor).copied() != Some(LEGACY_APPEARANCE_BODY_PART_COUNT)
-            && bytes.get(cursor.checked_add(4)?).copied() == Some(LEGACY_APPEARANCE_BODY_PART_COUNT)
-        {
-            // HG full-state creature appearances can carry four legacy compact
-            // scalar bytes immediately before the full 19-part body table. The
-            // mature C++ bridge only accepts this when the following part table
-            // and equipment block validate; mirror that discipline here rather
-            // than letting the boundary walker split on item-like bytes inside
-            // the appearance record.
-            cursor = cursor.checked_add(4)?;
-        }
+        cursor = cursor.checked_add(legacy_full_appearance_body_table_padding(
+            bytes, cursor, limit,
+        )?)?;
         let part_count = *bytes.get(cursor)?;
         if part_count != LEGACY_APPEARANCE_BODY_PART_COUNT {
             return None;
@@ -2439,11 +2564,9 @@ fn score_missing_second_inline_name_tail(
         limit,
         LEGACY_APPEARANCE_ALL_FIELDS_MASK,
     )?;
-    if bytes.get(cursor).copied() != Some(LEGACY_APPEARANCE_BODY_PART_COUNT)
-        && bytes.get(cursor.checked_add(4)?).copied() == Some(LEGACY_APPEARANCE_BODY_PART_COUNT)
-    {
-        cursor = cursor.checked_add(4)?;
-    }
+    cursor = cursor.checked_add(legacy_full_appearance_body_table_padding(
+        bytes, cursor, limit,
+    )?)?;
     let part_count = *bytes.get(cursor)?;
     if part_count != LEGACY_APPEARANCE_BODY_PART_COUNT {
         return None;
@@ -3767,6 +3890,28 @@ mod tests {
             &mut bit_cursor,
         ));
         assert_eq!(bit_cursor, 29);
+    }
+
+    #[test]
+    fn hg_current_player_empty_name_full_appearance_rewrites_and_claims_exactly() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_current_player_empty_name_full_appearance.bin"
+        )
+        .to_vec();
+
+        assert!(super::super::claim_payload_if_verified(&payload).is_none());
+        let rewrite = super::super::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("current-player appearance rewrite");
+        assert!(
+            rewrite.bytes_inserted > 0,
+            "expected EE visual-transform/body appearance bytes to be inserted"
+        );
+
+        let claim = super::super::claim_payload_if_verified(&payload)
+            .expect("translated current-player appearance should claim");
+        assert_eq!(claim.add_records, 1);
+        assert_eq!(claim.creature_appearance_records, 1);
+        assert_eq!(claim.creature_update_records, 1);
     }
 
     #[test]

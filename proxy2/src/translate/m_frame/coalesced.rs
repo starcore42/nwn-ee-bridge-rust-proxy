@@ -6,7 +6,6 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,6 +21,7 @@ use crate::{
 use super::{
     CNW_LENGTH_BYTES, SessionState,
     deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate},
+    deferred_module_resources,
     hex_prefix, inflated_cnw_fragment_offset_valid,
     queue_area_client_area_side_effects_after_sequence,
     reassembly::{self, InflatedGameplayPayload},
@@ -72,7 +72,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         rewritten_deflated_spans = rewritten_deflated_spans.saturating_add(1);
     }
     record_proofs.push(primary.proof.clone());
-    if primary.dropped {
+    if primary.dropped && primary.abort_window_if_primary_consumed {
         let mut consumed = primary.record;
         encode_legacy_m_crc(&mut consumed)
             .then_some(())
@@ -142,10 +142,12 @@ struct CoalescedRecordRewrite {
     changed: bool,
     dropped: bool,
     rewritten_deflated: bool,
+    abort_window_if_primary_consumed: bool,
 }
 
 fn replay_completed_coalesced_stream_record(
     state: &SessionState,
+    record: &[u8],
     sequence: u16,
     offset: usize,
     payload_length: usize,
@@ -174,12 +176,29 @@ fn replay_completed_coalesced_stream_record(
         rewritten_deflated = entry.rewritten_deflated,
         "server coalesced zlib-stream record replayed from typed cache without re-inflating duplicate"
     );
+    let mut replay_record = entry.record.clone();
+    if replay_record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+        && record.len() >= LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+    {
+        // Retransmitted coalesced stream records can carry newer reliable-window
+        // sequence/ACK fields even when the compressed gameplay bytes are a
+        // duplicate of an already-classified semantic span. The replay cache owns
+        // only the proven payload rewrite, not those transport fields.
+        replay_record[3..7].copy_from_slice(&record[3..7]);
+        replay_record[8..10].copy_from_slice(&record[8..10]);
+        replay_record[7] = if entry.rewritten_deflated {
+            record[7] & !0x01
+        } else {
+            record[7]
+        };
+    }
     Some(CoalescedRecordRewrite {
-        record: entry.record.clone(),
+        record: replay_record,
         proof: entry.proof.clone(),
         changed: true,
         dropped: entry.dropped,
         rewritten_deflated: entry.rewritten_deflated,
+        abort_window_if_primary_consumed: false,
     })
 }
 
@@ -252,6 +271,7 @@ fn rewrite_coalesced_record_for_ee(
             changed: false,
             dropped: false,
             rewritten_deflated: false,
+            abort_window_if_primary_consumed: false,
         });
     }
 
@@ -262,6 +282,31 @@ fn rewrite_coalesced_record_for_ee(
 
     if let Some(high) = high {
         let mut payload = payload.to_vec();
+        if let Some(shape) = deferred_module_resources::capture_early_status_payload_if_needed(
+            &payload,
+            sequence,
+            ack_sequence,
+            &state.module_resources,
+            &mut state.deferred_module_resources.pending,
+        ) {
+            tracing::info!(
+                offset,
+                sequence,
+                ack_sequence,
+                declared = shape.declared,
+                status_string_len = shape.status_string_len,
+                fragment_tail_len = shape.fragment_tail_len,
+                "server coalesced early ServerStatus_ModuleRunning consumed as verified deferred module-resource status"
+            );
+            return consume_coalesced_record_with_proof(
+                record,
+                offset,
+                "deferred-module-resources-pending",
+                VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+                false,
+                false,
+            );
+        }
         let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
             &mut payload,
             Some(&state.area_context.latest_area_placeables),
@@ -294,6 +339,13 @@ fn rewrite_coalesced_record_for_ee(
                 summary,
             )?;
         }
+        let verified_proof = semantic_rewrite_summary.verified_proof();
+        crate::translate::semantic::observe_verified_payload(
+            &mut state.semantic,
+            crate::packet::Direction::ServerToClient,
+            &verified_proof,
+            &payload,
+        );
 
         let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET].to_vec();
         write_be_u16(&mut out_record, 10, payload.len() as u16)
@@ -313,10 +365,11 @@ fn rewrite_coalesced_record_for_ee(
         );
         return Ok(CoalescedRecordRewrite {
             record: out_record,
-            proof: semantic_rewrite_summary.verified_proof(),
+            proof: verified_proof,
             changed,
             dropped: false,
             rewritten_deflated: false,
+            abort_window_if_primary_consumed: false,
         });
     }
 
@@ -346,6 +399,7 @@ fn rewrite_coalesced_record_for_ee(
     if stream_payload {
         if let Some(replay) = replay_completed_coalesced_stream_record(
             state,
+            record,
             sequence,
             offset,
             payload_length,
@@ -439,9 +493,22 @@ fn rewrite_coalesced_record_for_ee(
         queue_area_client_area_side_effects_after_sequence(state, sequence, ack_sequence, summary)?;
     }
 
+    let verified_family = semantic_rewrite_summary.verified_family();
+    let verified_proof = semantic_rewrite_summary.verified_proof();
+    crate::translate::semantic::observe_verified_payload(
+        &mut state.semantic,
+        crate::packet::Direction::ServerToClient,
+        &verified_proof,
+        &inflated,
+    );
     let must_convert_stream = used_server_stream || state.deflate.server_zlib_stream_proxy_owned;
     if used_server_stream {
         state.deflate.server_zlib_stream_proxy_owned = true;
+        let owner = verified_proof
+            .primary_family()
+            .map(ContinuationOwner::from_verified_family)
+            .unwrap_or_else(|| ContinuationOwner::from_verified_family(verified_family));
+        claim_server_zlib_stream_owner(state, owner);
     }
 
     let rewritten_compressed = deflate_zlib(&inflated)?;
@@ -475,10 +542,11 @@ fn rewrite_coalesced_record_for_ee(
 
     let outcome = CoalescedRecordRewrite {
         record: out_record,
-        proof: semantic_rewrite_summary.verified_proof(),
+        proof: verified_proof,
         changed,
         dropped: false,
         rewritten_deflated: true,
+        abort_window_if_primary_consumed: false,
     };
     if used_server_stream {
         remember_completed_coalesced_stream_record(
@@ -492,6 +560,14 @@ fn rewrite_coalesced_record_for_ee(
         );
     }
     Ok(outcome)
+}
+
+fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationOwner) {
+    if state.deflate.server_zlib_stream_owner != Some(owner) {
+        state.deflate.server_zlib_stream_epoch =
+            state.deflate.server_zlib_stream_epoch.saturating_add(1);
+    }
+    state.deflate.server_zlib_stream_owner = Some(owner);
 }
 
 fn rewrite_coalesced_stream_continuation_for_ee(
@@ -552,6 +628,7 @@ fn rewrite_coalesced_stream_continuation_for_ee(
             first_sequence: sequence,
         }),
         false,
+        false,
     )
     .map(Some)
 }
@@ -567,6 +644,7 @@ fn consume_coalesced_record(
         reason,
         VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
         true,
+        true,
     )
 }
 
@@ -576,6 +654,7 @@ fn consume_coalesced_record_with_proof(
     reason: &'static str,
     proof: VerifiedProof,
     warn: bool,
+    abort_window_if_primary_consumed: bool,
 ) -> anyhow::Result<CoalescedRecordRewrite> {
     let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET.min(record.len())].to_vec();
     if out_record.len() < LEGACY_GAMEPLAY_PAYLOAD_OFFSET {
@@ -608,15 +687,15 @@ fn consume_coalesced_record_with_proof(
         changed: true,
         dropped: true,
         rewritten_deflated: false,
+        abort_window_if_primary_consumed,
     })
 }
 
 fn dump_invalid_inflated_payload_for_span(inflated: &[u8], sequence: u16, reason: &str) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
 
-    let dir = PathBuf::from(dir);
     if fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -705,12 +784,18 @@ mod tests {
             stream_epoch: 21,
             first_sequence: 34,
         });
+        let mut cached_record = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        cached_record[3..5].copy_from_slice(&34u16.to_be_bytes());
+        cached_record[5..7].copy_from_slice(&0x0010u16.to_be_bytes());
+        cached_record[7] = 0x00;
+        cached_record[8..10].copy_from_slice(&0x1111u16.to_be_bytes());
         let outcome = CoalescedRecordRewrite {
-            record: vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET],
+            record: cached_record.clone(),
             proof: proof.clone(),
             changed: true,
             dropped: true,
-            rewritten_deflated: false,
+            rewritten_deflated: true,
+            abort_window_if_primary_consumed: false,
         };
         let mut state = SessionState::default();
 
@@ -724,14 +809,22 @@ mod tests {
             &outcome,
         );
 
+        let mut current_record = cached_record.clone();
+        current_record[5..7].copy_from_slice(&0x0020u16.to_be_bytes());
+        current_record[7] = 0x01;
+        current_record[8..10].copy_from_slice(&0x2222u16.to_be_bytes());
+
         let replay =
-            replay_completed_coalesced_stream_record(&state, 34, 67, 381, 604, &compressed)
+            replay_completed_coalesced_stream_record(&state, &current_record, 34, 67, 381, 604, &compressed)
                 .expect("matching coalesced stream duplicate should replay cached proof");
 
         assert!(replay.changed);
         assert!(replay.dropped);
-        assert!(!replay.rewritten_deflated);
-        assert_eq!(replay.record, outcome.record);
+        assert!(replay.rewritten_deflated);
+        assert_eq!(&replay.record[3..7], &current_record[3..7]);
+        assert_eq!(&replay.record[8..10], &current_record[8..10]);
+        assert_eq!(replay.record[7] & 0x01, 0);
+        assert_eq!(&replay.record[10..12], &outcome.record[10..12]);
         assert_eq!(replay.proof, proof);
     }
 }

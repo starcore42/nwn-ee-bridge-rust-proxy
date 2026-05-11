@@ -9,7 +9,7 @@ use super::{
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID,
     PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item,
-    locstring, read_u32_le, trigger,
+    locstring, read_u16_le, read_u32_le, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -41,6 +41,19 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
     {
         if let Some(record_end) = trigger::try_get_trigger_add_record_end(bytes, offset, scan_end) {
+            return record_end;
+        }
+    }
+
+    if matches!(
+        (bytes.get(offset).copied(), bytes.get(offset + 1).copied()),
+        (
+            Some(b'A'),
+            Some(PLACEABLE_OBJECT_TYPE) | Some(DOOR_OBJECT_TYPE)
+        )
+    ) {
+        if let Some(record_end) = try_get_ee_door_placeable_add_record_end(bytes, offset, scan_end)
+        {
             return record_end;
         }
     }
@@ -92,12 +105,15 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // `fragment_spans` proof accept or reject the exact split
                 // instead of letting generic inline-string suppression hide the
                 // following real record.
-                // `0x0000_C408` is the HG self/visibility status family:
-                // status-effect list, four SHORT stats, five+two visibility
-                // BOOLs, and three self-visibility BOOLs. Its next true
-                // submessage can be an `I` sentinel record immediately after
-                // the read cursor, so inline-string suppression would hide the
-                // real boundary.
+                // `0x0000_C408` is the HG self/visibility status family. The
+                // stock Diamond/EE core is the visual-effect delta count, four
+                // SHORT stats, five+two visibility BOOLs, and three
+                // self-visibility BOOLs. Some HG captures carry a malformed
+                // zero visual-effect count followed by the known three encoded
+                // entries; the translator repairs only that count before EE
+                // validation. Its next true submessage can be an `I` sentinel
+                // record immediately after this compact numeric record, so
+                // inline-string suppression would hide the real boundary.
                 suppress_inline_string_boundaries = false;
             }
         }
@@ -132,6 +148,102 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         return scan_end;
     }
     scan_end
+}
+
+fn try_get_ee_door_placeable_add_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + 6 > scan_end
+        || offset + 6 > bytes.len()
+        || bytes.get(offset).copied()? != b'A'
+        || !matches!(
+            bytes.get(offset + 1).copied()?,
+            PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+        )
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    match bytes[offset + 1] {
+        PLACEABLE_OBJECT_TYPE => try_get_ee_placeable_add_record_end(bytes, offset, scan_end),
+        DOOR_OBJECT_TYPE => try_get_ee_door_add_record_end(bytes, offset, scan_end),
+        _ => None,
+    }
+}
+
+fn try_get_ee_placeable_add_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let name_offset = offset.checked_add(6)?;
+    let tail_offset = locstring::inline_cexo_string_end(bytes, name_offset)?;
+    let tail_end = tail_offset.checked_add(1 + 2 + 2)?;
+    if tail_end > scan_end || read_u16_le(bytes, tail_offset + 1).is_none() {
+        return None;
+    }
+    if read_u16_le(bytes, tail_offset + 3).is_none() {
+        return None;
+    }
+
+    // EE `CNWSMessage::AddPlaceableAppearanceToMessage` writes the direct name
+    // bytes, type byte, appearance WORD, static/state WORD, then consumes a
+    // fragment BOOL that may guard one optional OBJECTID before the fixed
+    // 40-byte `ObjectVisualTransformData::Write` block. Once that identity map
+    // is present, the add-record end is decompile-owned; do not let the generic
+    // byte scanner merge the following `U/9` update into this record.
+    let direct_end = tail_end.checked_add(40)?;
+    if direct_end <= scan_end
+        && creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, direct_end)
+    {
+        return Some(direct_end);
+    }
+
+    let optional_object_end = tail_end.checked_add(4)?;
+    let optional_end = optional_object_end.checked_add(40)?;
+    if optional_end <= scan_end
+        && read_u32_le(bytes, tail_end).is_some()
+        && creature::has_ee_identity_visual_transform_map_at(bytes, optional_object_end, optional_end)
+    {
+        return Some(optional_end);
+    }
+
+    None
+}
+
+fn try_get_ee_door_add_record_end(bytes: &[u8], offset: usize, scan_end: usize) -> Option<usize> {
+    let first_dword = read_u32_le(bytes, offset + 6)?;
+    let visual_offset = offset.checked_add(2 + if first_dword == 0 { 12 } else { 8 })?;
+    let name_offset = visual_offset.checked_add(40)?;
+    if name_offset > scan_end {
+        return None;
+    }
+
+    // EE `CNWSMessage::AddDoorAppearanceToMessage` writes one or two DWORDs,
+    // the same 40-byte visual-transform map, then the existing name/state tail.
+    // The Diamond-only optional model token has already been removed by the
+    // focused add-record translator before this boundary helper can claim it.
+    if !creature::has_ee_identity_visual_transform_map_at(bytes, visual_offset, name_offset) {
+        return None;
+    }
+
+    if let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) {
+        let record_end = inline_end.checked_add(2)?;
+        return (record_end <= scan_end && read_u16_le(bytes, inline_end).is_some())
+            .then_some(record_end);
+    }
+
+    if let Some(tlk_end) = locstring::tlk_locstring_ref_end(bytes, name_offset) {
+        let record_end = tlk_end.checked_add(2)?;
+        return (record_end <= scan_end && read_u16_le(bytes, tlk_end).is_some())
+            .then_some(record_end);
+    }
+
+    let record_end = name_offset.checked_add(6)?;
+    (record_end <= scan_end && read_u16_le(bytes, name_offset + 4).is_some()).then_some(record_end)
 }
 
 fn try_get_ee_door_placeable_update_record_end(
@@ -302,6 +414,25 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // Keep this as a mask-specific boundary floor and let the focused
         // creature cursor validator prove the exact final cursor and bits.
         return 32;
+    }
+
+    if raw_mask == 0x0000_C408 {
+        // Diamond/EE `WriteGameObjUpdate_UpdateObject` writes this compact
+        // creature self/status family as a WORD looping-visual-effect delta
+        // count, encoded 3-byte effect entries, four WORD scalar/status values,
+        // then visibility/self-visibility BOOLs in the fragment bitstream.
+        //
+        // HG captures can carry the malformed count-zero shape followed by the
+        // same known three encoded effects that the focused creature translator
+        // repairs before EE emission. Those interior effect bytes include `A`
+        // markers, so the generic boundary scanner must not consider a later
+        // live-object boundary until the decompile-owned fixed read span has
+        // been crossed.
+        //
+        // This remains only a lower bound. The real semantic claim, count
+        // repair, scalar cursor proof, and exact ten fragment-bit proof stay in
+        // creature.rs.
+        return LEGACY_UPDATE_HEADER_BYTES + 2 + 9 + 8;
     }
 
     LEGACY_UPDATE_HEADER_BYTES

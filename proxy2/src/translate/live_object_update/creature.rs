@@ -173,6 +173,67 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     advanced
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CreatureC408CountRepair {
+    pub entries: u16,
+    pub bytes_rewritten: usize,
+}
+
+pub(super) fn repair_legacy_c408_visual_effect_count_for_ee(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<CreatureC408CountRepair> {
+    // Stock Diamond 1.69 and EE both write the `U/5 0x0000_C408` core as:
+    //
+    //   0x0008: WORD looping-visual-effect delta count, then count entries.
+    //   0x0400: four signed SHORT scalar/status values.
+    //   0x4000: five BOOLs, optional dominated/master details, then two BOOLs.
+    //   0x8000: three visibility BOOLs.
+    //
+    // The seq36 HG quarantine contains the same three looping-effect entries
+    // seen in the earlier valid fixture, but its count WORD is zero. That is
+    // invalid for both stock writers: a zero count would leave the three
+    // entry triplets to be misread as scalar fields and shift the following
+    // `I` inventory record. Repair only this proven malformed shape, then let
+    // the normal exact EE-shaped validator consume the record.
+    const HG_C408_THREE_EFFECT_ENTRIES: [u8; 9] =
+        [b'A', 0xB6, 0x00, b'A', 0xB1, 0x00, b'A', 0xFE, 0x07];
+    const HG_C408_THREE_EFFECT_COUNT: u16 = 3;
+
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(0x0000_C408)
+    {
+        return None;
+    }
+
+    let mut cursor = offset.checked_add(10)?;
+    let count = usize::from(read_u16_le(bytes, cursor)?);
+    if count != 0 {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    let entries_end = cursor.checked_add(HG_C408_THREE_EFFECT_ENTRIES.len())?;
+    let scalar_end = entries_end.checked_add(8)?;
+    if scalar_end != record_end || scalar_end > bytes.len() {
+        return None;
+    }
+    if bytes.get(cursor..entries_end)? != HG_C408_THREE_EFFECT_ENTRIES {
+        return None;
+    }
+
+    let count_bytes = HG_C408_THREE_EFFECT_COUNT.to_le_bytes();
+    bytes[offset + 10] = count_bytes[0];
+    bytes[offset + 11] = count_bytes[1];
+    Some(CreatureC408CountRepair {
+        entries: HG_C408_THREE_EFFECT_COUNT,
+        bytes_rewritten: 2,
+    })
+}
+
 fn try_advance_legacy_3967_at_adjacent_bit_cursor(
     bytes: &[u8],
     offset: usize,
@@ -409,20 +470,21 @@ fn advance_verified_creature_update_c408(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    // Decompile/capture-backed HG creature state family:
+    // Decompile-backed stock EE creature state family after legacy/HG count
+    // normalization:
     //
     //   U 05 <object-id> mask=0x0000_C408
-    //   0x0008: WORD status-row count, then count*(BYTE opcode + WORD row)
+    //   0x0008: WORD looping-effect delta count, then count entries
     //   0x0400: four WORD scalar values
     //   0x4000: seven fragment BOOLs
     //   0x8000: three fragment BOOLs
     //
-    // The BOOL values are state flags, not a permission to reinterpret this
-    // compact legacy packet as the newer optional master-detail branch. Earlier
-    // generic cursor simulation rejected captured HG packets when the fifth
-    // 0x4000 bit was true even though no read-buffer bytes follow the four
-    // scalar WORDs. Keep this as a narrow exact validator instead of broadening
-    // the generic creature-update simulator.
+    // This validator intentionally accepts only the EE-shaped record. Captured
+    // HG legacy records with a zero looping-effect count followed by the known
+    // three encoded entries must first go through
+    // `repair_legacy_c408_visual_effect_count_for_ee`; otherwise the packet
+    // remains unclaimed instead of leaking a malformed read layout to the EE
+    // client.
     let Some(mut cursor) = offset.checked_add(10) else {
         return false;
     };

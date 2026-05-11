@@ -42,13 +42,13 @@ pub(super) fn creature_identity_row_optional_extra_byte_counts(
 
 fn observed_higher_ground_class_row_optional_count(class_id: u8) -> Option<u8> {
     match class_id {
-        // Stock Fighter has neither a spell-option table nor Cleric domains.
-        // HG seq31 captures use row 0x04 in the creature identity branch; EE
-        // `sub_140781E80` reads only the fixed class id/level bytes when both
-        // rules-table flags at `+0x4F8` and `+0x4F4` are zero.
-        4 => Some(0),
-        // Stock Wizard row has a spell-option table and consumes the one
-        // `+0x4F8` byte. This matches the earlier `0x0A 0x01` live capture.
+        // Public stock 1.72 class rows that consume only the fixed class
+        // id/level bytes. Server-specific merged tables can still be supplied
+        // with `NWN_BRIDGE_CLASSES_2DA`.
+        0 | 1 | 3..=9 | 11..=41 => Some(0),
+        // Stock Cleric consumes the two domain bytes from the `+0x4F4` flag.
+        2 => Some(2),
+        // Stock Wizard consumes the one spell-option byte from `+0x4F8`.
         10 => Some(1),
         _ => None,
     }

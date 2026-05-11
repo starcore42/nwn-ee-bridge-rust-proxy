@@ -63,6 +63,7 @@ const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
+const LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 4;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 const LEGACY_DOOR_PLACEABLE_GENERIC_UPDATE_TAIL_BYTES: usize = 9;
 const EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES: usize = 1;
@@ -1870,14 +1871,20 @@ fn advance_legacy_live_update_record_fragment_cursor_for_add_pass(
     };
 
     // Cursor-only bridge between `A` add-map rewrites and later focused `U`
-    // update rewrites. Diamond/EE generic update readers consume the shared
-    // position bits from mask 0x1. HG's anchored door/placeable all-bits update
-    // tail carries the orientation/name material in read bytes; the update
-    // translator inserts the EE-only orientation/name BOOLs later, so this
-    // pre-rewrite add pass advances only over source-owned legacy bits.
+    // update rewrites. Diamond `sub_44F3D0` consumes the mask-0x2 generic
+    // orientation as the compact scalar shape; EE `sub_14079C050` consumes one
+    // extra orientation-mode BOOL before that same scalar branch. The later
+    // update translator inserts that EE-only branch bit, but this add pass must
+    // still advance over Diamond's four source-owned scalar low bits so a
+    // following placeable/door add repairs the correct fragment span.
     let mut consumed = 0usize;
     if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
         consumed = consumed.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+    }
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+    {
+        consumed = consumed.saturating_add(LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS);
     }
     if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0
@@ -2371,7 +2378,8 @@ fn has_ee_identity_visual_transform_map_at(bytes: &[u8], offset: usize, record_e
 fn candidate_inside_inline_string(bytes: &[u8], search_start: usize, candidate: usize) -> bool {
     let mut string_offset = search_start;
     while string_offset + 4 <= candidate && string_offset < bytes.len() {
-        if let Some(string_end) = inline_cexo_string_end(bytes, string_offset) {
+        if let Some(string_end) = inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
+        {
             if string_offset + 4 <= candidate && candidate < string_end {
                 return true;
             }
@@ -2381,6 +2389,19 @@ fn candidate_inside_inline_string(bytes: &[u8], search_start: usize, candidate: 
     false
 }
 
+fn inline_cexo_string_end_for_boundary_suppression(
+    bytes: &[u8],
+    offset: usize,
+) -> Option<usize> {
+    let end = inline_cexo_string_end(bytes, offset)?;
+    let text = bytes.get(offset + CNW_LENGTH_BYTES..end)?;
+    if text.iter().all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e)) {
+        Some(end)
+    } else {
+        None
+    }
+}
+
 fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     let length = usize::try_from(read_u32_le(bytes, offset)?).ok()?;
     const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
@@ -2388,16 +2409,12 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
         return None;
     }
 
-    let text_start = offset + 4;
-    let end = text_start + length;
-    if bytes[text_start..end]
-        .iter()
-        .all(|byte| matches!(*byte, 0x20..=0x7E | b'\t'))
-    {
-        Some(end)
-    } else {
-        None
-    }
+    // Decompile-backed CExoString rule: Diamond `sub_44E4A0` and EE
+    // `sub_1407A7800` both call `ReadCExoString(32)` for direct placeable
+    // names. That reader consumes the declared byte count; it does not reject
+    // embedded NUL bytes. HG sign/placeable names can contain NUL padding, so
+    // printable-only validation shifts the following live-object records.
+    Some(offset + 4 + length)
 }
 
 fn looks_like_legacy_live_object_id_at(bytes: &[u8], offset: usize) -> bool {
@@ -3029,6 +3046,31 @@ mod hg_mixed_door_placeable_translation_tests {
         assert!(
             live_update::claim_payload_if_verified(&payload).is_some(),
             "door-transition Ascension West mixed live-object burst must be exact-claimable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod embedded_nul_placeable_name_tests {
+    use super::*;
+    use crate::translate::live_object_update as live_update;
+
+    #[test]
+    fn placeable_add_update_with_embedded_nul_name_rewrites_and_claims() {
+        let mut payload = include_bytes!(
+            "../../fixtures/live_object/hg_placeable_embedded_nul_name_add_update.bin"
+        )
+        .to_vec();
+
+        rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
+            .expect("placeable add visual-transform rewrite");
+        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+        live_update::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("placeable update rewrite");
+
+        assert!(
+            live_update::claim_payload_if_verified(&payload).is_some(),
+            "embedded-NUL placeable names are valid CExoString payloads and must remain exact-claimable"
         );
     }
 }

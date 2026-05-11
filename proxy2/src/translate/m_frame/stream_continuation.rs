@@ -22,7 +22,6 @@
 
 use std::{
     fs,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -32,7 +31,7 @@ use super::{
     SessionState, hex_prefix,
     reassembly::{
         CompletedDeflatedReplay, ServerDeflatedReassembly, build_consumed_server_deflated_frames,
-        remember_completed_server_stream_window,
+        emit_family_packets_with_interleaved, remember_completed_server_stream_window,
     },
 };
 
@@ -62,7 +61,7 @@ pub(super) fn emit_verified_server_stream_continuation(
         },
     );
 
-    let mut outputs = build_consumed_server_deflated_frames(reassembly)?;
+    let outputs = build_consumed_server_deflated_frames(reassembly)?;
     let replay_family = claimed_family.unwrap_or(VerifiedFamily::ConsumedEmptyMFrame);
     remember_completed_server_stream_window(
         state,
@@ -73,7 +72,7 @@ pub(super) fn emit_verified_server_stream_continuation(
             packets: outputs.clone(),
         },
     );
-    outputs.extend(reassembly.interleaved_packets.clone());
+    let interleaved_packets = reassembly.interleaved_packets.clone();
 
     if claimed_family.is_some() {
         tracing::info!(
@@ -99,10 +98,11 @@ pub(super) fn emit_verified_server_stream_continuation(
         );
     }
 
-    Ok(Emit::VerifiedPackets {
-        family: replay_family,
-        packets: outputs,
-    })
+    Ok(emit_family_packets_with_interleaved(
+        replay_family,
+        outputs,
+        interleaved_packets,
+    ))
 }
 
 fn proxy_owned_continuation_family(
@@ -135,14 +135,11 @@ fn dump_server_stream_continuation(
     stream_epoch: u64,
     reason: &str,
 ) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
-    if dir.trim().is_empty() {
-        return;
-    }
 
-    let mut path = PathBuf::from(dir);
+    let mut path = dir;
     if fs::create_dir_all(&path).is_err() {
         return;
     }

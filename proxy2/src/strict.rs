@@ -15,16 +15,16 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, char_list, chat, client_input,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat, client_input,
+        client_login,
         client_quickbar, gameplay_stream, journal, live_object_update, play_module_character_list,
-        quickbar,
+        player_list, quickbar,
     },
 };
 use flate2::read::ZlibDecoder;
 use std::{
     fs,
     io::Read,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -580,9 +580,29 @@ fn decide_verified_coalesced_window_translated(
             "crc-mismatch",
         );
     }
-    if view.declared_payload_length != view.payload_length
+    // `MFrameView` treats declared length 0 as a whole-datagram sentinel for
+    // broad frame classification. EE's decompiled
+    // `CNetLayerWindow::UnpacketizeFullMessages`, however, walks coalesced
+    // reliable-window records as `12 byte record header + declared length`.
+    // In that exact typed coalesced context, a zero declared primary record is
+    // a valid empty progress shell and the next record begins immediately at
+    // offset 12. Only allow that narrower interpretation when the translator
+    // supplied per-record proofs for additional coalesced records.
+    let primary_payload_length = if view.declared_payload_length == 0 && record_proofs.len() > 1 {
+        0
+    } else if view.declared_payload_length != view.payload_length
         || view.payload_length > view.available_payload_length
     {
+        return StrictDecision::quarantine(
+            "M/verified-coalesced",
+            "CoalescedWindow",
+            "coalesced-primary-declared-mismatch",
+        );
+    } else {
+        view.payload_length
+    };
+
+    if primary_payload_length > view.available_payload_length {
         return StrictDecision::quarantine(
             "M/verified-coalesced",
             "CoalescedWindow",
@@ -591,7 +611,7 @@ fn decide_verified_coalesced_window_translated(
     }
 
     let primary_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
-    let primary_end = primary_start + view.payload_length;
+    let primary_end = primary_start + primary_payload_length;
     let Some(primary_payload) = frame.bytes.get(primary_start..primary_end) else {
         return StrictDecision::quarantine(
             "M/verified-coalesced",
@@ -600,10 +620,13 @@ fn decide_verified_coalesced_window_translated(
         );
     };
 
-    let primary_deflated = view
-        .deflated
-        .as_ref()
-        .map(|deflated| (deflated.plausible, deflated.inflated_length));
+    let primary_deflated = if primary_payload_length == view.payload_length {
+        view.deflated
+            .as_ref()
+            .map(|deflated| (deflated.plausible, deflated.inflated_length))
+    } else {
+        None
+    };
     if !coalesced_record_proof_valid(
         direction,
         &record_proofs[0],
@@ -624,7 +647,7 @@ fn decide_verified_coalesced_window_translated(
         );
     }
 
-    let spans = if view.trailing_payload_length == 0 {
+    let spans = if primary_end == frame.bytes.len() {
         Vec::new()
     } else {
         let Some(spans) = parse_packetized_spans(frame.bytes, primary_end) else {
@@ -824,14 +847,9 @@ fn dump_strict_payload_reject(
     inflated: Option<&[u8]>,
     reason: &str,
 ) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(mut path) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
-    if dir.trim().is_empty() {
-        return;
-    }
-
-    let mut path = PathBuf::from(dir);
     if fs::create_dir_all(&path).is_err() {
         return;
     }
@@ -1275,7 +1293,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
         VerifiedFamily::Inventory => {
             high.major == 0x0C
-                && matches!(high.minor, 0x01 | 0x02)
+                && matches!(high.minor, 0x01 | 0x02 | 0x03)
                 && bare_or_cnw_wrapped_payload_shape_valid(payload)
         }
         VerifiedFamily::Journal => {
@@ -1311,7 +1329,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::PlayerList => {
             high.major == 0x0A
-                && matches!(high.minor, 0x01 | 0x02)
+                && matches!(high.minor, 0x01 | 0x02 | 0x03)
                 && player_list_shape_valid(payload)
         }
         VerifiedFamily::SetCustomToken => {
@@ -1533,7 +1551,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x09, 0x04 | 0x05 | 0x0B | 0x0C) => {
             HighPayloadValidation::Exact(chat_shape_valid(payload, high))
         }
-        (0x0A, 0x01 | 0x02) => HighPayloadValidation::Exact(player_list_shape_valid(payload)),
+        (0x0A, 0x01 | 0x02 | 0x03) => {
+            HighPayloadValidation::Exact(player_list_shape_valid(payload))
+        },
         (0x0D, 0x01) => HighPayloadValidation::Exact(gui_inventory_status_shape_valid(payload)),
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
@@ -1571,19 +1591,7 @@ fn empty_high_level_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn client_login_server_subdirectory_shape_valid(payload: &[u8]) -> bool {
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < 7 || declared > payload.len() || payload.len().saturating_sub(declared) > 8 {
-        return false;
-    }
-    let identifier = &payload[7..declared];
-    !identifier.is_empty()
-        && identifier.len() <= 256
-        && identifier
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'.'))
+    client_login::server_subdirectory_character_shape_valid(payload)
 }
 
 fn client_login_waypoint_response_shape_valid(payload: &[u8]) -> bool {
@@ -2037,8 +2045,12 @@ fn fixed_resref16_shape_valid(bytes: &[u8], allow_empty: bool) -> bool {
 }
 
 fn area_client_area_shape_valid(payload: &[u8]) -> bool {
-    const MIN_AREA_CLIENT_AREA_DECLARED: usize = 3 + 4 + 4 + 4 * 4 + 4 + 16;
-    cnw_wrapped_payload_shape_valid(payload, MIN_AREA_CLIENT_AREA_DECLARED, 64)
+    // `Area_ClientArea` is not safe to validate as a generic CNW wrapper. EE's
+    // `CNWCArea::LoadArea` consumes a fixed, decompile-backed static header
+    // before the tile stream; if the proxy mis-identifies width/height/tileset
+    // offsets, the client can cleanly disconnect without a message overflow.
+    // Delegate exact cursor proof to the semantic area translator.
+    area::ee_area_client_area_payload_shape_valid(payload)
 }
 
 fn live_object_shape_valid(payload: &[u8]) -> bool {
@@ -2052,7 +2064,13 @@ fn live_object_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn player_list_shape_valid(payload: &[u8]) -> bool {
-    cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
+    // Decompile-backed shape:
+    // EE `SendServerToPlayerPlayerList_Add/All` writes a platform identity
+    // byte plus `CExoString` immediately after each `has_creature` bit, and
+    // the EE client handler reads that field before optional creature details.
+    // Strict validation therefore delegates to the focused PlayerList owner
+    // instead of accepting any generic `P 0A xx` CNW wrapper.
+    player_list::ee_player_list_payload_shape_valid(payload)
 }
 
 fn char_list_shape_valid(payload: &[u8]) -> bool {

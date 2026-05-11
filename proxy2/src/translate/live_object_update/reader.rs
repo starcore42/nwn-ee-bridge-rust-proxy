@@ -281,16 +281,10 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     if length > MAX_LIVE_OBJECT_NAME_BYTES || bytes.len().saturating_sub(offset + 4) < length {
         return None;
     }
-    let text_start = offset + 4;
-    let end = text_start + length;
-    if bytes[text_start..end]
-        .iter()
-        .all(|byte| matches!(*byte, 0x20..=0x7E | b'\t'))
-    {
-        Some(end)
-    } else {
-        None
-    }
+    // Diamond and EE direct-name branches both read a bounded CExoString. The
+    // decompiled reader consumes raw bytes, so embedded NUL padding is legal
+    // and must not force a shifted short-name interpretation.
+    Some(offset + 4 + length)
 }
 
 fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {

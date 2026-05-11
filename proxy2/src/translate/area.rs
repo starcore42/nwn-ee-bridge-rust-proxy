@@ -47,7 +47,9 @@ const MIN_READ_SIZE: usize = 4;
 
 const CRESREF_TEXT_BYTES: usize = 16;
 const AREA_NAME_READ_OFFSET: usize = 44;
-const AREA_STATIC_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
+const AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
+const AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
+const AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
 const MAX_REASONABLE_AREA_DIMENSION: u32 = 512;
 const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
@@ -243,6 +245,18 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     let mut tile_scan = scan_area_tile_stream(payload, fragment_offset);
     let height_repaired = repair_missing_area_height(payload, fragment_offset, &mut tile_scan);
+    if !tile_scan.valid {
+        tracing::warn!(
+            area_resref = %area_resref,
+            width = tile_scan.width,
+            packet_height = tile_scan.packet_height,
+            inferred_height = tile_scan.inferred_height,
+            tile_count = tile_scan.tile_count,
+            first_tile_read_offset = static_layout.first_tile_read_offset,
+            "Area_ClientArea rewrite skipped: decompile-shaped tile stream did not validate"
+        );
+        return None;
+    }
     let mut rewrite_kinds = vec![
         AreaRewriteKind::ExactEeAreaNameModeBitForce,
         AreaRewriteKind::ExactEePostStaticListZeroWords,
@@ -325,6 +339,65 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     })
 }
 
+pub fn ee_area_client_area_payload_shape_valid(payload: &[u8]) -> bool {
+    let Some((_, _, fragment_offset, fragment_size)) = area_client_area_read_window(payload) else {
+        return false;
+    };
+    if fragment_size == 0
+        || payload
+            .get(fragment_offset)
+            .map(|byte| (byte & AREA_NAME_MODE_FORCE_MASK) == 0)
+            .unwrap_or(true)
+    {
+        return false;
+    }
+
+    let Some(legacy_area_object_id) = read_u32_le(payload, LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET)
+    else {
+        return false;
+    };
+    let Some(area_resref) = fixed_resref_preview(
+        payload,
+        LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
+    ) else {
+        return false;
+    };
+    if !legacy_area_object_id_plausible(legacy_area_object_id)
+        || !area_resref_plausible(&area_resref)
+        || !start_fields_plausible(payload)
+    {
+        return false;
+    }
+
+    area_static_layout(payload, fragment_offset)
+        .filter(|layout| layout.valid)
+        .is_some()
+        && scan_area_tile_stream(payload, fragment_offset).valid
+}
+
+fn area_client_area_read_window(payload: &[u8]) -> Option<(u32, usize, usize, usize)> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != AREA_MAJOR
+        || payload[2] != AREA_CLIENT_AREA_MINOR
+    {
+        return None;
+    }
+
+    let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    if declared < (HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES) as u32 {
+        return None;
+    }
+    let payload_size = payload.len().checked_sub(HIGH_LEVEL_HEADER_BYTES)?;
+    let read_size = declared as usize - HIGH_LEVEL_HEADER_BYTES;
+    if !(MIN_READ_SIZE..=payload_size).contains(&read_size) {
+        return None;
+    }
+    let fragment_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(read_size)?;
+    let fragment_size = payload.len().checked_sub(fragment_offset)?;
+    Some((declared, read_size, fragment_offset, fragment_size))
+}
+
 fn rewrite_area_fragment_bits(fragment: &[u8]) -> Option<Vec<u8>> {
     let _bits = decode_cnw_msb_valid_bits(
         fragment,
@@ -371,9 +444,18 @@ fn decode_cnw_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<V
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {
     let (area_name_length, name_end) =
         read_c_exo_string_shape(payload, fragment_offset, AREA_NAME_READ_OFFSET, 1024)?;
-    let width_read_offset = name_end.checked_add(AREA_STATIC_WIDTH_BYTES_AFTER_NAME_END)?;
-    let height_read_offset = width_read_offset.checked_add(4)?;
-    let tileset_read_offset = height_read_offset.checked_add(4)?;
+    // EE `CNWCArea::LoadArea` first consumes three INTs and several
+    // environment DWORD/BYTE/BOOL fields after the area-name payload. Those
+    // early DWORDs are not the tile-grid dimensions. The decompiled client
+    // later reads the actual grid width/height into `[area+0Ch]` and
+    // `[area+10h]`, immediately before `ReadCResRef(16)` for the tileset; the
+    // EE server writer mirrors this with `[area+0Ch]`, `[area+10h]`, then
+    // `WriteCResRef`. The HG `docksofascension` fixture proves this offset:
+    // width=11 is at `name_end + 96`, the legacy missing height DWORD is zero
+    // at `name_end + 100`, and tileset `ttr01` starts at `name_end + 104`.
+    let width_read_offset = name_end.checked_add(AREA_WIDTH_BYTES_AFTER_NAME_END)?;
+    let height_read_offset = name_end.checked_add(AREA_HEIGHT_BYTES_AFTER_NAME_END)?;
+    let tileset_read_offset = name_end.checked_add(AREA_TILESET_BYTES_AFTER_NAME_END)?;
     let first_tile_read_offset = tileset_read_offset.checked_add(CRESREF_TEXT_BYTES)?;
 
     Some(AreaStaticLayout {
@@ -439,6 +521,17 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
 
     let inferred_height = tile_count / width;
     if inferred_height == 0 || inferred_height > MAX_REASONABLE_AREA_DIMENSION {
+        return AreaTileStreamScan {
+            layout,
+            width,
+            packet_height,
+            inferred_height,
+            tile_count,
+            tile_end_read_offset: cursor,
+            ..AreaTileStreamScan::default()
+        };
+    }
+    if packet_height != 0 && packet_height != inferred_height {
         return AreaTileStreamScan {
             layout,
             width,
@@ -589,7 +682,12 @@ fn repair_missing_area_height(
     if height_payload_offset > fragment_offset || fragment_offset - height_payload_offset < 4 {
         return false;
     }
-    write_u32_le(payload, height_payload_offset, scan.inferred_height).is_some()
+    if write_u32_le(payload, height_payload_offset, scan.inferred_height).is_some() {
+        scan.packet_height = scan.inferred_height;
+        true
+    } else {
+        false
+    }
 }
 
 fn area_tile_record_length_at(
@@ -743,4 +841,61 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT: &[u8] = include_bytes!(
+        "../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
+    );
+
+    #[test]
+    fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
+        let payload = DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT;
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(payload).expect("fixture read window");
+        let layout = area_static_layout(payload, fragment_offset).expect("fixture static layout");
+
+        assert_eq!(
+            read_area_u32(payload, fragment_offset, layout.width_read_offset),
+            Some(11)
+        );
+        assert_eq!(
+            read_area_u32(payload, fragment_offset, layout.height_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            fixed_resref_preview(payload, HIGH_LEVEL_HEADER_BYTES + layout.tileset_read_offset)
+                .as_deref(),
+            Some("ttr01")
+        );
+
+        let scan = scan_area_tile_stream(payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 11);
+        assert_eq!(scan.packet_height, 0);
+        assert_eq!(scan.inferred_height, 14);
+        assert_eq!(scan.tile_count, 154);
+    }
+
+    #[test]
+    fn docksofascension_rewrite_repairs_missing_height_and_validates() {
+        let mut payload = DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT.to_vec();
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("legacy missing-height area rewrite");
+
+        assert!(summary.tile_scan_valid);
+        assert!(summary.height_repaired);
+        assert_eq!(summary.width, 11);
+        assert_eq!(summary.packet_height, 14);
+        assert_eq!(summary.inferred_height, 14);
+        assert_eq!(summary.tile_count, 154);
+        assert_eq!(summary.area_resref, "docksofascension");
+        assert!(summary
+            .rewrite_kinds
+            .contains(&AreaRewriteKind::LegacyHgMissingHeightRepair));
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
 }

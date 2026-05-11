@@ -10,7 +10,6 @@ use crate::{
 };
 use std::{
     fs,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -20,7 +19,7 @@ use super::{
     hex_prefix, live_update,
     reassembly::{
         CompletedDeflatedReplay, ServerDeflatedReassembly, build_server_deflated_output_frames,
-        remember_completed_server_stream_window,
+        emit_family_packets_with_interleaved, remember_completed_server_stream_window,
     },
 };
 
@@ -146,7 +145,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
             }
 
             state.deflate.server_zlib_stream_proxy_owned = true;
-            let mut outputs = build_live_object_placeholder_frames(reassembly)?;
+            let outputs = build_live_object_placeholder_frames(reassembly)?;
             remember_completed_server_stream_window(
                 state,
                 reassembly,
@@ -156,7 +155,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     packets: outputs.clone(),
                 },
             );
-            outputs.extend(reassembly.interleaved_packets.clone());
+            let interleaved_packets = reassembly.interleaved_packets.clone();
             if let Some(pending) = state.live_object.pending_stream.as_ref() {
                 tracing::info!(
                     first_sequence = pending.first_sequence,
@@ -168,10 +167,11 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     "server live-object continuation buffered pending semantic claim"
                 );
             }
-            return Ok(Some(Emit::VerifiedPackets {
-                family: VerifiedFamily::GameObjUpdateLiveObject,
-                packets: outputs,
-            }));
+            return Ok(Some(emit_family_packets_with_interleaved(
+                VerifiedFamily::GameObjUpdateLiveObject,
+                outputs,
+                interleaved_packets,
+            )));
         }
 
         if let Some(split) = live_object::raw_prefixed_live_object_split(bytes) {
@@ -193,7 +193,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
             }
 
             state.deflate.server_zlib_stream_proxy_owned = true;
-            let mut outputs = build_live_object_placeholder_frames(reassembly)?;
+            let outputs = build_live_object_placeholder_frames(reassembly)?;
             remember_completed_server_stream_window(
                 state,
                 reassembly,
@@ -203,7 +203,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     packets: outputs.clone(),
                 },
             );
-            outputs.extend(reassembly.interleaved_packets.clone());
+            let interleaved_packets = reassembly.interleaved_packets.clone();
             if let Some(pending) = state.live_object.pending_stream.as_ref() {
                 tracing::info!(
                     first_sequence = pending.first_sequence,
@@ -215,10 +215,11 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     "server live-object raw prefixed stream buffered pending semantic claim"
                 );
             }
-            return Ok(Some(Emit::VerifiedPackets {
-                family: VerifiedFamily::GameObjUpdateLiveObject,
-                packets: outputs,
-            }));
+            return Ok(Some(emit_family_packets_with_interleaved(
+                VerifiedFamily::GameObjUpdateLiveObject,
+                outputs,
+                interleaved_packets,
+            )));
         }
     }
 
@@ -253,7 +254,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
             }
 
             state.deflate.server_zlib_stream_proxy_owned = true;
-            let mut outputs = build_live_object_placeholder_frames(reassembly)?;
+            let outputs = build_live_object_placeholder_frames(reassembly)?;
             remember_completed_server_stream_window(
                 state,
                 reassembly,
@@ -263,7 +264,7 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     packets: outputs.clone(),
                 },
             );
-            outputs.extend(reassembly.interleaved_packets.clone());
+            let interleaved_packets = reassembly.interleaved_packets.clone();
             if let Some(pending) = state.live_object.pending_stream.as_ref() {
                 tracing::info!(
                     first_sequence = pending.first_sequence,
@@ -275,10 +276,11 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
                     "server live-object stream fragment buffered pending continuation"
                 );
             }
-            return Ok(Some(Emit::VerifiedPackets {
-                family: VerifiedFamily::GameObjUpdateLiveObject,
-                packets: outputs,
-            }));
+            return Ok(Some(emit_family_packets_with_interleaved(
+                VerifiedFamily::GameObjUpdateLiveObject,
+                outputs,
+                interleaved_packets,
+            )));
         }
 
         return Ok(None);
@@ -518,13 +520,10 @@ fn dump_pending_live_object_candidate(
     chunks: u32,
     reason: &str,
 ) {
-    let Ok(dir) = std::env::var("HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR") else {
+    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
         return;
     };
-    if dir.trim().is_empty() {
-        return;
-    }
-    let mut path = PathBuf::from(dir);
+    let mut path = dir;
     if fs::create_dir_all(&path).is_err() {
         return;
     }

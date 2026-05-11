@@ -6,10 +6,13 @@
 //!   `0x02` by minor id.
 //! - The EE packet-name table maps minor `0x11` to
 //!   `Login_ServerSubDirectoryCharacter`.
+//! - EE `CNWSMessage::HandlePlayerToServerLoginMessage`, minor `0x11`, calls
+//!   `CNWMessage::ReadCResRef(..., 0x10)` and passes that fixed-width resref
+//!   to `CServerExoApp::LoadCharacterStart`.
 //! - The harnessed EE client emits this request as a CNW declared read-message
-//!   window containing the selected server-side character identifier, followed
-//!   by the usual fragment byte. The 1.69 handler consumes the same semantic
-//!   identifier; there are no EE-only fields to remove.
+//!   window containing exactly one 16-byte, NUL-padded `CResRef`, followed by
+//!   the usual single fragment byte. The 1.69 server consumes the same fixed
+//!   resref shape; there are no EE-only fields to remove.
 //! - Both decompiles handle `Login_WaypointResponse` (`0x02/0x0D`) as one
 //!   `CExoString` bounded to `0x20` bytes. The empty-string form is a valid
 //!   Diamond response to `Login_GetWaypoint` when no local waypoint tag exists.
@@ -23,8 +26,9 @@ const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const CEXOSTRING_LENGTH_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const CEXOSTRING_BYTES_OFFSET: usize = CEXOSTRING_LENGTH_OFFSET + CNW_LENGTH_BYTES;
-const MAX_LOGIN_FRAGMENT_BYTES: usize = 8;
-const MAX_CHARACTER_IDENTIFIER_BYTES: usize = 256;
+const CRESREF_BYTES: usize = 16;
+const SERVER_SUBDIRECTORY_DECLARED_BYTES: usize =
+    HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + CRESREF_BYTES;
 const MAX_WAYPOINT_TAG_BYTES: usize = 0x20;
 const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
 
@@ -54,26 +58,42 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientLoginClaimSumma
     None
 }
 
-fn server_subdirectory_character_shape_valid(payload: &[u8]) -> bool {
+pub fn server_subdirectory_character_shape_valid(payload: &[u8]) -> bool {
     let Some(declared) =
         read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok())
     else {
         return false;
     };
-    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_LOGIN_FRAGMENT_BYTES
+
+    if declared != SERVER_SUBDIRECTORY_DECLARED_BYTES
+        || payload.len() != declared + 1
+        || payload[declared] != FINAL_EMPTY_FRAGMENT_BYTE
     {
         return false;
     }
 
     let identifier = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared];
-    !identifier.is_empty()
-        && identifier.len() <= MAX_CHARACTER_IDENTIFIER_BYTES
-        && identifier.iter().all(|byte| is_safe_identifier_byte(*byte))
+    fixed_cresref_shape_valid(identifier)
 }
 
-fn is_safe_identifier_byte(byte: u8) -> bool {
+fn fixed_cresref_shape_valid(bytes: &[u8]) -> bool {
+    if bytes.len() != CRESREF_BYTES {
+        return false;
+    }
+
+    let Some(first_nul) = bytes.iter().position(|byte| *byte == 0) else {
+        return bytes.iter().all(|byte| is_safe_resref_byte(*byte));
+    };
+    if first_nul == 0 {
+        return false;
+    }
+    bytes[..first_nul]
+        .iter()
+        .all(|byte| is_safe_resref_byte(*byte))
+        && bytes[first_nul..].iter().all(|byte| *byte == 0)
+}
+
+fn is_safe_resref_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
 }
 
@@ -130,5 +150,39 @@ mod tests {
         let payload = [0x70, 0x02, 0x0D, 0x0B, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x00];
 
         assert!(!waypoint_response_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn accepts_fixed_cresref_server_subdirectory_character_shape() {
+        let mut payload = vec![0x70, 0x02, 0x11, 0x17, 0x00, 0x00, 0x00];
+        let mut resref = [0u8; 16];
+        resref[..15].copy_from_slice(b"febrieltestxilo");
+        payload.extend_from_slice(&resref);
+        payload.push(0x60);
+
+        assert!(server_subdirectory_character_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some_and(|claim| {
+            claim.packet_name == "Login_ServerSubDirectoryCharacter"
+        }));
+    }
+
+    #[test]
+    fn rejects_server_subdirectory_character_with_nonzero_padding() {
+        let mut payload = vec![0x70, 0x02, 0x11, 0x17, 0x00, 0x00, 0x00];
+        let mut resref = [0u8; 16];
+        resref[..5].copy_from_slice(b"valid");
+        resref[6] = b'x';
+        payload.extend_from_slice(&resref);
+        payload.push(0x60);
+
+        assert!(!server_subdirectory_character_shape_valid(&payload));
+    }
+
+    #[test]
+    fn rejects_server_subdirectory_character_without_fragment_byte() {
+        let mut payload = vec![0x70, 0x02, 0x11, 0x17, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(b"febrieltestxilo\0");
+
+        assert!(!server_subdirectory_character_shape_valid(&payload));
     }
 }

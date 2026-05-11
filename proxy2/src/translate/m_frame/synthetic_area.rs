@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET},
-    translate::{VerifiedFamily, area, loadbar},
+    translate::{VerifiedFamily, VerifiedProof, area, loadbar},
 };
 
 use super::sequence::{
@@ -25,14 +25,21 @@ use super::sequence::{
 
 const AREA_MAJOR: u8 = 0x04;
 const AREA_LOADED_MINOR: u8 = 0x03;
-const LOADBAR_DELAY: Duration = Duration::from_millis(6500);
-// The fallback is already gated on the client ACKing the synthetic
-// LoadBar_End sequence. Keeping an additional wall-clock grace stranded the
-// fallback in driver-only captures: EE sent the final ACK and then produced no
-// further client packet for the proxy to piggyback Area_AreaLoaded onto. Native
-// Area_AreaLoaded still wins because it clears the pending fallback before this
-// ACK-gated release path runs.
+// The old in-process hook synthesized Area_AreaLoaded as soon as the EE
+// Area_ClientArea dispatch returned. The proxy cannot observe that return, but
+// it can keep the same protocol order: emit exact synthetic LoadBar_Start/End
+// immediately after the audited Area_ClientArea rewrite, before post-area live
+// objects are forwarded. A timed grace window let live-object updates arrive
+// while EE was still in the load transition and driver-only captures showed the
+// client disconnecting before LoadBar_End fired.
+const LOADBAR_DELAY: Duration = Duration::from_millis(0);
+// The fallback is gated on the client ACKing the synthetic LoadBar_End
+// sequence. That ACK is transport evidence that EE's receive window reached
+// the proxy-owned loadbar completion before the legacy server is told the area
+// finished loading. Native Area_AreaLoaded still wins because it clears the
+// pending fallback before this ACK-gated release path runs.
 const AREA_LOADED_FALLBACK_GRACE: Duration = Duration::from_millis(0);
+const AREA_LOADED_RETRANSMIT_DELAY: Duration = Duration::from_millis(1250);
 const LOADBAR_FRAME_COUNT: u16 = 2;
 const LOADBAR_STALL_EVENT_ID: u32 = 2;
 
@@ -50,6 +57,31 @@ pub(super) struct PendingServerPacket {
     pub(super) packet: Vec<u8>,
     pub(super) due_at: Instant,
     pub(super) reason: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingVerifiedServerPacket {
+    pub(super) proof: VerifiedProof,
+    pub(super) packet: Vec<u8>,
+    pub(super) reason: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ServerHoldGate {
+    pub(super) release_client_ack_sequence: u16,
+    pub(super) reason: AreaLoadedFallbackReason,
+    pub(super) armed_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct InFlightAreaLoaded {
+    pub(super) packet: Vec<u8>,
+    pub(super) original_sequence: u16,
+    pub(super) shifted_sequence: u16,
+    pub(super) ack_sequence: u16,
+    pub(super) next_retransmit_at: Instant,
+    pub(super) retransmits: u32,
+    pub(super) reason: AreaLoadedFallbackReason,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +150,108 @@ pub(super) fn is_native_area_loaded(high: Option<HighLevel>) -> bool {
 
 pub(super) fn clear_pending_area_loaded(pending: &mut Option<PendingAreaLoaded>) {
     *pending = None;
+}
+
+pub(super) fn clear_in_flight_area_loaded(in_flight: &mut Option<InFlightAreaLoaded>) {
+    *in_flight = None;
+}
+
+pub(super) fn observe_area_loaded_server_ack(
+    in_flight: &mut Option<InFlightAreaLoaded>,
+    server_ack_sequence: u16,
+) {
+    let Some(pending) = in_flight.as_ref() else {
+        return;
+    };
+    if server_ack_sequence == 0
+        || !sequence_at_or_after(server_ack_sequence, pending.shifted_sequence)
+    {
+        return;
+    }
+
+    tracing::info!(
+        server_ack_sequence,
+        original_sequence = pending.original_sequence,
+        shifted_sequence = pending.shifted_sequence,
+        retransmits = pending.retransmits,
+        reason = pending.reason.as_str(),
+        "client synthetic Area_AreaLoaded acknowledged by server"
+    );
+    *in_flight = None;
+}
+
+pub(super) fn arm_server_hold_gate_until_client_ack(
+    gate: &mut Option<ServerHoldGate>,
+    pending_area_loaded: Option<&PendingAreaLoaded>,
+) {
+    let Some(pending) = pending_area_loaded else {
+        return;
+    };
+    *gate = Some(ServerHoldGate {
+        release_client_ack_sequence: pending.release_client_ack_sequence,
+        reason: pending.reason,
+        armed_at: Instant::now(),
+    });
+    tracing::info!(
+        release_client_ack_sequence = pending.release_client_ack_sequence,
+        reason = pending.reason.as_str(),
+        "server-to-client post-area hold gate armed until EE ACKs synthetic LoadBar_End"
+    );
+}
+
+pub(super) fn observe_server_hold_gate_client_ack(
+    gate: &mut Option<ServerHoldGate>,
+    observed_client_ack: u16,
+) {
+    let Some(active) = gate.as_ref() else {
+        return;
+    };
+    if observed_client_ack == 0
+        || !sequence_at_or_after(observed_client_ack, active.release_client_ack_sequence)
+    {
+        return;
+    }
+
+    tracing::info!(
+        observed_client_ack,
+        release_client_ack_sequence = active.release_client_ack_sequence,
+        held_ms = Instant::now()
+            .saturating_duration_since(active.armed_at)
+            .as_millis(),
+        reason = active.reason.as_str(),
+        "server-to-client post-area hold gate opened by EE ACK"
+    );
+    *gate = None;
+}
+
+pub(super) fn maybe_queue_area_loaded_retransmit(
+    in_flight: &mut Option<InFlightAreaLoaded>,
+    pending_client_to_server_packets: &mut Vec<Vec<u8>>,
+    server_ack_sequence: u16,
+) {
+    observe_area_loaded_server_ack(in_flight, server_ack_sequence);
+
+    let Some(pending) = in_flight.as_mut() else {
+        return;
+    };
+    let now = Instant::now();
+    if now < pending.next_retransmit_at {
+        return;
+    }
+
+    pending.retransmits = pending.retransmits.saturating_add(1);
+    pending.next_retransmit_at = now + AREA_LOADED_RETRANSMIT_DELAY;
+    pending_client_to_server_packets.push(pending.packet.clone());
+    tracing::warn!(
+        server_ack_sequence,
+        original_sequence = pending.original_sequence,
+        shifted_sequence = pending.shifted_sequence,
+        ack_sequence = pending.ack_sequence,
+        retransmits = pending.retransmits,
+        reason = pending.reason.as_str(),
+        pending_local_client_packets = pending_client_to_server_packets.len(),
+        "client synthetic Area_AreaLoaded not yet ACKed; retransmitting reliable M frame"
+    );
 }
 
 pub(super) fn queue_loadbar_and_area_loaded_fallback(
@@ -197,9 +331,11 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
 
 pub(super) fn maybe_build_area_loaded_client_packet(
     pending_area_loaded: &mut Option<PendingAreaLoaded>,
+    in_flight_area_loaded: &mut Option<InFlightAreaLoaded>,
     latest_client_sequence_from_client: &mut Option<u16>,
     client_sequence_shifts: &mut Vec<SequenceShift>,
     observed_client_ack: u16,
+    origin_ack_sequence: u16,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(pending) = pending_area_loaded.clone() else {
         return Ok(None);
@@ -211,10 +347,33 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         return Ok(None);
     }
 
+    release_area_loaded_client_packet(
+        pending_area_loaded,
+        in_flight_area_loaded,
+        latest_client_sequence_from_client,
+        client_sequence_shifts,
+        pending,
+        Some(observed_client_ack),
+        origin_ack_sequence,
+        "client ACKed synthetic LoadBar_End",
+    )
+}
+
+fn release_area_loaded_client_packet(
+    pending_area_loaded: &mut Option<PendingAreaLoaded>,
+    in_flight_area_loaded: &mut Option<InFlightAreaLoaded>,
+    latest_client_sequence_from_client: &mut Option<u16>,
+    client_sequence_shifts: &mut Vec<SequenceShift>,
+    pending: PendingAreaLoaded,
+    observed_client_ack: Option<u16>,
+    ack_sequence: u16,
+    release_trigger: &'static str,
+) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(latest_client_sequence) = *latest_client_sequence_from_client else {
         tracing::warn!(
-            observed_client_ack,
+            observed_client_ack = ?observed_client_ack,
             release_client_ack_sequence = pending.release_client_ack_sequence,
+            release_trigger,
             "client synthetic Area_AreaLoaded fallback cannot release without a client sequence"
         );
         return Ok(None);
@@ -223,8 +382,7 @@ pub(super) fn maybe_build_area_loaded_client_packet(
     let original_sequence = latest_client_sequence.wrapping_add(1);
     let shifted_sequence = shift_sequence_for_peer(client_sequence_shifts, original_sequence);
     let payload = [0x70, AREA_MAJOR, AREA_LOADED_MINOR];
-    let packet =
-        build_synthetic_gameplay_frame(shifted_sequence, pending.server_ack_sequence, &payload)?;
+    let packet = build_synthetic_gameplay_frame(shifted_sequence, ack_sequence, &payload)?;
 
     client_sequence_shifts.push(SequenceShift {
         base: original_sequence,
@@ -233,14 +391,25 @@ pub(super) fn maybe_build_area_loaded_client_packet(
     trim_sequence_shifts(client_sequence_shifts);
     *latest_client_sequence_from_client = Some(original_sequence);
     *pending_area_loaded = None;
+    *in_flight_area_loaded = Some(InFlightAreaLoaded {
+        packet: packet.clone(),
+        original_sequence,
+        shifted_sequence,
+        ack_sequence,
+        next_retransmit_at: Instant::now() + AREA_LOADED_RETRANSMIT_DELAY,
+        retransmits: 0,
+        reason: pending.reason,
+    });
 
     tracing::info!(
         original_sequence,
         shifted_sequence,
-        observed_client_ack,
-        ack_sequence = pending.server_ack_sequence,
+        observed_client_ack = ?observed_client_ack,
+        ack_sequence,
+        armed_server_ack_sequence = pending.server_ack_sequence,
         release_client_ack_sequence = pending.release_client_ack_sequence,
         reason = pending.reason.as_str(),
+        release_trigger,
         shifts = client_sequence_shifts.len(),
         "client synthetic Area_AreaLoaded released"
     );

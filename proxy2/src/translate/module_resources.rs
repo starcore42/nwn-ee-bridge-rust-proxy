@@ -109,6 +109,13 @@ impl ModuleResourceRuntime {
             return false;
         }
 
+        // Share the decompile-confirmed, server-provided HAK stack with
+        // resource-table helpers such as `baseitems.2da` lookup. Those helpers
+        // must follow the same observed Diamond/EE module order instead of an
+        // HG fallback profile whenever live Module_Info has already proved the
+        // active stack for this session.
+        crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
+
         let Ok(mut observed) = self.observed_declaration.lock() else {
             return false;
         };
@@ -176,8 +183,19 @@ impl ModuleResourceWriter {
         self.write_string(advertisement.root_hash())?;
         self.write_byte(1);
         self.write_string(advertisement.url())?;
-        self.write_byte(u8::try_from(advertisement.manifests().len()).ok()?);
-        for manifest in advertisement.manifests() {
+        // EE's CNWCModule::LoadModuleResources mounts the advertisement root
+        // with AddManifest(root) before it iterates explicit manifest adverts.
+        // BNXR may still advertise the same root as required client content so
+        // the pre-module NWSync downloader has a concrete work item, but this
+        // CNWMessage-shaped module-resource packet must not ask EE to mount the
+        // same root twice.
+        let module_manifests = advertisement
+            .manifests()
+            .iter()
+            .filter(|manifest| manifest.hash != advertisement.root_hash())
+            .collect::<Vec<_>>();
+        self.write_byte(u8::try_from(module_manifests.len()).ok()?);
+        for manifest in module_manifests {
             self.write_string(&manifest.hash)?;
             self.write_byte(manifest.flags);
             self.write_byte(manifest.language);
