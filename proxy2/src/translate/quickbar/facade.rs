@@ -95,8 +95,44 @@ pub fn rewrite_summary_needs_more_quickbar_bytes(summary: &QuickbarRewriteSummar
     // blank EE slots for unowned source spans. Waiting solely because many
     // source slots were blanked turns a valid partial semantic salvage into the
     // visible `GuiQuickbarPlaceholder` regression that clears the whole bar.
-    summary.trailing_read_bytes != 0
-        && summary.new_payload_length < MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
+    if summary.trailing_read_bytes == 0 {
+        return false;
+    }
+
+    if quickbar_summary_has_complete_decompile_owned_slot_shape(summary) {
+        tracing::info!(
+            read_size = summary.read_size,
+            final_cursor = summary.final_cursor,
+            trailing_read_bytes = summary.trailing_read_bytes,
+            fragment_size = summary.fragment_size,
+            spells_preserved = summary.spells_preserved,
+            item_buttons_blanked = summary.item_buttons_blanked,
+            unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
+            "server GuiQuickbar_SetAllButtons trailing legacy read bytes are owned by the verified 36-slot translator; not waiting for zlib continuation"
+        );
+        return false;
+    }
+
+    summary.new_payload_length < MAX_REASONABLE_REASSEMBLED_QUICKBAR_BYTES
+}
+
+fn quickbar_summary_has_complete_decompile_owned_slot_shape(summary: &QuickbarRewriteSummary) -> bool {
+    // Diamond and EE both read SetAllButtons as a fixed 36-slot quickbar body followed by
+    // the CNW fragment tail. Once the bounded reader has produced that typed slot model and
+    // the writer has emitted an exact EE quickbar payload, bytes left inside the legacy read
+    // buffer are not treated as a zlib continuation. They are legacy slot/item subobject tails
+    // that the semantic translator either preserved in typed form or deliberately blanked by
+    // policy. Truly split/incomplete quickbar streams still arrive without this completed
+    // fragment-tail proof and continue down the buffering path.
+    !summary.direct_opcode_stream
+        && summary.fragment_size != 0
+        && summary.final_cursor <= summary.read_size
+        && (summary.spells_preserved != 0
+            || summary.item_buttons_preserved != 0
+            || summary.general_buttons_preserved != 0
+            || summary.general_buttons_blanked != 0
+            || summary.item_buttons_blanked != 0
+            || summary.unsupported_buttons_blanked != 0)
 }
 
 pub(in crate::translate::quickbar) fn parse_cnw_quickbar_payload(

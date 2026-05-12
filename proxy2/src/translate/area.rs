@@ -28,11 +28,11 @@
 //!   high-level prefix. Moving the fragment stream therefore requires repairing
 //!   that DWORD too.
 //! - EE `CNWMessage::SetReadMessage` consumes the first three fragment bits as
-//!   the "valid bits in final fragment byte" count, and
-//!   `MessageReadUnderflow` treats zero as "the final byte has no valid bits",
-//!   not "the final byte is full". Fragment repacking must therefore allocate
-//!   `valid_bits / 8 + 1` bytes, preserving the trailing padding byte when the
-//!   valid-bit count lands exactly on a byte boundary.
+//!   the "valid bits in final fragment byte" count. The decompiled
+//!   `MessageReadUnderflow` final check and the driver-only Docks trace agree
+//!   that a zero final-bit count reaches the clean state as
+//!   `fragments=N/N bits=0/0`, so this module treats zero as a full final
+//!   fragment byte when proving final cursor exhaustion.
 //! - EE `CNWCArea::LoadArea` performs two post-static-list WORD reads for
 //!   zero-count server-side lists that are not present in the legacy stream.
 //!   The old driver shim had to synthesize both counts at the client read site;
@@ -55,6 +55,7 @@ const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const AREA_PRESENT_USER_BOOL_COUNT: usize = 1;
 const AREA_NAME_MODE_FORCE_MASK: u8 = 0x08;
+const AREA_LOAD_PRE_TILE_FRAGMENT_BITS: usize = 14;
 
 const TRANSITION_INDEX_PAYLOAD_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const START_X_PAYLOAD_OFFSET: usize = TRANSITION_INDEX_PAYLOAD_OFFSET + 4;
@@ -63,12 +64,15 @@ const LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET: usize =
 const LEGACY_AREA_OBJECT_ID_BYTES: usize = 4;
 
 const EE_POST_STATIC_LIST_ZERO_WORD_BYTES: usize = 4;
+const MAX_AREA_POST_TILE_LIST_COUNT: u32 = 4096;
+const MAX_AREA_SOUND_RESREFS: u16 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaRewriteKind {
     ExactEeAreaNameModeBitForce,
     ExactEePostStaticListZeroWords,
     LegacyHgMissingHeightRepair,
+    LegacyDiamondSoundCountZeroMeansOneRepair,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +100,7 @@ pub struct AreaRewriteSummary {
     pub tile_count: u32,
     pub tile_scan_valid: bool,
     pub height_repaired: bool,
+    pub sound_count_zero_one_repairs: u32,
     pub rewrite_kinds: Vec<AreaRewriteKind>,
     pub placeable_context_valid: bool,
     pub placeable_light_count: usize,
@@ -162,6 +167,21 @@ struct AreaTileStreamScan {
     inferred_height: u32,
     tile_count: u32,
     tile_end_read_offset: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AreaExactReadProof {
+    read_size: usize,
+    read_end: usize,
+    fragment_bits_available: usize,
+    fragment_bits_consumed: usize,
+    transition_count: u32,
+    map_pin_count: u32,
+    sound_count: u16,
+    light_count: u16,
+    static_count: u16,
+    first_post_static_count: u16,
+    second_post_static_count: u16,
 }
 
 pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
@@ -243,8 +263,13 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         return None;
     }
 
-    let mut tile_scan = scan_area_tile_stream(payload, fragment_offset);
-    let height_repaired = repair_missing_area_height(payload, fragment_offset, &mut tile_scan);
+    let mut working_payload = payload.clone();
+    let mut tile_scan = scan_area_tile_stream(&working_payload, fragment_offset);
+    let height_repaired =
+        repair_missing_area_height(&mut working_payload, fragment_offset, &mut tile_scan);
+    let sound_count_zero_one_repairs =
+        repair_legacy_zero_sound_counts(&mut working_payload, fragment_offset, &tile_scan)
+            .unwrap_or(0);
     if !tile_scan.valid {
         tracing::warn!(
             area_resref = %area_resref,
@@ -264,15 +289,18 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     if height_repaired {
         rewrite_kinds.push(AreaRewriteKind::LegacyHgMissingHeightRepair);
     }
+    if sound_count_zero_one_repairs != 0 {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondSoundCountZeroMeansOneRepair);
+    }
 
-    let old_fragment_byte = payload[fragment_offset];
-    let rewritten_fragment = rewrite_area_fragment_bits(&payload[fragment_offset..])?;
+    let old_fragment_byte = working_payload[fragment_offset];
+    let rewritten_fragment = rewrite_area_fragment_bits(&working_payload[fragment_offset..])?;
     let new_fragment_byte = *rewritten_fragment.first()?;
     let new_declared = declared + EE_POST_STATIC_LIST_ZERO_WORD_BYTES as u32;
     let new_read_size = read_size + EE_POST_STATIC_LIST_ZERO_WORD_BYTES;
     let new_fragment_offset = fragment_offset + EE_POST_STATIC_LIST_ZERO_WORD_BYTES;
     let placeable_context =
-        collect_area_post_tile_placeable_context(payload, fragment_offset, &area_resref);
+        collect_area_post_tile_placeable_context(&working_payload, fragment_offset, &area_resref);
     let placeable_context_valid = placeable_context.is_some();
     let placeable_context = placeable_context.unwrap_or_default();
     let placeable_light_count = placeable_context.light_rows.len();
@@ -281,11 +309,24 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     let mut rewritten_payload = Vec::with_capacity(
         fragment_offset + EE_POST_STATIC_LIST_ZERO_WORD_BYTES + rewritten_fragment.len(),
     );
-    rewritten_payload.extend_from_slice(&payload[..fragment_offset]);
+    rewritten_payload.extend_from_slice(&working_payload[..fragment_offset]);
     rewritten_payload.extend_from_slice(&[0, 0, 0, 0]);
     rewritten_payload.extend_from_slice(&rewritten_fragment);
+    write_u32_le(&mut rewritten_payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+    let Some(exact_proof) = ee_area_client_area_exact_read_proof(&rewritten_payload) else {
+        tracing::warn!(
+            area_resref = %area_resref,
+            old_declared = declared,
+            new_declared,
+            old_read_size = read_size,
+            new_read_size,
+            old_fragment_offset = fragment_offset,
+            new_fragment_offset,
+            "Area_ClientArea rewrite skipped: rewritten packet does not satisfy exact EE LoadArea cursor proof"
+        );
+        return None;
+    };
     *payload = rewritten_payload;
-    write_u32_le(payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
     for kind in &rewrite_kinds {
         tracing::info!(
             rewrite_kind = ?kind,
@@ -300,9 +341,21 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
             tile_count = tile_scan.tile_count,
             tile_scan_valid = tile_scan.valid,
             height_repaired,
+            sound_count_zero_one_repairs,
             first_tile_read_offset = static_layout.first_tile_read_offset,
             old_fragment_byte,
             new_fragment_byte,
+            post_tile_end = exact_proof.read_end,
+            read_limit = exact_proof.read_size,
+            fragment_bits_consumed = exact_proof.fragment_bits_consumed,
+            fragment_bits_available = exact_proof.fragment_bits_available,
+            transition_count = exact_proof.transition_count,
+            map_pin_count = exact_proof.map_pin_count,
+            sound_count = exact_proof.sound_count,
+            light_count = exact_proof.light_count,
+            static_count = exact_proof.static_count,
+            first_post_static_count = exact_proof.first_post_static_count,
+            second_post_static_count = exact_proof.second_post_static_count,
             "Area_ClientArea named compatibility rewrite applied"
         );
     }
@@ -331,6 +384,7 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         tile_count: tile_scan.tile_count,
         tile_scan_valid: tile_scan.valid,
         height_repaired,
+        sound_count_zero_one_repairs,
         rewrite_kinds,
         placeable_context_valid,
         placeable_light_count,
@@ -369,10 +423,11 @@ pub fn ee_area_client_area_payload_shape_valid(payload: &[u8]) -> bool {
         return false;
     }
 
-    area_static_layout(payload, fragment_offset)
+    let structural_prefix_valid = area_static_layout(payload, fragment_offset)
         .filter(|layout| layout.valid)
         .is_some()
-        && scan_area_tile_stream(payload, fragment_offset).valid
+        && scan_area_tile_stream(payload, fragment_offset).valid;
+    structural_prefix_valid && ee_area_client_area_exact_read_proof(payload).is_some()
 }
 
 fn area_client_area_read_window(payload: &[u8]) -> Option<(u32, usize, usize, usize)> {
@@ -416,13 +471,7 @@ fn rewrite_area_fragment_bits(fragment: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn decode_cnw_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<Vec<bool>> {
-    let first = *fragment.first()?;
-    let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
-    let valid_bits = fragment
-        .len()
-        .checked_sub(1)?
-        .checked_mul(8)?
-        .checked_add(final_fragment_bits)?;
+    let valid_bits = cnw_fragment_consumable_bits(fragment)?;
     if valid_bits < min_valid_bits {
         tracing::warn!(
             valid_bits,
@@ -439,6 +488,28 @@ fn decode_cnw_msb_valid_bits(fragment: &[u8], min_valid_bits: usize) -> Option<V
         bits.push((byte & (0x80 >> (bit_index % 8))) != 0);
     }
     Some(bits)
+}
+
+fn cnw_fragment_consumable_bits(fragment: &[u8]) -> Option<usize> {
+    let first = *fragment.first()?;
+    let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
+    if final_fragment_bits == 0 {
+        fragment.len().checked_mul(8)
+    } else {
+        fragment
+            .len()
+            .checked_sub(1)?
+            .checked_mul(8)?
+            .checked_add(final_fragment_bits)
+    }
+}
+
+fn fragment_bit(fragment: &[u8], bit_index: usize) -> Option<bool> {
+    if bit_index >= cnw_fragment_consumable_bits(fragment)? {
+        return None;
+    }
+    let byte = *fragment.get(bit_index / 8)?;
+    Some((byte & (0x80 >> (bit_index % 8))) != 0)
 }
 
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {
@@ -670,6 +741,187 @@ fn collect_area_post_tile_placeable_context(
     })
 }
 
+fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadProof> {
+    let (_, read_size, fragment_offset, fragment_size) = area_client_area_read_window(payload)?;
+    if fragment_size == 0 {
+        return None;
+    }
+    let fragment = payload.get(fragment_offset..)?;
+    let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
+    let area_name_mode_bit = CNW_FRAGMENT_HEADER_BITS + AREA_PRESENT_USER_BOOL_COUNT;
+    if !fragment_bit(fragment, area_name_mode_bit)? {
+        return None;
+    }
+
+    let scan = scan_area_tile_stream(payload, fragment_offset);
+    if !scan.valid {
+        return None;
+    }
+
+    // `CNWCArea::LoadArea` reaches tile byte zero at read-buffer offset
+    // `first_tile_read_offset` with fragment state `fragments=1 bits=6` in
+    // the driver-only EE reader trace. This is 14 consumed bits: the three
+    // CNW fragment-header bits, the caller's Area_ClientArea area-present
+    // BOOL, the area-name discriminator forced above, and the remaining
+    // decompiled static/environment BOOL reads before the tile loop.
+    let mut bit_cursor = AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
+    if bit_cursor > fragment_bits_available {
+        return None;
+    }
+
+    let mut cursor = scan.tile_end_read_offset;
+
+    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    for _ in 0..transition_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        for component in 0..3 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 4 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+
+        // EE writer/reader pair for this list uses one fragment BOOL for the
+        // transition-name visibility flag and then the shared
+        // `CExoLocStringServer` selector. HG Docks takes the inline
+        // `CExoString` branch for each row; the TLK branch is modeled because
+        // the decompiled helper has an exact one-bit-plus-DWORD shape.
+        fragment_bit(fragment, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let client_tlk = fragment_bit(fragment, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
+        cursor = if client_tlk {
+            fragment_bit(fragment, bit_cursor)?;
+            bit_cursor = bit_cursor.checked_add(1)?;
+            read_area_u32(payload, fragment_offset, locstring_offset)?;
+            locstring_offset.checked_add(4)?
+        } else {
+            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
+        };
+    }
+
+    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if map_pin_count != 0 {
+        // The Docks-proven EE/Diamond path has no map pins. Keep this strict
+        // until the decompiled non-empty map-pin row is traced and modeled.
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+
+    let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..sound_count {
+        const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
+        const AREA_SOUND_BASE_BYTES: usize = 54;
+        let resref_count = read_area_u16(
+            payload,
+            fragment_offset,
+            cursor.checked_add(AREA_SOUND_RESREF_COUNT_OFFSET)?,
+        )?;
+        if resref_count > MAX_AREA_SOUND_RESREFS {
+            return None;
+        }
+        bit_cursor = bit_cursor.checked_add(6)?;
+        if bit_cursor > fragment_bits_available {
+            return None;
+        }
+        cursor = cursor.checked_add(
+            AREA_SOUND_BASE_BYTES.checked_add(resref_count as usize * CRESREF_TEXT_BYTES)?,
+        )?;
+        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+            return None;
+        }
+    }
+
+    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(light_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..light_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        read_area_u16(payload, fragment_offset, cursor + 4)?;
+        for component in 0..3 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+        cursor = cursor.checked_add(4 + 2 + 3 * 4)?;
+    }
+
+    let static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(static_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..static_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        read_area_u16(payload, fragment_offset, cursor + 4)?;
+        for component in 0..6 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+        cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
+    }
+
+    let first_post_static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(first_post_static_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    cursor = cursor.checked_add(first_post_static_count as usize * 2)?;
+    if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+        return None;
+    }
+
+    let second_post_static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if second_post_static_count != 0 {
+        // EE's area writer finishes these legacy-facing packets with a zero
+        // creature/server-side tail count. Model the non-empty branch only
+        // after a capture and decompile pass prove the row shape.
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+
+    if cursor != read_size || bit_cursor != fragment_bits_available {
+        return None;
+    }
+
+    Some(AreaExactReadProof {
+        read_size,
+        read_end: cursor,
+        fragment_bits_available,
+        fragment_bits_consumed: bit_cursor,
+        transition_count,
+        map_pin_count,
+        sound_count,
+        light_count,
+        static_count,
+        first_post_static_count,
+        second_post_static_count,
+    })
+}
+
 fn repair_missing_area_height(
     payload: &mut [u8],
     fragment_offset: usize,
@@ -688,6 +940,100 @@ fn repair_missing_area_height(
     } else {
         false
     }
+}
+
+fn repair_legacy_zero_sound_counts(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+) -> Option<u32> {
+    if !scan.valid {
+        return None;
+    }
+
+    // EE `CNWSSoundObject::PackIntoMessage` writes a WORD sound-count at the
+    // end of the fixed 54-byte sound-object body, then writes exactly that many
+    // fixed `CResRef(16)` entries. Live 1.69 HG Docks packets use the legacy
+    // single-entry compact form for some sound rows: the count WORD is zero,
+    // but one valid CResRef immediately follows. Driver-only EE cannot consume
+    // that shape, so convert only this proven row-local legacy encoding to the
+    // exact EE writer shape. Multi-sound rows already carry their true count and
+    // are left untouched.
+    let fragment = payload.get(fragment_offset..)?;
+    let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
+    let mut bit_cursor = AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
+    if bit_cursor > fragment_bits_available {
+        return None;
+    }
+
+    let mut cursor = scan.tile_end_read_offset;
+    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    for _ in 0..transition_count {
+        cursor.checked_add(4 + 3 * 4)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let client_tlk = fragment_bit(fragment, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
+        cursor = if client_tlk {
+            bit_cursor = bit_cursor.checked_add(1)?;
+            read_area_u32(payload, fragment_offset, locstring_offset)?;
+            locstring_offset.checked_add(4)?
+        } else {
+            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
+        };
+    }
+
+    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if map_pin_count != 0 {
+        // Keep the repair scoped to the Docks-proven no-map-pin branch already
+        // modeled by the exact EE area proof.
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+
+    let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+
+    let mut repairs = 0u32;
+    for _ in 0..sound_count {
+        const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
+        const AREA_SOUND_BASE_BYTES: usize = 54;
+
+        let count_offset = cursor.checked_add(AREA_SOUND_RESREF_COUNT_OFFSET)?;
+        let resref_count = read_area_u16(payload, fragment_offset, count_offset)?;
+        let effective_count = if resref_count == 0
+            && fixed_cresref_at_read_offset_plausible(
+                payload,
+                fragment_offset,
+                cursor.checked_add(AREA_SOUND_BASE_BYTES)?,
+            )
+        {
+            write_area_u16(payload, fragment_offset, count_offset, 1)?;
+            repairs = repairs.checked_add(1)?;
+            1usize
+        } else {
+            usize::from(resref_count)
+        };
+
+        if effective_count > usize::from(MAX_AREA_SOUND_RESREFS) {
+            return None;
+        }
+        cursor = cursor.checked_add(
+            AREA_SOUND_BASE_BYTES.checked_add(effective_count.checked_mul(CRESREF_TEXT_BYTES)?)?,
+        )?;
+        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+            return None;
+        }
+    }
+
+    Some(repairs)
 }
 
 fn area_tile_record_length_at(
@@ -764,12 +1110,10 @@ fn read_c_exo_string_shape(
     {
         return None;
     }
-    if !payload[string_payload_offset..string_payload_offset + length_usize]
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
-    {
-        return None;
-    }
+    // `CNWMessage::ReadCExoString(max)` is length-bounded byte storage, not a
+    // printable text validator. HG area transition names can contain embedded
+    // NUL bytes in the inline branch, and the EE reader accepts them while
+    // advancing the cursor exactly by the declared length.
     Some((length, string_read_offset + length_usize))
 }
 
@@ -796,6 +1140,40 @@ fn read_area_f32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> 
         return None;
     }
     read_f32_le(payload, payload_offset)
+}
+
+fn write_area_u16(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    read_offset: usize,
+    value: u16,
+) -> Option<()> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < 2 {
+        return None;
+    }
+    payload
+        .get_mut(payload_offset..payload_offset + 2)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+fn fixed_cresref_at_read_offset_plausible(
+    payload: &[u8],
+    fragment_offset: usize,
+    read_offset: usize,
+) -> bool {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < CRESREF_TEXT_BYTES {
+        return false;
+    }
+    fixed_resref_preview(payload, payload_offset).is_some_and(|resref| {
+        !resref.is_empty()
+            && resref.len() <= CRESREF_TEXT_BYTES
+            && resref
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
 }
 
 fn start_fields_plausible(payload: &[u8]) -> bool {
@@ -850,6 +1228,9 @@ mod tests {
     const DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT: &[u8] = include_bytes!(
         "../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
     );
+    const DOCKS_OF_ASCENSION_LEGACY_ZERO_SOUND_COUNTS: &[u8] = include_bytes!(
+        "../../fixtures/area/hg_docksofascension_client_area_legacy_zero_sound_counts.bin"
+    );
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -896,6 +1277,46 @@ mod tests {
         assert!(summary
             .rewrite_kinds
             .contains(&AreaRewriteKind::LegacyHgMissingHeightRepair));
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn docksofascension_rewrite_consumes_exact_ee_area_reader_window() {
+        let mut payload = DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT.to_vec();
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("legacy missing-height area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten area should match EE LoadArea cursor proof");
+
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert_eq!(proof.transition_count, 8);
+        assert_eq!(proof.map_pin_count, 0);
+        assert_eq!(proof.sound_count, 11);
+        assert_eq!(proof.light_count, 16);
+        assert_eq!(proof.static_count, 194);
+        assert_eq!(proof.first_post_static_count, 0);
+        assert_eq!(proof.second_post_static_count, 0);
+        assert_eq!(summary.placeable_light_count, 16);
+        assert_eq!(summary.placeable_static_count, 194);
+    }
+
+    #[test]
+    fn docksofascension_rewrite_repairs_legacy_zero_sound_counts() {
+        let mut payload = DOCKS_OF_ASCENSION_LEGACY_ZERO_SOUND_COUNTS.to_vec();
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("legacy zero-sound-count area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "docksofascension");
+        assert_eq!(summary.sound_count_zero_one_repairs, 3);
+        assert!(summary
+            .rewrite_kinds
+            .contains(&AreaRewriteKind::LegacyDiamondSoundCountZeroMeansOneRepair));
+        assert_eq!(proof.sound_count, 11);
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
 }

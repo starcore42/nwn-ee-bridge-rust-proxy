@@ -18,12 +18,24 @@
 //!   window-level records. Any visible high-level packet is deliberately
 //!   refused here and must be claimed by a focused semantic translator.
 
-use crate::packet::m::MFrameView;
+use crate::{
+    crc::{encode_legacy_m_crc, write_be_u16},
+    packet::m::{LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
+    translate::{ContinuationOwner, VerifiedFamily, VerifiedPacket, VerifiedProof},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TransportIdentityClaim {
     pub(super) packet_name: &'static str,
     pub(super) reason: &'static str,
+    kind: TransportIdentityKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportIdentityKind {
+    EmptyWindowShell,
+    PacketizedContinuation,
+    ServerDeflatedContinuation,
 }
 
 pub(super) fn claim_client_frame_if_verified(view: &MFrameView) -> Option<TransportIdentityClaim> {
@@ -58,6 +70,7 @@ fn claim_frame_if_verified(
         return Some(TransportIdentityClaim {
             packet_name: "empty reliable-window ack/control",
             reason: "verified-empty-M-window-shell",
+            kind: TransportIdentityKind::EmptyWindowShell,
         });
     }
 
@@ -65,6 +78,7 @@ fn claim_frame_if_verified(
         return Some(TransportIdentityClaim {
             packet_name: "packetized reliable-window continuation",
             reason: "verified-window-packetized-continuation",
+            kind: TransportIdentityKind::PacketizedContinuation,
         });
     }
 
@@ -76,8 +90,80 @@ fn claim_frame_if_verified(
         return Some(TransportIdentityClaim {
             packet_name: "deflated reliable-window continuation",
             reason: "verified-server-deflated-window-continuation",
+            kind: TransportIdentityKind::ServerDeflatedContinuation,
         });
     }
 
     None
+}
+
+pub(super) fn verified_server_packet_for_claim(
+    bytes: &[u8],
+    view: &MFrameView,
+    claim: TransportIdentityClaim,
+    owner: ContinuationOwner,
+    stream_epoch: u64,
+    proxy_owned_stream: bool,
+) -> anyhow::Result<Option<VerifiedPacket>> {
+    if claim.kind == TransportIdentityKind::EmptyWindowShell {
+        return Ok(Some(VerifiedPacket {
+            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+            packet: bytes.to_vec(),
+        }));
+    }
+
+    if claim.kind == TransportIdentityKind::ServerDeflatedContinuation
+        && proxy_owned_stream
+        && owner != ContinuationOwner::UnknownProxyOwned
+        && stream_epoch != 0
+    {
+        return Ok(Some(VerifiedPacket {
+            proof: VerifiedProof::family(VerifiedFamily::ServerZlibStreamContinuation {
+                owner,
+                stream_epoch,
+                first_sequence: view.sequence,
+            }),
+            packet: consume_transport_only_packet_for_ee(bytes)?,
+        }));
+    }
+
+    tracing::warn!(
+        packet = claim.packet_name,
+        reason = claim.reason,
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        flags = view.flags,
+        packetized_sequence = view.packetized_sequence,
+        payload_len = view.payload_length,
+        owner = owner.as_str(),
+        stream_epoch,
+        proxy_owned_stream,
+        "server M transport-only frame was classified but has no exact continuation owner proof"
+    );
+    Ok(None)
+}
+
+pub(super) fn consume_transport_only_packet_for_ee(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut out_packet = bytes.to_vec();
+    out_packet.truncate(LEGACY_GAMEPLAY_PAYLOAD_OFFSET);
+    if out_packet.len() > 7 {
+        // Decompile-backed EE window behavior: byte 7's high nibble selects
+        // the M-frame kind. Only kind 0 enters CNetLayerWindow::FrameReceive's
+        // reliable-data path, which stores the frame and advances the incoming
+        // sequence/ACK cursor. The 0x10 control kind is ACK-only and does not
+        // consume a sequence number, so an empty progress carrier must stay a
+        // data frame while clearing zlib/packet-length semantics. Preserve only
+        // the high-priority queue bit.
+        out_packet[7] &= 0x08;
+    }
+    write_be_u16(&mut out_packet, 8, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear transport M packetized sequence"))?;
+    write_be_u16(&mut out_packet, 10, 0)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to clear transport M packetized length"))?;
+    encode_legacy_m_crc(&mut out_packet)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair transport M CRC"))?;
+    Ok(out_packet)
 }

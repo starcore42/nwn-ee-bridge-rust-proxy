@@ -44,7 +44,10 @@ pub(crate) enum ServerStatusEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) enum AreaEvent {
-    ClientArea { observed: ObservedHighLevel },
+    ClientArea {
+        observed: ObservedHighLevel,
+        area_object_id: Option<u32>,
+    },
     AreaLoaded { observed: ObservedHighLevel },
     LoadBar { observed: ObservedHighLevel },
 }
@@ -55,11 +58,37 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) mentions: Vec<LiveObjectMention>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LiveObjectMention {
     pub(crate) opcode: u8,
     pub(crate) object_type: u8,
     pub(crate) object_id: u32,
+    pub(crate) name: Option<String>,
+    pub(crate) position: Option<LiveObjectPosition>,
+    pub(crate) orientation: Option<LiveObjectOrientation>,
+    pub(crate) bounds: Option<LiveObjectBounds>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LiveObjectPosition {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) z: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LiveObjectOrientation {
+    pub(crate) scalar_tenths_degrees: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LiveObjectBounds {
+    pub(crate) min_x: f32,
+    pub(crate) min_y: f32,
+    pub(crate) min_z: f32,
+    pub(crate) max_x: f32,
+    pub(crate) max_y: f32,
+    pub(crate) max_z: f32,
 }
 
 #[derive(Debug, Clone)]

@@ -12,12 +12,12 @@ pub(super) fn apply_legacy_icon_list(
         if let Some((cursor, _, _, fragment_bits)) =
             advance_legacy_icon_list_block(bytes, candidate.cursor, record_end)
         {
-            next.push(GenericInventoryCandidate {
+            next.push(candidate.advanced(
                 cursor,
-                bits: candidate
+                candidate
                     .bits
                     .saturating_add(usize::try_from(fragment_bits).unwrap_or(usize::MAX)),
-            });
+            ));
         }
     }
     next

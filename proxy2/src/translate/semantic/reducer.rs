@@ -7,13 +7,15 @@
 
 use crate::{
     packet::{Direction, m::HighLevel},
-    translate::{VerifiedFamily, VerifiedProof, gameplay_stream},
+    translate::{VerifiedFamily, VerifiedProof, gameplay_stream, live_object_update},
 };
 
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
-    LoginEvent, ModuleInfoEvent, ObservedHighLevel, ProtocolEvent, QuickbarEvent,
-    SemanticSessionState, ServerStatusEvent,
+    LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent,
+    ObservedHighLevel,
+    ProtocolEvent,
+    QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -71,18 +73,21 @@ fn observe_family_payload(
         VerifiedFamily::ServerStatusModuleResources => {
             ProtocolEvent::ServerStatus(ServerStatusEvent::ModuleResources { observed })
         }
-        VerifiedFamily::AreaClientArea => ProtocolEvent::Area(AreaEvent::ClientArea { observed }),
+        VerifiedFamily::AreaClientArea => ProtocolEvent::Area(AreaEvent::ClientArea {
+            observed,
+            area_object_id: current_area_object_id_from_payload(payload),
+        }),
         VerifiedFamily::ClientArea => ProtocolEvent::Area(AreaEvent::AreaLoaded { observed }),
         VerifiedFamily::LoadBar => ProtocolEvent::Area(AreaEvent::LoadBar { observed }),
         VerifiedFamily::GameObjUpdateLiveObject => {
-            // Do not infer object registry facts by scanning arbitrary live
-            // bytes. The exact live-object add/update parsers should attach
-            // typed mentions once they have proven record boundaries and
-            // object ids. Until then, this event records only that a verified
-            // live-object packet passed through the gateway.
+            // Populate object lifecycle facts only from the exact
+            // `GameObjUpdate_LiveObject` parser. This preserves the strict
+            // discipline from the EE/Diamond readers: no loose byte scans, no
+            // packet-family inference without proven record boundaries.
+            let mentions = live_object_mentions_from_payload(payload);
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
-                mentions: Vec::new(),
+                mentions,
             })
         }
         VerifiedFamily::GuiQuickbar => {
@@ -124,9 +129,14 @@ fn apply_event(state: &mut SemanticSessionState, event: ProtocolEvent) {
             state.resources.module_running_packets =
                 state.resources.module_running_packets.saturating_add(1);
         }
-        ProtocolEvent::Area(AreaEvent::ClientArea { observed }) => {
+        ProtocolEvent::Area(AreaEvent::ClientArea {
+            observed,
+            area_object_id,
+        }) => {
             state.area.client_area_packets = state.area.client_area_packets.saturating_add(1);
             state.area.last_client_area_declared_len = observed.declared_len;
+            state.area.current_area_object_id = *area_object_id;
+            state.objects.reset_for_area();
         }
         ProtocolEvent::Area(AreaEvent::AreaLoaded { .. }) => {
             state.area.area_loaded_packets = state.area.area_loaded_packets.saturating_add(1);
@@ -180,4 +190,41 @@ fn observed_high_level(
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn live_object_mentions_from_payload(payload: &[u8]) -> Vec<LiveObjectMention> {
+    let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
+        return Vec::new();
+    };
+    claim
+        .mentions
+        .into_iter()
+        .map(|mention| LiveObjectMention {
+            opcode: mention.opcode,
+            object_type: mention.object_type,
+            object_id: mention.object_id,
+            name: mention.name,
+            position: mention.position.map(|position| LiveObjectPosition {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            }),
+            orientation: mention.orientation.map(|orientation| LiveObjectOrientation {
+                scalar_tenths_degrees: orientation.scalar_tenths_degrees,
+            }),
+            bounds: mention.bounds.map(|bounds| super::LiveObjectBounds {
+                min_x: bounds.min_x,
+                min_y: bounds.min_y,
+                min_z: bounds.min_z,
+                max_x: bounds.max_x,
+                max_y: bounds.max_y,
+                max_z: bounds.max_z,
+            }),
+        })
+        .collect()
+}
+
+fn current_area_object_id_from_payload(payload: &[u8]) -> Option<u32> {
+    const AREA_OBJECT_ID_OFFSET: usize = 3 + 4 + 4 + 4 * 4;
+    read_u32_le(payload, AREA_OBJECT_ID_OFFSET)
 }

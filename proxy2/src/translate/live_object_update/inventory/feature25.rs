@@ -12,14 +12,14 @@ pub(super) fn apply_2000(
         let Some(feature25) = try_parse_inventory_2000_at(bytes, candidate.cursor, record_end) else {
             continue;
         };
-        next.push(GenericInventoryCandidate {
-            cursor: feature25.block_end,
-            bits: candidate.bits.saturating_add(
+        next.push(candidate.advanced(
+            feature25.block_end,
+            candidate.bits.saturating_add(
                 usize::try_from(feature25.second_count)
                     .unwrap_or(usize::MAX)
                     .saturating_mul(3),
             ),
-        });
+        ));
     }
     next
 }
@@ -41,7 +41,7 @@ pub(super) fn try_parse_inventory_2000_record(
     try_parse_inventory_2000_at(bytes, record_offset + 7, record_end)
 }
 
-fn try_parse_inventory_2000_at(
+pub(super) fn try_parse_inventory_2000_at(
     bytes: &[u8],
     cursor: usize,
     record_end: usize,
@@ -87,6 +87,26 @@ fn try_parse_inventory_2000_at(
     Some(Inventory2000Shape {
         second_count: 0,
         block_end: record_end,
+    })
+}
+
+pub(super) fn try_parse_inventory_2000_prefix_at(
+    bytes: &[u8],
+    cursor: usize,
+    scan_end: usize,
+) -> Option<Inventory2000Shape> {
+    // Prefix-only companion for Diamond `sub_455940` / EE `sub_1407B4F70`
+    // inventory mask 0x2000 handling. The decompiled reader consumes the two
+    // OBJECTID lists and then returns to the enclosing inventory mask reader;
+    // it does not require the enclosing live-object stream to end here. Use
+    // this only when another exact inventory branch owns the following bytes.
+    let feature25 = try_parse_feature25_at(bytes, cursor, scan_end)?;
+    if feature25.missing_second_count || feature25.block_end > scan_end {
+        return None;
+    }
+    Some(Inventory2000Shape {
+        second_count: feature25.second_count,
+        block_end: feature25.block_end,
     })
 }
 
@@ -136,6 +156,25 @@ pub(super) fn normalize_legacy_feature25_tail_for_ee(
     }
 
     None
+}
+
+pub(super) fn insert_missing_feature25_second_count_zero_for_ee(
+    bytes: &mut Vec<u8>,
+    cursor: usize,
+    record_end: &mut usize,
+) -> Option<usize> {
+    if cursor > bytes.len() || *record_end > bytes.len() || cursor > *record_end {
+        return None;
+    }
+
+    let feature25 = try_parse_feature25_at(bytes, cursor, *record_end)?;
+    if !feature25.missing_second_count || feature25.block_end != *record_end {
+        return None;
+    }
+
+    bytes.splice(*record_end..*record_end, [0, 0, 0, 0]);
+    *record_end = record_end.checked_add(4)?;
+    Some(4)
 }
 
 pub(super) fn try_parse_inventory_2a00_shape(

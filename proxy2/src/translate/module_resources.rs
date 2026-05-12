@@ -183,14 +183,16 @@ impl ModuleResourceWriter {
         self.write_string(advertisement.root_hash())?;
         self.write_byte(1);
         self.write_string(advertisement.url())?;
-        // EE's CNWCModule::LoadModuleResources mounts the advertisement root
-        // with AddManifest(root) before it iterates explicit manifest adverts.
-        // BNXR may still advertise the same root as required client content so
-        // the pre-module NWSync downloader has a concrete work item, but this
-        // CNWMessage-shaped module-resource packet must not ask EE to mount the
-        // same root twice.
+        // EE's `CNWCModule::LoadModuleResources` first calls
+        // `CExoResMan::AddManifest(root)` and then iterates the explicit
+        // manifest-advert vector, calling `AddManifest(extra)` for each entry
+        // whose language should load. This is not the same semantic role as
+        // BNXR's pre-module client-download advert list: every extra here must
+        // already be a manifest the EE resource manager can mount as a key
+        // table, and a required missing extra is the decompile-confirmed
+        // `0x10BBE` failure path.
         let module_manifests = advertisement
-            .manifests()
+            .module_manifests()
             .iter()
             .filter(|manifest| manifest.hash != advertisement.root_hash())
             .collect::<Vec<_>>();

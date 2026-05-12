@@ -28,11 +28,43 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         }
     }
 
+    if bytes.get(offset).copied() == Some(b'I') {
+        if let Some(prefix) =
+            inventory::try_get_legacy_live_inventory_prefix_claim(bytes, offset, scan_end)
+        {
+            if !prefix.interleaved_fragment_tail_allowed
+                && prefix.read_end > offset
+                && prefix.read_end < scan_end
+            {
+                // Diamond `sub_455940` and EE `sub_1407B4F70` both consume the
+                // inventory mask branches before returning to the live-object
+                // dispatcher. Trust the exact inventory parser's cursor first,
+                // even when the following bytes are stale-declared CNW fragment
+                // storage rather than another live-object/GUI boundary. The
+                // semantic rewrite and exact validator still have to prove the
+                // promoted fragment tail before this packet can be emitted.
+                return prefix.read_end;
+            }
+        }
+    }
+
     if bytes.get(offset).copied() == Some(b'A') && bytes.get(offset + 1).copied() == Some(0x05) {
         let record_end = offset.saturating_add(creature::EE_CREATURE_ADD_RECORD_BYTES);
         if record_end <= scan_end
             && creature::looks_like_ee_creature_add_record(bytes, offset, record_end)
         {
+            return record_end;
+        }
+        let record_end = offset.saturating_add(creature::LEGACY_CREATURE_ADD_RECORD_BYTES);
+        if record_end <= scan_end
+            && creature::looks_like_legacy_creature_add_transform_fields(bytes, offset, record_end)
+        {
+            // Diamond `sub_4489F0` consumes exactly OBJECTID, six raw FLOAT
+            // fields, and a WORD for creature add records before returning to
+            // the live-object stream. If the following bytes are fragment
+            // storage or another family, they must not be swallowed by a
+            // generic opcode scan merely because they do not start with an
+            // obvious boundary byte.
             return record_end;
         }
     }
@@ -91,7 +123,14 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         if let Some(raw_mask) = read_u32_le(bytes, offset + 6) {
             if matches!(
                 raw_mask,
-                0x0000_0008 | 0x0000_0047 | 0x0000_3967 | 0x0000_8000 | 0x0000_C408
+                0x0000_0007
+                    | 0x0000_0008
+                    | 0x0000_0040
+                    | 0x0000_0047
+                    | 0x0000_3967
+                    | 0x0000_8000
+                    | 0x0000_C408
+                    | 0x0000_C40F
             ) {
                 // Decompile/capture-backed creature `U/5` numeric update shapes
                 // contain compact status/movement fields, not CExoString names.
@@ -114,6 +153,20 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // validation. Its next true submessage can be an `I` sentinel
                 // record immediately after this compact numeric record, so
                 // inline-string suppression would hide the real boundary.
+                // `0x0000_0040` is the compact creature state branch already
+                // modelled by `creature.rs`: WORD, BYTE mode, WORD, BYTE, then
+                // one fragment BOOL and an optional OBJECTID only when mode 2
+                // is set. The 2026-05-12 Starcore5 driver capture has mode 1
+                // and the next byte is a real `U/5 0x47` boundary at the exact
+                // decompiled read cursor; string suppression must not merge it.
+                // `0x0000_C40F` is the same self/status family with the
+                // Diamond writer's lower movement bits present. The writer at
+                // 0x4451DC..0x4458B0 emits `0x0001` position, `0x0002`
+                // orientation, `0x0004` action scalar/code, then falls through
+                // to the `0x0008` status-effect list and the `0xC400` suffix.
+                // Its adjacent fragment-storage bytes can contain opcode-like
+                // values before the following inventory record, so only the
+                // focused creature parser/span promoter may choose the split.
                 suppress_inline_string_boundaries = false;
             }
         }
@@ -126,12 +179,18 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             continue;
         }
         if looks_like_legacy_live_object_sub_message_boundary(bytes, candidate) {
-            if inventory_record
-                && inventory::try_get_legacy_live_inventory_fragment_bit_count(
+            let inventory_candidate_claimed = !inventory_record
+                || inventory::try_get_legacy_live_inventory_fragment_bit_count(
                     bytes, offset, candidate,
                 )
-                .is_none()
-            {
+                .is_some()
+                || inventory::try_get_legacy_live_inventory_prefix_claim(bytes, offset, candidate)
+                    .is_some_and(|claim| {
+                        claim.interleaved_fragment_tail_allowed
+                            && claim.read_end > offset
+                            && claim.read_end < candidate
+                    });
+            if !inventory_candidate_claimed {
                 continue;
             }
             return candidate;
@@ -396,6 +455,24 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         return LEGACY_UPDATE_HEADER_BYTES;
     };
 
+    if raw_mask == 0x0000_0007 {
+        // Diamond/EE `CNWSMessage::WriteGameObjUpdate_UpdateObject` reads this
+        // compact creature update as the first three ordered mask branches:
+        //
+        //   header + mask
+        //   0x0001 position: WORD, WORD, WORD plus two fragment bits
+        //   0x0002 orientation: scalar form is one read byte plus fragment bits
+        //   0x0004 action: FLOAT + WORD action code, state BYTE,
+        //                  movement-followup WORD
+        //
+        // HG's Starcore5 coalesced live-object burst places an inventory
+        // record immediately after this 26-byte update. Bytes in the numeric
+        // body can look like live-object opcodes, so the generic scanner must
+        // not accept any candidate before this decompile-owned lower bound.
+        // The exact cursor and bit usage are still proven by creature.rs.
+        return 26;
+    }
+
     if raw_mask == 0x0000_0047 {
         // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` writes this
         // creature update family as:
@@ -433,6 +510,24 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // repair, scalar cursor proof, and exact ten fragment-bit proof stay in
         // creature.rs.
         return LEGACY_UPDATE_HEADER_BYTES + 2 + 9 + 8;
+    }
+
+    if raw_mask == 0x0000_C40F {
+        // Diamond 1.69 writer evidence:
+        //
+        //   0x445212: mask 0x0001 writes 16, 16, and 18 bits.
+        //   0x44525B: mask 0x0002 writes the orientation branch.
+        //   0x445427: mask 0x0004 writes the action scalar and WORD code.
+        //   0x4458B0: mask 0x0008 writes the status-effect list.
+        //   later 0x0400/0x4000/0x8000 branches match the C408 suffix.
+        //
+        // The Starcore5 Sooty Crow transition capture has scalar orientation,
+        // action code zero, three status-effect triplets, four WORD scalars,
+        // then three bytes of adjacent CNW fragment-storage before the next
+        // `I` inventory record. This is still only a scan floor; exact cursor,
+        // fragment-bit, and span proof stay in `creature.rs` and
+        // `fragment_spans.rs`.
+        return LEGACY_UPDATE_HEADER_BYTES + 6 + 1 + 6 + 2 + 9 + 8;
     }
 
     LEGACY_UPDATE_HEADER_BYTES
@@ -498,10 +593,11 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
     matches!(
         high_byte,
         // EE's decompile treats object ids as opaque DWORDs. These high-byte
-        // filters are scanner guards, not engine rules. HG live-object door
-        // and placeable captures use 0x08xxxxxx and 0x35xxxxxx ids, so accept
-        // those namespaces explicitly while still rejecting arbitrary shifted
-        // ASCII bytes.
+        // filters are scanner guards, not engine rules. HG live-object door,
+        // placeable, and Starcore5 Sooty Crow creature-add captures use
+        // 0x08xxxxxx, 0x35xxxxxx, and 0xACxxxxxx ids, so accept those
+        // namespaces explicitly while still rejecting arbitrary shifted ASCII
+        // bytes.
         0x8000_0000
             | 0x8800_0000
             | 0xFF00_0000
@@ -509,6 +605,7 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
             | 0x0500_0000
             | 0x0800_0000
             | 0x3500_0000
+            | 0xAC00_0000
     ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
         .contains(&object_id)
 }

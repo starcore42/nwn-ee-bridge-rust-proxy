@@ -25,20 +25,35 @@ use super::sequence::{
 
 const AREA_MAJOR: u8 = 0x04;
 const AREA_LOADED_MINOR: u8 = 0x03;
-// The old in-process hook synthesized Area_AreaLoaded as soon as the EE
-// Area_ClientArea dispatch returned. The proxy cannot observe that return, but
-// it can keep the same protocol order: emit exact synthetic LoadBar_Start/End
-// immediately after the audited Area_ClientArea rewrite, before post-area live
-// objects are forwarded. A timed grace window let live-object updates arrive
-// while EE was still in the load transition and driver-only captures showed the
-// client disconnecting before LoadBar_End fired.
-const LOADBAR_DELAY: Duration = Duration::from_millis(0);
-// The fallback is gated on the client ACKing the synthetic LoadBar_End
-// sequence. That ACK is transport evidence that EE's receive window reached
-// the proxy-owned loadbar completion before the legacy server is told the area
-// finished loading. Native Area_AreaLoaded still wins because it clears the
-// pending fallback before this ACK-gated release path runs.
-const AREA_LOADED_FALLBACK_GRACE: Duration = Duration::from_millis(0);
+// The old in-process hook synthesized Area_AreaLoaded only after it could see
+// the EE Area_ClientArea dispatch return. The proxy cannot observe that
+// in-process return, so synthetic Area_AreaLoaded must be a true fallback:
+// emit exact synthetic LoadBar_Start/End to advance the reliable window, but
+// keep post-area server packets gated until native Area_AreaLoaded arrives or
+// this delayed fallback explicitly fires.
+// Keep the synthetic stall event open while EE consumes the rewritten
+// Area_ClientArea payload. Earlier driver-only captures showed that immediate
+// LoadBar_End can race the client-side area load; successful Docks runs had
+// CNWCArea::LoadArea return after roughly five seconds before LoadBar_End.
+// We cannot observe that in-process return from the proxy, so use a conservative
+// transport delay and keep all post-area packets gated until the native or
+// fallback Area_AreaLoaded proof.
+const LOADBAR_DELAY: Duration = Duration::from_millis(6_500);
+// Driver-only evidence on 2026-05-12 showed that ACKing LoadBar_End is not a
+// safe release condition in either direction: EE can ACK a transport frame
+// before the area object registry is ready, but it can also never ACK the
+// proxy-owned synthetic LoadBar frames when the area stream is already being
+// gated. Give native Area_AreaLoaded a normal load window before using the
+// proxy-owned fallback, then release by the audited timeout rather than by a
+// synthetic ACK that may never arrive. Historical clean Docks loads were about
+// five seconds, so eight seconds keeps the fallback available without racing
+// the native client.
+// Live HG/EE bridge captures show that EE's native Area_AreaLoaded can remain
+// blocked behind the post-area server stream once the legacy area payload needed
+// proxy-owned LoadBar repair. Keep this as a short, reason-gated fallback rather
+// than a normal path: native Area_AreaLoaded still clears the gate immediately
+// when it arrives first.
+const AREA_LOADED_FALLBACK_GRACE: Duration = Duration::from_millis(8_000);
 const AREA_LOADED_RETRANSMIT_DELAY: Duration = Duration::from_millis(1250);
 const LOADBAR_FRAME_COUNT: u16 = 2;
 const LOADBAR_STALL_EVENT_ID: u32 = 2;
@@ -57,6 +72,13 @@ pub(super) struct PendingServerPacket {
     pub(super) packet: Vec<u8>,
     pub(super) due_at: Instant,
     pub(super) reason: &'static str,
+    pub(super) placement: PendingServerPacketPlacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingServerPacketPlacement {
+    BeforeCurrentEmit,
+    AfterCurrentEmit,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +178,21 @@ pub(super) fn clear_in_flight_area_loaded(in_flight: &mut Option<InFlightAreaLoa
     *in_flight = None;
 }
 
+pub(super) fn clear_server_hold_gate(gate: &mut Option<ServerHoldGate>, trigger: &'static str) {
+    let Some(active) = gate.take() else {
+        return;
+    };
+    tracing::info!(
+        release_client_ack_sequence = active.release_client_ack_sequence,
+        held_ms = Instant::now()
+            .saturating_duration_since(active.armed_at)
+            .as_millis(),
+        reason = active.reason.as_str(),
+        trigger,
+        "server-to-client post-area hold gate opened by area-loaded proof"
+    );
+}
+
 pub(super) fn observe_area_loaded_server_ack(
     in_flight: &mut Option<InFlightAreaLoaded>,
     server_ack_sequence: u16,
@@ -180,7 +217,7 @@ pub(super) fn observe_area_loaded_server_ack(
     *in_flight = None;
 }
 
-pub(super) fn arm_server_hold_gate_until_client_ack(
+pub(super) fn arm_server_hold_gate_after_loadbar_release(
     gate: &mut Option<ServerHoldGate>,
     pending_area_loaded: Option<&PendingAreaLoaded>,
 ) {
@@ -195,7 +232,7 @@ pub(super) fn arm_server_hold_gate_until_client_ack(
     tracing::info!(
         release_client_ack_sequence = pending.release_client_ack_sequence,
         reason = pending.reason.as_str(),
-        "server-to-client post-area hold gate armed until EE ACKs synthetic LoadBar_End"
+        "server-to-client post-area hold gate armed until native or fallback Area_AreaLoaded"
     );
 }
 
@@ -212,16 +249,15 @@ pub(super) fn observe_server_hold_gate_client_ack(
         return;
     }
 
-    tracing::info!(
+    tracing::trace!(
         observed_client_ack,
         release_client_ack_sequence = active.release_client_ack_sequence,
         held_ms = Instant::now()
             .saturating_duration_since(active.armed_at)
             .as_millis(),
         reason = active.reason.as_str(),
-        "server-to-client post-area hold gate opened by EE ACK"
+        "server-to-client post-area hold gate saw synthetic LoadBar_End ACK; still waiting for native Area_AreaLoaded or fallback timeout"
     );
-    *gate = None;
 }
 
 pub(super) fn maybe_queue_area_loaded_retransmit(
@@ -285,12 +321,14 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
         packet: start_packet,
         due_at: now,
         reason: "Area_ClientArea synthetic LoadBar_Start",
+        placement: PendingServerPacketPlacement::AfterCurrentEmit,
     });
     pending_packets.push(PendingServerPacket {
         family: VerifiedFamily::LoadBar,
         packet: end_packet,
         due_at: end_due_at,
         reason: "Area_ClientArea synthetic LoadBar_End",
+        placement: PendingServerPacketPlacement::AfterCurrentEmit,
     });
     if let Some(reason) = area_loaded_fallback_reason {
         arm_area_loaded_fallback(
@@ -332,6 +370,7 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
 pub(super) fn maybe_build_area_loaded_client_packet(
     pending_area_loaded: &mut Option<PendingAreaLoaded>,
     in_flight_area_loaded: &mut Option<InFlightAreaLoaded>,
+    server_hold_gate: &mut Option<ServerHoldGate>,
     latest_client_sequence_from_client: &mut Option<u16>,
     client_sequence_shifts: &mut Vec<SequenceShift>,
     observed_client_ack: u16,
@@ -340,14 +379,25 @@ pub(super) fn maybe_build_area_loaded_client_packet(
     let Some(pending) = pending_area_loaded.clone() else {
         return Ok(None);
     };
-    if observed_client_ack == 0
-        || !sequence_at_or_after(observed_client_ack, pending.release_client_ack_sequence)
-        || Instant::now() < pending.release_at
-    {
+    if Instant::now() < pending.release_at {
         return Ok(None);
     }
 
-    release_area_loaded_client_packet(
+    let release_trigger = if observed_client_ack != 0
+        && sequence_at_or_after(observed_client_ack, pending.release_client_ack_sequence)
+    {
+        "client ACKed synthetic LoadBar_End after fallback grace"
+    } else {
+        tracing::warn!(
+            observed_client_ack,
+            release_client_ack_sequence = pending.release_client_ack_sequence,
+            reason = pending.reason.as_str(),
+            "client synthetic Area_AreaLoaded fallback grace elapsed without synthetic LoadBar_End ACK"
+        );
+        "fallback grace elapsed without synthetic LoadBar_End ACK"
+    };
+
+    let released = release_area_loaded_client_packet(
         pending_area_loaded,
         in_flight_area_loaded,
         latest_client_sequence_from_client,
@@ -355,8 +405,12 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         pending,
         Some(observed_client_ack),
         origin_ack_sequence,
-        "client ACKed synthetic LoadBar_End",
-    )
+        release_trigger,
+    )?;
+    if released.is_some() {
+        clear_server_hold_gate(server_hold_gate, "synthetic Area_AreaLoaded fallback released");
+    }
+    Ok(released)
 }
 
 fn release_area_loaded_client_packet(

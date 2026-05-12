@@ -12,10 +12,7 @@ pub(super) fn apply_simple_categories(
         if let Some((cursor, _, _)) =
             advance_simple_category_block(bytes, candidate.cursor, record_end)
         {
-            next.push(GenericInventoryCandidate {
-                cursor,
-                bits: candidate.bits,
-            });
+            next.push(candidate.advanced(cursor, candidate.bits));
         }
     }
     next
@@ -31,14 +28,14 @@ pub(super) fn apply_rich_categories(
         if let Some((cursor, _, second_entries)) =
             advance_rich_category_block(bytes, candidate.cursor, record_end)
         {
-            next.push(GenericInventoryCandidate {
+            next.push(candidate.advanced(
                 cursor,
-                bits: candidate.bits.saturating_add(
+                candidate.bits.saturating_add(
                     usize::try_from(second_entries)
                         .unwrap_or(usize::MAX)
                         .saturating_mul(2),
                 ),
-            });
+            ));
         }
     }
     next

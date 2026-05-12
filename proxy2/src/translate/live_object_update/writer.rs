@@ -26,27 +26,23 @@ pub(super) fn build_ee_door_placeable_generic_update_bytes(
 pub(super) fn encode_ee_scalar_orientation_from_legacy_facing(facing: u16) -> u16 {
     const LEGACY_FULL_TURN_UNITS: f64 = 65536.0;
     const FULL_TURN_DEGREES: f64 = 360.0;
-    const EE_READER_BASIS_DEGREES: f64 = 90.0;
     const EE_TENTHS_PER_DEGREE: f64 = 10.0;
 
     let legacy_degrees = f64::from(facing) * FULL_TURN_DEGREES / LEGACY_FULL_TURN_UNITS;
     // Decompile-backed orientation rule:
-    // - EE server `WriteGameObjUpdate_UpdateObject` computes `Yaw(Vector)` in
-    //   degrees, writes a scalar-orientation branch BOOL `false`, then emits
-    //   `CNWMessage::WriteFLOAT(yaw_degrees, 10.0f, 12)`.
-    // - `CNWMessage::WriteFLOAT(value, scale, bits)` writes
-    //   `floor(value * scale)`, and `ReadFLOAT(scale, bits)` returns
-    //   `raw / scale`.
-    // - The EE/Diamond generic door/placeable update reader then applies its
-    //   model-basis conversion by adding +90 degrees (`+pi/2`) before storing
-    //   the orientation vector.
+    // - Diamond `sub_467AE0` and EE `sub_14079C050` both read the generic
+    //   object orientation mask as BOOL vector_mode followed by the compact
+    //   scalar branch when that BOOL is false.
+    // - Both readers decode the 12-bit tenths-degree scalar, then apply the
+    //   same model-basis conversion by adding +90 degrees (`+pi/2`) before
+    //   storing the orientation vector.
     //
-    // HG's legacy anchored tail stores the pre-basis legacy facing turn. To
-    // make EE end at that same facing after its reader adds the basis, the
-    // packet scalar must be pre-compensated by -90 degrees here.
-    let ee_packet_degrees =
-        (legacy_degrees - EE_READER_BASIS_DEGREES).rem_euclid(FULL_TURN_DEGREES);
-    let raw = (ee_packet_degrees * EE_TENTHS_PER_DEGREE + 0.000001).floor() as u32;
+    // The old injected hook wrote runtime vectors directly after bypassing the
+    // packet reader, so it used cos/sin(facing).  The proxy feeds EE's packet
+    // reader, and Diamond/EE agree on the scalar packet basis.  Pre-subtracting
+    // 90 degrees double-corrects the packet value and leaves doors, signs, and
+    // placeables one quadrant away from their frames.
+    let raw = (legacy_degrees * EE_TENTHS_PER_DEGREE + 0.000001).floor() as u32;
     raw.min(0x0FFF) as u16
 }
 
@@ -55,10 +51,10 @@ mod tests {
     use super::encode_ee_scalar_orientation_from_legacy_facing;
 
     #[test]
-    fn ee_scalar_orientation_precompensates_reader_basis_for_legacy_cardinals() {
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x0000), 2700);
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x4000), 0);
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x8000), 900);
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0xC000), 1800);
+    fn ee_scalar_orientation_preserves_shared_diamond_ee_packet_basis_for_cardinals() {
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x0000), 0);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x4000), 900);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x8000), 1800);
+        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0xC000), 2700);
     }
 }

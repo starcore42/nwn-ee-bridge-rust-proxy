@@ -7,51 +7,97 @@
 //! - EE `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` reads minor
 //!   `0x01` as the same `BOOL + OBJECTIDServer` shape and treats either the
 //!   current creature id or `0x7F000000` as the self-inventory owner.
+//! - EE `CNWSMessage::HandlePlayerToServerGuiInventoryMessage` reads minor
+//!   `0x02` as `ReadBYTE(8, 1)` followed by one `ReadBOOL`, checks both
+//!   overflow and underflow, then calls `CNWSPlayerInventoryGUI::SetPanel`
+//!   (`nwn ee decompile.txt:1655147..1655178`). This is the observed
+//!   `GuiInventory_SelectPanel` shape from the Starcore5 sign/placeable probe.
 //! - Diamond/HG captures proved the EE harnessed self request
 //!   `70 0D 01 0B 00 00 00 FD FF FF FF 90` must rewrite the object id to
 //!   `0x7F000000` before the 1.69 server returns the GUI inventory stream.
 //!
 //! The BOOL lives in the single CNW fragment byte after the declared read
-//! buffer. This translator validates that exact packetized shape, rewrites only
-//! the EE self sentinel, and otherwise leaves validated object ids untouched.
+//! buffer. This translator validates each exact packetized shape, rewrites only
+//! the EE self sentinel for `Status`, and otherwise leaves validated bytes
+//! untouched. `SelectPanel` is an identity translation, but still must be
+//! claimed here before the router may emit it.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
 const GUI_INVENTORY_MAJOR: u8 = 0x0D;
 const STATUS_MINOR: u8 = 0x01;
+const SELECT_PANEL_MINOR: u8 = 0x02;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const STATUS_DECLARED_BYTES: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + 4;
 const STATUS_FRAGMENT_BYTES: usize = 1;
 const STATUS_OBJECT_ID_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+const SELECT_PANEL_DECLARED_BYTES: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + 1;
+const SELECT_PANEL_FRAGMENT_BYTES: usize = 1;
+const SELECT_PANEL_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
 const DIAMOND_CURRENT_PLAYER_OBJECT_ID: u32 = 0x7F00_0000;
+const SINGLE_BOOL_FALSE_FRAGMENT_BYTE: u8 = 0x80;
+const SINGLE_BOOL_TRUE_FRAGMENT_BYTE: u8 = 0x90;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientGuiInventoryKind {
+    Status,
+    SelectPanel,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientGuiInventoryClaimSummary {
     pub packet_name: &'static str,
-    pub object_id: u32,
+    pub kind: ClientGuiInventoryKind,
+    pub object_id: Option<u32>,
+    pub panel: Option<u8>,
+    pub player_inventory_gui: Option<bool>,
     pub rewritten_self_object_id: bool,
+}
+
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != GUI_INVENTORY_MAJOR {
+        return None;
+    }
+    match high.minor {
+        STATUS_MINOR => claim_status_payload_if_verified(payload),
+        SELECT_PANEL_MINOR => claim_select_panel_payload_if_verified(payload),
+        _ => None,
+    }
 }
 
 pub fn claim_or_rewrite_payload_if_verified(
     payload: &mut [u8],
 ) -> Option<ClientGuiInventoryClaimSummary> {
     let high = HighLevel::parse(payload)?;
-    if high.major != GUI_INVENTORY_MAJOR || high.minor != STATUS_MINOR {
+    if high.major != GUI_INVENTORY_MAJOR {
         return None;
     }
-    claim_or_rewrite_status_payload_if_verified(payload)
+    match high.minor {
+        STATUS_MINOR => claim_or_rewrite_status_payload_if_verified(payload),
+        SELECT_PANEL_MINOR => claim_select_panel_payload_if_verified(payload),
+        _ => None,
+    }
+}
+
+fn claim_status_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
+    let object_id = read_status_object_id_if_verified(payload)?;
+    Some(ClientGuiInventoryClaimSummary {
+        packet_name: "GuiInventory_Status",
+        kind: ClientGuiInventoryKind::Status,
+        object_id: Some(object_id),
+        panel: None,
+        player_inventory_gui: None,
+        rewritten_self_object_id: false,
+    })
 }
 
 fn claim_or_rewrite_status_payload_if_verified(
     payload: &mut [u8],
 ) -> Option<ClientGuiInventoryClaimSummary> {
-    if !status_payload_shape_valid(payload) {
-        return None;
-    }
-
-    let object_id = read_le_u32(payload, STATUS_OBJECT_ID_OFFSET)?;
+    let object_id = read_status_object_id_if_verified(payload)?;
     let rewritten_self_object_id = object_id == EE_SELF_OBJECT_ID;
     if rewritten_self_object_id {
         payload[STATUS_OBJECT_ID_OFFSET..STATUS_OBJECT_ID_OFFSET + 4]
@@ -60,13 +106,35 @@ fn claim_or_rewrite_status_payload_if_verified(
 
     Some(ClientGuiInventoryClaimSummary {
         packet_name: "GuiInventory_Status",
-        object_id: if rewritten_self_object_id {
+        kind: ClientGuiInventoryKind::Status,
+        object_id: Some(if rewritten_self_object_id {
             DIAMOND_CURRENT_PLAYER_OBJECT_ID
         } else {
             object_id
-        },
+        }),
+        panel: None,
+        player_inventory_gui: None,
         rewritten_self_object_id,
     })
+}
+
+fn claim_select_panel_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
+    if !select_panel_payload_shape_valid(payload) {
+        return None;
+    }
+    Some(ClientGuiInventoryClaimSummary {
+        packet_name: "GuiInventory_SelectPanel",
+        kind: ClientGuiInventoryKind::SelectPanel,
+        object_id: None,
+        panel: payload.get(SELECT_PANEL_OFFSET).copied(),
+        player_inventory_gui: decode_single_bool_fragment(*payload.last()?),
+        rewritten_self_object_id: false,
+    })
+}
+
+fn read_status_object_id_if_verified(payload: &[u8]) -> Option<u32> {
+    status_payload_shape_valid(payload).then_some(())?;
+    read_le_u32(payload, STATUS_OBJECT_ID_OFFSET)
 }
 
 fn status_payload_shape_valid(payload: &[u8]) -> bool {
@@ -75,6 +143,33 @@ fn status_payload_shape_valid(payload: &[u8]) -> bool {
         == Some(STATUS_DECLARED_BYTES)
         && payload.len() == STATUS_DECLARED_BYTES + STATUS_FRAGMENT_BYTES
         && read_le_u32(payload, STATUS_OBJECT_ID_OFFSET).is_some()
+        && payload
+            .last()
+            .and_then(|byte| decode_single_bool_fragment(*byte))
+            .is_some()
+}
+
+fn select_panel_payload_shape_valid(payload: &[u8]) -> bool {
+    // EE `SendServerToPlayerInventory_SelectPanel` and the player-to-server
+    // handler both own a one-byte read cursor plus one fragment BOOL. The same
+    // packed single-BOOL fragment byte shape is used by `GuiInventory_Status`.
+    read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)
+        .and_then(|declared| usize::try_from(declared).ok())
+        == Some(SELECT_PANEL_DECLARED_BYTES)
+        && payload.len() == SELECT_PANEL_DECLARED_BYTES + SELECT_PANEL_FRAGMENT_BYTES
+        && payload.get(SELECT_PANEL_OFFSET).is_some()
+        && payload
+            .last()
+            .and_then(|byte| decode_single_bool_fragment(*byte))
+            .is_some()
+}
+
+fn decode_single_bool_fragment(byte: u8) -> Option<bool> {
+    match byte {
+        SINGLE_BOOL_FALSE_FRAGMENT_BYTE => Some(false),
+        SINGLE_BOOL_TRUE_FRAGMENT_BYTE => Some(true),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -91,7 +186,8 @@ mod tests {
             .expect("observed EE GuiInventory_Status should be claimed");
 
         assert_eq!(summary.packet_name, "GuiInventory_Status");
-        assert_eq!(summary.object_id, DIAMOND_CURRENT_PLAYER_OBJECT_ID);
+        assert_eq!(summary.kind, ClientGuiInventoryKind::Status);
+        assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
         assert!(summary.rewritten_self_object_id);
         assert_eq!(
             &payload[STATUS_OBJECT_ID_OFFSET..STATUS_OBJECT_ID_OFFSET + 4],
@@ -109,7 +205,7 @@ mod tests {
         let summary = claim_or_rewrite_payload_if_verified(&mut payload)
             .expect("Diamond current-player GuiInventory_Status should be claimed");
 
-        assert_eq!(summary.object_id, DIAMOND_CURRENT_PLAYER_OBJECT_ID);
+        assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
         assert!(!summary.rewritten_self_object_id);
     }
 
@@ -120,5 +216,25 @@ mod tests {
         ];
 
         assert!(claim_or_rewrite_payload_if_verified(&mut payload).is_none());
+    }
+
+    #[test]
+    fn claims_select_panel_exact_single_byte_panel_and_fragment_bool() {
+        let payload = [0x70, 0x0D, 0x02, 0x08, 0x00, 0x00, 0x00, 0x03, 0x90];
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("observed GuiInventory_SelectPanel shape should be claimed");
+
+        assert_eq!(summary.packet_name, "GuiInventory_SelectPanel");
+        assert_eq!(summary.kind, ClientGuiInventoryKind::SelectPanel);
+        assert_eq!(summary.panel, Some(3));
+        assert_eq!(summary.player_inventory_gui, Some(true));
+    }
+
+    #[test]
+    fn rejects_select_panel_without_exact_single_bool_fragment() {
+        let payload = [0x70, 0x0D, 0x02, 0x08, 0x00, 0x00, 0x00, 0x03, 0xA0];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
     }
 }

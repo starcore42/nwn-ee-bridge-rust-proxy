@@ -12,10 +12,7 @@ pub(super) fn apply_ten_bit_groups(
         if let Some((cursor, _, _)) =
             advance_ten_bit_value_groups(bytes, candidate.cursor, record_end)
         {
-            next.push(GenericInventoryCandidate {
-                cursor,
-                bits: candidate.bits,
-            });
+            next.push(candidate.advanced(cursor, candidate.bits));
         }
     }
     next

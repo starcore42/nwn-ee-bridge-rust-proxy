@@ -743,6 +743,75 @@ function Split-NwsyncSpecsIntoShards {
     return @($shards.ToArray())
 }
 
+function Get-NwsyncModuleResourceManifestAdverts {
+    param(
+        [object]$Profile,
+        [object[]]$WrittenManifests
+    )
+
+    if ($Profile.nwsync -and $null -ne $Profile.nwsync.moduleResourceManifests) {
+        return @($Profile.nwsync.moduleResourceManifests | ForEach-Object {
+            $hash = [string]$_.hash
+            if ([string]::IsNullOrWhiteSpace($hash)) {
+                throw "Profile '$($Profile.id)' contains an empty nwsync.moduleResourceManifests hash."
+            }
+            [pscustomobject]@{
+                hash = $hash.Trim()
+                flags = $(if ($null -ne $_.flags) { [int]$_.flags } else { 1 })
+                language = $(if ($null -ne $_.language) { [int]$_.language } else { 255 })
+                source = "profile-explicit"
+            }
+        })
+    }
+
+    $policy = "none"
+    if ($Profile.nwsync -and $null -ne $Profile.nwsync.moduleResourceManifestPolicy) {
+        $policy = ([string]$Profile.nwsync.moduleResourceManifestPolicy).Trim().ToLowerInvariant()
+    }
+
+    switch ($policy) {
+        "" { return @() }
+        "none" { return @() }
+        "generated-non-root" {
+            return @($WrittenManifests | Where-Object { [int]$_.index -ne 1 } | ForEach-Object {
+                [pscustomobject]@{
+                    hash = [string]$_.hash
+                    flags = [int]$_.flags
+                    language = [int]$_.language
+                    source = "generated-non-root"
+                }
+            })
+        }
+        "generatednonroot" {
+            return @($WrittenManifests | Where-Object { [int]$_.index -ne 1 } | ForEach-Object {
+                [pscustomobject]@{
+                    hash = [string]$_.hash
+                    flags = [int]$_.flags
+                    language = [int]$_.language
+                    source = "generated-non-root"
+                }
+            })
+        }
+        default {
+            throw "Profile '$($Profile.id)' sets unsupported nwsync.moduleResourceManifestPolicy '$policy'. Supported values: none, generated-non-root."
+        }
+    }
+}
+
+function Format-NwsyncManifestAdvertText {
+    param([object[]]$Manifests)
+
+    return ($Manifests | ForEach-Object {
+        $hash = [string]$_.hash
+        if ([string]::IsNullOrWhiteSpace($hash)) {
+            throw "NWSync manifest advert contains an empty hash."
+        }
+        $flags = $(if ($null -ne $_.flags) { [int]$_.flags } else { 1 })
+        $language = $(if ($null -ne $_.language) { [int]$_.language } else { 255 })
+        "$($hash.Trim()):$flags:0x$('{0:X2}' -f $language)"
+    }) -join ","
+}
+
 function New-NwsyncWriteArgs {
     param(
         [object]$Profile,
@@ -1037,6 +1106,7 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
     }
 
     $rootHash = [string]$writtenManifests[0].hash
+    $moduleResourceManifestAdverts = Get-NwsyncModuleResourceManifestAdverts -Profile $profile -WrittenManifests $writtenManifests
     $nwsyncManifest = [pscustomobject]@{
         profile = $profile.id
         generatedUtc = [DateTime]::UtcNow.ToString("o")
@@ -1047,17 +1117,28 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         loadOrder = "root manifest first, then advertised manifests in listed order"
         specs = @($specs.ToArray())
         manifests = $writtenManifests
+        moduleResourceManifests = @($moduleResourceManifestAdverts)
     }
     Write-JsonFile -PathValue (Join-Path $buildRoot "nwsync-manifest.json") -Value $nwsyncManifest
 
-    $advertisedManifestText = ($writtenManifests | ForEach-Object { "$($_.hash):$($_.flags):0x$('{0:X2}' -f [int]$_.language)" }) -join ","
+    $advertisedManifestText = Format-NwsyncManifestAdvertText -Manifests $writtenManifests
+    # Keep native BNXR download adverts separate from module-resource mount
+    # adverts. The EE decompile for `CNWCModule::LoadModuleResources` shows it
+    # mounts the root manifest first, then calls `CExoResMan::AddManifest` for
+    # every explicit manifest entry in the module-resource packet. Those extras
+    # are therefore resource-manager key tables, not just download hints.
+    # Profiles can opt into generated non-root shard mounts only when their
+    # asset delivery path also gives EE a BNXR preflight chance to cache those
+    # manifests before module load.
+    $moduleManifestText = Format-NwsyncManifestAdvertText -Manifests $moduleResourceManifestAdverts
 
     $envText = @(
         "HG_BRIDGE_ASSET_PROFILE=$($profile.id)",
         "HG_BRIDGE_NWSYNC_ROOT=$repoRoot",
         "HG_BRIDGE_NWSYNC_HASH=$rootHash",
         "HG_BRIDGE_NWSYNC_URL=$($profile.nwsync.url)",
-        "HG_BRIDGE_NWSYNC_MANIFESTS=$advertisedManifestText"
+        "HG_BRIDGE_NWSYNC_MANIFESTS=$advertisedManifestText",
+        "HG_BRIDGE_NWSYNC_MODULE_MANIFESTS=$moduleManifestText"
     ) -join "`r`n"
     $envText += "`r`n"
     Set-Content -LiteralPath (Join-Path $buildRoot "nwsync.env") -Value $envText -Encoding ASCII

@@ -23,9 +23,11 @@ pub(super) fn claim_server_to_ee_if_verified(
     let status = bytes[6];
     if status != b'V' && status != b'P' {
         if status == b'R' && bytes.len() == 8 {
+            let detail = bytes[7];
             state.clear_bncr_challenge();
             tracing::info!(
-                detail = bytes[7],
+                detail,
+                detail_hint = bncr_reject_detail_hint(detail),
                 "server BNCR reject result parsed for EE client"
             );
             return Ok(Some(()));
@@ -58,4 +60,30 @@ pub(super) fn claim_server_to_ee_if_verified(
     );
 
     Ok(Some(()))
+}
+
+fn bncr_reject_detail_hint(detail: u8) -> &'static str {
+    match detail {
+        // EE and Diamond both carry this as the raw byte after the `R` status.
+        // The decompiled EE rejection-string table maps detail 6 to strref
+        // 0x28D8, but the staged EE/Diamond TLKs both leave that entry empty.
+        // In HG driver-only runs this is the observed rapid reconnect / still
+        // reserved Starcore5 player-name case, so keep the hint operational
+        // rather than pretending the byte has a decompiled symbolic enum name.
+        6 => "observed-hg-rapid-reconnect-or-name-reservation",
+        _ => "unknown-legacy-bncr-reject-detail",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bncr_reject_detail_six_keeps_operational_hint() {
+        assert_eq!(
+            bncr_reject_detail_hint(6),
+            "observed-hg-rapid-reconnect-or-name-reservation"
+        );
+    }
 }

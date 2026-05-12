@@ -156,3 +156,4 @@ still experimental, not a finished public content pipeline.
 - Removed the synthetic area-load delay so loadbar fallback packets emit before post-area live-object traffic.
 - Expanded public class/base-item fallback rows so captured appearance tests do not require local 2DA files.
 - Added an EE ACK-gated hold for post-area server packets after synthetic LoadBar_End to reduce load-transition races.
+- Added broader GUI inventory/live-object fixture coverage, client input repairs, NWSync module-manifest handling, and coalesced stream sequencing diagnostics.

@@ -8,6 +8,8 @@ use super::{class_rows, read_f32_le, read_u16_le, read_u32_le};
 
 const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
+const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
+const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_APPEARANCE_NAME_ONLY_MASK: u16 = 0x0400;
 const LEGACY_LIVE_CREATURE_UPDATE_UNSUPPORTED_FEATURE_MASK: u32 =
     0x0010_0000 | 0x0020_0000 | 0x0040_0000 | 0x0080_0000 | 0x0100_0000;
@@ -27,6 +29,7 @@ const SUPPORTED_LEGACY_CREATURE_UPDATE_CURSOR_MASK: u32 = 0x0000_0001
     | 0x0000_8000
     | 0x0002_0000;
 
+pub(super) const LEGACY_CREATURE_ADD_RECORD_BYTES: usize = 32;
 pub(super) const EE_CREATURE_ADD_RECORD_BYTES: usize = 72;
 
 pub(super) fn looks_like_ee_creature_add_record(
@@ -50,10 +53,9 @@ pub(super) fn looks_like_legacy_creature_add_transform_fields(
     offset: usize,
     record_end: usize,
 ) -> bool {
-    const CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET: usize = 32;
     if offset > bytes.len()
         || record_end > bytes.len()
-        || record_end < offset + CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET
+        || record_end < offset + LEGACY_CREATURE_ADD_RECORD_BYTES
     {
         return false;
     }
@@ -66,10 +68,10 @@ pub(super) fn looks_like_legacy_creature_add_transform_fields(
     }
 
     for index in 0..6 {
-        let Some(value) = read_f32_le(bytes, offset + 6 + index * 4) else {
-            return false;
-        };
-        if !value.is_finite() || value.abs() > 1_000_000_000.0 {
+        // Diamond `sub_4489F0` and EE's creature-add writer consume these as
+        // raw FLOAT slots. They do not reject NaN/sentinel bit patterns, so the
+        // proxy validator must only prove the six fields are present.
+        if read_f32_le(bytes, offset + 6 + index * 4).is_none() {
             return false;
         }
     }
@@ -605,7 +607,18 @@ fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
     }
     matches!(
         object_id & 0xFF00_0000,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
+        // Diamond/EE readers treat object ids as opaque DWORDs; this list is
+        // only a false-positive guard for live-object stream scanning. HG's
+        // 2026-05-12 Starcore5 Sooty Crow capture proves a creature add/update
+        // namespace at 0xACxxxxxx immediately after an exact `I/0x2B00`
+        // inventory cursor, so allow the focused creature parser to validate
+        // those records instead of rejecting the id before semantic proof.
+        0x8000_0000
+            | 0x8800_0000
+            | 0xFF00_0000
+            | 0x0100_0000
+            | 0x0500_0000
+            | 0xAC00_0000
     ) || (0x0000_1000..=0x00FF_FFFF).contains(&object_id)
 }
 
@@ -810,25 +823,42 @@ fn simulate_legacy_live_creature_update_tail_cursor(
             );
             return None;
         };
-        if cursor.read_u8().is_none() {
-            trace_creature_update_cursor_reject(
-                "action-state-byte",
+        // Starcore5 Sooty Crow `0xC40F` and `0xC44F` self/status captures
+        // match EE `CNWSMessage::WriteGameObjUpdate_UpdateObject` at
+        // `loc_1404EBD88`: mask bit `0x0004` writes only the 32-bit action
+        // scalar and 16-bit action code, plus the decompiled action-specific
+        // subobjects parsed above, before falling through to the `0x0008`
+        // status-effect list. `0xC44F` is the same family with the low
+        // `0x0040` creature-state branch enabled later in the writer. The
+        // older movement fixtures still carry the bridge-modelled post-state /
+        // followup shape, so keep that parser for those proven masks instead of
+        // broadening this exact self/status family.
+        if !legacy_creature_update_action_branch_omits_bridge_followup(raw_mask) {
+            if cursor.read_u8().is_none() {
+                trace_creature_update_cursor_reject(
+                    "action-state-byte",
+                    raw_mask,
+                    cursor.read_cursor,
+                    cursor.bit_cursor,
+                    record_end,
+                );
+                return None;
+            }
+            if !simulate_legacy_creature_update_action_post_state_followup(
+                &mut cursor,
                 raw_mask,
-                cursor.read_cursor,
-                cursor.bit_cursor,
-                record_end,
-            );
-            return None;
-        }
-        if !simulate_legacy_creature_update_action_post_state_followup(&mut cursor, action_code) {
-            trace_creature_update_cursor_reject(
-                "action-followup",
-                raw_mask,
-                cursor.read_cursor,
-                cursor.bit_cursor,
-                record_end,
-            );
-            return None;
+                action_code,
+            )
+            {
+                trace_creature_update_cursor_reject(
+                    "action-followup",
+                    raw_mask,
+                    cursor.read_cursor,
+                    cursor.bit_cursor,
+                    record_end,
+                );
+                return None;
+            }
         }
     }
 
@@ -988,6 +1018,13 @@ fn simulate_legacy_live_creature_update_tail_cursor(
         return None;
     }
     Some(cursor)
+}
+
+fn legacy_creature_update_action_branch_omits_bridge_followup(raw_mask: u32) -> bool {
+    matches!(
+        raw_mask,
+        LEGACY_CREATURE_UPDATE_C40F_MASK | LEGACY_CREATURE_UPDATE_C44F_MASK
+    )
 }
 
 fn trace_creature_update_cursor_reject(
@@ -1274,7 +1311,11 @@ fn simulate_legacy_creature_update_mask_0x47(
     if cursor.read_u8().is_none() {
         return false;
     }
-    if !simulate_legacy_creature_update_action_post_state_followup(&mut cursor, action_code) {
+    if !simulate_legacy_creature_update_action_post_state_followup(
+        &mut cursor,
+        0x0000_0047,
+        action_code,
+    ) {
         return false;
     }
 
@@ -1348,6 +1389,7 @@ fn simulate_legacy_creature_update_action_branch(
 
 fn simulate_legacy_creature_update_action_post_state_followup(
     cursor: &mut LegacyCreatureUpdateCursor<'_>,
+    raw_mask: u32,
     action_code: u16,
 ) -> bool {
     let start_read_cursor = cursor.read_cursor;
@@ -1366,19 +1408,44 @@ fn simulate_legacy_creature_update_action_post_state_followup(
     if followup_count > 256 {
         return false;
     }
-    if followup_count == 0 {
-        return true;
+    if !is_legacy_creature_update_movement_followup_action(action_code) {
+        return followup_count == 0;
     }
 
+    // Diamond and EE both read the action-code movement guard before walking
+    // the per-point coordinate list.  HG Starcore5 captures prove the guard can
+    // be present with a zero follow-up count; returning early on count zero
+    // left the cursor four bytes before the decompiled identity branch and made
+    // the following `U/5 0x3967` record look malformed.
     let Some(has_extra_float) = cursor.read_bool() else {
         return false;
     };
     if has_extra_float && cursor.read_unsigned_bits(32).is_none() {
         return false;
     }
-    if !is_legacy_creature_update_movement_followup_action(action_code) {
+    if followup_count == 0 {
+        if action_code == 4 && (raw_mask & 0x0000_0040) != 0 {
+            // Diamond/EE both classify action code 4 as a movement follow-up
+            // family. The 2026-05-12 Starcore5 Sooty Crow `U/5 0x47`
+            // capture proves the zero-count action-4 shape can still carry
+            // one implicit 2D point before the decompile-owned six-byte
+            // `0x0040` state tail. Keep this narrow: only consume that point
+            // when enough read bytes remain for the point plus the state tail,
+            // and let the final exact record cursor prove the whole shape.
+            let remaining = cursor.record_end.saturating_sub(cursor.read_cursor);
+            if remaining >= 10 {
+                let original = *cursor;
+                if cursor.read_unsigned_bits(16).is_some()
+                    && cursor.read_unsigned_bits(16).is_some()
+                {
+                    return true;
+                }
+                *cursor = original;
+            }
+        }
         return true;
     }
+
     for _ in 0..followup_count {
         if cursor.read_unsigned_bits(16).is_none() || cursor.read_unsigned_bits(16).is_none() {
             return false;

@@ -17,7 +17,7 @@ pub(crate) mod char_list;
 pub(crate) mod chat;
 mod client_area;
 mod client_char_list;
-mod client_gui_inventory;
+pub(crate) mod client_gui_inventory;
 mod client_high;
 pub(crate) mod client_input;
 pub(crate) mod client_login;

@@ -12,8 +12,8 @@ mod state;
 
 pub(crate) use event::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
-    LiveObjectMention, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    ProtocolEvent, QuickbarEvent, ServerStatusEvent,
+    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, LoginEvent,
+    ModuleInfoEvent, ObservedHighLevel, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
 };
 pub(crate) use reducer::observe_verified_payload;
 pub(crate) use state::{

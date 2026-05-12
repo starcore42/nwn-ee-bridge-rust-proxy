@@ -16,6 +16,15 @@ pub(super) fn sequence_at_or_after(sequence: u16, base: u16) -> bool {
     sequence.wrapping_sub(base) < 0x8000
 }
 
+pub(super) fn record_forward_progress(latest: &mut Option<u16>, observed: u16) {
+    let should_update = latest
+        .map(|current| sequence_at_or_after(observed, current))
+        .unwrap_or(true);
+    if should_update {
+        *latest = Some(observed);
+    }
+}
+
 fn sequence_before(sequence: u16, base: u16) -> bool {
     sequence != base && base.wrapping_sub(sequence) < 0x8000
 }
@@ -61,5 +70,30 @@ pub(super) fn trim_sequence_shifts(shifts: &mut Vec<SequenceShift>) {
     if shifts.len() > MAX_SEQUENCE_SHIFTS {
         let overflow = shifts.len() - MAX_SEQUENCE_SHIFTS;
         shifts.drain(0..overflow);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_forward_progress_ignores_retransmitted_older_sequence() {
+        let mut latest = Some(74);
+
+        record_forward_progress(&mut latest, 73);
+
+        assert_eq!(latest, Some(74));
+    }
+
+    #[test]
+    fn record_forward_progress_accepts_equal_forward_and_wrapped_sequences() {
+        let mut latest = Some(74);
+        record_forward_progress(&mut latest, 74);
+        assert_eq!(latest, Some(74));
+
+        let mut wrapped = Some(u16::MAX);
+        record_forward_progress(&mut wrapped, 1);
+        assert_eq!(wrapped, Some(1));
     }
 }

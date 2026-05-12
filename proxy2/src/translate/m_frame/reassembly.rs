@@ -22,7 +22,7 @@ use crate::{
 // (12-byte legacy M header + 948 payload bytes). Keeping rewritten deflated
 // output at or below that cap avoids ACK starvation while preserving the exact
 // translated high-level payload.
-const EE_SAFE_M_FRAME_DATAGRAM_BYTES: usize = 960;
+pub(super) const EE_SAFE_M_FRAME_DATAGRAM_BYTES: usize = 960;
 const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
     EE_SAFE_M_FRAME_DATAGRAM_BYTES - LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
 

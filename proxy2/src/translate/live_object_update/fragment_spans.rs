@@ -23,7 +23,10 @@ const MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES: usize = 32;
 // any larger or non-zero trailing span should quarantine until a capture and
 // decompile-backed owner prove the exact shape.
 const MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES: usize = 2;
+const MAX_TRAILING_FRAGMENT_PREFIX_BYTES: usize = MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
+const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
+const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 
 #[derive(Debug, Clone, Copy)]
 enum CreatureUpdateFragmentSpanCursorPolicy {
@@ -62,6 +65,12 @@ pub(super) struct RemovedTrailingFragmentStorage {
     pub bytes_removed: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PromotedTrailingFragmentPrefix {
+    pub bytes_promoted: usize,
+    pub bits_promoted: usize,
+}
+
 pub(super) fn promote_inventory_interleaved_fragment_span_for_ee(
     live_bytes: &mut Vec<u8>,
     fragment_bits: &mut Vec<bool>,
@@ -76,21 +85,49 @@ pub(super) fn promote_inventory_interleaved_fragment_span_for_ee(
     let prefix =
         inventory::try_get_legacy_live_inventory_prefix_claim(live_bytes, offset, *record_end)?;
     let available_bits = fragment_bits.len().saturating_sub(bit_cursor);
-    if prefix.fragment_bits <= available_bits {
-        return None;
-    }
-
-    let minimum_span_bytes = prefix
-        .fragment_bits
-        .saturating_sub(available_bits)
-        .saturating_add(7)
-        / 8;
+    let missing_bits = prefix.fragment_bits.saturating_sub(available_bits);
+    // Legacy inventory records can carry their CNW fragment storage interleaved
+    // between the read-buffer cursor and the next live-object submessage. The
+    // earlier bridge only promoted that span when the trailing fragment buffer
+    // was too short. The Sooty Crow `I/0x0401` capture proves a stricter case:
+    // Diamond `sub_455940` / EE `sub_1407B4F70` end the read cursor after the
+    // compact 0x0001 branch plus 0x0400 equipment delta, then the server places
+    // three packed fragment bytes before the following `P/5` appearance record.
+    // Even if the global tail has enough bits numerically, those adjacent bytes
+    // are the decompile-owned inventory fragment span and must be promoted
+    // before the following semantic record can be dispatched.
+    let minimum_span_bytes = if missing_bits == 0 {
+        1
+    } else {
+        missing_bits.saturating_add(7) / 8
+    };
     let span_end = find_interleaved_fragment_span_end(
         live_bytes,
         prefix.read_end,
         *record_end,
         minimum_span_bytes,
-    )?;
+    )
+    .or_else(|| {
+        // The live-object boundary walker reports `record_end` as an exclusive
+        // cursor at the next proven submessage. For inventory records with
+        // interleaved CNW storage, the storage span can therefore end exactly
+        // at `record_end`; the generic scanner above only finds boundaries
+        // strictly inside the range. Accept this case only when the exclusive
+        // cursor is itself a verified boundary (or the end of the live stream),
+        // then let the exact inventory reader below prove the shortened record.
+        let candidate = *record_end;
+        let span_len = candidate.checked_sub(prefix.read_end)?;
+        if span_len < minimum_span_bytes || span_len > MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES {
+            return None;
+        }
+        if candidate == live_bytes.len()
+            || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, candidate)
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    })?;
     let span = live_bytes.get(prefix.read_end..span_end)?;
     let span_len = span.len();
     if span.is_empty() || span_len > MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES {
@@ -270,6 +307,54 @@ pub(super) fn remove_trailing_zero_fragment_storage_after_verified_record_for_ee
     Some(RemovedTrailingFragmentStorage { bytes_removed })
 }
 
+pub(super) fn promote_trailing_fragment_prefix_after_verified_record_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    span_start: usize,
+) -> Option<PromotedTrailingFragmentPrefix> {
+    if span_start >= live_bytes.len()
+        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
+    {
+        return None;
+    }
+
+    let prefix = live_bytes.get(span_start..)?.to_vec();
+    if prefix.is_empty() || prefix.len() > MAX_TRAILING_FRAGMENT_PREFIX_BYTES {
+        return None;
+    }
+
+    // Diamond/EE live-object packets keep the CNW fragment-storage stream after
+    // the declared read-buffer cursor. Short-declared HG windows can leave the
+    // first one or two storage bytes behind the last decompile-proven record,
+    // while the remaining storage bytes already sit in the packet tail. Accept
+    // only a tiny suffix that, when prepended to the existing tail, decodes as
+    // one valid CNW MSB fragment bitstream; the final strict live-object claim
+    // still has to consume the resulting bit cursor exactly before anything is
+    // emitted.
+    let mut combined = Vec::with_capacity(prefix.len().saturating_add(fragment_bytes.len()));
+    combined.extend_from_slice(&prefix);
+    combined.extend_from_slice(fragment_bytes);
+    let combined_bits = bits::decode_msb_valid_bits(&combined, 3)?;
+    let bits_promoted = combined_bits.len().saturating_sub(fragment_bits.len());
+
+    live_bytes.drain(span_start..);
+    *fragment_bytes = combined;
+    *fragment_bits = combined_bits;
+
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object trailing fragment prefix promoted: span_start={span_start} bytes_promoted={} bits_promoted={bits_promoted}",
+            prefix.len()
+        );
+    }
+
+    Some(PromotedTrailingFragmentPrefix {
+        bytes_promoted: prefix.len(),
+        bits_promoted,
+    })
+}
+
 struct CreatureUpdateFragmentSpanProof {
     read_end: usize,
     promoted_bits: Vec<bool>,
@@ -290,17 +375,30 @@ fn find_creature_update_3967_interleaved_fragment_span(
         || old_record_end > live_bytes.len()
         || live_bytes.get(offset).copied()? != b'U'
         || live_bytes.get(offset + 1).copied()? != 0x05
-        || read_u32_le(live_bytes, offset + 6)? != LEGACY_CREATURE_UPDATE_3967_MASK
     {
+        return None;
+    }
+    let raw_mask = read_u32_le(live_bytes, offset + 6)?;
+    if !matches!(
+        raw_mask,
+        LEGACY_CREATURE_UPDATE_3967_MASK
+            | LEGACY_CREATURE_UPDATE_C40F_MASK
+            | LEGACY_CREATURE_UPDATE_C44F_MASK
+    ) {
         return None;
     }
 
     // Decompile/capture-backed short-declared repair for creature `U/5`
-    // mask `0x3967`: the reader shape is exact, but some legacy stream windows
-    // leave a bounded CNW fragment-storage suffix in the read buffer. Try only
-    // suffix splits that decode as CNW fragment storage and accept exactly one
-    // split whose shortened read buffer is consumed by the focused creature
-    // update simulator.
+    // update masks whose reader shape is exact, but whose legacy stream window
+    // can leave a bounded CNW fragment-storage suffix in the read buffer.
+    // `0x3967` was the original HG capture family. `0xC40F` and `0xC44F` are
+    // Starcore5 Sooty Crow transition families: Diamond writes lower movement /
+    // action fields, optional low `0x0040` creature-state fields, then the
+    // C408-style self/status suffix. Diamond `0x4463B0..0x44649B` proves the
+    // low `0x0040` branch is `WORD, BYTE, WORD, BYTE, BOOL[, OBJECTID]`; the
+    // bytes after the exact creature cursor are therefore not invented creature
+    // fields. They must prove themselves as adjacent CNW fragment storage before
+    // we promote them ahead of the following inventory record.
     let min_read_end = offset.checked_add(10)?;
     let scan_start = old_record_end
         .saturating_sub(MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES)

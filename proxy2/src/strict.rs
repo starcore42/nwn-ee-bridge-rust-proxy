@@ -15,8 +15,8 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat, client_input,
-        client_login,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat,
+        client_gui_inventory, client_input, client_login,
         client_quickbar, gameplay_stream, journal, live_object_update, play_module_character_list,
         player_list, quickbar,
     },
@@ -1247,11 +1247,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 }
         }
         VerifiedFamily::ClientGuiInventory => {
-            high.major == 0x0D && high.minor == 0x01 && gui_inventory_status_shape_valid(payload)
+            high.major == 0x0D && client_gui_inventory::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientInput => {
             high.major == 0x06
-                && matches!(high.minor, 0x01 | 0x03 | 0x0B)
+                && matches!(high.minor, 0x01 | 0x03 | 0x05 | 0x09 | 0x0B)
                 && client_input::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientLogin => {
@@ -1554,7 +1554,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0A, 0x01 | 0x02 | 0x03) => {
             HighPayloadValidation::Exact(player_list_shape_valid(payload))
         },
-        (0x0D, 0x01) => HighPayloadValidation::Exact(gui_inventory_status_shape_valid(payload)),
+        (0x0D, 0x01 | 0x02) => {
+            HighPayloadValidation::Exact(client_gui_inventory::claim_payload_if_verified(payload).is_some())
+        }
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
@@ -1609,19 +1611,6 @@ fn client_login_waypoint_response_shape_valid(payload: &[u8]) -> bool {
         && declared < payload.len()
         && payload.len() == declared + 1
         && payload[declared] == 0x60
-}
-
-fn gui_inventory_status_shape_valid(payload: &[u8]) -> bool {
-    // EE `GuiInventory_Status` minor `0x01` is exactly:
-    // high-level tag + CNW declared read size `11` + one OBJECTIDServer in the
-    // read buffer + one fragment byte carrying the open/close BOOL.
-    const DECLARED_BYTES: usize = 11;
-    const PAYLOAD_BYTES: usize = 12;
-    const OBJECT_ID_OFFSET: usize = 7;
-    payload.len() == PAYLOAD_BYTES
-        && read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-            == Some(DECLARED_BYTES)
-        && read_le_u32(payload, OBJECT_ID_OFFSET).is_some()
 }
 
 fn cnw_wrapped_payload_shape_valid(

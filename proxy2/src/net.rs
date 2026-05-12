@@ -63,6 +63,13 @@ pub fn run(config: Config, nwsync_runtime: Option<nwsync::Runtime>) -> Result<()
     }
 }
 
+fn is_udp_connection_reset(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+    ) || err.raw_os_error() == Some(10054)
+}
+
 fn drain_client_socket(
     config: &Config,
     translator_template: &Translator,
@@ -168,6 +175,13 @@ fn drain_client_socket(
                 }
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(()),
+            Err(err) if is_udp_connection_reset(&err) => {
+                tracing::warn!(
+                    error = %err,
+                    "ignoring UDP client-socket connection reset; keeping proxy2 listener alive"
+                );
+                return Ok(());
+            }
             Err(err) => return Err(err).context("receiving from client socket"),
         }
     }
@@ -273,6 +287,14 @@ fn drain_server_sockets(
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                Err(err) if is_udp_connection_reset(&err) => {
+                    tracing::warn!(
+                        %client,
+                        error = %err,
+                        "ignoring UDP upstream connection reset for session"
+                    );
+                    break;
+                }
                 Err(err) => return Err(err).context("receiving from upstream server socket"),
             }
         }

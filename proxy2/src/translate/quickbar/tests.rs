@@ -29,8 +29,8 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
         new_declared: 43,
         read_size: 881,
         fragment_size: 459,
-        final_cursor: 881,
-        trailing_read_bytes: 0,
+        final_cursor: 870,
+        trailing_read_bytes: 11,
         direct_opcode_stream: false,
         item_buttons_preserved: 0,
         spells_preserved: 1,
@@ -47,14 +47,14 @@ fn owned_quickbar_boundary_with_many_blanks_does_not_wait_for_placeholder() {
 }
 
 #[test]
-fn trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
+fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
     let summary = QuickbarRewriteSummary {
         old_payload_length: 1340,
         new_payload_length: 64,
         old_declared: 884,
         new_declared: 43,
         read_size: 881,
-        fragment_size: 459,
+        fragment_size: 0,
         final_cursor: 870,
         trailing_read_bytes: 11,
         direct_opcode_stream: false,
@@ -68,7 +68,7 @@ fn trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
 
     assert!(
         rewrite_summary_needs_more_quickbar_bytes(&summary),
-        "trailing read-buffer bytes mean the semantic boundary is not yet proven"
+        "trailing read-buffer bytes without a fragment-tail proof mean the semantic boundary is not yet proven"
     );
 }
 
@@ -109,15 +109,15 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
         "item slots should be either emitted from proven item-object models or deliberately blanked after boundary proof"
     );
     assert_eq!(
-        summary.item_buttons_preserved, 18,
-        "all item-bearing slots in this capture should be emitted only after typed item-object materialization proof"
+        summary.item_buttons_preserved, 0,
+        "item-bearing slots should stay blank until the state-aware object registry can prove EE client-item materialization"
     );
-    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.item_buttons_blanked, 18);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(summary.spells_preserved >= 13);
     assert!(
-        payload.len() > 2000,
-        "verified EE item materialization should emit full item appearance/property branches"
+        payload.len() < 1515,
+        "unproven item materialization should be removed from the EE-facing packet while spell/general slots remain"
     );
     assert!(
         ee_set_all_buttons_payload_shape_valid(&payload),
@@ -138,7 +138,7 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
 }
 
 #[test]
-fn starcore5_compact_item_body_without_source_type_preserves_spells_and_verified_items() {
+fn starcore5_compact_item_body_without_source_type_preserves_spells_and_blanks_unverified_items() {
     let mut payload = include_bytes!(
         "../../../fixtures/quickbar/starcore5_compact_missing_item_type_set_all_buttons.bin"
     )
@@ -170,24 +170,24 @@ fn starcore5_compact_item_body_without_source_type_preserves_spells_and_verified
     assert!(!summary.direct_opcode_stream);
     assert_eq!(summary.old_payload_length, 1340);
     assert!(
-        summary.new_payload_length >= 2000,
-        "verified compact item slots should be emitted as reconstructed EE item branches"
+        summary.new_payload_length < 1494,
+        "compact item bodies prove the boundary but must not be emitted until EE item materialization is state-proven"
     );
     assert_eq!(summary.old_declared, 1321);
     assert_eq!(summary.read_size, 1318);
     assert_eq!(summary.fragment_size, 15);
     assert_eq!(summary.final_cursor, 1318);
     assert_eq!(summary.trailing_read_bytes, 0);
-    assert_eq!(summary.item_buttons_preserved, 18);
-    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.item_buttons_preserved, 0);
+    assert_eq!(summary.item_buttons_blanked, 18);
     assert_eq!(summary.spells_preserved, 15);
     assert_eq!(
         summary.general_buttons_blanked, 0,
         "verified byte-identical general/blank records should no longer be counted as translator-blanked"
     );
     assert!(
-        summary.item_buttons_preserved >= recovered_item_slots as u32,
-        "recovered compact item branches should be emitted only after typed EE item materialization proof"
+        summary.item_buttons_blanked >= recovered_item_slots as u32,
+        "recovered compact item branches should prove ownership but remain blank until typed EE item materialization proof exists"
     );
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(
@@ -257,10 +257,10 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
     assert_eq!(summary.fragment_size, 15);
     assert_eq!(summary.final_cursor, 1318);
     assert_eq!(summary.trailing_read_bytes, 0);
-    assert_eq!(summary.item_buttons_preserved, 18);
+    assert_eq!(summary.item_buttons_preserved, 0);
     assert_eq!(summary.spells_preserved, 15);
     assert_eq!(summary.general_buttons_preserved, 1);
-    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.item_buttons_blanked, 18);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(
         ee_set_all_buttons_payload_shape_valid(&payload),
@@ -287,11 +287,67 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
         "first page after: visible={visible_after} items={first_page_items_after} spells={first_page_spells_after} slot_types={:?}",
         &slot_types[..12]
     );
-    assert_eq!(first_page_items_after, first_page_items_before);
+    assert_eq!(
+        first_page_items_after, 0,
+        "item slots are intentionally blanked until the proxy can prove EE client item materialization"
+    );
     assert_eq!(first_page_spells_after, first_page_spells_before);
     assert!(
         visible_after >= first_page_spells_before,
         "rewritten Starcore5 live quickbar should keep visible F1-F12 records populated: {:?}",
         &slot_types[..12]
     );
+}
+
+#[test]
+fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_items() {
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
+            .to_vec();
+    let declared = read_u32_le(&payload, 3).expect("quickbar declared length") as usize;
+    let read_size = declared
+        .checked_sub(HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared includes high-level header");
+    let fragment_start = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)
+        .and_then(|start| start.checked_add(read_size))
+        .expect("fragment start");
+    let fragments = payload
+        .get_mut(fragment_start..)
+        .expect("fixture has quickbar fragment tail");
+    let final_bits = fragments[0] & 0xE0;
+    fragments[0] = final_bits;
+    for byte in fragments.iter_mut().skip(1) {
+        *byte = 0;
+    }
+
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("byte-owned item bodies should prove exact quickbar shape");
+    let recovered_items = parsed
+        .buttons
+        .iter()
+        .filter(|button| matches!(button.kind, QuickbarButtonKind::Item { .. }))
+        .count();
+    assert!(
+        recovered_items >= 13,
+        "compact byte-owned item bodies should be materialized when the item model and 36-slot boundary are exact"
+    );
+    assert!(
+        recovered_items < 18,
+        "the translator must not invent all item slots from absent fragment presence bits; non-byte-owned items remain deliberate blanks"
+    );
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("mutated Starcore5 quickbar capture should still be semantically owned");
+    assert_eq!(summary.item_buttons_preserved, 0);
+    assert!(
+        summary.item_buttons_blanked >= recovered_items as u32,
+        "absent fragment presence bits must not be promoted into unproven item materialization"
+    );
+    assert!(
+        summary.item_buttons_blanked <= 18,
+        "byte-owned recovery may prove ownership, but unproven EE materialization must stay bounded to known item slots"
+    );
+    assert_eq!(summary.spells_preserved, 15);
+    assert!(ee_set_all_buttons_payload_shape_valid(&payload));
 }

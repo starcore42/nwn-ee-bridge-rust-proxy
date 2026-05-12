@@ -97,7 +97,10 @@ struct Probe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformIdentityShape {
-    LegacyAbsent,
+    /// Rewrite mode for legacy/Diamond streams: skip an EE platform identity
+    /// field when the decompile-backed cursor proves one is already present,
+    /// otherwise insert EE's empty identity before the optional creature body.
+    InsertMissing,
     EeRequired,
 }
 
@@ -112,9 +115,84 @@ struct ParsedPlayerList {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LegacyLocStringLengthRepair {
-    raw_start: usize,
-    raw_end: usize,
+enum LegacyLocStringLengthRepair {
+    /// Diamond/HG PlayerList captures can encode the second display-name
+    /// locstring as raw printable bytes followed by a four-byte zero slot where
+    /// EE's `sub_1409735F0` expects the missing CExoString length. Rewrite by
+    /// inserting that length before the raw bytes and dropping the zero slot.
+    InsertLengthAndDropZeroSlot { raw_start: usize, raw_end: usize },
+
+    /// The Diamond reader (`sub_453BD0`) consumes two locstring helpers and then
+    /// joins them with a space when the second is non-empty. Some HG entries put
+    /// a raw first-name/title prefix in front of an otherwise valid second
+    /// length-prefixed string while the first helper's length is zero. Keep the
+    /// byte order and repair the first helper's zero length to consume the raw
+    /// prefix, leaving the following CExoString as the second helper.
+    MoveRawPrefixIntoPreviousEmpty {
+        previous_length_offset: usize,
+        raw_start: usize,
+        raw_end: usize,
+    },
+
+    /// Some second-name locstrings omit only the four-byte length prefix and are
+    /// followed immediately by the decompile-confirmed portrait WORD/CResRef
+    /// fields. Rewrite by inserting the missing CExoString length before the
+    /// raw bytes; the following portrait boundary remains in place.
+    InsertMissingLengthBeforePortrait { raw_start: usize, raw_end: usize },
+
+    /// A closely related HG PlayerList shape keeps the CExoString length slot
+    /// but leaves it as zero, then places the raw second-name bytes before the
+    /// portrait WORD/CResRef boundary. Rewrite the existing zero length to the
+    /// raw byte count.
+    ExtendCurrentEmptyBeforePortrait {
+        length_offset: usize,
+        raw_start: usize,
+        raw_end: usize,
+    },
+}
+
+impl LegacyLocStringLengthRepair {
+    fn net_read_size_delta(self) -> usize {
+        match self {
+            Self::InsertLengthAndDropZeroSlot { .. }
+            | Self::MoveRawPrefixIntoPreviousEmpty { .. }
+            | Self::ExtendCurrentEmptyBeforePortrait { .. } => 0,
+            Self::InsertMissingLengthBeforePortrait { .. } => CNW_LENGTH_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct LocStringRead {
+    empty_inline_length_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerListReadMutation {
+    InsertIdentity { offset: usize },
+    InsertLengthPrefix { offset: usize, length: u32 },
+    RemoveZeroLengthSlot { offset: usize },
+    WriteLength { offset: usize, length: u32 },
+}
+
+impl PlayerListReadMutation {
+    fn offset(self) -> usize {
+        match self {
+            Self::InsertIdentity { offset }
+            | Self::InsertLengthPrefix { offset, .. }
+            | Self::RemoveZeroLengthSlot { offset }
+            | Self::WriteLength { offset, .. } => offset,
+        }
+    }
+
+    fn sort_rank(self) -> u8 {
+        match self {
+            Self::RemoveZeroLengthSlot { .. } => 0,
+            Self::WriteLength { .. } => 1,
+            Self::InsertLengthPrefix { .. } => 2,
+            Self::InsertIdentity { .. } => 3,
+        }
+    }
 }
 
 pub fn rewrite_player_list_payload_if_possible(
@@ -142,7 +220,7 @@ pub fn rewrite_player_list_payload_if_possible(
         minor,
         layout.read_size,
         fragments,
-        PlatformIdentityShape::LegacyAbsent,
+        PlatformIdentityShape::InsertMissing,
     )
     .or_else(|| {
         parse_player_list_cnw(
@@ -176,24 +254,29 @@ pub fn rewrite_player_list_payload_if_possible(
         original_fragments
     };
 
-    let total_inserted = parsed.insert_offsets.len() * EE_EMPTY_IDENTITY.len();
+    let identity_bytes_inserted = parsed.insert_offsets.len() * EE_EMPTY_IDENTITY.len();
+    let locstring_bytes_inserted: usize = parsed
+        .locstring_repairs
+        .iter()
+        .copied()
+        .map(LegacyLocStringLengthRepair::net_read_size_delta)
+        .sum();
+    let total_inserted = identity_bytes_inserted.checked_add(locstring_bytes_inserted)?;
     if payload.len() > MAX_REASONABLE_PAYLOAD.saturating_sub(total_inserted) {
         return None;
     }
 
-    for repair in parsed.locstring_repairs.iter().rev().copied() {
-        apply_legacy_locstring_length_repair(payload, repair)?;
+    let mut mutations = Vec::new();
+    for repair in parsed.locstring_repairs.iter().copied() {
+        enqueue_legacy_locstring_length_repair(repair, &mut mutations)?;
     }
-
-    for offset in parsed.insert_offsets.iter().rev().copied() {
+    for offset in parsed.insert_offsets.iter().copied() {
         if offset > layout.read_size {
             return None;
         }
-        payload.splice(
-            HIGH_LEVEL_HEADER_BYTES + offset..HIGH_LEVEL_HEADER_BYTES + offset,
-            EE_EMPTY_IDENTITY,
-        );
+        mutations.push(PlayerListReadMutation::InsertIdentity { offset });
     }
+    apply_player_list_read_mutations(payload, mutations)?;
 
     let normalized_declared_base = (layout.read_size + HIGH_LEVEL_HEADER_BYTES) as u32;
     let new_declared = normalized_declared_base.checked_add(total_inserted as u32)?;
@@ -280,7 +363,7 @@ fn normalize_player_list_layout(payload: &mut Vec<u8>) -> Option<Layout> {
             false,
             true,
             &[
-                PlatformIdentityShape::LegacyAbsent,
+                PlatformIdentityShape::InsertMissing,
                 PlatformIdentityShape::EeRequired,
             ],
         );
@@ -299,7 +382,7 @@ fn probe_current_layout(
         normalized_short_declared,
         false,
         &[
-            PlatformIdentityShape::LegacyAbsent,
+            PlatformIdentityShape::InsertMissing,
             PlatformIdentityShape::EeRequired,
         ],
     )
@@ -397,7 +480,7 @@ fn normalize_short_declared(payload: &mut Vec<u8>, prefixed: bool) -> bool {
         normalized_read_size,
         fragment_bytes.len(),
         &[
-            PlatformIdentityShape::LegacyAbsent,
+            PlatformIdentityShape::InsertMissing,
             PlatformIdentityShape::EeRequired,
         ],
         &mut probe,
@@ -455,7 +538,7 @@ fn normalize_exact_tail_short_declared(payload: &mut Vec<u8>) -> bool {
             read_size,
             fragment_size,
             &[
-                PlatformIdentityShape::LegacyAbsent,
+                PlatformIdentityShape::InsertMissing,
                 PlatformIdentityShape::EeRequired,
             ],
             &mut probe,
@@ -569,8 +652,12 @@ fn parse_player_list_cnw(
         let has_creature = reader.read_bool()?;
 
         match identity_shape {
-            PlatformIdentityShape::LegacyAbsent => {
-                insert_offsets.push(reader.cursor);
+            PlatformIdentityShape::InsertMissing => {
+                if looks_like_ee_identity(&reader) {
+                    skip_ee_identity(&mut reader)?;
+                } else {
+                    insert_offsets.push(reader.cursor);
+                }
             }
             PlatformIdentityShape::EeRequired => {
                 if !looks_like_ee_identity(&reader) {
@@ -582,9 +669,11 @@ fn parse_player_list_cnw(
 
         if has_creature {
             let _creature_object = reader.read_u32()?;
-            reader.read_locstring(false, &mut locstring_repairs)?;
+            let first_locstring = reader.read_locstring(false, None, &mut locstring_repairs)?;
             reader.read_locstring(
-                minor == PLAYER_LIST_ALL_MINOR && identity_shape == PlatformIdentityShape::LegacyAbsent,
+                minor == PLAYER_LIST_ALL_MINOR
+                    && identity_shape == PlatformIdentityShape::InsertMissing,
+                first_locstring.empty_inline_length_offset,
                 &mut locstring_repairs,
             )?;
             let portrait_id = reader.read_u16()?;
@@ -672,27 +761,69 @@ impl<'a> Reader<'a> {
     fn read_locstring(
         &mut self,
         allow_legacy_suffix_length_repair: bool,
+        previous_empty_length_offset: Option<usize>,
         locstring_repairs: &mut Vec<LegacyLocStringLengthRepair>,
-    ) -> Option<()> {
+    ) -> Option<LocStringRead> {
         let custom_tlk = self.read_bool()?;
         if custom_tlk {
             self.read_bits(1)?;
             self.read_u32()?;
+            return Some(LocStringRead::default());
         } else {
             let length_offset = self.cursor;
-            if self.read_string(4096).is_none() {
-                self.cursor = length_offset;
-                if !allow_legacy_suffix_length_repair {
-                    return None;
+            let length = self.read_u32()? as usize;
+            if length <= 4096 && length <= self.read_size.checked_sub(self.cursor)? {
+                self.cursor += length;
+                if length == 0 && allow_legacy_suffix_length_repair {
+                    if let Some(repair) = self.read_legacy_current_empty_before_portrait_string(
+                        length_offset,
+                        self.cursor,
+                        4096,
+                    ) {
+                        locstring_repairs.push(repair);
+                        return Some(LocStringRead::default());
+                    }
                 }
-                let repair = self.read_legacy_suffix_length_string(length_offset, 4096)?;
-                locstring_repairs.push(repair);
+                return Some(LocStringRead {
+                    empty_inline_length_offset: (length == 0).then_some(length_offset),
+                });
             }
+            self.cursor = length_offset;
+            if !allow_legacy_suffix_length_repair {
+                return None;
+            }
+            let repair = self.read_legacy_locstring_length_repair(
+                length_offset,
+                4096,
+                previous_empty_length_offset,
+            )?;
+            locstring_repairs.push(repair);
         }
-        Some(())
+        Some(LocStringRead::default())
     }
 
-    fn read_legacy_suffix_length_string(
+    fn read_legacy_locstring_length_repair(
+        &mut self,
+        raw_start: usize,
+        max_length: usize,
+        previous_empty_length_offset: Option<usize>,
+    ) -> Option<LegacyLocStringLengthRepair> {
+        if let Some(repair) = self.read_legacy_zero_slot_string(raw_start, max_length) {
+            return Some(repair);
+        }
+        if let Some(previous_length_offset) = previous_empty_length_offset {
+            if let Some(repair) = self.read_legacy_split_second_name_string(
+                previous_length_offset,
+                raw_start,
+                max_length,
+            ) {
+                return Some(repair);
+            }
+        }
+        self.read_legacy_missing_length_before_portrait_string(raw_start, max_length)
+    }
+
+    fn read_legacy_zero_slot_string(
         &mut self,
         raw_start: usize,
         max_length: usize,
@@ -716,7 +847,141 @@ impl<'a> Reader<'a> {
                 continue;
             }
             self.cursor = suffix_end;
-            return Some(LegacyLocStringLengthRepair { raw_start, raw_end });
+            return Some(LegacyLocStringLengthRepair::InsertLengthAndDropZeroSlot {
+                raw_start,
+                raw_end,
+            });
+        }
+        None
+    }
+
+    fn read_legacy_split_second_name_string(
+        &mut self,
+        previous_length_offset: usize,
+        raw_start: usize,
+        max_length: usize,
+    ) -> Option<LegacyLocStringLengthRepair> {
+        if raw_start != self.cursor
+            || raw_start >= self.read_size
+            || previous_length_offset >= raw_start
+            || read_u32_le(self.read_buffer, previous_length_offset)? != 0
+        {
+            return None;
+        }
+        let remaining = self.read_size.checked_sub(raw_start)?;
+        let max_candidate = max_length.min(remaining.checked_sub(CNW_LENGTH_BYTES)?);
+        for raw_len in 1..=max_candidate {
+            let raw_end = raw_start.checked_add(raw_len)?;
+            let suffix_length_offset = raw_end;
+            let suffix_start = suffix_length_offset.checked_add(CNW_LENGTH_BYTES)?;
+            if suffix_start > self.read_size {
+                break;
+            }
+            let raw = self.read_buffer.get(raw_start..raw_end)?;
+            if !raw.iter().all(is_player_list_inline_text_byte) {
+                continue;
+            }
+            let suffix_len = read_u32_le(self.read_buffer, suffix_length_offset)? as usize;
+            if suffix_len == 0 || suffix_len > max_length {
+                continue;
+            }
+            let suffix_end = suffix_start.checked_add(suffix_len)?;
+            if suffix_end > self.read_size {
+                continue;
+            }
+            let suffix = self.read_buffer.get(suffix_start..suffix_end)?;
+            if !suffix.iter().all(is_player_list_inline_text_byte) {
+                continue;
+            }
+            self.cursor = suffix_end;
+            return Some(LegacyLocStringLengthRepair::MoveRawPrefixIntoPreviousEmpty {
+                previous_length_offset,
+                raw_start,
+                raw_end,
+            });
+        }
+        None
+    }
+
+    fn read_legacy_missing_length_before_portrait_string(
+        &mut self,
+        raw_start: usize,
+        max_length: usize,
+    ) -> Option<LegacyLocStringLengthRepair> {
+        if raw_start != self.cursor || raw_start >= self.read_size {
+            return None;
+        }
+        let remaining = self.read_size.checked_sub(raw_start)?;
+        let max_candidate = max_length.min(remaining.checked_sub(2 + CRESREF_TEXT_BYTES)?);
+        for raw_len in 1..=max_candidate {
+            let raw_end = raw_start.checked_add(raw_len)?;
+            let raw = self.read_buffer.get(raw_start..raw_end)?;
+            if !raw.iter().all(is_player_list_inline_text_byte) {
+                continue;
+            }
+            let portrait_id = read_u16_le(self.read_buffer, raw_end)?;
+            if portrait_id < 0xFFFE {
+                continue;
+            }
+            let resref_start = raw_end.checked_add(2)?;
+            let resref_end = resref_start.checked_add(CRESREF_TEXT_BYTES)?;
+            if resref_end > self.read_size {
+                continue;
+            }
+            let resref = self.read_buffer.get(resref_start..resref_end)?;
+            if !looks_like_player_list_resref16(resref) {
+                continue;
+            }
+            self.cursor = raw_end;
+            return Some(
+                LegacyLocStringLengthRepair::InsertMissingLengthBeforePortrait {
+                    raw_start,
+                    raw_end,
+                },
+            );
+        }
+        None
+    }
+
+    fn read_legacy_current_empty_before_portrait_string(
+        &mut self,
+        length_offset: usize,
+        raw_start: usize,
+        max_length: usize,
+    ) -> Option<LegacyLocStringLengthRepair> {
+        if raw_start != self.cursor
+            || raw_start >= self.read_size
+            || read_u32_le(self.read_buffer, length_offset)? != 0
+        {
+            return None;
+        }
+        let remaining = self.read_size.checked_sub(raw_start)?;
+        let max_candidate = max_length.min(remaining.checked_sub(2 + CRESREF_TEXT_BYTES)?);
+        for raw_len in 1..=max_candidate {
+            let raw_end = raw_start.checked_add(raw_len)?;
+            let raw = self.read_buffer.get(raw_start..raw_end)?;
+            if !raw.iter().all(is_player_list_inline_text_byte) {
+                continue;
+            }
+            let portrait_id = read_u16_le(self.read_buffer, raw_end)?;
+            if portrait_id < 0xFFFE {
+                continue;
+            }
+            let resref_start = raw_end.checked_add(2)?;
+            let resref_end = resref_start.checked_add(CRESREF_TEXT_BYTES)?;
+            if resref_end > self.read_size {
+                continue;
+            }
+            let resref = self.read_buffer.get(resref_start..resref_end)?;
+            if !looks_like_player_list_resref16(resref) {
+                continue;
+            }
+            self.cursor = raw_end;
+            return Some(LegacyLocStringLengthRepair::ExtendCurrentEmptyBeforePortrait {
+                length_offset,
+                raw_start,
+                raw_end,
+            });
         }
         None
     }
@@ -739,6 +1004,7 @@ fn looks_like_ee_identity(reader: &Reader<'_>) -> bool {
         return false;
     };
     identity_type <= 4
+        && (identity_length != 0 || identity_type == 0)
         && identity_length <= 256
         && identity_length as usize <= reader.read_size - reader.cursor - 5
 }
@@ -813,23 +1079,116 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     Some(())
 }
 
-fn apply_legacy_locstring_length_repair(
-    payload: &mut Vec<u8>,
+fn is_player_list_inline_text_byte(byte: &u8) -> bool {
+    byte.is_ascii_graphic() || *byte == b' '
+}
+
+fn looks_like_player_list_resref16(bytes: &[u8]) -> bool {
+    if bytes.len() != CRESREF_TEXT_BYTES {
+        return false;
+    }
+    let mut seen_nul = false;
+    for byte in bytes {
+        if *byte == 0 {
+            seen_nul = true;
+            continue;
+        }
+        if seen_nul {
+            return false;
+        }
+        if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
+            return false;
+        }
+    }
+    true
+}
+
+fn enqueue_legacy_locstring_length_repair(
     repair: LegacyLocStringLengthRepair,
+    mutations: &mut Vec<PlayerListReadMutation>,
 ) -> Option<()> {
-    let raw_len = repair.raw_end.checked_sub(repair.raw_start)?;
-    let raw_len = u32::try_from(raw_len).ok()?;
-    let insert_at = HIGH_LEVEL_HEADER_BYTES.checked_add(repair.raw_start)?;
-    let suffix_start = HIGH_LEVEL_HEADER_BYTES.checked_add(repair.raw_end)?;
-    let suffix_end = suffix_start.checked_add(4)?;
-    if insert_at > suffix_start || suffix_end > payload.len() {
-        return None;
+    match repair {
+        LegacyLocStringLengthRepair::InsertLengthAndDropZeroSlot { raw_start, raw_end } => {
+            let raw_len = u32::try_from(raw_end.checked_sub(raw_start)?).ok()?;
+            mutations.push(PlayerListReadMutation::RemoveZeroLengthSlot { offset: raw_end });
+            mutations.push(PlayerListReadMutation::InsertLengthPrefix {
+                offset: raw_start,
+                length: raw_len,
+            });
+        }
+        LegacyLocStringLengthRepair::MoveRawPrefixIntoPreviousEmpty {
+            previous_length_offset,
+            raw_start,
+            raw_end,
+        } => {
+            let raw_len = u32::try_from(raw_end.checked_sub(raw_start)?).ok()?;
+            mutations.push(PlayerListReadMutation::WriteLength {
+                offset: previous_length_offset,
+                length: raw_len,
+            });
+        }
+        LegacyLocStringLengthRepair::InsertMissingLengthBeforePortrait { raw_start, raw_end } => {
+            let raw_len = u32::try_from(raw_end.checked_sub(raw_start)?).ok()?;
+            mutations.push(PlayerListReadMutation::InsertLengthPrefix {
+                offset: raw_start,
+                length: raw_len,
+            });
+        }
+        LegacyLocStringLengthRepair::ExtendCurrentEmptyBeforePortrait {
+            length_offset,
+            raw_start,
+            raw_end,
+        } => {
+            let raw_len = u32::try_from(raw_end.checked_sub(raw_start)?).ok()?;
+            mutations.push(PlayerListReadMutation::WriteLength {
+                offset: length_offset,
+                length: raw_len,
+            });
+        }
     }
-    if payload.get(suffix_start..suffix_end)? != [0, 0, 0, 0] {
-        return None;
+    Some(())
+}
+
+fn apply_player_list_read_mutations(
+    payload: &mut Vec<u8>,
+    mut mutations: Vec<PlayerListReadMutation>,
+) -> Option<()> {
+    mutations.sort_by(|left, right| {
+        right
+            .offset()
+            .cmp(&left.offset())
+            .then_with(|| left.sort_rank().cmp(&right.sort_rank()))
+    });
+    for mutation in mutations {
+        match mutation {
+            PlayerListReadMutation::InsertIdentity { offset } => {
+                let insert_at = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
+                if insert_at > payload.len() {
+                    return None;
+                }
+                payload.splice(insert_at..insert_at, EE_EMPTY_IDENTITY);
+            }
+            PlayerListReadMutation::InsertLengthPrefix { offset, length } => {
+                let insert_at = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
+                if insert_at > payload.len() {
+                    return None;
+                }
+                payload.splice(insert_at..insert_at, length.to_le_bytes());
+            }
+            PlayerListReadMutation::RemoveZeroLengthSlot { offset } => {
+                let remove_start = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
+                let remove_end = remove_start.checked_add(CNW_LENGTH_BYTES)?;
+                if payload.get(remove_start..remove_end)? != [0, 0, 0, 0] {
+                    return None;
+                }
+                payload.drain(remove_start..remove_end);
+            }
+            PlayerListReadMutation::WriteLength { offset, length } => {
+                let write_at = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
+                write_u32_le(payload, write_at, length)?;
+            }
+        }
     }
-    payload.drain(suffix_start..suffix_end);
-    payload.splice(insert_at..insert_at, raw_len.to_le_bytes());
     Some(())
 }
 
@@ -880,6 +1239,24 @@ mod tests {
         assert_eq!(summary.entries, 5);
         assert_eq!(summary.insertions, u32::from(summary.entries));
         assert!(summary.normalized_exact_tail_short_declared);
+        assert!(ee_player_list_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn hg_coalesced_all_title_locstring_variants_rewrite_to_exact_ee_shape() {
+        let mut payload =
+            include_bytes!(
+                "../../fixtures/player_list/hg_player_list_all_title_locstring_variants_seq34.bin"
+            )
+            .to_vec();
+
+        let summary = rewrite_player_list_payload_if_possible(&mut payload)
+            .expect("HG coalesced PlayerList_All title locstring variants should normalize");
+
+        assert_eq!(summary.minor, PLAYER_LIST_ALL_MINOR);
+        assert_eq!(summary.entries, 11);
+        assert_eq!(summary.insertions, u32::from(summary.entries));
+        assert_eq!(summary.locstring_length_repairs, 3);
         assert!(ee_player_list_payload_shape_valid(&payload));
     }
 

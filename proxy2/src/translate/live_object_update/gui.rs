@@ -57,6 +57,46 @@ pub(super) fn try_get_legacy_live_gui_record_end(
         .or_else(|| try_get_legacy_live_gui_item_create_record_end(bytes, offset, search_end))
 }
 
+pub(super) fn try_get_legacy_live_gui_record_end_with_fragment_proof(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end).or_else(|| {
+        let scan_end = search_end.min(bytes.len());
+        let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, scan_end)?;
+        appearance::try_get_legacy_item_create_record_end_with_fragment_proof(
+            bytes,
+            item_object_offset,
+            scan_end,
+            fragment_bits,
+            bit_cursor,
+        )
+    })
+}
+
+pub(super) fn try_get_verified_ee_live_gui_record_end(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end).or_else(|| {
+        let scan_end = search_end.min(bytes.len());
+        let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, scan_end)?;
+        appearance::try_get_verified_ee_item_create_record_end(
+            bytes,
+            item_object_offset,
+            scan_end,
+            fragment_bits,
+            bit_cursor,
+        )
+    })
+}
+
 pub(super) fn is_verified_live_gui_read_buffer_record(
     bytes: &[u8],
     offset: usize,

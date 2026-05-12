@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    crc::{encode_legacy_m_crc, write_be_u16},
+    crc::{encode_legacy_m_crc, read_be_u16, write_be_u16},
     packet::m::{
         DeflatedEnvelope, HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView,
         parse_packetized_spans,
@@ -24,16 +24,33 @@ use super::{
     deferred_module_resources,
     hex_prefix, inflated_cnw_fragment_offset_valid,
     queue_area_client_area_side_effects_after_sequence,
-    reassembly::{self, InflatedGameplayPayload},
+    reassembly::{
+        self, BufferedFrame, EE_SAFE_M_FRAME_DATAGRAM_BYTES, InflatedGameplayPayload,
+        ServerDeflatedReassembly,
+    },
+    sequence::{SequenceShift, shift_sequence_for_peer, trim_sequence_shifts},
     server_dispatch,
     state::CompletedCoalescedStreamRecord,
 };
+
+pub(super) enum CoalescedRewrite {
+    Single {
+        proof: VerifiedProof,
+        packet: Vec<u8>,
+    },
+    Split {
+        packets: Vec<(VerifiedProof, Vec<u8>)>,
+    },
+    SplitPreShifted {
+        packets: Vec<(VerifiedProof, Vec<u8>)>,
+    },
+}
 
 pub(super) fn rewrite_server_window_spans_if_needed(
     bytes: &[u8],
     view: &MFrameView,
     state: &mut SessionState,
-) -> anyhow::Result<Option<(VerifiedProof, Vec<u8>)>> {
+) -> anyhow::Result<Option<CoalescedRewrite>> {
     if view.trailing_payload_length == 0 {
         return Ok(None);
     }
@@ -51,6 +68,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
     let mut dropped_spans = 0u32;
     let mut rewritten_deflated_spans = 0u32;
     let mut record_proofs = Vec::new();
+    let mut record_rewrites = Vec::new();
 
     let primary_record = &bytes[..primary_len];
     let primary = rewrite_coalesced_record_for_ee(
@@ -85,12 +103,13 @@ pub(super) fn rewrite_server_window_spans_if_needed(
             dropped_spans,
             "server coalesced M window consumed because primary semantic record was quarantined"
         );
-        return Ok(Some((
-            VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
-            consumed,
-        )));
+        return Ok(Some(CoalescedRewrite::Single {
+            proof: VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame),
+            packet: consumed,
+        }));
     }
     rewritten.extend_from_slice(&primary.record);
+    record_rewrites.push(primary);
 
     for span in spans {
         let record_end = span.offset + span.record_length;
@@ -115,6 +134,7 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         }
         record_proofs.push(outcome.proof.clone());
         rewritten.extend_from_slice(&outcome.record);
+        record_rewrites.push(outcome);
     }
 
     encode_legacy_m_crc(&mut rewritten)
@@ -130,10 +150,212 @@ pub(super) fn rewrite_server_window_spans_if_needed(
         dropped_spans,
         "server coalesced M window spans rewritten for strict EE delivery"
     );
-    Ok(Some((
-        VerifiedProof::CoalescedWindow(record_proofs),
-        rewritten,
-    )))
+    if rewritten.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES {
+        return Ok(Some(CoalescedRewrite::Single {
+            proof: VerifiedProof::CoalescedWindow(record_proofs),
+            packet: rewritten,
+        }));
+    }
+
+    let (split_packets, pre_shifted) = split_rewritten_coalesced_records(record_rewrites, state)?;
+    tracing::info!(
+        sequence = view.sequence,
+        ack_sequence = view.ack_sequence,
+        coalesced_len = rewritten.len(),
+        safe_datagram_bytes = EE_SAFE_M_FRAME_DATAGRAM_BYTES,
+        output_packets = split_packets.len(),
+        "server coalesced M window exceeded EE-safe datagram budget; split into standalone typed reliable frames"
+    );
+    if pre_shifted {
+        Ok(Some(CoalescedRewrite::SplitPreShifted {
+            packets: split_packets,
+        }))
+    } else {
+        Ok(Some(CoalescedRewrite::Split {
+            packets: split_packets,
+        }))
+    }
+}
+
+fn split_rewritten_coalesced_records(
+    records: Vec<CoalescedRecordRewrite>,
+    state: &mut SessionState,
+) -> anyhow::Result<(Vec<(VerifiedProof, Vec<u8>)>, bool)> {
+    let mut packets = Vec::with_capacity(records.len());
+    let mut cumulative_inserted = 0u16;
+    let mut inserted_extra_packets = 0usize;
+    let mut future_shift_base = None;
+    for (index, outcome) in records.into_iter().enumerate() {
+        if outcome.record.len() < LEGACY_GAMEPLAY_PAYLOAD_OFFSET {
+            anyhow::bail!(
+                "rewritten coalesced record {} too short for standalone M frame",
+                index
+            );
+        }
+
+        let mut packet = outcome.record;
+        let original_sequence = read_be_u16(&packet, 3)
+            .ok_or_else(|| anyhow::anyhow!("coalesced record {} missing sequence", index))?;
+        future_shift_base = Some(original_sequence.wrapping_add(1));
+        // Decompile-backed transport rule: `CNetLayerWindow::FrameReceive`
+        // accepts only normal reliable frames whose byte 0 is `M`, while
+        // `UnpacketizeFullMessages` walks queued coalesced records by the same
+        // 12-byte header layout after they have already been stored. If a
+        // semantic rewrite makes the combined datagram too large for EE's
+        // receive frame storage, promote each verified queued record back into
+        // an ordinary `M` frame and repair its frame-level CRC.
+        packet[0] = b'M';
+        if cumulative_inserted != 0 {
+            write_be_u16(&mut packet, 3, original_sequence.wrapping_add(cumulative_inserted))
+                .then_some(())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("failed to locally shift split coalesced record sequence")
+                })?;
+        }
+        let mut output_records = if packet.len() > EE_SAFE_M_FRAME_DATAGRAM_BYTES {
+            split_oversized_deflated_coalesced_record(index, packet)?
+        } else {
+            encode_legacy_m_crc(&mut packet)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("failed to repair split coalesced M CRC"))?;
+            vec![packet]
+        };
+        let inserted_for_record = output_records.len().saturating_sub(1);
+        if inserted_for_record != 0 {
+            if inserted_extra_packets.saturating_add(inserted_for_record) > u16::MAX as usize {
+                anyhow::bail!("coalesced split inserted too many reliable frames");
+            }
+            inserted_extra_packets += inserted_for_record;
+            cumulative_inserted = cumulative_inserted.wrapping_add(inserted_for_record as u16);
+        }
+        packets.extend(
+            output_records
+                .drain(..)
+                .map(|packet| (outcome.proof.clone(), packet)),
+        );
+    }
+
+    if inserted_extra_packets == 0 {
+        return Ok((packets, false));
+    }
+
+    for (_, packet) in &mut packets {
+        shift_packet_sequence_for_existing_server_shifts(
+            packet,
+            &state.sequence.server_sequence_shifts,
+        )?;
+    }
+    if let Some(base) = future_shift_base {
+        // Apply pre-existing server sequence shifts before recording the new
+        // coalesced split shift. This mirrors deflated-window expansion:
+        // current replacement packets are emitted pre-shifted, then future
+        // server-origin packets at or after the original post-window sequence
+        // are shifted by the number of extra reliable frames we inserted.
+        state.sequence.server_sequence_shifts.push(SequenceShift {
+            base,
+            delta: inserted_extra_packets as u16,
+        });
+        trim_sequence_shifts(&mut state.sequence.server_sequence_shifts);
+        tracing::info!(
+            shift_base = base,
+            inserted_extra_packets,
+            shifts = state.sequence.server_sequence_shifts.len(),
+            "server coalesced rewrite inserted reliable M frames; future server sequences shifted"
+        );
+    }
+    Ok((packets, true))
+}
+
+fn split_oversized_deflated_coalesced_record(
+    index: usize,
+    packet: Vec<u8>,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let view = MFrameView::parse(&packet).ok_or_else(|| {
+        anyhow::anyhow!("rewritten coalesced record {} did not parse as standalone M frame", index)
+    })?;
+    let deflated = view.deflated.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "rewritten coalesced record {} is {} bytes, exceeding EE-safe datagram budget {}, and is not a deflated payload",
+            index,
+            packet.len(),
+            EE_SAFE_M_FRAME_DATAGRAM_BYTES
+        )
+    })?;
+    if view.payload_length < CNW_LENGTH_BYTES {
+        anyhow::bail!(
+            "rewritten coalesced deflated record {} is too short for inflated-length prefix",
+            index
+        );
+    }
+    let payload_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+    let Some(combined_payload) = packet.get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end) else {
+        anyhow::bail!("rewritten coalesced deflated record {} payload overflow", index);
+    };
+    let combined_payload = combined_payload.to_vec();
+    let compressed_chunk = combined_payload[CNW_LENGTH_BYTES..].to_vec();
+    let reassembly = ServerDeflatedReassembly {
+        inflated_length: deflated.inflated_length,
+        expected_frames: 1,
+        first_sequence: view.sequence,
+        packetized_sequence: view.packetized_sequence,
+        zlib_stream: (view.flags & 0x01) != 0,
+        frames: vec![BufferedFrame {
+            packet,
+            payload_length: view.payload_length,
+            sequence: view.sequence,
+            ack_sequence: view.ack_sequence,
+            compressed_chunk,
+        }],
+        interleaved_packets: Vec::new(),
+    };
+    let outputs = reassembly::build_server_deflated_output_frames(
+        &reassembly,
+        &combined_payload,
+        0x01,
+        true,
+    )?;
+    if outputs
+        .iter()
+        .any(|packet| packet.len() > EE_SAFE_M_FRAME_DATAGRAM_BYTES)
+    {
+        anyhow::bail!(
+            "rewritten coalesced deflated record {} could not be split into EE-safe M frames",
+            index
+        );
+    }
+    tracing::info!(
+        index,
+        original_len = reassembly.frames[0].packet.len(),
+        output_frames = outputs.len(),
+        safe_datagram_bytes = EE_SAFE_M_FRAME_DATAGRAM_BYTES,
+        "oversized coalesced deflated record split into standalone reliable M frames"
+    );
+    Ok(outputs)
+}
+
+fn shift_packet_sequence_for_existing_server_shifts(
+    packet: &mut [u8],
+    shifts: &[SequenceShift],
+) -> anyhow::Result<()> {
+    if shifts.is_empty() {
+        return Ok(());
+    }
+    let view = MFrameView::parse(packet)
+        .ok_or_else(|| anyhow::anyhow!("pre-shifted split coalesced packet is not an M frame"))?;
+    if view.sequence == 0 {
+        return Ok(());
+    }
+    let shifted = shift_sequence_for_peer(shifts, view.sequence);
+    if shifted == view.sequence {
+        return Ok(());
+    }
+    write_be_u16(packet, 3, shifted)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to pre-shift split coalesced sequence"))?;
+    encode_legacy_m_crc(packet)
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("failed to repair pre-shifted split coalesced CRC"))?;
+    Ok(())
 }
 
 struct CoalescedRecordRewrite {
@@ -826,5 +1048,140 @@ mod tests {
         assert_eq!(replay.record[7] & 0x01, 0);
         assert_eq!(&replay.record[10..12], &outcome.record[10..12]);
         assert_eq!(replay.proof, proof);
+    }
+
+    #[test]
+    fn split_rewritten_coalesced_records_promotes_spans_to_crc_valid_m_frames() {
+        let mut primary = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        primary[0] = b'M';
+        primary[3..5].copy_from_slice(&61u16.to_be_bytes());
+        primary[5..7].copy_from_slice(&81u16.to_be_bytes());
+        primary[7] = 0x0A;
+        primary[8..10].copy_from_slice(&1u16.to_be_bytes());
+        primary[10..12].copy_from_slice(&3u16.to_be_bytes());
+        primary[12..15].copy_from_slice(&[b'P', 0x09, 0x05]);
+
+        let mut span = vec![0xCCu8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        span[3..5].copy_from_slice(&62u16.to_be_bytes());
+        span[5..7].copy_from_slice(&81u16.to_be_bytes());
+        span[7] = 0x0A;
+        span[8..10].copy_from_slice(&1u16.to_be_bytes());
+        span[10..12].copy_from_slice(&3u16.to_be_bytes());
+        span[12..15].copy_from_slice(&[b'P', 0x05, 0x02]);
+
+        let mut state = SessionState::default();
+        let (packets, pre_shifted) = split_rewritten_coalesced_records(
+            vec![
+            CoalescedRecordRewrite {
+                record: primary,
+                proof: VerifiedProof::family(VerifiedFamily::Chat),
+                changed: false,
+                dropped: false,
+                rewritten_deflated: false,
+                abort_window_if_primary_consumed: false,
+            },
+            CoalescedRecordRewrite {
+                record: span,
+                proof: VerifiedProof::family(VerifiedFamily::GameObjUpdateObjectControl),
+                changed: true,
+                dropped: false,
+                rewritten_deflated: false,
+                abort_window_if_primary_consumed: false,
+            },
+            ],
+            &mut state,
+        )
+        .expect("split coalesced records should promote to standalone M frames");
+
+        assert!(!pre_shifted);
+        assert_eq!(packets.len(), 2);
+        assert!(state.sequence.server_sequence_shifts.is_empty());
+        assert_eq!(packets[0].0, VerifiedProof::family(VerifiedFamily::Chat));
+        assert_eq!(
+            packets[1].0,
+            VerifiedProof::family(VerifiedFamily::GameObjUpdateObjectControl)
+        );
+        for (expected_sequence, (_, packet)) in [61u16, 62u16].into_iter().zip(packets.iter()) {
+            assert_eq!(packet[0], b'M');
+            let view = MFrameView::parse(packet).expect("promoted packet should parse as M");
+            assert!(view.crc_valid);
+            assert_eq!(view.sequence, expected_sequence);
+            assert_eq!(view.ack_sequence, 81);
+            assert_eq!(view.payload_length, 3);
+        }
+    }
+
+    #[test]
+    fn oversized_deflated_coalesced_record_is_repacketized_and_shifts_later_spans() {
+        let combined_payload_len = EE_SAFE_M_FRAME_DATAGRAM_BYTES * 2;
+        let inflated_len = 0x0888u32;
+        let mut oversized =
+            vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + combined_payload_len];
+        oversized[0] = b'M';
+        oversized[3..5].copy_from_slice(&100u16.to_be_bytes());
+        oversized[5..7].copy_from_slice(&80u16.to_be_bytes());
+        oversized[7] = 0x0E;
+        oversized[8..10].copy_from_slice(&1u16.to_be_bytes());
+        oversized[10..12].copy_from_slice(&(combined_payload_len as u16).to_be_bytes());
+        oversized[12..16].copy_from_slice(&inflated_len.to_le_bytes());
+        for (offset, byte) in oversized[16..].iter_mut().enumerate() {
+            *byte = (offset as u8).wrapping_mul(13).wrapping_add(7);
+        }
+        assert!(encode_legacy_m_crc(&mut oversized));
+
+        let mut following = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        following[0] = b'M';
+        following[3..5].copy_from_slice(&101u16.to_be_bytes());
+        following[5..7].copy_from_slice(&80u16.to_be_bytes());
+        following[7] = 0x0A;
+        following[8..10].copy_from_slice(&1u16.to_be_bytes());
+        following[10..12].copy_from_slice(&3u16.to_be_bytes());
+        following[12..15].copy_from_slice(&[b'P', 0x09, 0x05]);
+        assert!(encode_legacy_m_crc(&mut following));
+
+        let mut state = SessionState::default();
+        let (packets, pre_shifted) = split_rewritten_coalesced_records(
+            vec![
+                CoalescedRecordRewrite {
+                    record: oversized,
+                    proof: VerifiedProof::family(VerifiedFamily::AreaClientArea),
+                    changed: true,
+                    dropped: false,
+                    rewritten_deflated: true,
+                    abort_window_if_primary_consumed: false,
+                },
+                CoalescedRecordRewrite {
+                    record: following,
+                    proof: VerifiedProof::family(VerifiedFamily::Chat),
+                    changed: false,
+                    dropped: false,
+                    rewritten_deflated: false,
+                    abort_window_if_primary_consumed: false,
+                },
+            ],
+            &mut state,
+        )
+        .expect("oversized deflated coalesced record should be split into safe M frames");
+
+        assert!(pre_shifted);
+        assert!(packets.len() >= 4);
+        assert_eq!(state.sequence.server_sequence_shifts.len(), 1);
+        let shift = &state.sequence.server_sequence_shifts[0];
+        assert_eq!(shift.base, 102);
+        assert_eq!(shift.delta as usize, packets.len() - 2);
+
+        for (index, (_, packet)) in packets.iter().enumerate() {
+            assert!(
+                packet.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES,
+                "packet {index} exceeded EE-safe datagram cap"
+            );
+            let view = MFrameView::parse(packet).expect("split output should parse as M");
+            assert!(view.crc_valid, "packet {index} should have repaired CRC");
+            assert_eq!(view.sequence, 100u16.wrapping_add(index as u16));
+        }
+        assert_eq!(
+            packets.last().expect("following packet should be present").0,
+            VerifiedProof::family(VerifiedFamily::Chat)
+        );
     }
 }

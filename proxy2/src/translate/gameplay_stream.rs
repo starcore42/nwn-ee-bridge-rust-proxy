@@ -125,6 +125,21 @@ fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<u
         }
     }
 
+    if is_live_object_high_level(high) {
+        // `GameObjUpdate_LiveObject` is the dangerous CNW family for stream
+        // splitting: the decompiled EE live-object reader seeds
+        // `CNWMessage::SetReadMessage` from this declared read-window, then
+        // continues through packed fragment BOOL bytes. Legacy/HG coalesced
+        // spans can carry stale short declarations, and the read/fragment body
+        // legitimately contains `0x70` bytes inside object ids or item
+        // subobjects (for example `A <object id 0x800170C7>`). Those bytes must
+        // not be promoted to a top-level EE high-level boundary. Keep the
+        // whole remaining live-object blob together so the focused
+        // declared-length repair and exact live-object validator can either
+        // claim it or quarantine it.
+        return Some(bytes.len());
+    }
+
     // CNW read-buffer lengths do not describe the compact BOOL fragment tail.
     // When multiple gameplay messages are concatenated, the next `P major minor`
     // begins after that fragment tail. We only split at a later offset if that
@@ -149,6 +164,10 @@ fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
         | (0x31, 0x01 | 0x02) => Some(3),
         _ => None,
     }
+}
+
+fn is_live_object_high_level(high: HighLevel) -> bool {
+    high.major == 0x05 && high.minor == 0x01
 }
 
 fn declared_cnw_length(bytes: &[u8], offset: usize, high: HighLevel) -> Option<usize> {
@@ -305,6 +324,25 @@ mod tests {
                 assert_eq!(message.major, 0x05);
                 assert_eq!(message.minor, 0x01);
                 assert_eq!(message.declared, Some(600));
+                assert_eq!(message.payload.len(), bytes.len());
+            }
+            _ => panic!("expected one live-object high-level unit"),
+        }
+    }
+
+    #[test]
+    fn short_declared_live_object_with_embedded_0x70_object_id_stays_one_unit() {
+        let bytes = include_bytes!(
+            "../../fixtures/live_object/hg_starc5_seq39_creature_add_coalesced_unclaimed.bin"
+        );
+        let split = split_inflated_gameplay(bytes);
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.major, 0x05);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.declared, Some(0x56));
                 assert_eq!(message.payload.len(), bytes.len());
             }
             _ => panic!("expected one live-object high-level unit"),

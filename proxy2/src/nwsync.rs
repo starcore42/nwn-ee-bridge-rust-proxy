@@ -23,6 +23,7 @@ const ENV_ROOT: &str = "HG_BRIDGE_NWSYNC_ROOT";
 const ENV_HASH: &str = "HG_BRIDGE_NWSYNC_HASH";
 const ENV_URL: &str = "HG_BRIDGE_NWSYNC_URL";
 const ENV_MANIFESTS: &str = "HG_BRIDGE_NWSYNC_MANIFESTS";
+const ENV_MODULE_MANIFESTS: &str = "HG_BRIDGE_NWSYNC_MODULE_MANIFESTS";
 
 #[derive(Debug, Clone)]
 pub struct ManifestAdvert {
@@ -35,30 +36,39 @@ pub struct ManifestAdvert {
 pub struct Advertisement {
     root_hash: String,
     url: String,
-    manifests: Vec<ManifestAdvert>,
+    bnxr_manifests: Vec<ManifestAdvert>,
+    module_manifests: Vec<ManifestAdvert>,
 }
 
 impl Advertisement {
     pub fn new(
         root_hash: String,
         url: String,
-        manifests: Vec<ManifestAdvert>,
+        bnxr_manifests: Vec<ManifestAdvert>,
+        module_manifests: Vec<ManifestAdvert>,
     ) -> anyhow::Result<Self> {
         validate_counted_ascii("NWSync root hash", &root_hash)?;
         validate_counted_ascii("NWSync URL", &url)?;
-        if manifests.len() > u8::MAX as usize {
+        if bnxr_manifests.len() > u8::MAX as usize {
             return Err(anyhow!(
-                "too many NWSync manifest adverts: {}",
-                manifests.len()
+                "too many BNXR NWSync manifest adverts: {}",
+                bnxr_manifests.len()
             ));
         }
-        for manifest in &manifests {
+        if module_manifests.len() > u8::MAX as usize {
+            return Err(anyhow!(
+                "too many module-resource NWSync manifest adverts: {}",
+                module_manifests.len()
+            ));
+        }
+        for manifest in bnxr_manifests.iter().chain(module_manifests.iter()) {
             validate_counted_ascii("NWSync manifest hash", &manifest.hash)?;
         }
         Ok(Self {
             root_hash,
             url,
-            manifests,
+            bnxr_manifests,
+            module_manifests,
         })
     }
 
@@ -71,7 +81,11 @@ impl Advertisement {
     }
 
     pub fn manifests(&self) -> &[ManifestAdvert] {
-        &self.manifests
+        &self.bnxr_manifests
+    }
+
+    pub fn module_manifests(&self) -> &[ManifestAdvert] {
+        &self.module_manifests
     }
 
     pub fn build_bnxr_section(&self) -> anyhow::Result<Vec<u8>> {
@@ -80,8 +94,9 @@ impl Advertisement {
         section.push(1);
         append_counted(&mut section, self.url())?;
         append_counted(&mut section, self.root_hash())?;
-        section.push(u8::try_from(self.manifests.len()).context("manifest count overflow")?);
-        for manifest in &self.manifests {
+        section
+            .push(u8::try_from(self.bnxr_manifests.len()).context("manifest count overflow")?);
+        for manifest in &self.bnxr_manifests {
             section.push(manifest.flags);
             section.push(manifest.language);
             append_counted(&mut section, &manifest.hash)?;
@@ -130,8 +145,21 @@ impl Runtime {
         };
 
         let root_hash = root_hash.trim().to_string();
-        let manifests = parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash)?;
-        let advertisement = Advertisement::new(root_hash, url.trim().to_string(), manifests)?;
+        let bnxr_manifests = parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash, true)?;
+        let module_manifests =
+            parse_manifest_adverts(env_values.get(ENV_MODULE_MANIFESTS), &root_hash, false)?;
+        if !module_manifests.is_empty() && !config.nwsync_advertise_mode.advertises_bnxr() {
+            tracing::warn!(
+                module_manifests = module_manifests.len(),
+                "NWSync module-resource extra manifests are configured without BNXR preflight advertisement; a cold EE cache may fail CNWCModule::LoadModuleResources before those manifests are locally known"
+            );
+        }
+        let advertisement = Advertisement::new(
+            root_hash,
+            url.trim().to_string(),
+            bnxr_manifests,
+            module_manifests,
+        )?;
         Ok(Some(Self {
             root,
             advertisement,
@@ -159,19 +187,25 @@ fn default_env_path() -> Option<PathBuf> {
 fn parse_manifest_adverts(
     raw: Option<&String>,
     root_hash: &str,
+    default_to_root: bool,
 ) -> anyhow::Result<Vec<ManifestAdvert>> {
     let Some(raw) = raw.map(String::as_str).map(str::trim).filter(|value| !value.is_empty()) else {
-        // EE's pre-module NWSync path receives the byte-oriented BNXR
-        // advertisement and uses the manifest list as the client-content work
-        // set. Default to the root manifest as required client content. The
-        // module-resources writer filters this duplicate root entry back out,
-        // because CNWCModule::LoadModuleResources calls AddManifest(root)
-        // before it iterates advertisement manifests.
-        return Ok(vec![ManifestAdvert {
-            hash: root_hash.to_string(),
-            flags: 1,
-            language: 0xFF,
-        }]);
+        // EE's byte-oriented BNXR pre-module path needs a concrete client
+        // content work item, so its default advert list is the root manifest.
+        // `CNWCModule::LoadModuleResources` is different: the decompile shows
+        // it calls AddManifest(root) first and then treats each explicit
+        // manifest advert as another resource key table to mount. Missing
+        // explicit manifests can be fatal, so module-resource extras must be
+        // opt-in only.
+        return if default_to_root {
+            Ok(vec![ManifestAdvert {
+                hash: root_hash.to_string(),
+                flags: 1,
+                language: 0xFF,
+            }])
+        } else {
+            Ok(Vec::new())
+        };
     };
 
     let mut manifests = Vec::new();

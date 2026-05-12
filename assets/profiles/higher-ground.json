@@ -100,6 +100,7 @@
     "limitFileSizeMB": 1024,
     "maxManifestTotalBytes": 3900000000,
     "compression": "none",
-    "writeOrigins": true
+    "writeOrigins": true,
+    "moduleResourceManifestPolicy": "generated-non-root"
   }
 }

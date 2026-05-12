@@ -199,22 +199,25 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     // a BOOL-gated secondary item object. The client receiver consumes those
     // same BOOL-gated objects and sets the quickbar slot from the object id(s).
     //
-    // The bridge cannot resolve CNWSItem pointers, but it can prove the same
-    // wire materialization from the already-typed legacy model:
-    //   object id + optional int param
-    //   AddItemAppearanceToMessage-compatible appearance bytes
-    //   EE identity visual-transform expansion
-    //   AddActiveItemPropertiesToMessage-compatible active-property bytes
+    // The EE client receiver does not stop at byte consumption. In
+    // `sub_14079DB00`, the type-1 branch reads the primary/secondary item
+    // object bodies, resolves or creates client item objects, registers them in
+    // the external object array, and only then calls the quickbar item setter.
+    // Any failure jumps to the function-wide abort path before later spell slots
+    // are applied.
     //
-    // This is deliberately stricter than "the slot parsed": both item objects
-    // must either be absent or have a complete bounded subobject model. Compact
-    // recovered source tags are acceptable only because the writer restores the
-    // explicit EE type byte and the final packet is validated by
-    // `ee_set_all_buttons_payload_shape_valid`.
-    let _source_had_missing_type_tag = recovered_type_tag;
-    (primary.present || secondary.present)
-        && quickbar_item_object_has_verified_ee_materialization(primary)
-        && quickbar_item_object_has_verified_ee_materialization(secondary)
+    // A bounded legacy item parse is therefore necessary but not sufficient. The
+    // proxy must also prove that the EE-facing object materialization will
+    // succeed. That proof belongs in the state-aware object registry layer:
+    //   legacy item object -> verified EE client item object -> quickbar slot
+    //
+    // Until that focused translator exists, item slots are deliberately emitted
+    // as type-0 blanks. This is a strict semantic downgrade, not a passthrough:
+    // it preserves the decompile-owned SetAllButtons boundary and lets verified
+    // spell/general slots apply instead of letting one unproven item abort the
+    // whole quickbar update.
+    let _ = (primary, secondary, recovered_type_tag);
+    false
 }
 
 fn quickbar_item_object_has_verified_ee_materialization(item: &QuickbarItemObject) -> bool {
@@ -270,7 +273,7 @@ fn write_quickbar_item_appearance(
         return None;
     }
     write_ee_quickbar_item_appearance_from_legacy(writer, item)?;
-    append_legacy_ee_visual_transform_identity_map(writer);
+    append_empty_ee_visual_transform_map(writer);
     Some(())
 }
 
@@ -278,38 +281,45 @@ fn write_ee_quickbar_item_appearance_from_legacy(
     writer: &mut QuickbarPacketWriter,
     item: &QuickbarItemObject,
 ) -> Option<()> {
-    // EE `sub_14079FAC0` first reads the base item DWORD, then checks
-    // `ServerSatisfiesBuild(0x2001, 0x23)`. HG's negotiated legacy path is
-    // false, so the model-variation fields remain the Diamond BYTE-sized
-    // shape. Do not widen these to WORDs unless a future captured feature-0x23
-    // path proves the EE-era branch is active for that session.
+    // EE `sub_14079FAC0` first reads the base item DWORD, then checks the
+    // EE protocol feature gate `(0x2001, 0x23)`. In the EE-facing bridge
+    // session this reader takes the EE-era branch: model-part fields that
+    // Diamond's `sub_4514C0` reads as BYTEs are read as WORDs by EE. Emit the
+    // widened shape from the typed legacy bytes instead of copying the legacy
+    // byte body, otherwise the following visual-transform map is parsed from
+    // the wrong offset and the client aborts the whole SetAllButtons update.
     writer.write_dword(item.base_item);
     let appearance = item.appearance_bytes.as_slice();
     match item.appearance_type {
         0 => {
-            writer.write_byte(*appearance.get(CNW_LENGTH_BYTES)?);
+            writer.write_word(u16::from(*appearance.get(CNW_LENGTH_BYTES)?));
         }
         1 => {
             let body_start = CNW_LENGTH_BYTES;
-            let body_end = body_start.checked_add(1 + 6)?;
+            let colors_start = body_start.checked_add(1)?;
+            let colors_end = colors_start.checked_add(6)?;
+            writer.write_word(u16::from(*appearance.get(body_start)?));
             writer
                 .read_buffer
-                .extend_from_slice(appearance.get(body_start..body_end)?);
+                .extend_from_slice(appearance.get(colors_start..colors_end)?);
         }
         2 => {
             let part_start = CNW_LENGTH_BYTES;
-            let part_end = part_start.checked_add(3 + 1)?;
-            writer
-                .read_buffer
-                .extend_from_slice(appearance.get(part_start..part_end)?);
+            for offset in 0..3 {
+                writer.write_word(u16::from(*appearance.get(part_start.checked_add(offset)?)?));
+            }
+            writer.write_byte(*appearance.get(part_start.checked_add(3)?)?);
         }
         3 => {
             let parts_start = CNW_LENGTH_BYTES;
             let colors_start = parts_start.checked_add(19)?;
             let colors_end = colors_start.checked_add(6)?;
+            for byte in appearance.get(parts_start..colors_start)? {
+                writer.write_word(u16::from(*byte));
+            }
             writer
                 .read_buffer
-                .extend_from_slice(appearance.get(parts_start..colors_end)?);
+                .extend_from_slice(appearance.get(colors_start..colors_end)?);
             append_ee_armor_layered_color_table(writer);
         }
         _ => return None,
@@ -326,15 +336,13 @@ fn append_ee_armor_layered_color_table(writer: &mut QuickbarPacketWriter) {
         .extend(std::iter::repeat(0).take(EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES));
 }
 
-fn append_legacy_ee_visual_transform_identity_map(writer: &mut QuickbarPacketWriter) {
-    // `sub_14079FAC0` always calls `sub_140973160` after item appearance.
-    // HG is on the feature-0x23-false branch, so the reader creates a default
-    // scope and consumes one legacy `CAurObjectVisualTransformData` block:
-    // ten 32-bit `LerpFloat` values. The neutral constructor state is
-    // scale=(1,1,1), rotation=(0,0,0,0), translation=(0,0), tail=1.
-    writer
-        .read_buffer
-        .extend_from_slice(&EE_QUICKBAR_LEGACY_VISUAL_TRANSFORM_IDENTITY_BYTES);
+fn append_empty_ee_visual_transform_map(writer: &mut QuickbarPacketWriter) {
+    // `sub_14079FAC0` always calls `sub_140973160` after item appearance. In
+    // the EE feature-0x23 branch, that helper reads two INT32-prefixed
+    // transform maps. Diamond has no quickbar-side transform map, so the exact
+    // neutral expansion is two zero counts.
+    writer.write_i32(0);
+    writer.write_i32(0);
 }
 
 fn write_quickbar_active_item_properties(

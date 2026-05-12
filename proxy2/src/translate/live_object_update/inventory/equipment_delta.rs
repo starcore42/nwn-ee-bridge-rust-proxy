@@ -28,10 +28,7 @@ pub(super) fn apply_0400(
             continue;
         }
         cursor += second_count;
-        next.push(GenericInventoryCandidate {
-            cursor,
-            bits: candidate.bits.saturating_add(second_count),
-        });
+        next.push(candidate.advanced(cursor, candidate.bits.saturating_add(second_count)));
     }
     next
 }

@@ -59,6 +59,9 @@ pub fn claim_or_rewrite_payload_if_verified(
     if rewrite_legacy_bulk_feedback_declared_text_window(payload).is_some() {
         return claim_feedback(payload);
     }
+    if rewrite_legacy_bulk_feedback_stale_declared_continued_text(payload).is_some() {
+        return claim_feedback(payload);
+    }
     rewrite_legacy_bulk_feedback_string(payload)
 }
 
@@ -422,6 +425,75 @@ fn rewrite_legacy_bulk_feedback_declared_text_window(payload: &mut Vec<u8>) -> O
     Some(())
 }
 
+/// HG can emit feedback id 0x00CC with a self-consistent first Diamond-era text
+/// window, then continue appending the rest of the bulk feedback text before the
+/// final compact CNW fragment byte. The EE client-side-message reader for case
+/// 0x0B/id 0x00CC does not consume that stale first-window boundary: it expects
+/// the decompile-backed `WORD feedback id` followed by one DWORD-length
+/// `CExoString`. Rewrite only this bounded legacy shape by deriving the EE
+/// string length from the full validated text window and preserving the final
+/// fragment byte outside the declared read span.
+fn rewrite_legacy_bulk_feedback_stale_declared_continued_text(
+    payload: &mut Vec<u8>,
+) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
+    if declared <= text_start || declared >= payload.len() {
+        return None;
+    }
+    if payload.len().saturating_sub(declared) <= MAX_FRAGMENT_BYTES {
+        return None;
+    }
+    if read_u16_le(payload, READ_START)? != BULK_FEEDBACK_STRING_ID {
+        return None;
+    }
+
+    let stale_text_len =
+        usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
+    if stale_text_len != declared.checked_sub(text_start)? {
+        return None;
+    }
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&stale_text_len) {
+        return None;
+    }
+
+    // This source shape has one final CNW compact-fragment byte after the
+    // visible feedback string. Do not generalize that byte count: if another
+    // capture proves a different fragment layout, it should get its own named
+    // rewrite instead of broadening this one.
+    let fragment_bytes = 1usize;
+    let text_end = payload.len().checked_sub(fragment_bytes)?;
+    if text_end <= declared || text_end <= text_start {
+        return None;
+    }
+    let text = &payload[text_start..text_end];
+    if !feedback_text_window_plausible(text) || !bulk_feedback_text_terminal_marker_valid(text) {
+        return None;
+    }
+
+    let text_len = text.len();
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text_len) {
+        return None;
+    }
+    let declared = text_start.checked_add(text_len)?;
+    let declared_u32 = u32::try_from(declared).ok()?;
+    let text_len_u32 = u32::try_from(text_len).ok()?;
+    payload[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+        .copy_from_slice(&declared_u32.to_le_bytes());
+    payload[READ_START + FEEDBACK_ID_BYTES..READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES]
+        .copy_from_slice(&text_len_u32.to_le_bytes());
+    Some(())
+}
+
+fn bulk_feedback_text_terminal_marker_valid(bytes: &[u8]) -> bool {
+    bytes.ends_with(b"</c>") || bytes.ends_with(b"\n") || bytes.ends_with(b"\r\n")
+}
+
 fn feedback_text_window_plausible(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -579,6 +651,47 @@ mod captured_hg_feedback_93_tests {
         let text_len = read_le_u32(&payload, text_len_offset).expect("EE CExoString length") as usize;
         assert_eq!(declared, payload.len() - summary.fragment_bytes);
         assert_eq!(text_len, declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES));
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn stale_declared_continued_bulk_feedback_rewrites_to_full_ee_text_window() {
+        let legacy =
+            include_bytes!("../../fixtures/client_side_message/hg_welcome_feedback_204.bin");
+        assert_eq!(&legacy[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(
+            read_u16_le(legacy, READ_START),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
+        let stale_declared =
+            usize::try_from(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
+        let stale_text_len =
+            usize::try_from(read_le_u32(legacy, READ_START + FEEDBACK_ID_BYTES).unwrap())
+                .unwrap();
+        assert_eq!(
+            stale_text_len,
+            stale_declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
+        assert!(legacy.len() - stale_declared > MAX_FRAGMENT_BYTES);
+        assert!(claim_payload_if_verified(legacy).is_none());
+
+        let mut payload = legacy.to_vec();
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("captured HG stale-declared 0xCC feedback should rewrite and claim");
+
+        assert_eq!(summary.feedback_id, BULK_FEEDBACK_STRING_ID);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(&payload[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(payload.last(), legacy.last());
+
+        let declared = read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+        let text_len = read_le_u32(&payload, READ_START + FEEDBACK_ID_BYTES).unwrap() as usize;
+        assert_eq!(declared, payload.len() - summary.fragment_bytes);
+        assert_eq!(
+            text_len,
+            declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
+        assert_eq!(&payload[declared - 4..declared], b"</c>");
         assert!(claim_payload_if_verified(&payload).is_some());
     }
 }

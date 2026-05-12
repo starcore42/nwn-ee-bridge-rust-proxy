@@ -148,6 +148,46 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                 // Blank this unowned item instead of continuing out of phase or
                 // forwarding unknown bytes.
                 if !primary.present && !secondary.present && reader.cursor == payload_start {
+                    // Some HG SetAllButtons captures carry byte-owned compact
+                    // item objects at this cursor while the shared fragment
+                    // stream is already out of phase for the two Diamond/EE
+                    // presence BOOLs.  The decompiled EE/Diamond item reader
+                    // still owns the BOOL-gated shape, so do not reinterpret a
+                    // false presence bit as "present".  Instead, treat this as
+                    // the same legacy compact source variant handled below:
+                    // only materialize an item when the focused byte-side item
+                    // parser proves a complete object model and the bounded
+                    // 36-slot scorer proves the next quickbar boundary.
+                    if let Some((next_cursor, primary, secondary)) =
+                        choose_legacy_quickbar_compact_item_end(
+                            read_buffer,
+                            slot,
+                            payload_start,
+                            model_types,
+                            &mut memo,
+                        )
+                    {
+                        tracing::info!(
+                            slot,
+                            button_start,
+                            payload_start,
+                            next_cursor,
+                            fragment_cursor = reader.fragment_cursor,
+                            fragment_bit = reader.fragment_bit,
+                            "server GuiQuickbar_SetAllButtons translated compact byte-owned item tail after absent presence bits"
+                        );
+                        reader = before_button;
+                        reader.cursor = next_cursor;
+                        allow_fragment_tail_slack = true;
+                        buttons.push(QuickbarButton {
+                            kind: QuickbarButtonKind::Item {
+                                primary,
+                                secondary,
+                                recovered_type_tag: false,
+                            },
+                        });
+                        continue;
+                    }
                     let next_cursor = choose_legacy_quickbar_item_end(
                         read_buffer,
                         slot,

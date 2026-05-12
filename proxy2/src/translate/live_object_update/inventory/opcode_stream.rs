@@ -14,10 +14,7 @@ pub(super) fn apply_0100(
         else {
             continue;
         };
-        next.push(GenericInventoryCandidate {
-            cursor,
-            bits: candidate.bits,
-        });
+        next.push(candidate.advanced(cursor, candidate.bits));
     }
     next
 }

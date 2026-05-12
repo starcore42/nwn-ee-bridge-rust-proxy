@@ -233,9 +233,10 @@ pub fn declared_length_repair_candidates(
     //
     // EE's `CNWMessage::SetReadMessage` wants a declared read-buffer window
     // followed by CNW fragment storage. Some legacy live-object bursts carry a
-    // stale/packetized declared value that lands in the middle of a legal
-    // `A/U/W` live-object read stream. Do not treat those bytes as a legacy
-    // fragment prefix until the real read-window boundary has been searched.
+    // stale/packetized declared value that either lands in the middle of a
+    // legal `A/U/W` live-object read stream or overruns the decompile-proven
+    // read cursor by a few CNW fragment-storage bytes. Do not trust the raw
+    // declaration until the real read-window boundary has been searched.
     //
     // This function only proposes transport boundaries. Callers must still run
     // the focused semantic translators and exact `GameObjUpdate_LiveObject`
@@ -248,7 +249,7 @@ pub fn declared_length_repair_candidates(
     let mut candidates = Vec::new();
     for tail_len in 1..=max_tail {
         let split = payload.len().saturating_sub(tail_len);
-        if split <= old_declared_usize || split <= LEGACY_LIVE_BYTES_OFFSET {
+        if split <= LEGACY_LIVE_BYTES_OFFSET {
             break;
         }
         if decode_cnw_msb_valid_bits(&payload[split..]).is_none() {
@@ -798,6 +799,35 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     if bytes.get(offset).copied() == Some(b'A')
+        && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+    {
+        let ee_record_end =
+            offset.saturating_add(CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET + 40);
+        if ee_record_end <= scan_end
+            && looks_like_legacy_creature_add_transform_fields(bytes, offset, ee_record_end)
+            && has_ee_identity_visual_transform_map_at(
+                bytes,
+                offset + CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET,
+                ee_record_end,
+            )
+        {
+            return ee_record_end;
+        }
+
+        let legacy_record_end = offset.saturating_add(CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET);
+        if legacy_record_end <= scan_end
+            && looks_like_legacy_creature_add_transform_fields(bytes, offset, legacy_record_end)
+        {
+            // Diamond `sub_4489F0` consumes exactly OBJECTID, six raw FLOAT
+            // fields, and a WORD for creature add records. The add-map rewrite
+            // owns inserting EE's following 40-byte visual-transform map at
+            // this fixed cursor; do not let generic scanning merge later bytes
+            // into the creature add.
+            return legacy_record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'A')
         && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
     {
         if let Some(record_end) =
@@ -824,6 +854,24 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     let start = scan_end.min(offset + minimum_legacy_live_object_record_length_at(bytes, offset));
+    let inventory_record = bytes.get(offset).copied() == Some(b'I');
+    if inventory_record {
+        if let Some(read_end) =
+            crate::translate::live_object_update::legacy_inventory_prefix_read_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            if read_end > offset && read_end < scan_end {
+                // Diamond `sub_455940` and EE `sub_1407B4F70` consume the
+                // inventory mask in a typed read-buffer order. Large HG
+                // deterministic inventory packets such as D5FF can contain no
+                // early opcode-like boundary for the generic scanner to test,
+                // so use the bounded inventory prefix proof directly instead
+                // of treating the whole remaining live stream as one record.
+                return read_end;
+            }
+        }
+    }
     let mut suppress_inline_string_boundaries = bytes.get(offset).copied() != Some(b'I');
     if bytes.len().saturating_sub(offset) >= 10
         && bytes[offset] == b'U'
@@ -853,8 +901,28 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
             continue;
         }
         if looks_like_legacy_live_object_sub_message_boundary(bytes, candidate) {
+            if inventory_record
+                && crate::translate::live_object_update::legacy_inventory_fragment_bit_count_for_transport(
+                    bytes,
+                    offset,
+                    candidate,
+                )
+                .is_none()
+            {
+                // Diamond `sub_455940` and EE `sub_1407B4F70` consume the
+                // full inventory mask shape before returning to the live-object
+                // dispatcher. This transport-level scanner must therefore use
+                // the same exact inventory cursor proof as
+                // `live_object_update::boundary`; otherwise row text or
+                // fragment bytes inside an `I` record can look like `GQ`/`A`/`U`
+                // and make declared-length repair split a legal inventory span.
+                continue;
+            }
             return candidate;
         }
+    }
+    if inventory_record {
+        return scan_end;
     }
     scan_end
 }
@@ -1168,10 +1236,10 @@ fn looks_like_legacy_creature_add_transform_fields(
     }
 
     for index in 0..6 {
-        let Some(value) = read_f32_le(bytes, offset + 6 + index * 4) else {
-            return false;
-        };
-        if !value.is_finite() || value.abs() > 1_000_000_000.0 {
+        // Diamond `sub_4489F0` and EE's creature-add writer consume these as
+        // raw FLOAT slots. They do not reject NaN/sentinel bit patterns, so the
+        // proxy validator must only prove the six fields are present.
+        if read_f32_le(bytes, offset + 6 + index * 4).is_none() {
             return false;
         }
     }
@@ -1559,24 +1627,19 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         "server->client live-object placeable add candidate"
     );
 
-    // EE `sub_1407A7800` resolves the add-record appearance row through
-    // `placeables.2da` and then immediately tries to load the resulting model
-    // resref. Diamond/HG UserNN placeable rows intentionally have no standalone
-    // model at that row; the usable model comes from the area/static placeable
-    // context. Until the Rust bridge carries that context across from
-    // `Area_ClientArea`, strict translation must not emit these as ordinary EE
-    // live adds or EE will try to load USER.mdl and crash during startup.
-    if area_context.is_some_and(|context| context.contains_placeable_id(object_id))
-        || is_legacy_user_defined_placeable_appearance(appearance)
-    {
-        let source_span = required_source_bits;
-        if bits.len().saturating_sub(*bit_cursor) < source_span {
-            return None;
-        }
-        let bytes_removed = (*record_end - record_offset) as u32;
-        bits.drain(*bit_cursor..(*bit_cursor + source_span));
-        bytes.drain(record_offset..*record_end);
-        *record_end = record_offset;
+    // EE `CNWCArea::LoadArea` (`sub_1407D95A0`) and Diamond's equivalent
+    // static-placeable loader both key their coalescing on object id, but live
+    // `U/9` updates still go through `HandleServerToPlayerGenericObjectUpdate`
+    // and require an active object-table entry for that same id. Driver-only HG
+    // captures proved that deleting this `A/9` record, even when the latest
+    // area stream mentioned the same id, makes EE log "Received update message
+    // for object that doesn't exist" on the following update. Keep overlap and
+    // legacy UserNN rows diagnostic-only; model/resource compatibility belongs
+    // in a typed placeable writer, not in an object-lifecycle suppression rule.
+    let area_static_duplicate =
+        area_context.is_some_and(|context| context.contains_placeable_id(object_id));
+    let legacy_user_defined_static = is_legacy_user_defined_placeable_appearance(appearance);
+    if area_static_duplicate || legacy_user_defined_static {
         let mut area_rows = String::new();
         if let Some(context) = area_context {
             for (index, row) in context.rows_with_placeable_id(object_id).enumerate() {
@@ -1592,19 +1655,12 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         tracing::info!(
             object_id = format_args!("0x{object_id:08X}"),
             appearance,
-            source_bits = source_span,
+            area_static_duplicate,
+            legacy_user_defined_static,
+            source_bits = required_source_bits,
             area_rows = %area_rows,
-            "server->client live-object placeable add suppressed because Area_ClientArea already owns it"
+            "server->client live-object placeable add overlaps area/static context; retaining add so later updates have an active EE object"
         );
-        return Some(DoorPlaceableAddRewrite {
-            maps_inserted: 0,
-            bytes_inserted: 0,
-            bytes_removed,
-            fragment_bits_changed: true,
-            record_removed: true,
-            area_placeable_adds_suppressed: 1,
-            legacy_door_model_tokens_removed: 0,
-        });
     }
 
     let already_has_ee_visual_map =
@@ -2456,6 +2512,7 @@ fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
             | 0x0500_0000
             | 0x0800_0000
             | 0x3500_0000
+            | 0xAC00_0000
     ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
         .contains(&object_id)
 }
@@ -2879,10 +2936,9 @@ mod tests {
             Some(&area_context),
         )
         .expect("placeable add visual-transform rewrite");
-        assert_eq!(visual_summary.area_placeable_adds_suppressed, 1);
         assert!(
-            visual_summary.maps_inserted >= 3,
-            "expected board placeable maps after Portal suppression, got {visual_summary:?}"
+            visual_summary.maps_inserted >= 4,
+            "expected board and Portal placeable maps to be retained and rewritten, got {visual_summary:?}"
         );
 
         crate::translate::live_object_update::rewrite_update_records_payload_if_possible(

@@ -87,12 +87,6 @@ pub(super) fn try_repair_for_creature_update(
             record_end,
             &candidate_bits,
             &mut trial_cursor,
-        ) || creature::legacy_3967_update_was_already_consumed_to_cursor(
-            live_bytes,
-            offset,
-            record_end,
-            &candidate_bits,
-            bit_cursor,
         ) {
             let old_bits_len = fragment_bits.len();
             let new_bits_len = candidate_bits.len();

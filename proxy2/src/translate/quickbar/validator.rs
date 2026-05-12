@@ -5,9 +5,10 @@ use super::*;
 ///
 /// This intentionally validates the receiver shape from EE decompiles:
 /// `sub_14079DB00` loops 36 slots, type 1 calls `sub_14079FAC0` for each item
-/// object, and `sub_14079FAC0` then calls `sub_140973160` for the EE visual
-/// transform map. The validator is therefore a post-translation proof, not a
-/// generic "known opcode" allow-list.
+/// object, `sub_14079FAC0` widens the Diamond item model-part bytes to the
+/// EE feature-0x23 WORD fields, and then calls `sub_140973160` for the EE
+/// visual-transform maps. The validator is therefore a post-translation proof,
+/// not a generic "known opcode" allow-list.
 pub(crate) fn ee_set_all_buttons_payload_shape_valid(payload: &[u8]) -> bool {
     ee_set_all_buttons_slot_types_if_valid(payload).is_some()
 }
@@ -150,16 +151,16 @@ fn validate_ee_quickbar_item_appearance(
     let model_type = *model_types.get(usize::try_from(base_item).ok()?)?;
     match model_type {
         0 => {
-            reader.read_byte()?;
+            reader.read_word()?;
         }
         1 => {
-            reader.skip_bytes(1 + 6)?;
+            reader.skip_bytes(2 + 6)?;
         }
         2 => {
-            reader.skip_bytes(3 + 1)?;
+            reader.skip_bytes(2 + 2 + 2 + 1)?;
         }
         3 => {
-            reader.skip_bytes(19 + 6)?;
+            reader.skip_bytes((19 * 2) + 6)?;
             reader.skip_bytes(EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES)?;
         }
         _ => return None,
@@ -168,23 +169,16 @@ fn validate_ee_quickbar_item_appearance(
 }
 
 fn validate_empty_ee_visual_transform_map(reader: &mut QuickbarPacketReader<'_>) -> bool {
-    // EE `sub_140973160` uses the feature-0x23-false legacy branch for HG:
-    // one default-scope transform data block, ten 32-bit `LerpFloat` values.
-    // The bridge emits only the identity block until a captured quickbar item
-    // proves non-empty transform ownership.
-    let start = reader.cursor;
-    let Some(end) = start.checked_add(EE_QUICKBAR_LEGACY_VISUAL_TRANSFORM_IDENTITY_BYTES.len())
-    else {
+    // EE `sub_140973160` takes the feature-0x23 count-prefixed path in this
+    // EE-facing session. The translator currently owns only the neutral
+    // transform state, represented by two empty maps.
+    let Some(first_count) = reader.read_dword() else {
         return false;
     };
-    if end > reader.read_buffer.len() {
+    let Some(second_count) = reader.read_dword() else {
         return false;
-    }
-    if reader.read_buffer[start..end] != EE_QUICKBAR_LEGACY_VISUAL_TRANSFORM_IDENTITY_BYTES {
-        return false;
-    }
-    reader.cursor = end;
-    true
+    };
+    first_count == 0 && second_count == 0
 }
 
 fn validate_ee_quickbar_active_item_properties(

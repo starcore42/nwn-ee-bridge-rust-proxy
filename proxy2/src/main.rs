@@ -17,6 +17,19 @@ fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let _log_guard = log::init(&config).context("initializing logging")?;
 
+    if config.packet_dump {
+        if let Some(log_path) = &config.log {
+            if let Some(parent) = log_path.parent() {
+                let quarantine_dir = parent.join("quarantine");
+                translate::diagnostics::set_default_diagnostic_dump_dir(quarantine_dir.clone());
+                tracing::info!(
+                    path = %quarantine_dir.display(),
+                    "default quarantine dump directory enabled from proxy log path"
+                );
+            }
+        }
+    }
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         listen = %config.listen,
