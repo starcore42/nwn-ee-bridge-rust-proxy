@@ -158,3 +158,4 @@ still experimental, not a finished public content pipeline.
 - Added an EE ACK-gated hold for post-area server packets after synthetic LoadBar_End to reduce load-transition races.
 - Added broader GUI inventory/live-object fixture coverage, client input repairs, NWSync module-manifest handling, and coalesced stream sequencing diagnostics.
 - f73b44f: Added Diamond/EE local bridge fixture coverage, proxy-owned EE server dialect handshakes, zlib zero-fill stream handling, and stricter live-object/quickbar parsing.
+- Removed private capture fixture payloads from the public repository and rewrote history so the runtime/source snapshot stays fixture-free.

@@ -13,6 +13,14 @@ nwncdkey.ini
 /logs/
 *.log
 *.jsonl
+*.bin
+*.cap
+*.pcap
+*.dmp
+
+# Private capture fixtures.
+/proxy2/fixtures/
+/proxy2/src/fixtures/
 
 # Local game assets and generated content.
 /hg-bridge-assets/
