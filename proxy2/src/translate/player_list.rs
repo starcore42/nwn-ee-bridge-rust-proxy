@@ -35,6 +35,13 @@
 //!   repair that declaration after an exact legacy PlayerList parse proves a
 //!   unique read-body/tail split; following live-object continuation bytes are
 //!   therefore rejected instead of being folded into PlayerList.
+//! - EE PlayerList object-id fields are read with `ReadOBJECTIDServer`, whose
+//!   decompile strips the EE server-object marker bit and preserves only the
+//!   `OBJECT_INVALID` wire value (`0x7f000000`) as invalid. Diamond writes raw
+//!   DWORD object ids in this family, so the legacy `0xffff_fffe` no-object
+//!   sentinel must be translated to EE's invalid wire value here. This repair
+//!   is intentionally scoped to PlayerList's decompile-confirmed object-id
+//!   fields; other packet families may use legacy sentinels internally.
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const PLAYER_LIST_MAJOR: u8 = 0x0A;
@@ -48,6 +55,9 @@ const CRESREF_TEXT_BYTES: usize = 16;
 const MAX_REASONABLE_PAYLOAD: usize = 256 * 1024;
 const EE_EMPTY_IDENTITY: [u8; 5] = [0, 0, 0, 0, 0];
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const NWN_OBJECT_INVALID: u32 = 0x7F00_0000;
+const EE_SERVER_OBJECT_ID_MARKER_BIT: u32 = 0x8000_0000;
+const DIAMOND_OBJECT_INVALID_SENTINEL: u32 = 0xFFFF_FFFE;
 
 #[derive(Debug, Clone)]
 pub struct PlayerListRewriteSummary {
@@ -62,6 +72,7 @@ pub struct PlayerListRewriteSummary {
     pub consumed_fragment_bits: u32,
     pub fragments_rewritten: bool,
     pub locstring_length_repairs: u32,
+    pub object_id_repairs: u32,
     pub old_payload_length: usize,
     pub new_payload_length: usize,
     pub normalized_prefixed_short_declared: bool,
@@ -109,6 +120,7 @@ struct ParsedPlayerList {
     entry_count: u8,
     insert_offsets: Vec<usize>,
     locstring_repairs: Vec<LegacyLocStringLengthRepair>,
+    object_id_repairs: Vec<(usize, u32)>,
     consumed_fragment_bits: usize,
     consumed_fragment_bytes: usize,
     final_fragment_bits: u8,
@@ -173,6 +185,7 @@ enum PlayerListReadMutation {
     InsertLengthPrefix { offset: usize, length: u32 },
     RemoveZeroLengthSlot { offset: usize },
     WriteLength { offset: usize, length: u32 },
+    WriteObjectId { offset: usize, value: u32 },
 }
 
 impl PlayerListReadMutation {
@@ -181,14 +194,15 @@ impl PlayerListReadMutation {
             Self::InsertIdentity { offset }
             | Self::InsertLengthPrefix { offset, .. }
             | Self::RemoveZeroLengthSlot { offset }
-            | Self::WriteLength { offset, .. } => offset,
+            | Self::WriteLength { offset, .. }
+            | Self::WriteObjectId { offset, .. } => offset,
         }
     }
 
     fn sort_rank(self) -> u8 {
         match self {
             Self::RemoveZeroLengthSlot { .. } => 0,
-            Self::WriteLength { .. } => 1,
+            Self::WriteLength { .. } | Self::WriteObjectId { .. } => 1,
             Self::InsertLengthPrefix { .. } => 2,
             Self::InsertIdentity { .. } => 3,
         }
@@ -270,6 +284,9 @@ pub fn rewrite_player_list_payload_if_possible(
     for repair in parsed.locstring_repairs.iter().copied() {
         enqueue_legacy_locstring_length_repair(repair, &mut mutations)?;
     }
+    for (offset, value) in parsed.object_id_repairs.iter().copied() {
+        mutations.push(PlayerListReadMutation::WriteObjectId { offset, value });
+    }
     for offset in parsed.insert_offsets.iter().copied() {
         if offset > layout.read_size {
             return None;
@@ -303,6 +320,7 @@ pub fn rewrite_player_list_payload_if_possible(
         consumed_fragment_bits: parsed.consumed_fragment_bits as u32,
         fragments_rewritten,
         locstring_length_repairs: parsed.locstring_repairs.len() as u32,
+        object_id_repairs: parsed.object_id_repairs.len() as u32,
         old_payload_length,
         new_payload_length: payload.len(),
         normalized_prefixed_short_declared: layout.normalized_prefixed_short_declared,
@@ -613,8 +631,7 @@ fn parse_player_list_cnw(
 
     if minor == PLAYER_LIST_DELETE_MINOR {
         let _deleted_player_id = reader.read_u32()?;
-        let consumed_fragment_bits =
-            reader.fragment_cursor * 8 + usize::from(reader.fragment_bit);
+        let consumed_fragment_bits = reader.fragment_cursor * 8 + usize::from(reader.fragment_bit);
         let consumed_fragment_bytes =
             reader.fragment_cursor + usize::from(reader.fragment_bit != 0);
         if reader.cursor != read_size
@@ -627,6 +644,7 @@ fn parse_player_list_cnw(
             entry_count: 1,
             insert_offsets: Vec::new(),
             locstring_repairs: Vec::new(),
+            object_id_repairs: Vec::new(),
             consumed_fragment_bits,
             consumed_fragment_bytes,
             final_fragment_bits,
@@ -644,9 +662,17 @@ fn parse_player_list_cnw(
 
     let mut insert_offsets = Vec::new();
     let mut locstring_repairs = Vec::new();
+    let mut object_id_repairs = Vec::new();
     for _ in 0..entry_count {
         let _player_id = reader.read_u32()?;
-        let _player_object = reader.read_u32()?;
+        let player_object_offset = reader.cursor;
+        let player_object = reader.read_u32()?;
+        record_player_list_object_id_rewrite(
+            player_object,
+            player_object_offset,
+            identity_shape,
+            &mut object_id_repairs,
+        )?;
         let _dm = reader.read_bool()?;
         reader.read_string(256)?;
         let has_creature = reader.read_bool()?;
@@ -668,7 +694,14 @@ fn parse_player_list_cnw(
         }
 
         if has_creature {
-            let _creature_object = reader.read_u32()?;
+            let creature_object_offset = reader.cursor;
+            let creature_object = reader.read_u32()?;
+            record_player_list_object_id_rewrite(
+                creature_object,
+                creature_object_offset,
+                identity_shape,
+                &mut object_id_repairs,
+            )?;
             let first_locstring = reader.read_locstring(false, None, &mut locstring_repairs)?;
             reader.read_locstring(
                 minor == PLAYER_LIST_ALL_MINOR
@@ -696,6 +729,7 @@ fn parse_player_list_cnw(
         entry_count,
         insert_offsets,
         locstring_repairs,
+        object_id_repairs,
         consumed_fragment_bits,
         consumed_fragment_bytes,
         final_fragment_bits,
@@ -840,7 +874,10 @@ impl<'a> Reader<'a> {
                 break;
             }
             let raw = self.read_buffer.get(raw_start..raw_end)?;
-            if !raw.iter().all(|byte| byte.is_ascii_graphic() || *byte == b' ') {
+            if !raw
+                .iter()
+                .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+            {
                 continue;
             }
             if self.read_buffer.get(raw_end..suffix_end)? != [0, 0, 0, 0] {
@@ -894,11 +931,13 @@ impl<'a> Reader<'a> {
                 continue;
             }
             self.cursor = suffix_end;
-            return Some(LegacyLocStringLengthRepair::MoveRawPrefixIntoPreviousEmpty {
-                previous_length_offset,
-                raw_start,
-                raw_end,
-            });
+            return Some(
+                LegacyLocStringLengthRepair::MoveRawPrefixIntoPreviousEmpty {
+                    previous_length_offset,
+                    raw_start,
+                    raw_end,
+                },
+            );
         }
         None
     }
@@ -977,11 +1016,13 @@ impl<'a> Reader<'a> {
                 continue;
             }
             self.cursor = raw_end;
-            return Some(LegacyLocStringLengthRepair::ExtendCurrentEmptyBeforePortrait {
-                length_offset,
-                raw_start,
-                raw_end,
-            });
+            return Some(
+                LegacyLocStringLengthRepair::ExtendCurrentEmptyBeforePortrait {
+                    length_offset,
+                    raw_start,
+                    raw_end,
+                },
+            );
         }
         None
     }
@@ -1012,6 +1053,35 @@ fn looks_like_ee_identity(reader: &Reader<'_>) -> bool {
 fn skip_ee_identity(reader: &mut Reader<'_>) -> Option<()> {
     reader.read_u8()?;
     reader.read_string(256)
+}
+
+fn record_player_list_object_id_rewrite(
+    object_id: u32,
+    offset: usize,
+    identity_shape: PlatformIdentityShape,
+    object_id_repairs: &mut Vec<(usize, u32)>,
+) -> Option<()> {
+    let ee_wire = ee_player_list_object_id_wire_value(object_id);
+    match identity_shape {
+        PlatformIdentityShape::InsertMissing => {
+            if ee_wire != object_id {
+                object_id_repairs.push((offset, ee_wire));
+            }
+            Some(())
+        }
+        PlatformIdentityShape::EeRequired => (ee_wire == object_id).then_some(()),
+    }
+}
+
+fn ee_player_list_object_id_wire_value(object_id: u32) -> u32 {
+    if object_id == DIAMOND_OBJECT_INVALID_SENTINEL {
+        return NWN_OBJECT_INVALID;
+    }
+    if object_id == NWN_OBJECT_INVALID || (object_id & EE_SERVER_OBJECT_ID_MARKER_BIT) != 0 {
+        object_id
+    } else {
+        object_id | EE_SERVER_OBJECT_ID_MARKER_BIT
+    }
 }
 
 fn decode_cnw_fragment_bits(fragment_bytes: &[u8]) -> Option<Vec<u8>> {
@@ -1187,6 +1257,10 @@ fn apply_player_list_read_mutations(
                 let write_at = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
                 write_u32_le(payload, write_at, length)?;
             }
+            PlayerListReadMutation::WriteObjectId { offset, value } => {
+                let write_at = HIGH_LEVEL_HEADER_BYTES.checked_add(offset)?;
+                write_u32_le(payload, write_at, value)?;
+            }
         }
     }
     Some(())
@@ -1211,10 +1285,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_all_rewrites_diamond_invalid_object_sentinels_to_ee_invalid_wire() {
+        let mut payload = build_legacy_player_list_all_fixture_with_object_ids(
+            DIAMOND_OBJECT_INVALID_SENTINEL,
+            DIAMOND_OBJECT_INVALID_SENTINEL,
+            DIAMOND_OBJECT_INVALID_SENTINEL,
+            DIAMOND_OBJECT_INVALID_SENTINEL,
+        );
+
+        let summary = rewrite_player_list_payload_if_possible(&mut payload)
+            .expect("legacy PlayerList_All object-id sentinels should normalize to EE");
+
+        assert_eq!(summary.minor, PLAYER_LIST_ALL_MINOR);
+        assert_eq!(summary.entries, 2);
+        assert_eq!(summary.object_id_repairs, 4);
+        assert!(!payload
+            .windows(4)
+            .any(|window| window == DIAMOND_OBJECT_INVALID_SENTINEL.to_le_bytes()));
+        assert_eq!(
+            payload
+                .windows(4)
+                .filter(|window| *window == NWN_OBJECT_INVALID.to_le_bytes())
+                .count(),
+            4
+        );
+        assert!(ee_player_list_payload_shape_valid(&payload));
+    }
+
+    #[test]
     fn hg_legacy_all_repairs_self_second_name_length_slot() {
-        let mut payload =
-            include_bytes!("../../fixtures/player_list/hg_player_list_all_suffix_length_legacy.bin")
-                .to_vec();
+        let mut payload = include_bytes!(
+            "../../fixtures/player_list/hg_player_list_all_suffix_length_legacy.bin"
+        )
+        .to_vec();
 
         let summary = rewrite_player_list_payload_if_possible(&mut payload)
             .expect("HG PlayerList_All suffix-length locstring should be normalized");
@@ -1228,9 +1331,10 @@ mod tests {
 
     #[test]
     fn hg_streamed_all_claims_after_transport_continuations_are_reassembled() {
-        let mut payload =
-            include_bytes!("../../fixtures/player_list/hg_player_list_all_short_declared_exact_tail_legacy.bin")
-                .to_vec();
+        let mut payload = include_bytes!(
+            "../../fixtures/player_list/hg_player_list_all_short_declared_exact_tail_legacy.bin"
+        )
+        .to_vec();
 
         let summary = rewrite_player_list_payload_if_possible(&mut payload)
             .expect("stream-reassembled HG PlayerList_All should normalize to EE");
@@ -1244,11 +1348,10 @@ mod tests {
 
     #[test]
     fn hg_coalesced_all_title_locstring_variants_rewrite_to_exact_ee_shape() {
-        let mut payload =
-            include_bytes!(
-                "../../fixtures/player_list/hg_player_list_all_title_locstring_variants_seq34.bin"
-            )
-            .to_vec();
+        let mut payload = include_bytes!(
+            "../../fixtures/player_list/hg_player_list_all_title_locstring_variants_seq34.bin"
+        )
+        .to_vec();
 
         let summary = rewrite_player_list_payload_if_possible(&mut payload)
             .expect("HG coalesced PlayerList_All title locstring variants should normalize");
@@ -1281,11 +1384,37 @@ mod tests {
     }
 
     fn build_legacy_player_list_all_fixture() -> Vec<u8> {
+        build_legacy_player_list_all_fixture_with_object_ids(
+            0xFFFF_FFAD,
+            0x0000_0001,
+            0xFFFF_FFAD,
+            0x0000_0002,
+        )
+    }
+
+    fn build_legacy_player_list_all_fixture_with_object_ids(
+        alpha_player_object_id: u32,
+        alpha_creature_object_id: u32,
+        beta_player_object_id: u32,
+        beta_creature_object_id: u32,
+    ) -> Vec<u8> {
         let mut read = Vec::new();
         read.extend_from_slice(&[0, 0, 0, 0]);
         read.push(2);
-        append_legacy_entry(&mut read, 1, [0x01, 0x00, 0x00, 0x00], "Alpha");
-        append_legacy_entry(&mut read, 2, [0x02, 0x00, 0x00, 0x00], "Beta");
+        append_legacy_entry(
+            &mut read,
+            1,
+            alpha_player_object_id,
+            alpha_creature_object_id,
+            "Alpha",
+        );
+        append_legacy_entry(
+            &mut read,
+            2,
+            beta_player_object_id,
+            beta_creature_object_id,
+            "Beta",
+        );
 
         let declared = u32::try_from(read.len() + HIGH_LEVEL_HEADER_BYTES)
             .expect("fixture declared length should fit");
@@ -1305,13 +1434,14 @@ mod tests {
     fn append_legacy_entry(
         read: &mut Vec<u8>,
         player_id: u32,
-        creature_object_id: [u8; 4],
+        player_object_id: u32,
+        creature_object_id: u32,
         name: &str,
     ) {
         read.extend_from_slice(&player_id.to_le_bytes());
-        read.extend_from_slice(&0xFFFF_FFADu32.to_le_bytes());
+        read.extend_from_slice(&player_object_id.to_le_bytes());
         append_string(read, name);
-        read.extend_from_slice(&creature_object_id);
+        read.extend_from_slice(&creature_object_id.to_le_bytes());
         append_string(read, "");
         append_string(read, "");
         read.extend_from_slice(&1u16.to_le_bytes());

@@ -19,11 +19,10 @@ use crate::{
 };
 
 use super::{
-    CNW_LENGTH_BYTES, SessionState,
+    CNW_LENGTH_BYTES, SessionState, deferred_module_resources,
     deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate},
-    deferred_module_resources,
     hex_prefix, inflated_cnw_fragment_offset_valid,
-    queue_area_client_area_side_effects_after_sequence,
+    login_waypoint, queue_area_client_area_side_effects_after_sequence,
     reassembly::{
         self, BufferedFrame, EE_SAFE_M_FRAME_DATAGRAM_BYTES, InflatedGameplayPayload,
         ServerDeflatedReassembly,
@@ -206,11 +205,15 @@ fn split_rewritten_coalesced_records(
         // an ordinary `M` frame and repair its frame-level CRC.
         packet[0] = b'M';
         if cumulative_inserted != 0 {
-            write_be_u16(&mut packet, 3, original_sequence.wrapping_add(cumulative_inserted))
-                .then_some(())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("failed to locally shift split coalesced record sequence")
-                })?;
+            write_be_u16(
+                &mut packet,
+                3,
+                original_sequence.wrapping_add(cumulative_inserted),
+            )
+            .then_some(())
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to locally shift split coalesced record sequence")
+            })?;
         }
         let mut output_records = if packet.len() > EE_SAFE_M_FRAME_DATAGRAM_BYTES {
             split_oversized_deflated_coalesced_record(index, packet)?
@@ -271,7 +274,10 @@ fn split_oversized_deflated_coalesced_record(
     packet: Vec<u8>,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
     let view = MFrameView::parse(&packet).ok_or_else(|| {
-        anyhow::anyhow!("rewritten coalesced record {} did not parse as standalone M frame", index)
+        anyhow::anyhow!(
+            "rewritten coalesced record {} did not parse as standalone M frame",
+            index
+        )
     })?;
     let deflated = view.deflated.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -289,7 +295,10 @@ fn split_oversized_deflated_coalesced_record(
     }
     let payload_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
     let Some(combined_payload) = packet.get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end) else {
-        anyhow::bail!("rewritten coalesced deflated record {} payload overflow", index);
+        anyhow::bail!(
+            "rewritten coalesced deflated record {} payload overflow",
+            index
+        );
     };
     let combined_payload = combined_payload.to_vec();
     let compressed_chunk = combined_payload[CNW_LENGTH_BYTES..].to_vec();
@@ -534,6 +543,7 @@ fn rewrite_coalesced_record_for_ee(
             Some(&state.area_context.latest_area_placeables),
             server_dispatch::SemanticScope::CoalescedSpan,
             Some(&state.module_resources),
+            Some(&state.semantic.objects),
             None,
         );
         if semantic_rewrite_summary.should_quarantine()
@@ -562,6 +572,21 @@ fn rewrite_coalesced_record_for_ee(
             )?;
         }
         let verified_proof = semantic_rewrite_summary.verified_proof();
+        // `Login_GetWaypoint` can be carried as a later packetized record
+        // inside a coalesced server window. Those records use the same
+        // reliable-window header fields, but their first byte is not required
+        // to be a standalone `M`, so `MFrameView::parse(record)` is too narrow
+        // here. Keep the semantic side effect in `login_waypoint.rs`; this
+        // layer supplies only the already-verified payload and record-local
+        // sequence/ACK fields.
+        let record_sequence = read_be_u16(record, 3).unwrap_or(sequence);
+        let record_ack_sequence = read_be_u16(record, 5).unwrap_or(ack_sequence);
+        login_waypoint::maybe_queue_empty_waypoint_response_payload(
+            state,
+            &payload,
+            record_sequence,
+            record_ack_sequence,
+        )?;
         crate::translate::semantic::observe_verified_payload(
             &mut state.semantic,
             crate::packet::Direction::ServerToClient,
@@ -672,7 +697,19 @@ fn rewrite_coalesced_record_for_ee(
             used_server_stream,
             "server coalesced M deflated record quarantined: no high-level payload"
         );
-        return consume_coalesced_record(record, offset, "deflated-no-high-level");
+        let outcome = consume_coalesced_record(record, offset, "deflated-no-high-level")?;
+        if used_server_stream {
+            remember_completed_coalesced_stream_record(
+                state,
+                sequence,
+                offset,
+                payload_length,
+                deflated.inflated_length,
+                compressed,
+                &outcome,
+            );
+        }
+        return Ok(outcome);
     }
 
     let semantic_rewrite_summary = server_dispatch::rewrite_inflated_payload_for_ee(
@@ -680,6 +717,7 @@ fn rewrite_coalesced_record_for_ee(
         Some(&state.area_context.latest_area_placeables),
         server_dispatch::SemanticScope::CoalescedSpan,
         Some(&state.module_resources),
+        Some(&state.semantic.objects),
         None,
     );
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
@@ -694,7 +732,19 @@ fn rewrite_coalesced_record_for_ee(
             prefix = %hex_prefix(&inflated, 32),
             "server coalesced M deflated record quarantined: required semantic translation is missing"
         );
-        return consume_coalesced_record(record, offset, reason);
+        let outcome = consume_coalesced_record(record, offset, reason)?;
+        if used_server_stream {
+            remember_completed_coalesced_stream_record(
+                state,
+                sequence,
+                offset,
+                payload_length,
+                deflated.inflated_length,
+                compressed,
+                &outcome,
+            );
+        }
+        return Ok(outcome);
     }
     if !inflated_cnw_fragment_offset_valid(&inflated) {
         dump_invalid_inflated_payload_for_span(
@@ -708,7 +758,19 @@ fn rewrite_coalesced_record_for_ee(
             prefix = %hex_prefix(&inflated, 32),
             "server coalesced M deflated record quarantined: invalid CNW fragment offset"
         );
-        return consume_coalesced_record(record, offset, "invalid-cnw-fragment-offset");
+        let outcome = consume_coalesced_record(record, offset, "invalid-cnw-fragment-offset")?;
+        if used_server_stream {
+            remember_completed_coalesced_stream_record(
+                state,
+                sequence,
+                offset,
+                payload_length,
+                deflated.inflated_length,
+                compressed,
+                &outcome,
+            );
+        }
+        return Ok(outcome);
     }
     if let Some(summary) = semantic_rewrite_summary.area_rewrite.as_ref() {
         state.area_context.latest_area_placeables = summary.placeable_context.clone();
@@ -741,7 +803,19 @@ fn rewrite_coalesced_record_for_ee(
             new_payload_length,
             "server coalesced M deflated record quarantined: rewritten payload too large"
         );
-        return consume_coalesced_record(record, offset, "rewritten-payload-too-large");
+        let outcome = consume_coalesced_record(record, offset, "rewritten-payload-too-large")?;
+        if used_server_stream {
+            remember_completed_coalesced_stream_record(
+                state,
+                sequence,
+                offset,
+                payload_length,
+                deflated.inflated_length,
+                compressed,
+                &outcome,
+            );
+        }
+        return Ok(outcome);
     }
 
     let mut out_record = record[..LEGACY_GAMEPLAY_PAYLOAD_OFFSET].to_vec();
@@ -1036,9 +1110,16 @@ mod tests {
         current_record[7] = 0x01;
         current_record[8..10].copy_from_slice(&0x2222u16.to_be_bytes());
 
-        let replay =
-            replay_completed_coalesced_stream_record(&state, &current_record, 34, 67, 381, 604, &compressed)
-                .expect("matching coalesced stream duplicate should replay cached proof");
+        let replay = replay_completed_coalesced_stream_record(
+            &state,
+            &current_record,
+            34,
+            67,
+            381,
+            604,
+            &compressed,
+        )
+        .expect("matching coalesced stream duplicate should replay cached proof");
 
         assert!(replay.changed);
         assert!(replay.dropped);
@@ -1048,6 +1129,97 @@ mod tests {
         assert_eq!(replay.record[7] & 0x01, 0);
         assert_eq!(&replay.record[10..12], &outcome.record[10..12]);
         assert_eq!(replay.proof, proof);
+    }
+
+    #[test]
+    fn coalesced_login_get_waypoint_queues_empty_response() {
+        let mut record = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        record[0] = b'M';
+        record[3..5].copy_from_slice(&21u16.to_be_bytes());
+        record[5..7].copy_from_slice(&72u16.to_be_bytes());
+        record[7] = 0x0A;
+        record[8..10].copy_from_slice(&1u16.to_be_bytes());
+        record[10..12].copy_from_slice(&3u16.to_be_bytes());
+        record[LEGACY_GAMEPLAY_PAYLOAD_OFFSET..].copy_from_slice(&[0x70, 0x02, 0x0C]);
+        assert!(encode_legacy_m_crc(&mut record));
+
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(74);
+
+        let outcome = rewrite_coalesced_record_for_ee(
+            &record,
+            0x0A,
+            Some(HighLevel {
+                envelope: 0x70,
+                major: 0x02,
+                minor: 0x0C,
+            }),
+            None,
+            3,
+            &mut state,
+            21,
+            72,
+            0,
+        )
+        .expect("coalesced login waypoint should translate");
+
+        assert_eq!(outcome.proof.primary_family(), Some(VerifiedFamily::Login));
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        let pending = state.sequence.pending_client_to_server_packets.remove(0);
+        let pending_view = MFrameView::parse(&pending).expect("queued response should parse");
+        assert_eq!(pending_view.sequence, 75);
+        assert_eq!(pending_view.ack_sequence, 21);
+        assert_eq!(
+            pending_view.high.map(|high| (high.major, high.minor)),
+            Some((0x02, 0x0D))
+        );
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(74));
+    }
+
+    #[test]
+    fn coalesced_login_get_waypoint_non_primary_span_queues_empty_response() {
+        let mut record = vec![0xCCu8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + 3];
+        record[3..5].copy_from_slice(&22u16.to_be_bytes());
+        record[5..7].copy_from_slice(&72u16.to_be_bytes());
+        record[7] = 0x0A;
+        record[8..10].copy_from_slice(&1u16.to_be_bytes());
+        record[10..12].copy_from_slice(&3u16.to_be_bytes());
+        record[LEGACY_GAMEPLAY_PAYLOAD_OFFSET..].copy_from_slice(&[0x70, 0x02, 0x0C]);
+
+        let mut state = SessionState::default();
+        state.sequence.latest_client_sequence_from_client = Some(74);
+
+        let outcome = rewrite_coalesced_record_for_ee(
+            &record,
+            0x0A,
+            Some(HighLevel {
+                envelope: 0x70,
+                major: 0x02,
+                minor: 0x0C,
+            }),
+            None,
+            3,
+            &mut state,
+            21,
+            72,
+            202,
+        )
+        .expect("non-primary coalesced login waypoint span should translate");
+
+        assert_eq!(outcome.proof.primary_family(), Some(VerifiedFamily::Login));
+        assert_eq!(state.sequence.pending_client_to_server_packets.len(), 1);
+        let pending = state.sequence.pending_client_to_server_packets.remove(0);
+        let pending_view = MFrameView::parse(&pending).expect("queued response should parse");
+        assert_eq!(pending_view.sequence, 75);
+        assert_eq!(pending_view.ack_sequence, 22);
+        assert_eq!(
+            pending_view.high.map(|high| (high.major, high.minor)),
+            Some((0x02, 0x0D))
+        );
+        assert_eq!(
+            state.login_waypoint.last_server_get_waypoint_sequence,
+            Some(22)
+        );
     }
 
     #[test]
@@ -1072,22 +1244,22 @@ mod tests {
         let mut state = SessionState::default();
         let (packets, pre_shifted) = split_rewritten_coalesced_records(
             vec![
-            CoalescedRecordRewrite {
-                record: primary,
-                proof: VerifiedProof::family(VerifiedFamily::Chat),
-                changed: false,
-                dropped: false,
-                rewritten_deflated: false,
-                abort_window_if_primary_consumed: false,
-            },
-            CoalescedRecordRewrite {
-                record: span,
-                proof: VerifiedProof::family(VerifiedFamily::GameObjUpdateObjectControl),
-                changed: true,
-                dropped: false,
-                rewritten_deflated: false,
-                abort_window_if_primary_consumed: false,
-            },
+                CoalescedRecordRewrite {
+                    record: primary,
+                    proof: VerifiedProof::family(VerifiedFamily::Chat),
+                    changed: false,
+                    dropped: false,
+                    rewritten_deflated: false,
+                    abort_window_if_primary_consumed: false,
+                },
+                CoalescedRecordRewrite {
+                    record: span,
+                    proof: VerifiedProof::family(VerifiedFamily::GameObjUpdateObjectControl),
+                    changed: true,
+                    dropped: false,
+                    rewritten_deflated: false,
+                    abort_window_if_primary_consumed: false,
+                },
             ],
             &mut state,
         )
@@ -1115,8 +1287,7 @@ mod tests {
     fn oversized_deflated_coalesced_record_is_repacketized_and_shifts_later_spans() {
         let combined_payload_len = EE_SAFE_M_FRAME_DATAGRAM_BYTES * 2;
         let inflated_len = 0x0888u32;
-        let mut oversized =
-            vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + combined_payload_len];
+        let mut oversized = vec![0u8; LEGACY_GAMEPLAY_PAYLOAD_OFFSET + combined_payload_len];
         oversized[0] = b'M';
         oversized[3..5].copy_from_slice(&100u16.to_be_bytes());
         oversized[5..7].copy_from_slice(&80u16.to_be_bytes());
@@ -1180,7 +1351,10 @@ mod tests {
             assert_eq!(view.sequence, 100u16.wrapping_add(index as u16));
         }
         assert_eq!(
-            packets.last().expect("following packet should be present").0,
+            packets
+                .last()
+                .expect("following packet should be present")
+                .0,
             VerifiedProof::family(VerifiedFamily::Chat)
         );
     }

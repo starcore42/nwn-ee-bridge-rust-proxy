@@ -61,15 +61,10 @@ pub(super) fn parse_quickbar_read_buffer(
             buttons.push(QuickbarButton {
                 kind: QuickbarButtonKind::ItemCandidate,
             });
-            cursor = choose_legacy_quickbar_item_end(
-                read_buffer,
-                slot,
-                cursor,
-                model_types,
-                &mut memo,
-            )
-            .filter(|next_cursor| *next_cursor > cursor)
-            .unwrap_or_else(|| cursor.saturating_add(1));
+            cursor =
+                choose_legacy_quickbar_item_end(read_buffer, slot, cursor, model_types, &mut memo)
+                    .filter(|next_cursor| *next_cursor > cursor)
+                    .unwrap_or_else(|| cursor.saturating_add(1));
             continue;
         }
 
@@ -183,6 +178,7 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                             kind: QuickbarButtonKind::Item {
                                 primary,
                                 secondary,
+                                source: QuickbarItemSource::CompactByteOwnedWithSourceType,
                                 recovered_type_tag: false,
                             },
                         });
@@ -219,6 +215,7 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                     kind: QuickbarButtonKind::Item {
                         primary,
                         secondary,
+                        source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
                         recovered_type_tag: false,
                     },
                 });
@@ -259,6 +256,7 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                         kind: QuickbarButtonKind::Item {
                             primary,
                             secondary,
+                            source: QuickbarItemSource::CompactByteOwnedWithSourceType,
                             recovered_type_tag: false,
                         },
                     });
@@ -325,15 +323,13 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
             // item model and the remaining 36-slot quickbar scorer proves the
             // next button boundary; the EE writer then restores the explicit
             // type tag from the typed model.
-            if let Some((next_cursor, primary, secondary)) =
-                choose_legacy_quickbar_compact_item_end(
-                    read_buffer,
-                    slot,
-                    button_start,
-                    model_types,
-                    &mut memo,
-                )
-            {
+            if let Some((next_cursor, primary, secondary)) = choose_legacy_quickbar_compact_item_end(
+                read_buffer,
+                slot,
+                button_start,
+                model_types,
+                &mut memo,
+            ) {
                 tracing::info!(
                     slot,
                     button_start,
@@ -349,6 +345,7 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                     kind: QuickbarButtonKind::Item {
                         primary,
                         secondary,
+                        source: QuickbarItemSource::RecoveredMissingType,
                         recovered_type_tag: true,
                     },
                 });
@@ -452,10 +449,7 @@ fn quickbar_can_blank_remaining_after_source_parse_failure(
         })
 }
 
-fn legacy_quickbar_trailing_command_tail_is_discardable(
-    read_buffer: &[u8],
-    cursor: usize,
-) -> bool {
+fn legacy_quickbar_trailing_command_tail_is_discardable(read_buffer: &[u8], cursor: usize) -> bool {
     // HG captures can end the recovered compact-item read window with one
     // Diamond command-line quickbar record that was not part of the 36 slots
     // selected by the typed scorer. The decompile-owned command shape is type
@@ -498,18 +492,18 @@ fn parse_legacy_quickbar_non_item_from_reader(
     }
 
     if ty == 2 {
-        let spell_class = reader.read_byte()?;
+        let class_byte = reader.read_byte()?;
         let spell_id = reader.read_dword()?;
-        let metamagic = reader.read_byte()?;
-        let domain = reader.read_byte()?;
+        let legacy_metamagic = reader.read_byte()?;
+        let legacy_level = reader.read_byte()?;
         if spell_id > 10_000 {
             return Some(QuickbarButtonKind::Unsupported);
         }
         return Some(QuickbarButtonKind::Spell {
-            spell_class,
+            class_byte,
             spell_id,
-            metamagic,
-            domain,
+            legacy_metamagic,
+            legacy_level,
         });
     }
 
@@ -576,10 +570,10 @@ pub(super) fn parse_legacy_quickbar_non_item(
 
     let payload_cursor = cursor.checked_add(1)?;
     if ty == 2 {
-        let spell_class = *read_buffer.get(payload_cursor)?;
+        let class_byte = *read_buffer.get(payload_cursor)?;
         let spell_id = read_u32_le(read_buffer, payload_cursor + 1)?;
-        let metamagic = *read_buffer.get(payload_cursor + 5)?;
-        let domain = *read_buffer.get(payload_cursor + 6)?;
+        let legacy_metamagic = *read_buffer.get(payload_cursor + 5)?;
+        let legacy_level = *read_buffer.get(payload_cursor + 6)?;
         if spell_id > 10_000 {
             return Some((
                 QuickbarButton {
@@ -591,10 +585,10 @@ pub(super) fn parse_legacy_quickbar_non_item(
         return Some((
             QuickbarButton {
                 kind: QuickbarButtonKind::Spell {
-                    spell_class,
+                    class_byte,
                     spell_id,
-                    metamagic,
-                    domain,
+                    legacy_metamagic,
+                    legacy_level,
                 },
             },
             payload_cursor + 7,

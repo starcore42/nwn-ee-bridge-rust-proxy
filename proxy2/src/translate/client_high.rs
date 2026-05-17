@@ -7,11 +7,11 @@
 //! performs a dialect rewrite before claiming the packet.
 
 use crate::{
-    packet::m::HighLevel,
+    packet::{hex_prefix, m::HighLevel},
     translate::{
-        client_area, client_char_list, client_gui_inventory, client_input, client_login,
-        client_module, client_quickbar, client_server_status, party, play_module_character_list,
-        semantic::SemanticSessionState, VerifiedFamily,
+        VerifiedFamily, client_area, client_char_list, client_gui_event, client_gui_inventory,
+        client_input, client_login, client_module, client_quickbar, client_server_status, party,
+        play_module_character_list, semantic::SemanticSessionState,
     },
 };
 
@@ -20,6 +20,36 @@ pub struct ClientHighClaimSummary {
     pub family_name: &'static str,
     pub packet_name: &'static str,
     pub verified_family: VerifiedFamily,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClientHighConsumedSummary {
+    pub family_name: &'static str,
+    pub packet_name: &'static str,
+    pub reason: &'static str,
+}
+
+pub fn claim_consumed_payload_if_verified(payload: &[u8]) -> Option<ClientHighConsumedSummary> {
+    if let Some(summary) = client_gui_event::claim_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = summary.packet_name,
+            event_a = summary.event_a,
+            event_b = summary.event_b,
+            object_id = %format_args!("0x{:08X}", summary.object_id),
+            declared_bytes = summary.declared_bytes,
+            trailing_fragment_bytes = summary.trailing_fragment_bytes,
+            has_vector = summary.vector.is_some(),
+            legacy_action = ?summary.legacy_action,
+            "client GuiEvent payload claimed as EE-only with no proven Diamond handler"
+        );
+        return Some(ClientHighConsumedSummary {
+            family_name: "ClientGuiEvent",
+            packet_name: summary.packet_name,
+            reason: "EE-only GuiEvent_Notify has no proven Diamond/1.69 handler",
+        });
+    }
+
+    None
 }
 
 pub fn claim_or_rewrite_payload_if_verified(
@@ -131,6 +161,7 @@ pub fn claim_or_rewrite_payload_if_verified(
         minor = high.minor,
         name = high.name(),
         payload_len = payload.len(),
+        prefix = %hex_prefix(payload, 64),
         "client high-level payload has no semantic owner"
     );
     None

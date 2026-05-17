@@ -69,7 +69,11 @@ impl GenericInventoryCandidate {
     }
 
     fn advanced(self, cursor: usize, bits: usize) -> Self {
-        Self { cursor, bits, ..self }
+        Self {
+            cursor,
+            bits,
+            ..self
+        }
     }
 
     fn require_fragment_bit(mut self, bit_index: usize, value: bool) -> Option<Self> {
@@ -262,7 +266,11 @@ fn try_get_legacy_live_inventory_claim_candidate(
     }
 
     if mask == 0x2700 {
-        return try_parse_inventory_2700_zero_count_feature25_shape(bytes, record_offset, record_end);
+        return try_parse_inventory_2700_zero_count_feature25_shape(
+            bytes,
+            record_offset,
+            record_end,
+        );
     }
 
     if matches!(mask, 0x2E00 | 0x2E01) {
@@ -529,8 +537,7 @@ fn try_get_inventory_2b00_missing_feature25_second_count_cursor(
         return None;
     }
     let feature25_cursor = record_offset.checked_add(8)?;
-    if feature25_cursor.checked_add(4)? != record_end
-        || read_u32_le(bytes, feature25_cursor)? != 0
+    if feature25_cursor.checked_add(4)? != record_end || read_u32_le(bytes, feature25_cursor)? != 0
     {
         return None;
     }
@@ -629,10 +636,7 @@ fn try_parse_inventory_2700_zero_count_feature25_shape(
         );
     }
 
-    if cursor > record_end
-        || record_end - cursor < 4
-        || read_u32_le(bytes, cursor)? != 0
-    {
+    if cursor > record_end || record_end - cursor < 4 || read_u32_le(bytes, cursor)? != 0 {
         if trace {
             eprintln!(
                 "inventory 2700 rejected: 0200-zero-dword offset={record_offset} cursor={cursor} record_end={record_end}"
@@ -641,11 +645,9 @@ fn try_parse_inventory_2700_zero_count_feature25_shape(
         return None;
     }
     let second_0200_bit = fragment_bits.checked_add(1)?;
-    let after_0200 = GenericInventoryCandidate::new(
-        cursor.checked_add(4)?,
-        fragment_bits.checked_add(2)?,
-    )
-    .require_fragment_bit(second_0200_bit, false)?;
+    let after_0200 =
+        GenericInventoryCandidate::new(cursor.checked_add(4)?, fragment_bits.checked_add(2)?)
+            .require_fragment_bit(second_0200_bit, false)?;
     let candidates = [after_0200];
 
     let candidates = apply_0100(bytes, &candidates, record_end);
@@ -689,8 +691,11 @@ fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_shape(
     record_offset: usize,
     record_end: usize,
 ) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
-    let shape =
-        try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(bytes, record_offset, record_end)?;
+    let shape = try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
+        bytes,
+        record_offset,
+        record_end,
+    )?;
     (shape.read_end == record_end).then_some(shape)
 }
 
@@ -790,7 +795,8 @@ fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
     fragment_bits = fragment_bits.saturating_add(1);
 
     if cursor < scan_end
-        && (bytes.get(cursor).copied() != Some(b'G') || bytes.get(cursor + 1).copied() != Some(b'Q'))
+        && (bytes.get(cursor).copied() != Some(b'G')
+            || bytes.get(cursor + 1).copied() != Some(b'Q'))
     {
         return None;
     }

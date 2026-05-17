@@ -9,7 +9,7 @@
 use super::SessionState;
 
 pub(super) enum BndmTranslation {
-    LegacyDisconnect(Vec<u8>),
+    LegacyDisconnectRetireSession(Vec<u8>),
     NwsyncHandoffConsumedRetireSession,
 }
 
@@ -21,16 +21,18 @@ pub(super) fn translate_client_bndm(
         anyhow::bail!("BNDM disconnect has invalid length/shape: {}", bytes.len());
     }
 
-    // EE sends this exact four-byte BNDM during the native NWSync handoff after
-    // it has accepted the legacy BN verifier result. Diamond has no equivalent
-    // handoff: EE intentionally tears down its current net-layer session while
-    // the native downloader runs, then the user/UI must connect again after the
-    // content is local. Forwarding this as a legacy BNDS does not model a real
-    // Diamond gameplay packet, and keeping the proxy session alive would poison
-    // a later same-UDP-port reconnect with stale BN/M translator state. Consume
-    // only this proven handoff position and ask the net layer to retire the
-    // proxy session. A normal BNDM outside the NWSync/BNVR-accept window still
-    // translates to the legacy disconnect datagram below.
+    // EE can send this exact four-byte BNDM during the native NWSync handoff
+    // before the legacy BNCS/BNVR verifier path exists, or after a BNVR accept
+    // but before reliable gameplay begins. Diamond has no equivalent handoff:
+    // EE intentionally tears down its current net-layer session while the
+    // native downloader runs, then the user/UI must connect again after the
+    // content is local.
+    //
+    // Once any reliable `M` gameplay frame has been observed, BNDM is no
+    // longer proof of the pre-game downloader handoff. EE's decompile names it
+    // as a direct disconnect control, so post-gameplay BNDM must translate to
+    // Diamond's BNDS shape and stay visible in the logs instead of being hidden
+    // behind the NWSync-hand-off escape hatch.
     if state.should_consume_nwsync_handoff_bndm() {
         state.remember_nwsync_handoff_bndm_consumed();
         tracing::info!(
@@ -55,12 +57,24 @@ pub(super) fn translate_client_bndm(
         "client BNDM disconnect translated to legacy BNDS"
     );
 
-    Ok(BndmTranslation::LegacyDisconnect(rewritten))
+    Ok(BndmTranslation::LegacyDisconnectRetireSession(rewritten))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumes_pre_bncs_bndm_after_nwsync_advert() {
+        let mut state = SessionState::default();
+        state.remember_nwsync_advertised_to_client();
+
+        let translated = translate_client_bndm(b"BNDM", &mut state).expect("pre-BNCS BNDM");
+        assert!(matches!(
+            translated,
+            BndmTranslation::NwsyncHandoffConsumedRetireSession
+        ));
+    }
 
     #[test]
     fn consumes_first_bndm_after_nwsync_advert_and_bnvr_accept() {
@@ -76,7 +90,25 @@ mod tests {
         ));
 
         let second = translate_client_bndm(b"BNDM", &mut state).expect("second BNDM");
-        assert!(matches!(second, BndmTranslation::LegacyDisconnect(_)));
+        assert!(matches!(
+            second,
+            BndmTranslation::LegacyDisconnectRetireSession(_)
+        ));
+    }
+
+    #[test]
+    fn post_gameplay_bndm_is_real_disconnect_not_nwsync_handoff() {
+        let mut state = SessionState::default();
+        state.remember_bncs_udp_port(5121);
+        state.remember_nwsync_advertised_to_client();
+        state.remember_bnvr_result(true);
+        state.remember_reliable_gameplay_seen();
+
+        let translated = translate_client_bndm(b"BNDM", &mut state).expect("post-gameplay BNDM");
+        assert!(matches!(
+            translated,
+            BndmTranslation::LegacyDisconnectRetireSession(_)
+        ));
     }
 
     #[test]
@@ -85,7 +117,7 @@ mod tests {
         state.remember_bncs_udp_port(0x1673);
 
         let translated = translate_client_bndm(b"BNDM", &mut state).expect("normal BNDM");
-        let BndmTranslation::LegacyDisconnect(packet) = translated else {
+        let BndmTranslation::LegacyDisconnectRetireSession(packet) = translated else {
             panic!("normal BNDM should not be consumed");
         };
         assert_eq!(packet, b"BNDS\x73\x16");

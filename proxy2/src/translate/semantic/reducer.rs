@@ -11,11 +11,9 @@ use crate::{
 };
 
 use super::{
-    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
-    LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent,
-    ObservedHighLevel,
-    ProtocolEvent,
-    QuickbarEvent, SemanticSessionState, ServerStatusEvent,
+    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent, LiveObjectMention,
+    LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
+    ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -30,11 +28,7 @@ pub(crate) fn observe_verified_payload(
             observe_gameplay_stream_payload(state, direction, families, payload);
         }
         VerifiedProof::CoalescedWindow(_) => {
-            let observed = observed_high_level(
-                direction,
-                VerifiedFamily::CoalescedWindow,
-                payload,
-            );
+            let observed = observed_high_level(direction, VerifiedFamily::CoalescedWindow, payload);
             apply_event(state, ProtocolEvent::Other(observed));
         }
     }
@@ -50,7 +44,9 @@ fn observe_gameplay_stream_payload(
     let mut family_iter = families.iter().copied();
     for unit in split.units {
         if let gameplay_stream::GameplayUnit::HighLevel(message) = unit {
-            let family = family_iter.next().unwrap_or(VerifiedFamily::SemanticDeflated);
+            let family = family_iter
+                .next()
+                .unwrap_or(VerifiedFamily::SemanticDeflated);
             observe_family_payload(state, direction, family, message.payload);
         }
     }
@@ -84,10 +80,12 @@ fn observe_family_payload(
             // `GameObjUpdate_LiveObject` parser. This preserves the strict
             // discipline from the EE/Diamond readers: no loose byte scans, no
             // packet-family inference without proven record boundaries.
-            let mentions = live_object_mentions_from_payload(payload);
+            let (mentions, materialized_item_object_ids) =
+                live_object_observations_from_payload(payload);
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
                 mentions,
+                materialized_item_object_ids,
             })
         }
         VerifiedFamily::GuiQuickbar => {
@@ -106,6 +104,7 @@ fn observe_family_payload(
         VerifiedFamily::Chat => ProtocolEvent::Chat(ChatEvent { observed }),
         VerifiedFamily::ModuleTime => ProtocolEvent::Other(observed),
         VerifiedFamily::ServerZlibStreamContinuation { .. }
+        | VerifiedFamily::ServerZlibZeroFillWindow { .. }
         | VerifiedFamily::CoalescedWindow
         | VerifiedFamily::ConsumedEmptyMFrame
         | VerifiedFamily::SemanticDeflated => ProtocolEvent::Other(observed),
@@ -146,6 +145,9 @@ fn apply_event(state: &mut SemanticSessionState, event: ProtocolEvent) {
         }
         ProtocolEvent::LiveObject(event) => {
             state.objects.observe_mentions(&event.mentions);
+            state
+                .objects
+                .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
         }
         ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
@@ -192,11 +194,12 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn live_object_mentions_from_payload(payload: &[u8]) -> Vec<LiveObjectMention> {
+fn live_object_observations_from_payload(payload: &[u8]) -> (Vec<LiveObjectMention>, Vec<u32>) {
     let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    claim
+    let materialized_item_object_ids = claim.materialized_item_object_ids;
+    let mentions = claim
         .mentions
         .into_iter()
         .map(|mention| LiveObjectMention {
@@ -209,9 +212,11 @@ fn live_object_mentions_from_payload(payload: &[u8]) -> Vec<LiveObjectMention> {
                 y: position.y,
                 z: position.z,
             }),
-            orientation: mention.orientation.map(|orientation| LiveObjectOrientation {
-                scalar_tenths_degrees: orientation.scalar_tenths_degrees,
-            }),
+            orientation: mention
+                .orientation
+                .map(|orientation| LiveObjectOrientation {
+                    scalar_tenths_degrees: orientation.scalar_tenths_degrees,
+                }),
             bounds: mention.bounds.map(|bounds| super::LiveObjectBounds {
                 min_x: bounds.min_x,
                 min_y: bounds.min_y,
@@ -221,10 +226,47 @@ fn live_object_mentions_from_payload(payload: &[u8]) -> Vec<LiveObjectMention> {
                 max_z: bounds.max_z,
             }),
         })
-        .collect()
+        .collect();
+    (mentions, materialized_item_object_ids)
 }
 
 fn current_area_object_id_from_payload(payload: &[u8]) -> Option<u32> {
     const AREA_OBJECT_ID_OFFSET: usize = 3 + 4 + 4 + 4 * 4;
     read_u32_le(payload, AREA_OBJECT_ID_OFFSET)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_gui_item_create_materializes_item_ids_for_quickbar_context() {
+        let mut payload =
+            include_bytes!("../../../fixtures/live_object/player_hide_inventory_gui_span.bin")
+                .to_vec();
+        live_object_update::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("fixture should rewrite legacy GUI item-create to exact EE shape");
+        let claim = live_object_update::claim_payload_if_verified(&payload)
+            .expect("fixture should be an exact verified live-object payload");
+        assert!(
+            !claim.materialized_item_object_ids.is_empty(),
+            "fixture should expose GUI item-create materialization ids"
+        );
+
+        let mut state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &payload,
+        );
+
+        assert!(
+            claim
+                .materialized_item_object_ids
+                .iter()
+                .any(|object_id| state.objects.has_active_object_id(*object_id)),
+            "exact GUI item materialization should become quickbar object proof"
+        );
+    }
 }

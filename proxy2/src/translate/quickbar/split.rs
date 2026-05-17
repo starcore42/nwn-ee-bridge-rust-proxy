@@ -341,13 +341,8 @@ pub(super) fn choose_legacy_quickbar_item_end(
             continue;
         }
 
-        let mut score = score_legacy_quickbar_parse_from(
-            read_buffer,
-            slot + 1,
-            candidate,
-            model_types,
-            memo,
-        );
+        let mut score =
+            score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, model_types, memo);
         if score <= QUICKBAR_BAD_SCORE / 2 {
             continue;
         }
@@ -391,13 +386,8 @@ pub(super) fn choose_legacy_quickbar_compact_item_end(
             continue;
         };
 
-        let mut score = score_legacy_quickbar_parse_from(
-            read_buffer,
-            slot + 1,
-            candidate,
-            model_types,
-            memo,
-        );
+        let mut score =
+            score_legacy_quickbar_parse_from(read_buffer, slot + 1, candidate, model_types, memo);
         if score <= QUICKBAR_BAD_SCORE / 2 {
             continue;
         }
@@ -519,13 +509,8 @@ fn score_legacy_quickbar_parse_from(
     if ty != 1
         && let Some((button, next_cursor)) = parse_legacy_quickbar_non_item(read_buffer, cursor)
     {
-        let mut score = score_legacy_quickbar_parse_from(
-            read_buffer,
-            slot + 1,
-            next_cursor,
-            model_types,
-            memo,
-        );
+        let mut score =
+            score_legacy_quickbar_parse_from(read_buffer, slot + 1, next_cursor, model_types, memo);
         if score > QUICKBAR_BAD_SCORE / 2 {
             match button.kind {
                 QuickbarButtonKind::Spell { .. } => score += 60,

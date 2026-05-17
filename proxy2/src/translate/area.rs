@@ -12,9 +12,13 @@
 //!   `0x04/0x01`.
 //! - EE `CNWCArea::LoadArea` reads the area OBJECTID, area resref, an EE-only
 //!   area-name mode BOOL, area name data, dimensions, tileset, tiles, and
-//!   post-tile lists. Later EE-only grass/tile-render fields are gated through
-//!   `CNetLayer::ServerSatisfiesBuild(0x2001, ...)`; against a 1.69 server
-//!   those branches are false, so the tile byte stream stays Diamond-shaped.
+//!   post-tile lists. EE `CNWSArea::PackAreaIntoMessage` and
+//!   `CNWCArea::LoadArea` both gate two static-header float triplets on
+//!   `ServerSatisfiesBuild(0x2001, 0x23, 0)`. The bridge must advertise this
+//!   proxy-owned EE-facing server dialect in BNVR so later live-object
+//!   visual-transform readers are selected correctly without also enabling newer
+//!   unmodeled build gates. Driver-only mode then requires the proxy to
+//!   synthesize those two EE writer fields before width/height/tileset.
 //! - EE `CNWSMessage::SendServerToPlayerArea_ClientArea` writes the
 //!   area-present BOOL immediately before calling `CNWSArea::PackAreaIntoMessage`.
 //!   `PackAreaIntoMessage` then writes the area-name BOOL. Diamond `CNWCArea`
@@ -47,9 +51,17 @@ const MIN_READ_SIZE: usize = 4;
 
 const CRESREF_TEXT_BYTES: usize = 16;
 const AREA_NAME_READ_OFFSET: usize = 44;
-const AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
-const AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
-const AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
+const DIAMOND_LEGACY_AREA_NAME_BYTES: usize = 20;
+const LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
+const LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
+const LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
+const EE_AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 120;
+const EE_AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 124;
+const EE_AREA_TILESET_BYTES_AFTER_NAME_END: usize = 128;
+const EE_AREA_STATIC_BUILD35_FIRST_INSERT_AFTER_NAME_END: usize = 24;
+const EE_AREA_STATIC_BUILD35_SECOND_INSERT_AFTER_NAME_END: usize = 37;
+const EE_AREA_STATIC_BUILD35_INSERT_BYTES: usize = 12;
+const EE_AREA_STATIC_BUILD35_TOTAL_INSERT_BYTES: usize = EE_AREA_STATIC_BUILD35_INSERT_BYTES * 2;
 const MAX_REASONABLE_AREA_DIMENSION: u32 = 512;
 const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
@@ -66,13 +78,20 @@ const LEGACY_AREA_OBJECT_ID_BYTES: usize = 4;
 const EE_POST_STATIC_LIST_ZERO_WORD_BYTES: usize = 4;
 const MAX_AREA_POST_TILE_LIST_COUNT: u32 = 4096;
 const MAX_AREA_SOUND_RESREFS: u16 = 64;
+const AREA_LIGHT_PLACEABLE_ROW_BYTES: usize = 4 + 2 + 3 * 4;
+const AREA_STATIC_PLACEABLE_ROW_BYTES: usize = 4 + 2 + 6 * 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaRewriteKind {
     ExactEeAreaNameModeBitForce,
+    ExactEeAreaStaticBuild35FloatTriplets,
     ExactEePostStaticListZeroWords,
+    LegacyDiamondFixedAreaName,
+    LegacyDiamondMissingSquareDimensionsRepair,
     LegacyHgMissingHeightRepair,
+    LegacyHgMissingWidthRepair,
     LegacyDiamondSoundCountZeroMeansOneRepair,
+    LegacyDiamondStaticPlaceableCountZeroRepair,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +119,9 @@ pub struct AreaRewriteSummary {
     pub tile_count: u32,
     pub tile_scan_valid: bool,
     pub height_repaired: bool,
+    pub width_repaired: bool,
     pub sound_count_zero_one_repairs: u32,
+    pub static_placeable_count_zero_repairs: u32,
     pub rewrite_kinds: Vec<AreaRewriteKind>,
     pub placeable_context_valid: bool,
     pub placeable_light_count: usize,
@@ -150,12 +171,38 @@ pub struct AreaPlaceableContextRow {
 #[derive(Debug, Clone, Default)]
 struct AreaStaticLayout {
     valid: bool,
+    dialect: AreaStaticDialect,
+    area_name_encoding: AreaNameEncoding,
     area_name_length: u32,
     area_name_end_read_offset: usize,
     width_read_offset: usize,
     height_read_offset: usize,
     tileset_read_offset: usize,
     first_tile_read_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AreaStaticDialect {
+    Legacy169,
+    EeBuild8193StaticHeader,
+}
+
+impl Default for AreaStaticDialect {
+    fn default() -> Self {
+        Self::Legacy169
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AreaNameEncoding {
+    CExoString,
+    DiamondFixed20,
+}
+
+impl Default for AreaNameEncoding {
+    fn default() -> Self {
+        Self::CExoString
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -182,6 +229,12 @@ struct AreaExactReadProof {
     static_count: u16,
     first_post_static_count: u16,
     second_post_static_count: u16,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LegacyAreaSourceTailProof {
+    static_count_read_offset: usize,
+    zero_static_placeable_rows: u16,
 }
 
 pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
@@ -265,11 +318,24 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     let mut working_payload = payload.clone();
     let mut tile_scan = scan_area_tile_stream(&working_payload, fragment_offset);
-    let height_repaired =
-        repair_missing_area_height(&mut working_payload, fragment_offset, &mut tile_scan);
+    let square_dimensions_repaired = repair_missing_square_area_dimensions(
+        &mut working_payload,
+        fragment_offset,
+        &mut tile_scan,
+    );
+    let width_repaired = square_dimensions_repaired
+        || repair_missing_area_width(&mut working_payload, fragment_offset, &mut tile_scan);
+    let height_repaired = square_dimensions_repaired
+        || repair_missing_area_height(&mut working_payload, fragment_offset, &mut tile_scan);
     let sound_count_zero_one_repairs =
         repair_legacy_zero_sound_counts(&mut working_payload, fragment_offset, &tile_scan)
             .unwrap_or(0);
+    let static_placeable_count_zero_repairs = repair_legacy_zero_static_placeable_count(
+        &mut working_payload,
+        fragment_offset,
+        &tile_scan,
+    )
+    .unwrap_or(0);
     if !tile_scan.valid {
         tracing::warn!(
             area_resref = %area_resref,
@@ -284,21 +350,38 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     }
     let mut rewrite_kinds = vec![
         AreaRewriteKind::ExactEeAreaNameModeBitForce,
+        AreaRewriteKind::ExactEeAreaStaticBuild35FloatTriplets,
         AreaRewriteKind::ExactEePostStaticListZeroWords,
     ];
     if height_repaired {
         rewrite_kinds.push(AreaRewriteKind::LegacyHgMissingHeightRepair);
     }
+    if width_repaired {
+        rewrite_kinds.push(AreaRewriteKind::LegacyHgMissingWidthRepair);
+    }
+    if static_layout.area_name_encoding == AreaNameEncoding::DiamondFixed20 {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondFixedAreaName);
+    }
+    if square_dimensions_repaired {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondMissingSquareDimensionsRepair);
+    }
     if sound_count_zero_one_repairs != 0 {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondSoundCountZeroMeansOneRepair);
+    }
+    if static_placeable_count_zero_repairs != 0 {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondStaticPlaceableCountZeroRepair);
     }
 
     let old_fragment_byte = working_payload[fragment_offset];
     let rewritten_fragment = rewrite_area_fragment_bits(&working_payload[fragment_offset..])?;
     let new_fragment_byte = *rewritten_fragment.first()?;
-    let new_declared = declared + EE_POST_STATIC_LIST_ZERO_WORD_BYTES as u32;
-    let new_read_size = read_size + EE_POST_STATIC_LIST_ZERO_WORD_BYTES;
-    let new_fragment_offset = fragment_offset + EE_POST_STATIC_LIST_ZERO_WORD_BYTES;
+    let static_expanded_read =
+        expand_legacy_area_static_header_for_ee(&working_payload, fragment_offset, &tile_scan.layout)?;
+    let ee_insert_bytes =
+        EE_AREA_STATIC_BUILD35_TOTAL_INSERT_BYTES + EE_POST_STATIC_LIST_ZERO_WORD_BYTES;
+    let new_declared = declared + ee_insert_bytes as u32;
+    let new_read_size = read_size + ee_insert_bytes;
+    let new_fragment_offset = fragment_offset + ee_insert_bytes;
     let placeable_context =
         collect_area_post_tile_placeable_context(&working_payload, fragment_offset, &area_resref);
     let placeable_context_valid = placeable_context.is_some();
@@ -307,12 +390,16 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     let placeable_static_count = placeable_context.static_rows.len();
 
     let mut rewritten_payload = Vec::with_capacity(
-        fragment_offset + EE_POST_STATIC_LIST_ZERO_WORD_BYTES + rewritten_fragment.len(),
+        new_fragment_offset + rewritten_fragment.len(),
     );
-    rewritten_payload.extend_from_slice(&working_payload[..fragment_offset]);
+    rewritten_payload.extend_from_slice(&static_expanded_read);
     rewritten_payload.extend_from_slice(&[0, 0, 0, 0]);
     rewritten_payload.extend_from_slice(&rewritten_fragment);
-    write_u32_le(&mut rewritten_payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+    write_u32_le(
+        &mut rewritten_payload,
+        HIGH_LEVEL_HEADER_BYTES,
+        new_declared,
+    )?;
     let Some(exact_proof) = ee_area_client_area_exact_read_proof(&rewritten_payload) else {
         tracing::warn!(
             area_resref = %area_resref,
@@ -341,7 +428,9 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
             tile_count = tile_scan.tile_count,
             tile_scan_valid = tile_scan.valid,
             height_repaired,
+            width_repaired,
             sound_count_zero_one_repairs,
+            static_placeable_count_zero_repairs,
             first_tile_read_offset = static_layout.first_tile_read_offset,
             old_fragment_byte,
             new_fragment_byte,
@@ -384,7 +473,9 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         tile_count: tile_scan.tile_count,
         tile_scan_valid: tile_scan.valid,
         height_repaired,
+        width_repaired,
         sound_count_zero_one_repairs,
+        static_placeable_count_zero_repairs,
         rewrite_kinds,
         placeable_context_valid,
         placeable_light_count,
@@ -513,24 +604,102 @@ fn fragment_bit(fragment: &[u8], bit_index: usize) -> Option<bool> {
 }
 
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {
+    // The same packet family can appear in two strict shapes inside this
+    // bridge:
+    //
+    // - Legacy 1.69 server packets have width/height/tileset at
+    //   name_end+96/+100/+104.
+    // - EE-facing packets, after BNVR advertises the proxy-owned build-35
+    //   server dialect, must include the two
+    //   `ServerSatisfiesBuild(0x2001, 0x23, 0)` float triplets proven in both
+    //   EE `PackAreaIntoMessage` and `LoadArea`, moving
+    //   width/height/tileset to name_end+120/+124/+128.
+    //
+    // Prefer the EE-expanded shape when it proves a CResRef at the EE tileset
+    // offset; otherwise fall back to the exact legacy shape so the rewrite can
+    // parse and repair the source packet before emitting an EE packet.
+    if let Some((area_name_length, name_end)) =
+        read_c_exo_string_shape(payload, fragment_offset, AREA_NAME_READ_OFFSET, 1024)
+    {
+        if let Some(layout) = area_static_layout_for_dialect(
+            payload,
+            fragment_offset,
+            AreaNameEncoding::CExoString,
+            area_name_length,
+            name_end,
+            AreaStaticDialect::EeBuild8193StaticHeader,
+            EE_AREA_WIDTH_BYTES_AFTER_NAME_END,
+            EE_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+            EE_AREA_TILESET_BYTES_AFTER_NAME_END,
+        )
+        .or_else(|| {
+            area_static_layout_for_dialect(
+                payload,
+                fragment_offset,
+                AreaNameEncoding::CExoString,
+                area_name_length,
+                name_end,
+                AreaStaticDialect::Legacy169,
+                LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+                LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+                LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+            )
+        }) {
+            return Some(layout);
+        }
+    }
+
     let (area_name_length, name_end) =
-        read_c_exo_string_shape(payload, fragment_offset, AREA_NAME_READ_OFFSET, 1024)?;
-    // EE `CNWCArea::LoadArea` first consumes three INTs and several
-    // environment DWORD/BYTE/BOOL fields after the area-name payload. Those
-    // early DWORDs are not the tile-grid dimensions. The decompiled client
-    // later reads the actual grid width/height into `[area+0Ch]` and
-    // `[area+10h]`, immediately before `ReadCResRef(16)` for the tileset; the
-    // EE server writer mirrors this with `[area+0Ch]`, `[area+10h]`, then
-    // `WriteCResRef`. The HG `docksofascension` fixture proves this offset:
-    // width=11 is at `name_end + 96`, the legacy missing height DWORD is zero
-    // at `name_end + 100`, and tileset `ttr01` starts at `name_end + 104`.
-    let width_read_offset = name_end.checked_add(AREA_WIDTH_BYTES_AFTER_NAME_END)?;
-    let height_read_offset = name_end.checked_add(AREA_HEIGHT_BYTES_AFTER_NAME_END)?;
-    let tileset_read_offset = name_end.checked_add(AREA_TILESET_BYTES_AFTER_NAME_END)?;
+        read_diamond_fixed_area_name_shape(payload, fragment_offset)?;
+    area_static_layout_for_dialect(
+        payload,
+        fragment_offset,
+        AreaNameEncoding::DiamondFixed20,
+        area_name_length,
+        name_end,
+        AreaStaticDialect::EeBuild8193StaticHeader,
+        EE_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        EE_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        EE_AREA_TILESET_BYTES_AFTER_NAME_END,
+    )
+    .or_else(|| {
+        area_static_layout_for_dialect(
+            payload,
+            fragment_offset,
+            AreaNameEncoding::DiamondFixed20,
+            area_name_length,
+            name_end,
+            AreaStaticDialect::Legacy169,
+            LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+            LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+            LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        )
+    })
+}
+
+fn area_static_layout_for_dialect(
+    payload: &[u8],
+    fragment_offset: usize,
+    area_name_encoding: AreaNameEncoding,
+    area_name_length: u32,
+    name_end: usize,
+    dialect: AreaStaticDialect,
+    width_after_name_end: usize,
+    height_after_name_end: usize,
+    tileset_after_name_end: usize,
+) -> Option<AreaStaticLayout> {
+    let width_read_offset = name_end.checked_add(width_after_name_end)?;
+    let height_read_offset = name_end.checked_add(height_after_name_end)?;
+    let tileset_read_offset = name_end.checked_add(tileset_after_name_end)?;
     let first_tile_read_offset = tileset_read_offset.checked_add(CRESREF_TEXT_BYTES)?;
+    if !fixed_cresref_at_read_offset_plausible(payload, fragment_offset, tileset_read_offset) {
+        return None;
+    }
 
     Some(AreaStaticLayout {
         valid: true,
+        dialect,
+        area_name_encoding,
         area_name_length,
         area_name_end_read_offset: name_end,
         width_read_offset,
@@ -540,7 +709,61 @@ fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStat
     })
 }
 
+fn expand_legacy_area_static_header_for_ee(
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+) -> Option<Vec<u8>> {
+    if layout.dialect != AreaStaticDialect::Legacy169 {
+        return None;
+    }
+
+    let first_insert_read_offset = layout
+        .area_name_end_read_offset
+        .checked_add(EE_AREA_STATIC_BUILD35_FIRST_INSERT_AFTER_NAME_END)?;
+    let second_insert_read_offset = layout
+        .area_name_end_read_offset
+        .checked_add(EE_AREA_STATIC_BUILD35_SECOND_INSERT_AFTER_NAME_END)?;
+    let first_insert_payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(first_insert_read_offset)?;
+    let second_insert_payload_offset =
+        HIGH_LEVEL_HEADER_BYTES.checked_add(second_insert_read_offset)?;
+    if first_insert_payload_offset > second_insert_payload_offset
+        || second_insert_payload_offset > fragment_offset
+    {
+        return None;
+    }
+
+    // EE writer branch 1 (`CNWSArea` offsets 0xAC/0xB0/0xB4) is emitted after
+    // the first three environment DWORDs. Branch 2 (0xCC/0xD0/0xD4) is emitted
+    // after the B8/BC DWORD pair. Legacy 1.69 has no corresponding fields, so
+    // the safest decompile-backed dialect writer emits zero floats at exactly
+    // those two writer positions.
+    let mut expanded =
+        Vec::with_capacity(fragment_offset + EE_AREA_STATIC_BUILD35_TOTAL_INSERT_BYTES);
+    expanded.extend_from_slice(payload.get(..first_insert_payload_offset)?);
+    expanded.extend_from_slice(&[0; EE_AREA_STATIC_BUILD35_INSERT_BYTES]);
+    expanded.extend_from_slice(payload.get(first_insert_payload_offset..second_insert_payload_offset)?);
+    expanded.extend_from_slice(&[0; EE_AREA_STATIC_BUILD35_INSERT_BYTES]);
+    expanded.extend_from_slice(payload.get(second_insert_payload_offset..fragment_offset)?);
+    Some(expanded)
+}
+
 fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStreamScan {
+    scan_area_tile_stream_with_policy(payload, fragment_offset, false)
+}
+
+fn scan_area_tile_stream_allow_legacy_missing_width(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> AreaTileStreamScan {
+    scan_area_tile_stream_with_policy(payload, fragment_offset, true)
+}
+
+fn scan_area_tile_stream_with_policy(
+    payload: &[u8],
+    fragment_offset: usize,
+    allow_legacy_missing_width: bool,
+) -> AreaTileStreamScan {
     let Some(layout) = area_static_layout(payload, fragment_offset) else {
         return AreaTileStreamScan::default();
     };
@@ -559,12 +782,89 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
             ..AreaTileStreamScan::default()
         };
     };
-    if width == 0 || width > MAX_REASONABLE_AREA_DIMENSION {
+    if width > MAX_REASONABLE_AREA_DIMENSION
+        || (width == 0
+            && (!allow_legacy_missing_width
+                || packet_height == 0
+                || packet_height > MAX_REASONABLE_AREA_DIMENSION))
+    {
         return AreaTileStreamScan {
             layout,
             width,
             packet_height,
             ..AreaTileStreamScan::default()
+        };
+    }
+
+    if width != 0 && packet_height != 0 {
+        let Some(expected_tile_count) = width.checked_mul(packet_height) else {
+            return AreaTileStreamScan {
+                layout,
+                width,
+                packet_height,
+                ..AreaTileStreamScan::default()
+            };
+        };
+        if expected_tile_count == 0 || expected_tile_count > MAX_REASONABLE_AREA_TILE_COUNT {
+            return AreaTileStreamScan {
+                layout,
+                width,
+                packet_height,
+                ..AreaTileStreamScan::default()
+            };
+        }
+
+        // Both Diamond and EE `CNWCArea::LoadArea` are dimension driven: once
+        // width and height are known, the reader consumes exactly
+        // `width * height` tile records before the transition/map/sound/light
+        // lists. Do not scan past that boundary looking for "more tiles";
+        // post-tile rows can be binary-plausible enough to create false
+        // records, which then prevents the exact list parser from seeing the
+        // true boundary.
+        let mut cursor = layout.first_tile_read_offset;
+        for _ in 0..expected_tile_count {
+            let Some(record_length) = area_tile_record_length_at(payload, fragment_offset, cursor)
+            else {
+                return AreaTileStreamScan {
+                    layout,
+                    width,
+                    packet_height,
+                    tile_count: expected_tile_count,
+                    tile_end_read_offset: cursor,
+                    ..AreaTileStreamScan::default()
+                };
+            };
+            if record_length == 0 {
+                return AreaTileStreamScan {
+                    layout,
+                    width,
+                    packet_height,
+                    tile_count: expected_tile_count,
+                    tile_end_read_offset: cursor,
+                    ..AreaTileStreamScan::default()
+                };
+            }
+            let Some(next_cursor) = cursor.checked_add(record_length) else {
+                return AreaTileStreamScan {
+                    layout,
+                    width,
+                    packet_height,
+                    tile_count: expected_tile_count,
+                    tile_end_read_offset: cursor,
+                    ..AreaTileStreamScan::default()
+                };
+            };
+            cursor = next_cursor;
+        }
+
+        return AreaTileStreamScan {
+            valid: true,
+            layout,
+            width,
+            packet_height,
+            inferred_height: packet_height,
+            tile_count: expected_tile_count,
+            tile_end_read_offset: cursor,
         };
     }
 
@@ -575,11 +875,14 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
         else {
             break;
         };
+        if record_length == 0 {
+            break;
+        }
         tile_count += 1;
         cursor += record_length;
     }
 
-    if tile_count == 0 || tile_count >= MAX_REASONABLE_AREA_TILE_COUNT || tile_count % width != 0 {
+    if tile_count == 0 || tile_count >= MAX_REASONABLE_AREA_TILE_COUNT {
         return AreaTileStreamScan {
             layout,
             width,
@@ -590,7 +893,43 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
         };
     }
 
-    let inferred_height = tile_count / width;
+    let (effective_width, inferred_height) = if width == 0 {
+        if tile_count % packet_height != 0 {
+            return AreaTileStreamScan {
+                layout,
+                width,
+                packet_height,
+                tile_count,
+                tile_end_read_offset: cursor,
+                ..AreaTileStreamScan::default()
+            };
+        }
+        let inferred_width = tile_count / packet_height;
+        (inferred_width, packet_height)
+    } else {
+        if tile_count % width != 0 {
+            return AreaTileStreamScan {
+                layout,
+                width,
+                packet_height,
+                tile_count,
+                tile_end_read_offset: cursor,
+                ..AreaTileStreamScan::default()
+            };
+        }
+        (width, tile_count / width)
+    };
+    if effective_width == 0 || effective_width > MAX_REASONABLE_AREA_DIMENSION {
+        return AreaTileStreamScan {
+            layout,
+            width,
+            packet_height,
+            inferred_height,
+            tile_count,
+            tile_end_read_offset: cursor,
+            ..AreaTileStreamScan::default()
+        };
+    }
     if inferred_height == 0 || inferred_height > MAX_REASONABLE_AREA_DIMENSION {
         return AreaTileStreamScan {
             layout,
@@ -617,7 +956,7 @@ fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStre
     AreaTileStreamScan {
         valid: true,
         layout,
-        width,
+        width: effective_width,
         packet_height,
         inferred_height,
         tile_count,
@@ -705,7 +1044,7 @@ fn collect_area_post_tile_placeable_context(
             has_direction: false,
             ..AreaPlaceableContextRow::default()
         });
-        cursor = cursor.checked_add(4 + 2 + 3 * 4)?;
+        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
     }
 
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
@@ -739,6 +1078,214 @@ fn collect_area_post_tile_placeable_context(
         light_rows,
         static_rows,
     })
+}
+
+fn legacy_area_source_tail_consumes_read_buffer(
+    payload: &[u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+) -> bool {
+    legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan).is_some()
+}
+
+fn legacy_area_source_tail_exact_read_proof(
+    payload: &[u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+) -> Option<LegacyAreaSourceTailProof> {
+    let (_, read_size, _, fragment_size) = area_client_area_read_window(payload)?;
+    if fragment_size == 0 || !scan.valid {
+        return None;
+    }
+    let fragment = payload.get(fragment_offset..)?;
+    let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
+
+    // This is the legacy-side counterpart to the EE `LoadArea` proof below.
+    // The source packet has not yet gained the two EE post-static zero WORDs,
+    // but the decompiled reader still reaches the post-tile lists with the
+    // same fragment cursor: fixed fragment-header bits, Area_ClientArea's
+    // area-present BOOL, the later forced EE area-name BOOL position, and the
+    // static/environment BOOL reads before tiles.
+    let mut bit_cursor = AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
+    if bit_cursor > fragment_bits_available {
+        return None;
+    }
+
+    let mut cursor = scan.tile_end_read_offset;
+
+    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    for _ in 0..transition_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        for component in 0..3 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 4 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+
+        fragment_bit(fragment, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let client_tlk = fragment_bit(fragment, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
+        cursor = if client_tlk {
+            fragment_bit(fragment, bit_cursor)?;
+            bit_cursor = bit_cursor.checked_add(1)?;
+            read_area_u32(payload, fragment_offset, locstring_offset)?;
+            locstring_offset.checked_add(4)?
+        } else {
+            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
+        };
+    }
+
+    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if map_pin_count != 0 {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+
+    let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..sound_count {
+        const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
+        const AREA_SOUND_BASE_BYTES: usize = 54;
+        let resref_count = read_area_u16(
+            payload,
+            fragment_offset,
+            cursor.checked_add(AREA_SOUND_RESREF_COUNT_OFFSET)?,
+        )?;
+        if resref_count > MAX_AREA_SOUND_RESREFS {
+            return None;
+        }
+        bit_cursor = bit_cursor.checked_add(6)?;
+        if bit_cursor > fragment_bits_available {
+            return None;
+        }
+        cursor = cursor.checked_add(
+            AREA_SOUND_BASE_BYTES.checked_add(resref_count as usize * CRESREF_TEXT_BYTES)?,
+        )?;
+        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
+            return None;
+        }
+    }
+
+    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(light_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    for _ in 0..light_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        read_area_u16(payload, fragment_offset, cursor + 4)?;
+        for component in 0..3 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
+    }
+
+    let static_count_read_offset = cursor;
+    let static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(static_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?;
+    let mut zero_static_placeable_rows = 0u16;
+    if static_count == 0 {
+        if let Some(row_count) =
+            legacy_zero_static_placeable_rows_count(payload, fragment_offset, cursor, read_size)
+        {
+            zero_static_placeable_rows = row_count;
+            cursor = cursor.checked_add(
+                usize::from(row_count).checked_mul(AREA_STATIC_PLACEABLE_ROW_BYTES)?,
+            )?;
+        }
+    } else {
+        for _ in 0..static_count {
+            if !area_static_placeable_row_valid(payload, fragment_offset, cursor) {
+                return None;
+            }
+            cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
+        }
+    }
+
+    if cursor != read_size || bit_cursor != fragment_bits_available {
+        return None;
+    }
+
+    Some(LegacyAreaSourceTailProof {
+        static_count_read_offset,
+        zero_static_placeable_rows,
+    })
+}
+
+fn legacy_zero_static_placeable_rows_count(
+    payload: &[u8],
+    fragment_offset: usize,
+    rows_read_offset: usize,
+    read_size: usize,
+) -> Option<u16> {
+    if rows_read_offset >= read_size {
+        return None;
+    }
+    let remaining = read_size.checked_sub(rows_read_offset)?;
+    if remaining == 0 || remaining % AREA_STATIC_PLACEABLE_ROW_BYTES != 0 {
+        return None;
+    }
+    let row_count = remaining / AREA_STATIC_PLACEABLE_ROW_BYTES;
+    if row_count == 0 || row_count > MAX_AREA_POST_TILE_LIST_COUNT as usize {
+        return None;
+    }
+    let row_count = u16::try_from(row_count).ok()?;
+    let mut cursor = rows_read_offset;
+    for _ in 0..row_count {
+        if !area_static_placeable_row_valid(payload, fragment_offset, cursor) {
+            return None;
+        }
+        cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
+    }
+    (cursor == read_size).then_some(row_count)
+}
+
+fn area_static_placeable_row_valid(
+    payload: &[u8],
+    fragment_offset: usize,
+    cursor: usize,
+) -> bool {
+    let Some(object_id) = read_area_u32(payload, fragment_offset, cursor) else {
+        return false;
+    };
+    if !legacy_area_object_id_plausible(object_id) {
+        return false;
+    }
+    if read_area_u16(payload, fragment_offset, cursor + 4).is_none() {
+        return false;
+    }
+    for component in 0..6 {
+        let Some(value) = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)
+        else {
+            return false;
+        };
+        if !value.is_finite() || value.abs() > 100_000.0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadProof> {
@@ -861,7 +1408,7 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
                 return None;
             }
         }
-        cursor = cursor.checked_add(4 + 2 + 3 * 4)?;
+        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
     }
 
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
@@ -942,6 +1489,150 @@ fn repair_missing_area_height(
     }
 }
 
+fn repair_missing_area_width(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &mut AreaTileStreamScan,
+) -> bool {
+    if scan.valid {
+        return false;
+    }
+
+    let legacy_scan = scan_area_tile_stream_allow_legacy_missing_width(payload, fragment_offset);
+    if !legacy_scan.valid || legacy_scan.width == 0 || legacy_scan.packet_height == 0 {
+        return false;
+    }
+    let Some(packet_width) = read_area_u32(
+        payload,
+        fragment_offset,
+        legacy_scan.layout.width_read_offset,
+    ) else {
+        return false;
+    };
+    if packet_width != 0 {
+        return false;
+    }
+
+    // EE and Diamond both read/write the area grid width as the DWORD
+    // immediately before the height DWORD and tileset CResRef.  HG `voyage`
+    // captures have that decompile-backed field zeroed while the height is
+    // present and the tile stream plus post-tile lists validate exactly as a
+    // 4x5 grid.  Repair only that narrow legacy encoding: one missing width,
+    // non-zero height, and a fully bounded tile scan that proves the inferred
+    // width before any EE packet is emitted.
+    let width_payload_offset = HIGH_LEVEL_HEADER_BYTES + legacy_scan.layout.width_read_offset;
+    if width_payload_offset > fragment_offset || fragment_offset - width_payload_offset < 4 {
+        return false;
+    }
+    if write_u32_le(payload, width_payload_offset, legacy_scan.width).is_none() {
+        return false;
+    }
+
+    let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
+    if !repaired_scan.valid {
+        return false;
+    }
+    *scan = repaired_scan;
+    true
+}
+
+fn repair_missing_square_area_dimensions(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &mut AreaTileStreamScan,
+) -> bool {
+    if scan.valid {
+        return false;
+    }
+
+    let Some(layout) = area_static_layout(payload, fragment_offset) else {
+        return false;
+    };
+    if layout.dialect != AreaStaticDialect::Legacy169
+        || layout.area_name_encoding != AreaNameEncoding::DiamondFixed20
+    {
+        return false;
+    }
+    let Some(packet_width) = read_area_u32(payload, fragment_offset, layout.width_read_offset)
+    else {
+        return false;
+    };
+    let Some(packet_height) = read_area_u32(payload, fragment_offset, layout.height_read_offset)
+    else {
+        return false;
+    };
+    if packet_width != 0 || packet_height != 0 {
+        return false;
+    }
+
+    // Diamond `CNWCArea::LoadArea` reads the width DWORD, height DWORD, then a
+    // 16-byte tileset CResRef immediately before the tile loop. Local Diamond
+    // server captures for the stock demo module show the legacy fixed-name
+    // branch above with both dimension DWORDs zeroed even though the following
+    // tile stream is complete and bounded.
+    //
+    // Do not trust "the longest run of tile-looking records" here: the
+    // post-tile lists are also compact binary records and can contain bytes
+    // that resemble tile flags. Instead, advance through the decompile-owned
+    // tile reader, try only perfect-square prefixes, and keep a candidate only
+    // when the normal exact area scanner proves the resulting width, height,
+    // tile stream, and post-tile lists consume the declared read buffer.
+    let mut cursor = layout.first_tile_read_offset;
+    let mut tile_count = 0u32;
+    while tile_count < MAX_REASONABLE_AREA_TILE_COUNT {
+        let Some(record_length) = area_tile_record_length_at(payload, fragment_offset, cursor)
+        else {
+            break;
+        };
+        if record_length == 0 {
+            break;
+        }
+        tile_count = tile_count.saturating_add(1);
+        cursor = cursor.saturating_add(record_length);
+
+        let Some(side) = perfect_square_root(tile_count) else {
+            continue;
+        };
+        if side == 0 || side > MAX_REASONABLE_AREA_DIMENSION {
+            continue;
+        }
+
+        if write_area_u32(payload, fragment_offset, layout.width_read_offset, side).is_none()
+            || write_area_u32(payload, fragment_offset, layout.height_read_offset, side).is_none()
+        {
+            let _ = write_area_u32(payload, fragment_offset, layout.width_read_offset, 0);
+            let _ = write_area_u32(payload, fragment_offset, layout.height_read_offset, 0);
+            return false;
+        }
+
+        let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
+        if repaired_scan.valid
+            && repaired_scan.width == side
+            && repaired_scan.packet_height == side
+            && legacy_area_source_tail_consumes_read_buffer(payload, fragment_offset, &repaired_scan)
+        {
+            *scan = repaired_scan;
+            return true;
+        }
+
+        let _ = write_area_u32(payload, fragment_offset, layout.width_read_offset, 0);
+        let _ = write_area_u32(payload, fragment_offset, layout.height_read_offset, 0);
+    }
+
+    false
+}
+
+fn perfect_square_root(value: u32) -> Option<u32> {
+    if value == 0 {
+        return None;
+    }
+    let mut side = 1u32;
+    while side.saturating_mul(side) < value {
+        side = side.checked_add(1)?;
+    }
+    (side.saturating_mul(side) == value).then_some(side)
+}
+
 fn repair_legacy_zero_sound_counts(
     payload: &mut [u8],
     fragment_offset: usize,
@@ -1013,8 +1704,7 @@ fn repair_legacy_zero_sound_counts(
                 payload,
                 fragment_offset,
                 cursor.checked_add(AREA_SOUND_BASE_BYTES)?,
-            )
-        {
+            ) {
             write_area_u16(payload, fragment_offset, count_offset, 1)?;
             repairs = repairs.checked_add(1)?;
             1usize
@@ -1034,6 +1724,41 @@ fn repair_legacy_zero_sound_counts(
     }
 
     Some(repairs)
+}
+
+fn repair_legacy_zero_static_placeable_count(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+) -> Option<u32> {
+    if !scan.valid {
+        return Some(0);
+    }
+
+    let proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if proof.zero_static_placeable_rows == 0 {
+        return Some(0);
+    }
+
+    // EE `CNWSArea::PackAreaIntoMessage` writes a WORD static-placeable count
+    // immediately before the static-placeable rows, then each row as
+    // OBJECTID, WORD appearance, and six 32-bit floats. The local Diamond demo
+    // capture has that count zeroed while the remaining read-buffer bytes are
+    // exactly decompile-shaped static rows. Repair only that bounded legacy
+    // form, then let the EE writer path append the two zero post-static WORDs.
+    write_area_u16(
+        payload,
+        fragment_offset,
+        proof.static_count_read_offset,
+        proof.zero_static_placeable_rows,
+    )?;
+
+    let repaired_proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if repaired_proof.zero_static_placeable_rows != 0 {
+        return None;
+    }
+
+    Some(u32::from(proof.zero_static_placeable_rows))
 }
 
 fn area_tile_record_length_at(
@@ -1117,6 +1842,39 @@ fn read_c_exo_string_shape(
     Some((length, string_read_offset + length_usize))
 }
 
+fn read_diamond_fixed_area_name_shape(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<(u32, usize)> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    if payload_offset > fragment_offset
+        || fragment_offset - payload_offset < DIAMOND_LEGACY_AREA_NAME_BYTES
+    {
+        return None;
+    }
+    let bytes = payload.get(payload_offset..payload_offset + DIAMOND_LEGACY_AREA_NAME_BYTES)?;
+    if !bytes
+        .iter()
+        .all(|byte| *byte == 0 || (0x20u8..=0x7Eu8).contains(byte))
+    {
+        return None;
+    }
+    let non_zero = bytes.iter().any(|byte| *byte != 0);
+    if !non_zero {
+        return None;
+    }
+
+    // Diamond `sub_53E700` first consumes a fragment BOOL. In the false branch
+    // used by this local 1.69 server capture it calls the fixed-buffer reader
+    // with `0x20`, then the area reader continues with the static environment
+    // DWORDs. On the wire this branch advances exactly twenty read bytes before
+    // the decompile-proven width/height/tileset positions.
+    Some((
+        DIAMOND_LEGACY_AREA_NAME_BYTES as u32,
+        AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES,
+    ))
+}
+
 fn read_area_u32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> Option<u32> {
     let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
     if payload_offset > fragment_offset || fragment_offset - payload_offset < 4 {
@@ -1140,6 +1898,19 @@ fn read_area_f32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> 
         return None;
     }
     read_f32_le(payload, payload_offset)
+}
+
+fn write_area_u32(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    read_offset: usize,
+    value: u32,
+) -> Option<()> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < 4 {
+        return None;
+    }
+    write_u32_le(payload, payload_offset, value)
 }
 
 fn write_area_u16(
@@ -1231,6 +2002,10 @@ mod tests {
     const DOCKS_OF_ASCENSION_LEGACY_ZERO_SOUND_COUNTS: &[u8] = include_bytes!(
         "../../fixtures/area/hg_docksofascension_client_area_legacy_zero_sound_counts.bin"
     );
+    const VOYAGE_LEGACY_MISSING_WIDTH: &[u8] =
+        include_bytes!("../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
+    const LOCAL_DIAMOND_BW167DEMO_FIXED_NAME: &[u8] =
+        include_bytes!("../../fixtures/area/local_diamond_bw167demo_client_area_fixed_name.bin");
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -1239,6 +2014,7 @@ mod tests {
             area_client_area_read_window(payload).expect("fixture read window");
         let layout = area_static_layout(payload, fragment_offset).expect("fixture static layout");
 
+        assert_eq!(layout.dialect, AreaStaticDialect::Legacy169);
         assert_eq!(
             read_area_u32(payload, fragment_offset, layout.width_read_offset),
             Some(11)
@@ -1248,8 +2024,11 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            fixed_resref_preview(payload, HIGH_LEVEL_HEADER_BYTES + layout.tileset_read_offset)
-                .as_deref(),
+            fixed_resref_preview(
+                payload,
+                HIGH_LEVEL_HEADER_BYTES + layout.tileset_read_offset
+            )
+            .as_deref(),
             Some("ttr01")
         );
 
@@ -1274,9 +2053,16 @@ mod tests {
         assert_eq!(summary.inferred_height, 14);
         assert_eq!(summary.tile_count, 154);
         assert_eq!(summary.area_resref, "docksofascension");
-        assert!(summary
-            .rewrite_kinds
-            .contains(&AreaRewriteKind::LegacyHgMissingHeightRepair));
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyHgMissingHeightRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::ExactEeAreaStaticBuild35FloatTriplets)
+        );
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
 
@@ -1287,7 +2073,25 @@ mod tests {
             .expect("legacy missing-height area rewrite");
         let proof = ee_area_client_area_exact_read_proof(&payload)
             .expect("rewritten area should match EE LoadArea cursor proof");
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("rewritten read window");
+        let layout =
+            area_static_layout(&payload, fragment_offset).expect("rewritten static layout");
 
+        assert_eq!(layout.dialect, AreaStaticDialect::EeBuild8193StaticHeader);
+        assert_eq!(
+            layout.width_read_offset,
+            layout.area_name_end_read_offset + EE_AREA_WIDTH_BYTES_AFTER_NAME_END
+        );
+        assert_eq!(
+            layout.height_read_offset,
+            layout.area_name_end_read_offset + EE_AREA_HEIGHT_BYTES_AFTER_NAME_END
+        );
+        assert_eq!(
+            fixed_resref_preview(&payload, HIGH_LEVEL_HEADER_BYTES + layout.tileset_read_offset)
+                .as_deref(),
+            Some("ttr01")
+        );
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert_eq!(proof.transition_count, 8);
@@ -1311,12 +2115,110 @@ mod tests {
 
         assert_eq!(summary.area_resref, "docksofascension");
         assert_eq!(summary.sound_count_zero_one_repairs, 3);
-        assert!(summary
-            .rewrite_kinds
-            .contains(&AreaRewriteKind::LegacyDiamondSoundCountZeroMeansOneRepair));
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondSoundCountZeroMeansOneRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::ExactEeAreaStaticBuild35FloatTriplets)
+        );
         assert_eq!(proof.sound_count, 11);
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn voyage_rewrite_repairs_legacy_missing_width_and_validates() {
+        let mut payload = VOYAGE_LEGACY_MISSING_WIDTH.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("fixture static layout");
+
+        assert_eq!(layout.dialect, AreaStaticDialect::Legacy169);
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
+            Some(5)
+        );
+        assert!(!scan_area_tile_stream(&payload, fragment_offset).valid);
+
+        let legacy_scan =
+            scan_area_tile_stream_allow_legacy_missing_width(&payload, fragment_offset);
+        assert!(legacy_scan.valid);
+        assert_eq!(legacy_scan.width, 4);
+        assert_eq!(legacy_scan.packet_height, 5);
+        assert_eq!(legacy_scan.inferred_height, 5);
+        assert_eq!(legacy_scan.tile_count, 20);
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("legacy missing-width area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "voyage");
+        assert!(summary.tile_scan_valid);
+        assert!(summary.width_repaired);
+        assert!(!summary.height_repaired);
+        assert_eq!(summary.width, 4);
+        assert_eq!(summary.packet_height, 5);
+        assert_eq!(summary.inferred_height, 5);
+        assert_eq!(summary.tile_count, 20);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyHgMissingWidthRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::ExactEeAreaStaticBuild35FloatTriplets)
+        );
+        assert_eq!(proof.sound_count, 1);
+        assert_eq!(proof.light_count, 0);
+        assert_eq!(proof.static_count, 3);
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn local_diamond_bw167demo_fixed_name_rewrite_validates() {
+        let mut payload = LOCAL_DIAMOND_BW167DEMO_FIXED_NAME.to_vec();
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("local Diamond fixed-name area rewrite");
+
+        assert_eq!(summary.area_resref, "edmo");
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondFixedAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondMissingSquareDimensionsRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondStaticPlaceableCountZeroRepair)
+        );
+        assert_eq!(summary.width, 8);
+        assert_eq!(summary.packet_height, 8);
+        assert_eq!(summary.tile_count, 64);
+        assert_eq!(summary.static_placeable_count_zero_repairs, 7);
+        let proof =
+            ee_area_client_area_exact_read_proof(&payload).expect("rewritten local area proof");
+        assert_eq!(proof.static_count, 7);
+        assert_eq!(proof.first_post_static_count, 0);
+        assert_eq!(proof.second_post_static_count, 0);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
 }

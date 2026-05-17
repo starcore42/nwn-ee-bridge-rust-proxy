@@ -54,7 +54,13 @@ mod tests {
     fn ee_scalar_orientation_preserves_shared_diamond_ee_packet_basis_for_cardinals() {
         assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x0000), 0);
         assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x4000), 900);
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0x8000), 1800);
-        assert_eq!(encode_ee_scalar_orientation_from_legacy_facing(0xC000), 2700);
+        assert_eq!(
+            encode_ee_scalar_orientation_from_legacy_facing(0x8000),
+            1800
+        );
+        assert_eq!(
+            encode_ee_scalar_orientation_from_legacy_facing(0xC000),
+            2700
+        );
     }
 }

@@ -32,9 +32,7 @@ impl PendingCreatureAppearanceTailRepair {
         appearance_offset: usize,
         object_id: u32,
     ) -> Option<Self> {
-        if original_tail_start > original_bits.len()
-            || rewritten_tail_start < original_tail_start
-        {
+        if original_tail_start > original_bits.len() || rewritten_tail_start < original_tail_start {
             return None;
         }
         Some(Self {
@@ -73,9 +71,12 @@ pub(super) fn try_repair_for_creature_update(
 
     for candidate_tail_start in candidate_tail_starts(pending) {
         let mut candidate_bits = Vec::with_capacity(
-            pending
-                .rewritten_tail_start
-                .saturating_add(pending.original_bits.len().saturating_sub(candidate_tail_start)),
+            pending.rewritten_tail_start.saturating_add(
+                pending
+                    .original_bits
+                    .len()
+                    .saturating_sub(candidate_tail_start),
+            ),
         );
         candidate_bits.extend_from_slice(&fragment_bits[..pending.rewritten_tail_start]);
         candidate_bits.extend_from_slice(&pending.original_bits[candidate_tail_start..]);
@@ -135,7 +136,12 @@ fn candidate_tail_starts(pending: &PendingCreatureAppearanceTailRepair) -> Vec<u
         if pending.original_tail_start >= delta {
             push_unique(&mut starts, pending.original_tail_start - delta);
         }
-        if delta <= pending.original_bits.len().saturating_sub(pending.original_tail_start) {
+        if delta
+            <= pending
+                .original_bits
+                .len()
+                .saturating_sub(pending.original_tail_start)
+        {
             push_unique(&mut starts, pending.original_tail_start + delta);
         }
     }
@@ -150,7 +156,11 @@ fn push_unique(values: &mut Vec<usize>, value: usize) {
     }
 }
 
-fn live_object_record_object_id(live_bytes: &[u8], offset: usize, record_end: usize) -> Option<u32> {
+fn live_object_record_object_id(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<u32> {
     if offset + 6 > record_end || record_end > live_bytes.len() {
         return None;
     }

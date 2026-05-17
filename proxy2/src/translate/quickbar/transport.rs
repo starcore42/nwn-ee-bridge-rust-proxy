@@ -40,9 +40,15 @@ fn normalize_quickbar_prefixed_short_declared_payload_if_needed(
         QuickbarSplitPolicy::DecompileOwnedBoundary,
     )?;
 
-    let mut read_buffer =
-        Vec::with_capacity(LEGACY_QUICKBAR_READ_CURSOR_START.checked_add(split.read_body_len)?);
-    read_buffer.extend_from_slice(&[0, 0, 0, 0]);
+    let mut read_buffer = Vec::with_capacity(split.read_body_len);
+    // The four bytes at `P 1E 01 + 3` in this compact legacy/HG shape are not
+    // a quickbar-owned read-buffer prefix. They are the displaced CNW fragment
+    // bytes occupying the slot where the EE/Diamond receiver expects the CNW
+    // declared length. Both decompiled quickbar receivers enter the 36-slot
+    // loop immediately after that length field, so the normalized read buffer
+    // must start with slot 0's type byte. Re-inserting four zero bytes here
+    // shifts every button and turns a proven compact SetAllButtons packet into
+    // an unclaimable quarantine.
     read_buffer.extend_from_slice(body_and_tail.get(..split.read_body_len)?);
 
     let mut fragments =
@@ -51,8 +57,12 @@ fn normalize_quickbar_prefixed_short_declared_payload_if_needed(
     fragments.extend_from_slice(body_and_tail.get(split.read_body_len..)?);
 
     let old_payload_length = payload.len();
-    let new_declared =
-        u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(read_buffer.len())?).ok()?;
+    let new_declared = u32::try_from(
+        HIGH_LEVEL_HEADER_BYTES
+            .checked_add(CNW_LENGTH_BYTES)?
+            .checked_add(read_buffer.len())?,
+    )
+    .ok()?;
     let mut rewritten = Vec::with_capacity(
         HIGH_LEVEL_HEADER_BYTES
             .checked_add(CNW_LENGTH_BYTES)?

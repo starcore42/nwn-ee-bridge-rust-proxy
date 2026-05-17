@@ -9,10 +9,9 @@ use flate2::Decompress;
 use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources, semantic};
 
 use super::{
-    deferred_module_resources,
-    live_stream, quickbar_stream,
+    client_ack, deferred_module_resources, live_stream, quickbar_stream,
     reassembly::{CompletedDeflatedStreamWindow, ServerDeflatedReassembly},
-    sequence::SequenceShift,
+    sequence::{SequenceElision, SequenceShift},
     synthetic_area,
 };
 
@@ -61,8 +60,14 @@ pub(super) struct SequenceState {
     /// packet is available to piggyback on.
     pub(super) latest_server_sequence_to_client: Option<u16>,
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
+    pub(super) client_sequence_elisions: Vec<SequenceElision>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
     pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct ClientAckSessionState {
+    pub(super) pending: client_ack::ClientAckState,
 }
 
 #[derive(Debug, Default)]
@@ -71,13 +76,29 @@ pub(super) struct LoginWaypointState {
     pub(super) synthetic_empty_response_count: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct SyntheticAreaState {
     pub(super) pending_server_to_client_packets: Vec<synthetic_area::PendingServerPacket>,
     pub(super) pending_area_loaded: Option<synthetic_area::PendingAreaLoaded>,
     pub(super) in_flight_area_loaded: Option<synthetic_area::InFlightAreaLoaded>,
+    pub(super) completed_area_loaded: Option<synthetic_area::CompletedAreaLoaded>,
     pub(super) server_hold_gate: Option<synthetic_area::ServerHoldGate>,
     pub(super) held_server_to_client_packets: Vec<synthetic_area::PendingVerifiedServerPacket>,
+    pub(super) synthesize_loadbar: bool,
+}
+
+impl Default for SyntheticAreaState {
+    fn default() -> Self {
+        Self {
+            pending_server_to_client_packets: Vec::new(),
+            pending_area_loaded: None,
+            in_flight_area_loaded: None,
+            completed_area_loaded: None,
+            server_hold_gate: None,
+            held_server_to_client_packets: Vec::new(),
+            synthesize_loadbar: true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -96,6 +117,7 @@ pub struct SessionState {
     pub(super) quickbar: QuickbarStreamState,
     pub(super) live_object: LiveObjectStreamState,
     pub(super) sequence: SequenceState,
+    pub(super) client_ack: ClientAckSessionState,
     pub(super) login_waypoint: LoginWaypointState,
     pub(super) synthetic_area: SyntheticAreaState,
     pub(super) deferred_module_resources: DeferredModuleResourcesSessionState,
@@ -105,9 +127,16 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn new(module_resources: module_resources::ModuleResourceRuntime) -> Self {
+    pub fn new(
+        module_resources: module_resources::ModuleResourceRuntime,
+        synthesize_area_loadbar: bool,
+    ) -> Self {
         Self {
             module_resources,
+            synthetic_area: SyntheticAreaState {
+                synthesize_loadbar: synthesize_area_loadbar,
+                ..SyntheticAreaState::default()
+            },
             ..Self::default()
         }
     }

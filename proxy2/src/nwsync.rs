@@ -94,8 +94,7 @@ impl Advertisement {
         section.push(1);
         append_counted(&mut section, self.url())?;
         append_counted(&mut section, self.root_hash())?;
-        section
-            .push(u8::try_from(self.bnxr_manifests.len()).context("manifest count overflow")?);
+        section.push(u8::try_from(self.bnxr_manifests.len()).context("manifest count overflow")?);
         for manifest in &self.bnxr_manifests {
             section.push(manifest.flags);
             section.push(manifest.language);
@@ -145,14 +144,17 @@ impl Runtime {
         };
 
         let root_hash = root_hash.trim().to_string();
-        let bnxr_manifests = parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash, true)?;
+        let bnxr_manifests =
+            parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash, true)?;
         let module_manifests =
             parse_manifest_adverts(env_values.get(ENV_MODULE_MANIFESTS), &root_hash, false)?;
         if !module_manifests.is_empty() && !config.nwsync_advertise_mode.advertises_bnxr() {
-            tracing::warn!(
-                module_manifests = module_manifests.len(),
-                "NWSync module-resource extra manifests are configured without BNXR preflight advertisement; a cold EE cache may fail CNWCModule::LoadModuleResources before those manifests are locally known"
-            );
+            return Err(anyhow!(
+                "NWSync module-resource extra manifests require BNXR preflight advertisement; \
+                 EE CNWCModule::LoadModuleResources calls AddManifest(extra), and the \
+                 decompile-backed AddManifest path fails if the client has not already learned \
+                 the manifest. Use --nwsync-advertise-mode both or remove HG_BRIDGE_NWSYNC_MODULE_MANIFESTS."
+            ));
         }
         let advertisement = Advertisement::new(
             root_hash,
@@ -189,7 +191,11 @@ fn parse_manifest_adverts(
     root_hash: &str,
     default_to_root: bool,
 ) -> anyhow::Result<Vec<ManifestAdvert>> {
-    let Some(raw) = raw.map(String::as_str).map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(raw) = raw
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         // EE's byte-oriented BNXR pre-module path needs a concrete client
         // content work item, so its default advert list is the root manifest.
         // `CNWCModule::LoadModuleResources` is different: the decompile shows

@@ -12,6 +12,11 @@ pub(super) struct SequenceShift {
     pub(super) delta: u16,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct SequenceElision {
+    pub(super) sequence: u16,
+}
+
 pub(super) fn sequence_at_or_after(sequence: u16, base: u16) -> bool {
     sequence.wrapping_sub(base) < 0x8000
 }
@@ -43,6 +48,23 @@ pub(super) fn shift_sequence_for_peer(shifts: &[SequenceShift], original_sequenc
     original_sequence.wrapping_add(delta)
 }
 
+pub(super) fn shift_sequence_for_peer_with_elisions(
+    shifts: &[SequenceShift],
+    elisions: &[SequenceElision],
+    original_sequence: u16,
+) -> Option<u16> {
+    if elisions.iter().any(|elision| elision.sequence == original_sequence) {
+        return None;
+    }
+
+    let shifted = shift_sequence_for_peer(shifts, original_sequence);
+    let elided_before = elisions
+        .iter()
+        .filter(|elision| sequence_at_or_after(original_sequence, elision.sequence))
+        .count() as u16;
+    Some(shifted.wrapping_sub(elided_before))
+}
+
 pub(super) fn unshift_ack_for_origin(shifts: &[SequenceShift], shifted_ack_sequence: u16) -> u16 {
     let mut cumulative_delta = 0u16;
     for shift in shifts {
@@ -65,11 +87,33 @@ pub(super) fn unshift_ack_for_origin(shifts: &[SequenceShift], shifted_ack_seque
     shifted_ack_sequence.wrapping_sub(cumulative_delta)
 }
 
+pub(super) fn unshift_ack_for_origin_with_elisions(
+    shifts: &[SequenceShift],
+    elisions: &[SequenceElision],
+    shifted_ack_sequence: u16,
+) -> u16 {
+    let mut unshifted = unshift_ack_for_origin(shifts, shifted_ack_sequence);
+    for elision in elisions {
+        if sequence_at_or_after(unshifted.wrapping_add(1), elision.sequence) {
+            unshifted = unshifted.wrapping_add(1);
+        }
+    }
+    unshifted
+}
+
 pub(super) fn trim_sequence_shifts(shifts: &mut Vec<SequenceShift>) {
     const MAX_SEQUENCE_SHIFTS: usize = 16;
     if shifts.len() > MAX_SEQUENCE_SHIFTS {
         let overflow = shifts.len() - MAX_SEQUENCE_SHIFTS;
         shifts.drain(0..overflow);
+    }
+}
+
+pub(super) fn trim_sequence_elisions(elisions: &mut Vec<SequenceElision>) {
+    const MAX_SEQUENCE_ELISIONS: usize = 64;
+    if elisions.len() > MAX_SEQUENCE_ELISIONS {
+        let overflow = elisions.len() - MAX_SEQUENCE_ELISIONS;
+        elisions.drain(0..overflow);
     }
 }
 
@@ -95,5 +139,36 @@ mod tests {
         let mut wrapped = Some(u16::MAX);
         record_forward_progress(&mut wrapped, 1);
         assert_eq!(wrapped, Some(1));
+    }
+
+    #[test]
+    fn client_sequence_elision_maps_later_sequences_down() {
+        let elisions = vec![SequenceElision { sequence: 3 }, SequenceElision { sequence: 5 }];
+
+        assert_eq!(
+            shift_sequence_for_peer_with_elisions(&[], &elisions, 2),
+            Some(2)
+        );
+        assert_eq!(
+            shift_sequence_for_peer_with_elisions(&[], &elisions, 3),
+            None
+        );
+        assert_eq!(
+            shift_sequence_for_peer_with_elisions(&[], &elisions, 4),
+            Some(3)
+        );
+        assert_eq!(
+            shift_sequence_for_peer_with_elisions(&[], &elisions, 6),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn client_sequence_elision_maps_server_ack_back_up() {
+        let elisions = vec![SequenceElision { sequence: 3 }, SequenceElision { sequence: 5 }];
+
+        assert_eq!(unshift_ack_for_origin_with_elisions(&[], &elisions, 2), 3);
+        assert_eq!(unshift_ack_for_origin_with_elisions(&[], &elisions, 3), 5);
+        assert_eq!(unshift_ack_for_origin_with_elisions(&[], &elisions, 4), 6);
     }
 }

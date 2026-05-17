@@ -14,6 +14,58 @@ const LENGTH_HINT_OFFSET: usize = 18;
 const EXTENDED_MARKER: u8 = 0xFD;
 const NWSYNC_SECTION_TAG: u8 = 0x02;
 
+pub(super) struct ProxyExtendedInfoResponse<'a> {
+    pub server_port: u16,
+    pub module_name: &'a str,
+    pub advertisement: Option<&'a Advertisement>,
+}
+
+pub(super) fn build_proxy_owned_bnxr_response(
+    response: ProxyExtendedInfoResponse<'_>,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        response.module_name.len() <= u8::MAX as usize,
+        "BNXR module name exceeds one-byte length"
+    );
+
+    let mut bytes = Vec::with_capacity(
+        MODULE_NAME_OFFSET
+            + response.module_name.len()
+            + response
+                .advertisement
+                .map(|advertisement| advertisement.build_bnxr_section().map(|section| section.len()))
+                .transpose()?
+                .unwrap_or(0),
+    );
+    bytes.extend_from_slice(b"BNXR");
+    bytes.extend_from_slice(&response.server_port.to_le_bytes());
+    // EE `HandleBNXRMessage` enters the extended reader only when byte 6 is
+    // 0xFD. The remaining pre-name bytes match the live HG 213 BNXR envelope
+    // observed before the module-name string; byte 18 is the decompile-checked
+    // length hint, and byte 19 is the counted module-name length.
+    bytes.extend_from_slice(&[
+        EXTENDED_MARKER,
+        0x00,
+        0x01,
+        0x28,
+        0x00,
+        0x10,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x03,
+    ]);
+    bytes.push(response.module_name.len() as u8);
+    bytes.extend_from_slice(response.module_name.as_bytes());
+    if let Some(advertisement) = response.advertisement {
+        bytes.extend_from_slice(&advertisement.build_bnxr_section()?);
+    }
+    Ok(bytes)
+}
+
 pub(super) fn rewrite_server_to_ee(
     bytes: &[u8],
     advertisement: &Advertisement,
@@ -52,6 +104,25 @@ pub(super) fn rewrite_server_to_ee(
     );
 
     Ok(Some(rewritten))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_exact_proxy_owned_bnxr_module_envelope() {
+        let packet = build_proxy_owned_bnxr_response(ProxyExtendedInfoResponse {
+            server_port: 5133,
+            module_name: "Path of Ascension CEP Legends",
+            advertisement: None,
+        })
+        .expect("valid BNXR response");
+
+        assert_eq!(&packet[..20], b"BNXR\x0D\x14\xFD\x00\x01\x28\x00\x10\x00\x01\x00\x00\x00\x01\x03\x1D");
+        assert_eq!(&packet[20..], b"Path of Ascension CEP Legends");
+        assert!(claim_server_to_ee_if_verified(&packet).is_some());
+    }
 }
 
 pub(super) fn claim_server_to_ee_if_verified(bytes: &[u8]) -> Option<()> {

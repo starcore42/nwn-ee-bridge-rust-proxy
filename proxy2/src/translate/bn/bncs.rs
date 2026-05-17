@@ -10,17 +10,23 @@ use crate::{
 
 use super::wire::{append_counted_segment, legacy_segment, read_counted_segment};
 
+pub(super) struct BncsRewrite {
+    pub packet: Vec<u8>,
+    pub advertised_udp_port: u16,
+}
+
 pub(super) fn rewrite_client_to_diamond(
     bytes: &[u8],
     identity: &DiamondIdentity,
+    proxy_upstream_udp_port: u16,
     bncs_private_build: u32,
     bncs_build_field: u16,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<BncsRewrite> {
     if bytes.len() < 18 {
         anyhow::bail!("BNCS too short: {}", bytes.len());
     }
 
-    let udp_port = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let ee_udp_port = u16::from_le_bytes([bytes[4], bytes[5]]);
     let connection_type = bytes[6];
     let auth_mode = bytes[13];
     let input_build =
@@ -48,7 +54,13 @@ pub(super) fn rewrite_client_to_diamond(
 
     let mut rewritten = Vec::with_capacity(20 + player.len() + public_key.len());
     rewritten.extend_from_slice(b"BNCS");
-    rewritten.extend_from_slice(&udp_port.to_le_bytes());
+    // Diamond `sub_5F6630` writes `CExoNet::GetUDPPort()` into bytes 4..5.
+    // In driver-only bridge mode the EE BNCS is still produced by the native
+    // EE CExoNet instance, so this advertised port is the EE-side UDP identity
+    // already present in the verified EE packet. The proxy's upstream socket
+    // port is transport plumbing only; using it here changes the legacy BNCS
+    // shape HG accepts and causes the server to stay silent before BNCR.
+    rewritten.extend_from_slice(&ee_udp_port.to_le_bytes());
     rewritten.push(connection_type);
     rewritten.extend_from_slice(&bncs_private_build.to_le_bytes());
     rewritten.extend_from_slice(&bncs_build_field.to_le_bytes());
@@ -60,7 +72,9 @@ pub(super) fn rewrite_client_to_diamond(
     tracing::info!(
         old_len = bytes.len(),
         new_len = rewritten.len(),
-        udp_port,
+        ee_udp_port,
+        advertised_udp_port = ee_udp_port,
+        proxy_upstream_udp_port,
         connection_type,
         auth_mode,
         input_build,
@@ -81,5 +95,8 @@ pub(super) fn rewrite_client_to_diamond(
         "client BNCS rewritten to Diamond layout"
     );
 
-    Ok(rewritten)
+    Ok(BncsRewrite {
+        packet: rewritten,
+        advertised_udp_port: ee_udp_port,
+    })
 }

@@ -38,6 +38,77 @@ const QUICKBAR_ITEM_LINK_HEADER_BYTES: usize = 3;
 const QUICKBAR_ITEM_LINK_ROW_BYTES: usize = 9;
 const QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW: usize = 2;
 
+/// Extract item-object ids from a GUI live-object record that has already been
+/// accepted by `advance_verified_live_gui_record`.
+///
+/// This is intentionally not a validator. The decompile-backed validators in
+/// this module own the exact byte shape for `G Q` quickbar item-link rows and
+/// `G I/i A` / `G R/r A` GUI item-create records. This helper only exposes the
+/// object ids from that already-proven shape so the session gateway can remember
+/// that the client has been told about those item objects before a quickbar
+/// packet references them.
+pub(super) fn verified_item_materialization_object_ids(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Vec<u32> {
+    if record_end <= offset || bytes.get(offset).copied() != Some(LIVE_GUI_OPCODE) {
+        return Vec::new();
+    }
+
+    match bytes.get(offset + 1).copied() {
+        Some(QUICKBAR_ITEM_LINK_SUBOPCODE) => {
+            let Some(count) = bytes.get(offset + 2).copied() else {
+                return Vec::new();
+            };
+            let count = usize::from(count);
+            let expected_end = offset
+                .checked_add(QUICKBAR_ITEM_LINK_HEADER_BYTES)
+                .and_then(|start| start.checked_add(count.checked_mul(QUICKBAR_ITEM_LINK_ROW_BYTES)?));
+            if expected_end != Some(record_end) {
+                return Vec::new();
+            }
+
+            let mut ids = Vec::new();
+            let mut cursor = offset + QUICKBAR_ITEM_LINK_HEADER_BYTES;
+            for _ in 0..count {
+                if let Some(object_id) =
+                    read_u32_le(bytes, cursor + QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW)
+                {
+                    if is_materialized_item_object_id(object_id) {
+                        ids.push(object_id);
+                    }
+                }
+                cursor += QUICKBAR_ITEM_LINK_ROW_BYTES;
+            }
+            ids
+        }
+        Some(GUI_INVENTORY_SUBOPCODE)
+        | Some(GUI_INVENTORY_LOWER_SUBOPCODE)
+        | Some(GUI_REPOSITORY_SUBOPCODE)
+        | Some(GUI_REPOSITORY_LOWER_SUBOPCODE) => {
+            let Some(item_object_offset) =
+                legacy_live_gui_item_object_offset(bytes, offset, record_end)
+            else {
+                return Vec::new();
+            };
+            let Some(object_id) = read_u32_le(bytes, item_object_offset) else {
+                return Vec::new();
+            };
+            if is_materialized_item_object_id(object_id) {
+                vec![object_id]
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn is_materialized_item_object_id(object_id: u32) -> bool {
+    object_id != 0 && object_id != 0x7F00_0000 && object_id != u32::MAX
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LiveGuiRecordClaim {
     pub item_create: bool,

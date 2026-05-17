@@ -67,11 +67,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{
-    crc::read_le_u32,
-    packet::m::HighLevel,
-    translate::semantic::SemanticSessionState,
-};
+use crate::{crc::read_le_u32, packet::m::HighLevel, translate::semantic::SemanticSessionState};
 
 const INPUT_MAJOR: u8 = 0x06;
 const WALK_TO_WAYPOINT_MINOR: u8 = 0x01;
@@ -323,17 +319,18 @@ fn claim_or_rewrite_transition_door_close(
     }
 
     let recent_open = state.client_input.recent_open_door_id == Some(door.door_id)
-        && state
-            .client_input
-            .recent_open_at
-            .is_some_and(|opened_at| now.duration_since(opened_at) <= RECENT_TRANSITION_DOOR_OPEN_WINDOW);
+        && state.client_input.recent_open_at.is_some_and(|opened_at| {
+            now.duration_since(opened_at) <= RECENT_TRANSITION_DOOR_OPEN_WINDOW
+        });
     if !recent_open {
         return None;
     }
 
     let Some(area_id) = state.area.current_area_object_id else {
-        state.client_input.transition_door_close_rewrite_skips =
-            state.client_input.transition_door_close_rewrite_skips.saturating_add(1);
+        state.client_input.transition_door_close_rewrite_skips = state
+            .client_input
+            .transition_door_close_rewrite_skips
+            .saturating_add(1);
         tracing::debug!(
             door_id = format_args!("0x{:08X}", door.door_id),
             requested_state = format_args!("0x{:04X}", door.state),
@@ -343,8 +340,10 @@ fn claim_or_rewrite_transition_door_close(
         return None;
     };
     let Some(door_object) = state.objects.get(DOOR_OBJECT_TYPE, door.door_id) else {
-        state.client_input.transition_door_close_rewrite_skips =
-            state.client_input.transition_door_close_rewrite_skips.saturating_add(1);
+        state.client_input.transition_door_close_rewrite_skips = state
+            .client_input
+            .transition_door_close_rewrite_skips
+            .saturating_add(1);
         tracing::debug!(
             door_id = format_args!("0x{:08X}", door.door_id),
             requested_state = format_args!("0x{:04X}", door.state),
@@ -356,8 +355,10 @@ fn claim_or_rewrite_transition_door_close(
         return None;
     };
     let Some(door_position) = door_object.position else {
-        state.client_input.transition_door_close_rewrite_skips =
-            state.client_input.transition_door_close_rewrite_skips.saturating_add(1);
+        state.client_input.transition_door_close_rewrite_skips = state
+            .client_input
+            .transition_door_close_rewrite_skips
+            .saturating_add(1);
         tracing::debug!(
             door_id = format_args!("0x{:08X}", door.door_id),
             requested_state = format_args!("0x{:04X}", door.state),
@@ -372,7 +373,10 @@ fn claim_or_rewrite_transition_door_close(
         );
         return None;
     };
-    let Some(anchor) = state.objects.nearby_transition_anchor_for_door(door.door_id) else {
+    let Some(anchor) = state
+        .objects
+        .nearby_transition_anchor_for_door(door.door_id)
+    else {
         let rewritten = build_transition_door_walk_payload(
             area_id,
             door.door_id,
@@ -384,8 +388,10 @@ fn claim_or_rewrite_transition_door_close(
         *payload = rewritten;
         state.client_input.recent_open_door_id = None;
         state.client_input.recent_open_at = None;
-        state.client_input.transition_door_close_rewrites =
-            state.client_input.transition_door_close_rewrites.saturating_add(1);
+        state.client_input.transition_door_close_rewrites = state
+            .client_input
+            .transition_door_close_rewrites
+            .saturating_add(1);
         tracing::info!(
             door_id = format_args!("0x{:08X}", door.door_id),
             requested_state = format_args!("0x{:04X}", door.state),
@@ -424,15 +430,21 @@ fn claim_or_rewrite_transition_door_close(
     *payload = rewritten;
     state.client_input.recent_open_door_id = None;
     state.client_input.recent_open_at = None;
-    state.client_input.transition_door_close_rewrites =
-        state.client_input.transition_door_close_rewrites.saturating_add(1);
+    state.client_input.transition_door_close_rewrites = state
+        .client_input
+        .transition_door_close_rewrites
+        .saturating_add(1);
     tracing::info!(
         door_id = format_args!("0x{:08X}", door.door_id),
         requested_state = format_args!("0x{:04X}", door.state),
         area_id = format_args!("0x{:08X}", area_id),
         x = door_position.x,
         y = door_position.y,
-        z = if door_position.z == 0.0 { 0.002 } else { door_position.z },
+        z = if door_position.z == 0.0 {
+            0.002
+        } else {
+            door_position.z
+        },
         anchor_id = format_args!("0x{:08X}", anchor.object_id),
         anchor_type = anchor.object_type,
         anchor_name = anchor.name,
@@ -748,8 +760,7 @@ mod tests {
         assert_eq!(door.action_object_id, 0x8000_34D1);
 
         assert_eq!(trigger[0], CLIENT_INPUT_ENVELOPE);
-        let trigger =
-            parse_walk_to_waypoint(trigger).expect("trigger click fixture should parse");
+        let trigger = parse_walk_to_waypoint(trigger).expect("trigger click fixture should parse");
         assert_eq!(trigger.area_id, 0x8000_34CB);
         assert_eq!(trigger.input_byte, 0);
         assert!(trigger.first_bool);
@@ -776,7 +787,8 @@ mod tests {
     #[test]
     fn examine_fixture_matches_decompile_cursor_shape() {
         let fixture = include_bytes!("../../fixtures/client_input/examine_item.bin");
-        let summary = claim_payload_if_verified(fixture).expect("examine fixture should be claimed");
+        let summary =
+            claim_payload_if_verified(fixture).expect("examine fixture should be claimed");
         let parsed = parse_examine(fixture).expect("examine fixture should parse");
 
         assert_eq!(summary.kind, ClientInputKind::Examine);
@@ -906,16 +918,14 @@ mod tests {
         ]);
 
         let mut open = build_change_door_payload(0x8000_34D1, DOOR_OPEN_STATE);
-        let open_summary =
-            claim_or_rewrite_payload_if_verified_with_state(&mut open, &mut state)
-                .expect("open door packet should be exact-claimed");
+        let open_summary = claim_or_rewrite_payload_if_verified_with_state(&mut open, &mut state)
+            .expect("open door packet should be exact-claimed");
         assert_eq!(open_summary.kind, ClientInputKind::ChangeDoorState);
         assert!(!open_summary.rewritten_transition_door_close);
 
         let mut close = build_change_door_payload(0x8000_34D1, 0x0016);
-        let close_summary =
-            claim_or_rewrite_payload_if_verified_with_state(&mut close, &mut state)
-                .expect("transition door close should rewrite to a walk packet");
+        let close_summary = claim_or_rewrite_payload_if_verified_with_state(&mut close, &mut state)
+            .expect("transition door close should rewrite to a walk packet");
         let walk = parse_walk_to_waypoint(&close).expect("rewritten packet should parse");
         assert_eq!(close_summary.kind, ClientInputKind::WalkToWaypoint);
         assert!(close_summary.rewritten_transition_door_close);
@@ -959,16 +969,14 @@ mod tests {
         ]);
 
         let mut open = build_change_door_payload(0x8000_F6AC, DOOR_OPEN_STATE);
-        let open_summary =
-            claim_or_rewrite_payload_if_verified_with_state(&mut open, &mut state)
-                .expect("open door packet should be exact-claimed");
+        let open_summary = claim_or_rewrite_payload_if_verified_with_state(&mut open, &mut state)
+            .expect("open door packet should be exact-claimed");
         assert_eq!(open_summary.kind, ClientInputKind::ChangeDoorState);
         assert!(!open_summary.rewritten_transition_door_close);
 
         let mut close = build_change_door_payload(0x8000_F6AC, 0x0016);
-        let close_summary =
-            claim_or_rewrite_payload_if_verified_with_state(&mut close, &mut state)
-                .expect("transition door close should rewrite to a walk packet");
+        let close_summary = claim_or_rewrite_payload_if_verified_with_state(&mut close, &mut state)
+            .expect("transition door close should rewrite to a walk packet");
         let walk = parse_walk_to_waypoint(&close).expect("rewritten packet should parse");
         assert_eq!(close_summary.kind, ClientInputKind::WalkToWaypoint);
         assert_eq!(close_summary.packet_name, "Input_WalkToWaypoint");

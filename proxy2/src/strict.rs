@@ -16,9 +16,8 @@ use crate::{
     },
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat,
-        client_gui_inventory, client_input, client_login,
-        client_quickbar, gameplay_stream, journal, live_object_update, play_module_character_list,
-        player_list, quickbar,
+        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar, gameplay_stream,
+        journal, live_object_update, login, play_module_character_list, player_list, quickbar,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -235,11 +234,11 @@ pub fn decide_verified_translated(
                         "verified-consumed-empty-frame",
                     );
                 }
-                if server_zlib_stream_continuation_empty_progress_valid(direction, family) {
+                if server_zlib_stream_empty_progress_valid(direction, family) {
                     return StrictDecision::allow(
                         "M/verified-empty",
                         family.as_str(),
-                        "verified-server-zlib-continuation-empty-progress-frame",
+                        "verified-server-zlib-empty-progress-frame",
                     );
                 }
                 return StrictDecision::quarantine(
@@ -380,7 +379,7 @@ pub fn decide_verified_translated(
     }
 }
 
-fn server_zlib_stream_continuation_empty_progress_valid(
+fn server_zlib_stream_empty_progress_valid(
     direction: Direction,
     family: VerifiedFamily,
 ) -> bool {
@@ -397,6 +396,11 @@ fn server_zlib_stream_continuation_empty_progress_valid(
             stream_epoch,
             ..
         } => owner != ContinuationOwner::UnknownProxyOwned && stream_epoch != 0,
+        VerifiedFamily::ServerZlibZeroFillWindow {
+            inflated_length,
+            compressed_length,
+            ..
+        } => inflated_length >= 8 && compressed_length != 0 && compressed_length <= 16,
         _ => false,
     }
 }
@@ -723,9 +727,12 @@ fn coalesced_record_proof_valid(
 ) -> bool {
     match proof {
         VerifiedProof::Family(VerifiedFamily::ConsumedEmptyMFrame) => payload.is_empty(),
-        VerifiedProof::Family(family @ VerifiedFamily::ServerZlibStreamContinuation { .. }) => {
-            payload.is_empty()
-                && server_zlib_stream_continuation_empty_progress_valid(direction, *family)
+        VerifiedProof::Family(
+            family
+            @ (VerifiedFamily::ServerZlibStreamContinuation { .. }
+            | VerifiedFamily::ServerZlibZeroFillWindow { .. }),
+        ) => {
+            payload.is_empty() && server_zlib_stream_empty_progress_valid(direction, *family)
         }
         VerifiedProof::Family(family) => coalesced_family_payload_valid(*family, payload, deflated),
         VerifiedProof::GameplayStream(families) => {
@@ -1224,6 +1231,21 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         );
         return false;
     }
+    if let VerifiedFamily::ServerZlibZeroFillWindow {
+        first_sequence,
+        inflated_length,
+        compressed_length,
+    } = family
+    {
+        tracing::warn!(
+            first_sequence,
+            inflated_length,
+            compressed_length,
+            continuation_len = payload.len(),
+            "strict rejected standalone zlib zero-fill proof without empty reliable progress shell"
+        );
+        return false;
+    }
 
     let Some(high) = HighLevel::parse(payload) else {
         return false;
@@ -1245,6 +1267,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                     0x03 => char_list_request_update_char_shape_valid(payload),
                     _ => false,
                 }
+        }
+        VerifiedFamily::ClientGuiEvent => {
+            high.major == 0x35
+                && high.minor == 0x01
+                && client_gui_event::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientGuiInventory => {
             high.major == 0x0D && client_gui_inventory::claim_payload_if_verified(payload).is_some()
@@ -1305,9 +1332,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && loadbar_shape_valid(payload)
         }
         VerifiedFamily::Login => {
-            high.major == 0x02
-                && matches!(high.minor, 0x05 | 0x0C)
-                && empty_high_level_shape_valid(payload)
+            high.major == 0x02 && login::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ModuleInfo => {
             high.major == 0x03 && high.minor == 0x01 && module_info_shape_valid(payload)
@@ -1348,7 +1373,8 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::CoalescedWindow
         | VerifiedFamily::ConsumedEmptyMFrame
         | VerifiedFamily::SemanticDeflated
-        | VerifiedFamily::ServerZlibStreamContinuation { .. } => false,
+        | VerifiedFamily::ServerZlibStreamContinuation { .. }
+        | VerifiedFamily::ServerZlibZeroFillWindow { .. } => false,
     }
 }
 
@@ -1358,6 +1384,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
         VerifiedFamily::AreaClientArea
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
+            | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientSideMessage
             | VerifiedFamily::GameObjUpdateObjectControl
             | VerifiedFamily::GameObjUpdateLiveObject
@@ -1529,7 +1556,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x01, 0x03) => {
             HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload))
         }
-        (0x02, 0x05 | 0x0C) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x02, 0x05 | 0x0C | 0x10 | 0x12) => {
+            HighPayloadValidation::Exact(login::claim_payload_if_verified(payload).is_some())
+        }
         (0x02, 0x0D) => {
             HighPayloadValidation::Exact(client_login_waypoint_response_shape_valid(payload))
         }
@@ -1553,10 +1582,10 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         }
         (0x0A, 0x01 | 0x02 | 0x03) => {
             HighPayloadValidation::Exact(player_list_shape_valid(payload))
-        },
-        (0x0D, 0x01 | 0x02) => {
-            HighPayloadValidation::Exact(client_gui_inventory::claim_payload_if_verified(payload).is_some())
         }
+        (0x0D, 0x01 | 0x02) => HighPayloadValidation::Exact(
+            client_gui_inventory::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
@@ -1578,11 +1607,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         ),
         (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
         (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
-        (0x02, 0x0A | 0x10 | 0x12) | (0x03, 0x0E) | (0x0C, 0x01) => {
-            HighPayloadValidation::shallow_noncritical(bare_or_cnw_wrapped_payload_shape_valid(
-                payload,
-            ))
-        }
+        (0x02, 0x0A) | (0x03, 0x0E) | (0x0C, 0x01) => HighPayloadValidation::shallow_noncritical(
+            bare_or_cnw_wrapped_payload_shape_valid(payload),
+        ),
         (0x2C, 0x01..=0x03) => HighPayloadValidation::Exact(loadbar_shape_valid(payload)),
         _ => HighPayloadValidation::Missing,
     }
@@ -1930,7 +1957,7 @@ fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
     server_status_module_resources_shape_valid(payload)
 }
 
-fn module_info_shape_valid(payload: &[u8]) -> bool {
+pub(crate) fn module_info_shape_valid(payload: &[u8]) -> bool {
     const READ_START: usize = 3 + 4;
     const MAX_MODULE_INFO_STRING: usize = 4096;
     const MAX_AREA_NAME_STRING: usize = 512;
@@ -2529,18 +2556,32 @@ fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
             "decompile SendBNLMMessage",
         ),
         (Direction::ClientToServer, BnTag::Bnxi) => validate_bnxi(packet),
-        (Direction::ServerToClient, BnTag::Bncr) => validate_bncr(packet),
-        (Direction::ServerToClient, BnTag::Bnvr) => validate_bnvr(packet),
-        (Direction::ServerToClient, BnTag::Bnds) => StrictDecision::quarantine(
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bncr) => {
+            validate_bncr(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnvr) => {
+            validate_bnvr(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnds) => {
+            StrictDecision::quarantine(
             "BN",
             packet.tag.name(),
             "legacy-server-BNDS-has-no-EE-client-translator",
-        ),
-        (Direction::ServerToClient, BnTag::Bndr) => validate_bndr(packet),
-        (Direction::ServerToClient, BnTag::Bnxr) => validate_bnxr(packet),
-        (Direction::ServerToClient, BnTag::Bndp) => validate_bndp(packet),
-        (Direction::ServerToClient, BnTag::Bner) => validate_bner(packet),
-        (Direction::ServerToClient, BnTag::Bnlr) => require_len(
+            )
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bndr) => {
+            validate_bndr(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnxr) => {
+            validate_bnxr(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bndp) => {
+            validate_bndp(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bner) => {
+            validate_bner(packet)
+        }
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnlr) => require_len(
             packet,
             11,
             "known-ee-server-latency-response",
@@ -2758,10 +2799,12 @@ fn validate_bncr(packet: &BnPacket<'_>) -> StrictDecision {
 
 fn validate_bnvr(packet: &BnPacket<'_>) -> StrictDecision {
     // Decompile-backed shape:
-    // Diamond `BNVR` reject is exactly six bytes (`BNVR`, `R`, reason) and
-    // accept is exactly nine bytes (`BNVR`, `A`, u32le window value). EE's
-    // `HandleBNVRMessage` accepts these legacy forms, so strict mode requires
-    // one of those exact cursor-consumed packets.
+    // Diamond `BNVR` reject is exactly six bytes (`BNVR`, `R`, reason). EE's
+    // `HandleBNVRMessage` accepts the legacy nine-byte accept, but only the
+    // 21-byte accept carries the server major/minor/revision fields that feed
+    // `CNetLayer::ServerSatisfiesBuild`. The EE-facing proxy therefore emits
+    // an exact extended accept carrying the proxy-owned server dialect build
+    // after the BNVR semantic translator has claimed it.
     let bytes = packet.bytes;
     if bytes.len() < 6 {
         return StrictDecision::quarantine("BN", packet.tag.name(), "BNVR-too-short");
@@ -2770,8 +2813,8 @@ fn validate_bnvr(packet: &BnPacket<'_>) -> StrictDecision {
         b'R' if bytes.len() == 6 => {
             StrictDecision::allow("BN", packet.tag.name(), "known-legacy-BNVR-reject")
         }
-        b'A' if bytes.len() == 9 => {
-            StrictDecision::allow("BN", packet.tag.name(), "known-legacy-BNVR-accept")
+        b'A' if bytes.len() == 21 => {
+            StrictDecision::allow("BN", packet.tag.name(), "known-ee-BNVR-accept-with-build")
         }
         b'R' => StrictDecision::quarantine("BN", packet.tag.name(), "BNVR-reject-invalid-length"),
         b'A' => StrictDecision::quarantine("BN", packet.tag.name(), "BNVR-accept-invalid-length"),
@@ -2863,11 +2906,7 @@ mod tests {
         // flag-driven, so this must remain a deflated envelope.
         let packet = build_m_deflated_packet_with_inflated_len(0x350);
 
-        let decision = decide(
-            Direction::ServerToClient,
-            &packet,
-            StrictProfile::Player,
-        );
+        let decision = decide(Direction::ServerToClient, &packet, StrictProfile::Player);
         assert_eq!(decision.verdict, Verdict::Allow);
         assert_eq!(decision.family, "M/deflated");
 
@@ -3028,6 +3067,63 @@ fn validate_bnxi(packet: &BnPacket<'_>) -> StrictDecision {
         return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-trailing-bytes");
     }
     StrictDecision::allow("BN", packet.tag.name(), "known-ee-extended-info-request")
+}
+
+#[cfg(test)]
+mod bn_synthetic_direction_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_server_bner_uses_server_response_validator() {
+        let mut packet = Vec::from(&b"BNER"[..]);
+        packet.push(0x55);
+        packet.extend_from_slice(&5133u16.to_le_bytes());
+        packet.push(0);
+        packet.push(5);
+        packet.extend_from_slice(b"HG213");
+
+        let decision = decide(
+            Direction::ServerToClientSynthetic,
+            &packet,
+            StrictProfile::Player,
+        );
+
+        assert_eq!(decision.verdict, Verdict::Allow);
+        assert_eq!(decision.reason, "known-ee-server-enumerate-response");
+    }
+
+    #[test]
+    fn synthetic_server_bnxr_uses_server_response_validator() {
+        let module = b"Path of Ascension CEP Legends";
+        let mut packet = Vec::from(&b"BNXR"[..]);
+        packet.extend_from_slice(&5133u16.to_le_bytes());
+        packet.extend_from_slice(&[
+            0xFD,
+            0x00,
+            0x01,
+            0x28,
+            0x00,
+            0x10,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x03,
+        ]);
+        packet.push(module.len() as u8);
+        packet.extend_from_slice(module);
+
+        let decision = decide(
+            Direction::ServerToClientSynthetic,
+            &packet,
+            StrictProfile::Player,
+        );
+
+        assert_eq!(decision.verdict, Verdict::Allow);
+        assert_eq!(decision.reason, "known-bnxr-extended-server-control");
+    }
 }
 
 pub fn log_decision(direction: Direction, bytes: &[u8], decision: &StrictDecision, strict: bool) {

@@ -11,5 +11,7 @@ pub(crate) fn module_resources_profile() -> ModuleResourceProfile {
         name: "generic-169",
         hak_order_top_first: &[],
         advertise_nwsync: false,
+        discovery_session_name: "NWN 1.69 Server",
+        discovery_module_name: "NWN 1.69 Module",
     }
 }

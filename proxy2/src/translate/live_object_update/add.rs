@@ -19,10 +19,14 @@ pub(super) fn advance_verified_add_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
+    let creature_add_object_id_ok = bytes.get(offset + 1).copied() == Some(0x05)
+        && read_u32_le(bytes, offset + 2).is_some_and(|object_id| object_id != u32::MAX);
+
     if offset + 6 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'A')
         || (!boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2)
+            && !creature_add_object_id_ok
             && !appearance::looks_like_legacy_item_add_record_boundary(bytes, offset))
     {
         return false;
@@ -87,7 +91,8 @@ fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -
         return false;
     }
 
-    let name_offset = visual_offset + 40;
+    let name_offset =
+        visual_offset + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
     if name_offset > record_end {
         return false;
     }
@@ -133,7 +138,8 @@ fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usi
     // a four-byte guarded OBJECTID immediately before the EE visual map. The
     // fragment cursor validator ties the chosen byte cursor back to the BOOL.
     if creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, record_end)
-        && tail_end + 40 == record_end
+        && tail_end + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+            == record_end
     {
         return true;
     }
@@ -144,5 +150,7 @@ fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usi
     optional_object_end <= record_end
         && read_u32_le(bytes, tail_end).is_some()
         && creature::has_ee_identity_visual_transform_map_at(bytes, optional_object_end, record_end)
-        && optional_object_end + 40 == record_end
+        && optional_object_end
+            + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+            == record_end
 }

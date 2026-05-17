@@ -7,9 +7,10 @@
 //! `A09` placeable add. At that point the byte side can be EE-shaped while the
 //! post-name fragment guards still reflect Diamond/HG positions.
 
-use super::{creature, locstring, read_u16_le, PLACEABLE_OBJECT_TYPE};
+use super::{PLACEABLE_OBJECT_TYPE, creature, locstring, read_u16_le};
 
-const EE_VISUAL_TRANSFORM_BYTES: usize = 40;
+const EE_VISUAL_TRANSFORM_BYTES: usize =
+    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
 
 pub(super) fn repair_verified_ee_placeable_add_guard_bits(
     live_bytes: &[u8],
@@ -28,8 +29,10 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
     }
 
     let name_offset = offset + 6;
-    let tail_offset = locstring::inline_cexo_string_end(live_bytes, name_offset)
-        .unwrap_or(name_offset.checked_add(4)?);
+    let inline_name_end = locstring::inline_cexo_string_end(live_bytes, name_offset);
+    let direct_inline_name =
+        inline_name_end.is_some_and(|end| end > name_offset + super::CNW_LENGTH_BYTES);
+    let tail_offset = inline_name_end.unwrap_or(name_offset.checked_add(4)?);
     let tail_end = tail_offset.checked_add(1 + 2 + 2)?;
     if tail_end > record_end || tail_end > live_bytes.len() {
         return None;
@@ -70,13 +73,26 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
             }
         };
 
+    let mut changed = false;
     let outer_locstring = fragment_bits.get(*bit_cursor).copied()?;
     let destination_name_inner_bits = if outer_locstring {
-        let inner_client_tlk = fragment_bits.get(*bit_cursor + 1).copied()?;
-        if inner_client_tlk {
-            return None;
+        if direct_inline_name && optional_object_bytes_present {
+            // Direct inline CExoString names are selected by outer=false in EE
+            // `sub_1407A7800`. Some Diamond/HG captures reach this already
+            // EE-shaped byte layout while the legacy fragment cursor still has
+            // outer=true and four optional-object bytes present; the following
+            // bit remains the first post-name state bit rather than an EE
+            // locstring inner selector. Non-optional direct-name captures keep
+            // the older locstring-inline branch proven by existing fixtures.
+            changed |= set_bit(fragment_bits, *bit_cursor, false)?;
+            0
+        } else {
+            let inner_client_tlk = fragment_bits.get(*bit_cursor + 1).copied()?;
+            if inner_client_tlk {
+                return None;
+            }
+            1
         }
-        1
     } else {
         0
     };
@@ -85,7 +101,6 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
         return None;
     }
 
-    let mut changed = false;
     changed |= set_bit(
         fragment_bits,
         post_name_bit + 1,

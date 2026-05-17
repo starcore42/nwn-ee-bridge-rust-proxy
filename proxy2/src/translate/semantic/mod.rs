@@ -11,12 +11,12 @@ mod reducer;
 mod state;
 
 pub(crate) use event::{
-    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
-    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, LoginEvent,
-    ModuleInfoEvent, ObservedHighLevel, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
+    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectBounds, LiveObjectEvent,
+    LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent,
+    ObservedHighLevel, ProtocolEvent, QuickbarEvent, ServerStatusEvent,
 };
 pub(crate) use reducer::observe_verified_payload;
 pub(crate) use state::{
-    AreaState, AuthState, KnownObjectState, ModuleState, ObjectRegistry,
-    ResourceState, SemanticSessionState, SyntheticState, UiState,
+    AreaState, AuthState, KnownObjectState, ModuleState, ObjectRegistry, ResourceState,
+    SemanticSessionState, SyntheticState, UiState,
 };

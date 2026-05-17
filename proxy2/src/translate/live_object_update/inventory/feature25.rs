@@ -9,17 +9,20 @@ pub(super) fn apply_2000(
 ) -> Vec<GenericInventoryCandidate> {
     let mut next = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let Some(feature25) = try_parse_inventory_2000_at(bytes, candidate.cursor, record_end) else {
+        let Some(feature25) = try_parse_inventory_2000_at(bytes, candidate.cursor, record_end)
+        else {
             continue;
         };
-        next.push(candidate.advanced(
-            feature25.block_end,
-            candidate.bits.saturating_add(
-                usize::try_from(feature25.second_count)
-                    .unwrap_or(usize::MAX)
-                    .saturating_mul(3),
+        next.push(
+            candidate.advanced(
+                feature25.block_end,
+                candidate.bits.saturating_add(
+                    usize::try_from(feature25.second_count)
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(3),
+                ),
             ),
-        ));
+        );
     }
     next
 }

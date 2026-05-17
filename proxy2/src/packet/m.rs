@@ -365,6 +365,7 @@ impl HighLevel {
             (0x31, 0x03) => "PlayModuleCharacterList_Response",
             (0x32, 0x01) => "SetCustomToken",
             (0x32, 0x02) => "SetCustomTokenList",
+            (0x35, 0x01) => "GuiEvent_Notify",
             _ => "<unknown>",
         }
     }

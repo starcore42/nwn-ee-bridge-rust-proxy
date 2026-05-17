@@ -294,6 +294,18 @@ fn repair_live_object_declared_length_if_verified(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
 ) -> Option<live_object::LiveObjectDeclaredLengthRepairCandidate> {
     for repair in live_object::declared_length_repair_candidates(bytes) {
+        if repair.old_declared == repair.new_declared {
+            // This helper is only allowed to own a decompile-backed declared
+            // length repair.  A no-op declared candidate must not become a
+            // generic live-object rewrite escape hatch; valid high-level
+            // `GameObjUpdate_LiveObject` packets still have to be claimed by the
+            // focused add/update/exact translators in server_dispatch.
+            continue;
+        }
+        let ambiguous_live_tail =
+            live_object::declared_length_repair_tail_contains_live_object_read_boundary(
+                bytes, &repair,
+            );
         let mut candidate = bytes.clone();
         candidate
             .get_mut(3..7)?
@@ -311,6 +323,9 @@ fn repair_live_object_declared_length_if_verified(
             translated = true;
         }
         if !translated && live_update::claim_payload_if_verified(&candidate).is_none() {
+            continue;
+        }
+        if ambiguous_live_tail && !translated {
             continue;
         }
         if live_update::claim_payload_if_verified(&candidate).is_some() {

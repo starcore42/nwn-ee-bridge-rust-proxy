@@ -115,6 +115,7 @@ impl ModuleResourceRuntime {
         // HG fallback profile whenever live Module_Info has already proved the
         // active stack for this session.
         crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
+        crate::translate::genericdoors::observe_hak_order_top_first(hak_order_top_first);
 
         let Ok(mut observed) = self.observed_declaration.lock() else {
             return false;
@@ -232,6 +233,45 @@ pub fn rewrite_server_status_module_resources_payload(
 
     let observed = runtime.observed_module_resource_declaration()?;
     rewrite_payload_for_observed_declaration(payload, runtime, observed)
+}
+
+pub fn build_server_status_module_resources_payload(
+    runtime: &ModuleResourceRuntime,
+    status_module_name: &str,
+) -> Option<(Vec<u8>, ModuleResourcesRewriteSummary)> {
+    let observed = runtime.observed_module_resource_declaration()?;
+    let mut payload = build_legacy_status_payload_shell(status_module_name)?;
+    let summary = rewrite_payload_for_observed_declaration(&mut payload, runtime, observed)?;
+    Some((payload, summary))
+}
+
+fn build_legacy_status_payload_shell(status_module_name: &str) -> Option<Vec<u8>> {
+    if status_module_name.len() > MAX_SERVER_STATUS_STRING {
+        return None;
+    }
+
+    // This is only a decompile-shaped source shell for the normal
+    // `rewrite_payload_for_observed_declaration` path above. EE and Diamond
+    // both classify `P 01/03` as ServerStatus_ModuleRunning. The legacy short
+    // form contains a CNW read buffer with the leading status string followed
+    // by a fragment tail byte; the writer below replaces that short form with
+    // EE's `CNWCModule::LoadModuleResources` read/fragment layout.
+    let declared = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(status_module_name.len())?;
+    let declared = u32::try_from(declared).ok()?;
+
+    let mut payload =
+        Vec::with_capacity(declared as usize + 1 /* legacy fragment tail byte */);
+    payload.push(b'P');
+    payload.push(SERVER_STATUS_MAJOR);
+    payload.push(MODULE_RUNNING_MINOR);
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&(status_module_name.len() as u32).to_le_bytes());
+    payload.extend_from_slice(status_module_name.as_bytes());
+    payload.push(0);
+    Some(payload)
 }
 
 fn rewrite_payload_for_observed_declaration(
@@ -366,10 +406,7 @@ mod tests {
         ];
         let runtime = ModuleResourceRuntime::default();
         assert!(runtime.observe_legacy_module_info_resources(
-            &[
-                "cep2_custom".to_string(),
-                "cep2_top_v23".to_string(),
-            ],
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string(),],
             Some("cep23_v1"),
         ));
 

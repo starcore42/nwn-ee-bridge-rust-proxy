@@ -205,9 +205,10 @@ fn claim_token_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
 
     let resref_end = cursor.checked_add(CRESREF_BYTES)?;
     let resref = payload.get(cursor..resref_end)?;
-    if !resref.iter().all(|byte| {
-        *byte == 0 || matches!(*byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_')
-    }) {
+    if !resref
+        .iter()
+        .all(|byte| *byte == 0 || matches!(*byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+    {
         return None;
     }
     cursor = resref_end;
@@ -315,7 +316,8 @@ mod tests {
 
     #[test]
     fn token_talk_rejects_wrong_fragment_bit_count() {
-        let mut fixture = include_bytes!("../../fixtures/chat/token_talk_examine_sign.bin").to_vec();
+        let mut fixture =
+            include_bytes!("../../fixtures/chat/token_talk_examine_sign.bin").to_vec();
         let declared = usize::try_from(read_le_u32(&fixture, HIGH_LEVEL_HEADER_BYTES).unwrap())
             .expect("declared should fit");
         fixture[declared] = 0x82;

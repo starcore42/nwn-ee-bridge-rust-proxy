@@ -157,3 +157,4 @@ still experimental, not a finished public content pipeline.
 - Expanded public class/base-item fallback rows so captured appearance tests do not require local 2DA files.
 - Added an EE ACK-gated hold for post-area server packets after synthetic LoadBar_End to reduce load-transition races.
 - Added broader GUI inventory/live-object fixture coverage, client input repairs, NWSync module-manifest handling, and coalesced stream sequencing diagnostics.
+- f73b44f: Added Diamond/EE local bridge fixture coverage, proxy-owned EE server dialect handshakes, zlib zero-fill stream handling, and stricter live-object/quickbar parsing.

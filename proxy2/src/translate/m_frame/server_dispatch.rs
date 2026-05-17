@@ -12,7 +12,7 @@ use crate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, area, char_list, chat, client_side_message,
         cnw_message, custom_token, game_obj_update, gameplay_stream, inventory, journal,
         live_object, loadbar, login, module, module_resources, module_time, party,
-        play_module_character_list, player_list, quickbar,
+        play_module_character_list, player_list, quickbar, semantic,
     },
 };
 
@@ -203,11 +203,6 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_live_object_prefixed_fragments,
     },
     ServerToClientTranslator {
-        family_name: "GameObjUpdate_LiveObjectDeclaredLengthRepair",
-        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
-        translate: translate_live_object_declared_length_repair,
-    },
-    ServerToClientTranslator {
         family_name: "GameObjUpdate_LiveObjectExactRecords",
         verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
         translate: translate_live_object_exact_records,
@@ -228,6 +223,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_live_object_claimed_records,
     },
     ServerToClientTranslator {
+        family_name: "GameObjUpdate_LiveObjectDeclaredLengthRepair",
+        verified_family: Some(VerifiedFamily::GameObjUpdateLiveObject),
+        translate: translate_live_object_declared_length_repair,
+    },
+    ServerToClientTranslator {
         family_name: "Area_ClientArea",
         verified_family: Some(VerifiedFamily::AreaClientArea),
         translate: translate_area_client_area,
@@ -244,6 +244,7 @@ pub(super) fn rewrite_inflated_payload_for_ee(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
+    object_registry: Option<&semantic::ObjectRegistry>,
     preclaimed_family: Option<(&'static str, VerifiedFamily)>,
 ) -> InflatedPayloadRewrite {
     let split_units = {
@@ -288,6 +289,7 @@ pub(super) fn rewrite_inflated_payload_for_ee(
             latest_area_placeables,
             scope,
             module_resource_runtime,
+            object_registry,
         );
     }
 
@@ -296,6 +298,7 @@ pub(super) fn rewrite_inflated_payload_for_ee(
         latest_area_placeables,
         scope,
         module_resource_runtime,
+        object_registry,
         preclaimed_family,
     )
 }
@@ -314,6 +317,7 @@ fn rewrite_split_inflated_payload_for_ee(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
+    object_registry: Option<&semantic::ObjectRegistry>,
 ) -> InflatedPayloadRewrite {
     let mut rewrite = InflatedPayloadRewrite::default();
     let mut translated_units = Vec::with_capacity(units.len());
@@ -326,6 +330,7 @@ fn rewrite_split_inflated_payload_for_ee(
                     latest_area_placeables,
                     scope,
                     module_resource_runtime,
+                    object_registry,
                     None,
                 );
                 if unit_rewrite.should_quarantine() || !unit_rewrite.any_rewrite() {
@@ -399,6 +404,7 @@ fn rewrite_single_inflated_payload_for_ee(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
+    object_registry: Option<&semantic::ObjectRegistry>,
     preclaimed_family: Option<(&'static str, VerifiedFamily)>,
 ) -> InflatedPayloadRewrite {
     let mut rewrite = InflatedPayloadRewrite::default();
@@ -408,12 +414,12 @@ fn rewrite_single_inflated_payload_for_ee(
     }
 
     for translator in SERVER_TO_CLIENT_TRANSLATORS {
-        match (translator.translate)(
-            payload,
-            latest_area_placeables,
-            scope,
-            module_resource_runtime,
-        ) {
+        let outcome = if translator.family_name == "GuiQuickbar" {
+            translate_quickbar_with_registry(payload, object_registry)
+        } else {
+            (translator.translate)(payload, latest_area_placeables, scope, module_resource_runtime)
+        };
+        match outcome {
             ServerTranslatorOutcome::None => {}
             ServerTranslatorOutcome::TransportOnly => {
                 // Transport-only normalizers may repair a CNW envelope so a
@@ -463,6 +469,11 @@ fn translate_custom_token(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else if crate::strict::module_info_shape_valid(payload) {
+        tracing::info!(
+            "server Module_Info already matches the EE reader shape; semantic no-op claim retained behind exact strict validation"
+        );
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -635,6 +646,32 @@ fn translate_quickbar(
     }
 }
 
+fn translate_quickbar_with_registry(
+    payload: &mut Vec<u8>,
+    object_registry: Option<&semantic::ObjectRegistry>,
+) -> ServerTranslatorOutcome {
+    let Some(registry) = object_registry else {
+        return translate_quickbar(payload, None, SemanticScope::DeflatedReassembly, None);
+    };
+    let item_object_is_known = |object_id| registry.has_active_object_id(object_id);
+    let materialization = quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
+    if quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
+        payload,
+        Some(&materialization),
+    )
+    .is_some()
+        || quickbar::rewrite_simple_quickbar_payload_with_context_if_possible(
+            payload,
+            Some(&materialization),
+        )
+        .is_some()
+    {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
 fn normalize_cnw_transport_only(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
@@ -687,6 +724,16 @@ fn translate_live_object_prefixed_fragments(
     };
 
     let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    let _ = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut candidate,
+        latest_area_placeables,
+    );
+    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    // Some local Diamond streams alternate legacy `A/9` add and `U/9` update
+    // records. A focused update rewrite can shrink/drop a legacy name tail and
+    // expose the next add record at its real boundary; that add rewrite can then
+    // expose the paired update. Keep this as one more bounded typed add/update
+    // pair instead of falling back to raw live-object forwarding.
     let _ = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
         &mut candidate,
         latest_area_placeables,
@@ -751,6 +798,13 @@ fn translate_live_object_declared_length_repair(
     // only after the focused live-object semantic rewriters and exact validator
     // accept the fully repaired payload.
     for repair in live_object::declared_length_repair_candidates(payload) {
+        if repair.old_declared == repair.new_declared {
+            continue;
+        }
+        let ambiguous_live_tail =
+            live_object::declared_length_repair_tail_contains_live_object_read_boundary(
+                payload, &repair,
+            );
         let mut candidate = payload.clone();
         let Some(declared_slot) = candidate.get_mut(3..7) else {
             continue;
@@ -766,6 +820,17 @@ fn translate_live_object_declared_length_repair(
             ServerTranslatorOutcome::Claim(_)
         );
         let exact_claim = live_update::claim_payload_if_verified(&candidate).is_some();
+        if ambiguous_live_tail && !claimed_by_rewrite {
+            tracing::debug!(
+                old_declared = repair.old_declared,
+                repaired_declared = repair.new_declared,
+                old_payload_length = repair.old_payload_length,
+                read_bytes = repair.read_bytes_length,
+                fragment_bytes = repair.fragment_bytes_length,
+                "live-object declared-length repair rejected exact-only claim: proposed fragment tail still contains plausible live-object read boundaries"
+            );
+            continue;
+        }
         if claimed_by_rewrite || exact_claim {
             tracing::info!(
                 old_declared = repair.old_declared,
@@ -831,6 +896,17 @@ fn translate_live_object_records_if_verified(
             latest_area_placeables,
         );
     let update_after_add_name_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let add_after_update_summary = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut candidate,
+        latest_area_placeables,
+    );
+    let update_after_final_add_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let add_after_final_update_summary =
+        live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut candidate,
+            latest_area_placeables,
+        );
+    let update_after_second_final_add_summary = live_update::rewrite_payload_if_needed(&mut candidate);
 
     if add_summary.is_none()
         && update_pre_summary.is_none()
@@ -838,6 +914,10 @@ fn translate_live_object_records_if_verified(
         && add_name_bit_summary.is_none()
         && add_after_add_name_summary.is_none()
         && update_after_add_name_summary.is_none()
+        && add_after_update_summary.is_none()
+        && update_after_final_add_summary.is_none()
+        && add_after_final_update_summary.is_none()
+        && update_after_second_final_add_summary.is_none()
     {
         return ServerTranslatorOutcome::None;
     }
@@ -847,8 +927,17 @@ fn translate_live_object_records_if_verified(
         *payload = candidate;
         claimed()
     } else {
+        crate::translate::live_object_update::dump_live_object_fixture_candidate(
+            &candidate,
+            "live-object-semantic-candidate-rejected-exact-validator",
+        );
         let (add_records_examined, maps_inserted, add_bytes_inserted, add_bytes_removed) =
-            [add_summary.as_ref(), add_after_add_name_summary.as_ref()]
+            [
+                add_summary.as_ref(),
+                add_after_add_name_summary.as_ref(),
+                add_after_update_summary.as_ref(),
+                add_after_final_update_summary.as_ref(),
+            ]
                 .into_iter()
                 .flatten()
                 .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
@@ -868,6 +957,8 @@ fn translate_live_object_records_if_verified(
             update_pre_summary.as_ref(),
             update_post_summary.as_ref(),
             update_after_add_name_summary.as_ref(),
+            update_after_final_add_summary.as_ref(),
+            update_after_second_final_add_summary.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -891,10 +982,14 @@ fn translate_live_object_records_if_verified(
             source,
             add_changed = add_summary.is_some()
                 || add_after_add_name_summary.is_some()
+                || add_after_update_summary.is_some()
+                || add_after_final_update_summary.is_some()
                 || add_name_bit_summary.is_some(),
             update_changed = update_pre_summary.is_some()
                 || update_post_summary.is_some()
-                || update_after_add_name_summary.is_some(),
+                || update_after_add_name_summary.is_some()
+                || update_after_final_add_summary.is_some()
+                || update_after_second_final_add_summary.is_some(),
             add_records_examined,
             maps_inserted,
             add_bytes_inserted,
@@ -980,12 +1075,9 @@ fn translate_area_client_area(
 fn translate_module_info(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
-    scope: SemanticScope,
+    _: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if !matches!(scope, SemanticScope::DeflatedReassembly) {
-        return ServerTranslatorOutcome::None;
-    }
     let mut candidate = payload.clone();
     if let Some(summary) = module::rewrite_module_info_payload(&mut candidate) {
         if let Some(runtime) = module_resource_runtime {
@@ -1198,6 +1290,7 @@ fn rewrite_direct_semantic_frame_if_claimed(
         SemanticScope::CoalescedSpan,
         Some(module_resource_runtime),
         None,
+        None,
     );
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
         return Ok(None);
@@ -1232,9 +1325,10 @@ mod tests {
 
     #[test]
     fn declared_length_repair_claims_stale_live_object_fixture() {
-        let mut payload =
-            include_bytes!("../../../fixtures/live_object/docks_placeable_boards_stale_declared.bin")
-                .to_vec();
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/docks_placeable_boards_stale_declared.bin"
+        )
+        .to_vec();
         let area_context = area::AreaPlaceableContext {
             area_resref: "zdl_docks".to_string(),
             static_rows: vec![area::AreaPlaceableContextRow {

@@ -7,7 +7,7 @@
 //! and proxy-owned synthetic event accounting.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Instant,
 };
 
@@ -82,17 +82,20 @@ pub(crate) struct ClientInputState {
 pub(crate) struct ObjectRegistry {
     pub(crate) live_object_packets: u64,
     pub(crate) known: BTreeMap<u32, KnownObjectState>,
+    materialized_item_object_ids: BTreeSet<u32>,
 }
 
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
-        if !self.known.is_empty() {
+        if !self.known.is_empty() || !self.materialized_item_object_ids.is_empty() {
             tracing::debug!(
                 known_objects = self.known.len(),
+                materialized_item_objects = self.materialized_item_object_ids.len(),
                 "semantic object registry reset for new Area_ClientArea"
             );
         }
         self.known.clear();
+        self.materialized_item_object_ids.clear();
     }
 
     pub(crate) fn observe_mentions(&mut self, mentions: &[LiveObjectMention]) {
@@ -201,6 +204,24 @@ impl ObjectRegistry {
         (object.object_type == object_type).then_some(object)
     }
 
+    pub(crate) fn observe_materialized_item_object_ids(&mut self, object_ids: &[u32]) {
+        for object_id in object_ids.iter().copied() {
+            if object_id == 0 || object_id == 0x7F00_0000 || object_id == u32::MAX {
+                continue;
+            }
+            self.materialized_item_object_ids.insert(object_id);
+        }
+    }
+
+    pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
+        self.materialized_item_object_ids.contains(&object_id)
+            || self
+            .known
+            .get(&object_id)
+            .map(|object| object.active)
+            .unwrap_or(false)
+    }
+
     pub(crate) fn nearby_transition_anchor_for_door(
         &self,
         door_id: u32,
@@ -230,9 +251,7 @@ impl ObjectRegistry {
                         .is_some_and(name_looks_transition_related),
                     _ => false,
                 };
-                transition_like
-                    && entry.active
-                    && entry.click_point().is_some()
+                transition_like && entry.active && entry.click_point().is_some()
             })
             .filter_map(|entry| {
                 let position = entry.click_point()?;
@@ -306,9 +325,17 @@ pub(crate) struct NearbyTransitionAnchor<'a> {
 
 fn name_looks_transition_related(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    ["door", "portal", "transition", "inn", "tavern", "crow", "moon"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "door",
+        "portal",
+        "transition",
+        "inn",
+        "tavern",
+        "crow",
+        "moon",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 #[derive(Debug, Default)]
@@ -379,6 +406,26 @@ mod tests {
             .get(&mention.object_id)
             .expect("object should stay registered");
         assert_eq!(object.orientation, mention.orientation);
+    }
+
+    #[test]
+    fn materialized_item_ids_are_protocol_state_without_live_add() {
+        let mut registry = ObjectRegistry::default();
+        let item_object_id = 0x4000_1234;
+
+        assert!(!registry.has_active_object_id(item_object_id));
+
+        registry.observe_materialized_item_object_ids(&[item_object_id]);
+
+        assert!(registry.has_active_object_id(item_object_id));
+        assert!(
+            registry.known.get(&item_object_id).is_none(),
+            "GUI item materialization must not invent a live-object add/type"
+        );
+
+        registry.reset_for_area();
+
+        assert!(!registry.has_active_object_id(item_object_id));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::{
 // output at or below that cap avoids ACK starvation while preserving the exact
 // translated high-level payload.
 pub(super) const EE_SAFE_M_FRAME_DATAGRAM_BYTES: usize = 960;
-const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
+pub(super) const EE_SAFE_M_FRAME_PAYLOAD_BYTES: usize =
     EE_SAFE_M_FRAME_DATAGRAM_BYTES - LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
 
 use super::{
@@ -104,11 +104,7 @@ pub(super) fn emit_proof_packets_with_interleaved(
     }
 
     let mut mixed = Vec::with_capacity(packets.len() + interleaved.len());
-    mixed.extend(
-        packets
-            .into_iter()
-            .map(|packet| (proof.clone(), packet)),
-    );
+    mixed.extend(packets.into_iter().map(|packet| (proof.clone(), packet)));
     mixed.extend(
         interleaved
             .into_iter()
@@ -521,7 +517,9 @@ pub(super) fn build_server_deflated_output_frames(
         if index > 0 {
             write_be_u16(&mut out_packet, 8, 0)
                 .then_some(())
-                .ok_or_else(|| anyhow::anyhow!("failed to clear continuation packetized sequence"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("failed to clear continuation packetized sequence")
+                })?;
         }
         write_be_u16(&mut out_packet, 10, chunk_length as u16)
             .then_some(())
@@ -566,6 +564,20 @@ pub(super) fn build_server_deflated_output_frames(
     }
 
     Ok(outputs)
+}
+
+pub(super) fn build_server_raw_gameplay_output_frames(
+    reassembly: &ServerDeflatedReassembly,
+    raw_gameplay_payload: &[u8],
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    // Decompile note: EE `CNetLayerInternal::UncompressMessage` forwards the
+    // M payload directly to the gameplay dispatcher when flag 0x04 is clear,
+    // and only enters zlib handling when flag 0x04 is set.  Verified semantic
+    // replacements that already fit in one EE-safe reliable frame can therefore
+    // be emitted as raw gameplay bytes by clearing both the deflate bit (0x04)
+    // and the persistent-stream bit (0x01), while preserving reliable/priority
+    // bits from the source frame.
+    build_server_deflated_output_frames(reassembly, raw_gameplay_payload, 0x05, true)
 }
 
 fn deflated_output_frame_count(
@@ -748,13 +760,20 @@ mod tests {
             .map(|packet| MFrameView::parse(packet).unwrap().sequence)
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![37, 38, 39, 40, 41]);
-        assert_eq!(MFrameView::parse(&outputs[0]).unwrap().packetized_sequence, 5);
-        assert!(outputs
-            .iter()
-            .all(|packet| packet.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES));
-        assert!(outputs
-            .iter()
-            .all(|packet| MFrameView::parse(packet).unwrap().crc_valid));
+        assert_eq!(
+            MFrameView::parse(&outputs[0]).unwrap().packetized_sequence,
+            5
+        );
+        assert!(
+            outputs
+                .iter()
+                .all(|packet| packet.len() <= EE_SAFE_M_FRAME_DATAGRAM_BYTES)
+        );
+        assert!(
+            outputs
+                .iter()
+                .all(|packet| MFrameView::parse(packet).unwrap().crc_valid)
+        );
     }
 
     #[test]
@@ -771,10 +790,79 @@ mod tests {
             .map(|packet| MFrameView::parse(packet).unwrap().sequence)
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![2, 3, 4]);
-        assert_eq!(MFrameView::parse(&outputs[0]).unwrap().packetized_sequence, 3);
-        assert!(outputs
-            .iter()
-            .all(|packet| MFrameView::parse(packet).unwrap().crc_valid));
+        assert_eq!(
+            MFrameView::parse(&outputs[0]).unwrap().packetized_sequence,
+            3
+        );
+        assert!(
+            outputs
+                .iter()
+                .all(|packet| MFrameView::parse(packet).unwrap().crc_valid)
+        );
+    }
+
+    #[test]
+    fn builds_raw_gameplay_replacement_by_clearing_deflate_and_stream_flags() {
+        let mut reassembly = make_reassembly(34, &[20]);
+        reassembly.frames[0].packet[7] = 0x0F;
+        encode_legacy_m_crc(&mut reassembly.frames[0].packet);
+
+        let mut quickbar = vec![b'P', 0x1E, 0x01];
+        quickbar.extend_from_slice(&43u32.to_le_bytes());
+        quickbar.extend(std::iter::repeat(0).take(36));
+        quickbar.push(0);
+
+        let outputs = build_server_raw_gameplay_output_frames(&reassembly, &quickbar).unwrap();
+
+        assert_eq!(outputs.len(), 1);
+        let view = MFrameView::parse(&outputs[0]).unwrap();
+        assert!(view.crc_valid);
+        assert_eq!(view.sequence, 34);
+        assert_eq!(view.packetized_sequence, 1);
+        assert_eq!(view.declared_payload_length, quickbar.len());
+        assert_eq!(view.flags & 0x05, 0);
+        assert_eq!(view.flags & 0x0A, 0x0A);
+        assert_eq!(&outputs[0][LEGACY_GAMEPLAY_PAYLOAD_OFFSET..], quickbar.as_slice());
+    }
+
+    #[test]
+    fn stream_bit_prefers_persistent_raw_deflate_contract() {
+        fn raw_sync_deflate(bytes: &[u8]) -> Vec<u8> {
+            let mut compressor =
+                flate2::Compress::new(flate2::Compression::default(), false);
+            let mut out = vec![0; bytes.len() + 64];
+            compressor
+                .compress(bytes, &mut out, flate2::FlushCompress::Sync)
+                .expect("raw sync deflate should succeed");
+            out.truncate(compressor.total_out() as usize);
+            out
+        }
+
+        let first = b"P\x03\x03\x07\x00\x00\x00";
+        let second = b"P\x04\x01\x17\x00\x00\x00edmonton\x00\x00\x00\x00\x00\x00\x00\x00";
+        let mut server_stream = None;
+
+        let first_inflated = inflate_gameplay_payload(
+            &raw_sync_deflate(first),
+            first.len(),
+            true,
+            &mut server_stream,
+        )
+        .expect("first stream-bit raw-deflate record should inflate");
+        assert_eq!(first_inflated.bytes, first);
+        assert!(first_inflated.used_server_stream);
+        assert!(server_stream.is_some());
+
+        let second_inflated = inflate_gameplay_payload(
+            &raw_sync_deflate(second),
+            second.len(),
+            true,
+            &mut server_stream,
+        )
+        .expect("second stream-bit raw-deflate record should use persistent history");
+        assert_eq!(second_inflated.bytes, second);
+        assert!(second_inflated.used_server_stream);
+        assert!(server_stream.is_some());
     }
 }
 
@@ -789,6 +877,13 @@ pub(super) fn inflate_gameplay_payload(
     }
 
     if zlib_stream && !looks_like_zlib_wrapped_deflate(compressed) {
+        // Diamond's M-frame stream bit maps to a persistent raw-deflate reader
+        // in the client transport layer. A self-contained raw-deflate inflate
+        // can also succeed for the first record in such a stream, but accepting
+        // that one-shot candidate discards the inflater history needed by the
+        // next semantic record. Prefer the decompile-owned stream contract when
+        // the stream bit is present; replay caches above this helper prevent
+        // retransmitted records from advancing the inflater twice.
         match inflate_with_server_stream(compressed, inflated_length, server_stream)? {
             Some(bytes) => {
                 return Ok(InflatedGameplayPayload {
@@ -801,7 +896,6 @@ pub(super) fn inflate_gameplay_payload(
             }
         }
     }
-
     if let Some(inflated) =
         inflate_with_window(compressed, inflated_length, false, FlushDecompress::Sync)?
     {

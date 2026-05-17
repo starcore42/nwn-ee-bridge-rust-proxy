@@ -12,6 +12,8 @@ pub(crate) struct ModuleResourceProfile {
     pub(crate) name: &'static str,
     pub(crate) hak_order_top_first: &'static [&'static str],
     pub(crate) advertise_nwsync: bool,
+    pub(crate) discovery_session_name: &'static str,
+    pub(crate) discovery_module_name: &'static str,
 }
 
 pub(crate) fn module_resources_profile(name: &str) -> ModuleResourceProfile {

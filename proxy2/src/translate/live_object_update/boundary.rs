@@ -4,12 +4,14 @@
 //! records and it does not mutate read bytes or fragment bits.
 
 use super::{
-    DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
-    LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
-    LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID,
-    PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item,
-    locstring, read_u16_le, read_u32_le, trigger,
+    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+    EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
+    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
+    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES,
+    LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
+    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
+    creature, gui, inventory, item, locstring, read_u16_le, read_u32_le, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -69,6 +71,24 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         }
     }
 
+    if bytes.get(offset).copied() == Some(b'U') && bytes.get(offset + 1).copied() == Some(0x05) {
+        if let Some(record_end) =
+            creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
+            creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
+            creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+    }
+
     if bytes.get(offset).copied() == Some(b'A')
         && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
     {
@@ -106,6 +126,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         )
     ) {
         if let Some(record_end) =
+            try_get_legacy_door_placeable_inline_name_update_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
             try_get_ee_door_placeable_update_record_end(bytes, offset, scan_end)
         {
             return record_end;
@@ -128,6 +153,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                     | 0x0000_0040
                     | 0x0000_0047
                     | 0x0000_3967
+                    | 0x0000_4408
                     | 0x0000_8000
                     | 0x0000_C408
                     | 0x0000_C40F
@@ -233,6 +259,14 @@ fn try_get_ee_door_placeable_add_record_end(
     }
 }
 
+pub(super) fn try_get_ee_door_placeable_add_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    try_get_ee_door_placeable_add_record_end(bytes, offset, scan_end)
+}
+
 fn try_get_ee_placeable_add_record_end(
     bytes: &[u8],
     offset: usize,
@@ -250,11 +284,13 @@ fn try_get_ee_placeable_add_record_end(
 
     // EE `CNWSMessage::AddPlaceableAppearanceToMessage` writes the direct name
     // bytes, type byte, appearance WORD, static/state WORD, then consumes a
-    // fragment BOOL that may guard one optional OBJECTID before the fixed
-    // 40-byte `ObjectVisualTransformData::Write` block. Once that identity map
-    // is present, the add-record end is decompile-owned; do not let the generic
+    // fragment BOOL that may guard one optional OBJECTID before the
+    // `ObjectVisualTransformData::Write` map. For EE build `2001/0x23`, the
+    // identity object map is two zero DWORD counts. Once that identity map is
+    // present, the add-record end is decompile-owned; do not let the generic
     // byte scanner merge the following `U/9` update into this record.
-    let direct_end = tail_end.checked_add(40)?;
+    let direct_end = tail_end
+        .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
     if direct_end <= scan_end
         && creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, direct_end)
     {
@@ -262,10 +298,15 @@ fn try_get_ee_placeable_add_record_end(
     }
 
     let optional_object_end = tail_end.checked_add(4)?;
-    let optional_end = optional_object_end.checked_add(40)?;
+    let optional_end = optional_object_end
+        .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
     if optional_end <= scan_end
         && read_u32_le(bytes, tail_end).is_some()
-        && creature::has_ee_identity_visual_transform_map_at(bytes, optional_object_end, optional_end)
+        && creature::has_ee_identity_visual_transform_map_at(
+            bytes,
+            optional_object_end,
+            optional_end,
+        )
     {
         return Some(optional_end);
     }
@@ -276,15 +317,17 @@ fn try_get_ee_placeable_add_record_end(
 fn try_get_ee_door_add_record_end(bytes: &[u8], offset: usize, scan_end: usize) -> Option<usize> {
     let first_dword = read_u32_le(bytes, offset + 6)?;
     let visual_offset = offset.checked_add(2 + if first_dword == 0 { 12 } else { 8 })?;
-    let name_offset = visual_offset.checked_add(40)?;
+    let name_offset = visual_offset
+        .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
     if name_offset > scan_end {
         return None;
     }
 
     // EE `CNWSMessage::AddDoorAppearanceToMessage` writes one or two DWORDs,
-    // the same 40-byte visual-transform map, then the existing name/state tail.
-    // The Diamond-only optional model token has already been removed by the
-    // focused add-record translator before this boundary helper can claim it.
+    // the same EE object visual-transform identity map, then the existing
+    // name/state tail. The Diamond-only optional model token has already been
+    // removed by the focused add-record translator before this boundary helper
+    // can claim it.
     if !creature::has_ee_identity_visual_transform_map_at(bytes, visual_offset, name_offset) {
         return None;
     }
@@ -393,6 +436,128 @@ fn is_bridge_empty_state_update_mask(mask: u32) -> bool {
     mask == ee_supported_all || mask == (ee_supported_all | LEGACY_UPDATE_NAME_MASK)
 }
 
+fn try_get_legacy_door_placeable_inline_name_update_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end || scan_end > bytes.len() {
+        return None;
+    }
+    if bytes.get(offset).copied()? != b'U' {
+        return None;
+    }
+    if !matches!(
+        bytes.get(offset + 1).copied()?,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) {
+        return None;
+    }
+    if !looks_like_legacy_live_object_id_at(bytes, offset + 2) {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    if (raw_mask & LEGACY_UPDATE_NAME_MASK) == 0 {
+        return None;
+    }
+    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+
+    // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` and EE
+    // `sub_14079C050` consume the shared generic door/placeable fields before
+    // Diamond's legacy bit-13 inline CExoString name branch:
+    //
+    //   position -> orientation scalar/vector branch -> appearance/resref
+    //   -> scale/state -> fragment-only state -> legacy inline name.
+    //
+    // Boundary scanning must therefore not accept an `A/U/D/...` byte inside
+    // that CExoString as the next live-object submessage. The semantic record
+    // translator still owns removing the legacy name bit and bytes; this helper
+    // only proves the complete legacy record span.
+    let mut cursors = vec![offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?];
+    if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        for cursor in &mut cursors {
+            *cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        }
+    }
+
+    if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let mut branch_cursors = Vec::with_capacity(cursors.len().saturating_mul(2));
+        for cursor in cursors {
+            branch_cursors.push(cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?);
+            branch_cursors.push(cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?);
+        }
+        cursors = branch_cursors;
+    }
+
+    if (raw_mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let mut appearance_cursors = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            let appearance = read_u16_le(bytes, cursor)?;
+            let mut next = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+            if appearance >= 0xFFFE {
+                next = next.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+            }
+            appearance_cursors.push(next);
+        }
+        cursors = appearance_cursors;
+    }
+
+    if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        for cursor in &mut cursors {
+            *cursor = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+        }
+    }
+
+    let mut proven_end = None;
+    for name_offset in cursors {
+        if name_offset > scan_end {
+            continue;
+        }
+        let Some(name_end) = locstring::inline_cexo_string_end(bytes, name_offset) else {
+            if debug_live_claim {
+                eprintln!(
+                    "legacy inline update boundary candidate rejected: offset={offset} name_offset={name_offset} reason=no-inline-cexo mask=0x{raw_mask:08X} preview={:02X?}",
+                    bytes
+                        .get(name_offset..scan_end.min(name_offset.saturating_add(16)))
+                        .unwrap_or(&[])
+                );
+            }
+            continue;
+        };
+        if name_end > scan_end {
+            if debug_live_claim {
+                eprintln!(
+                    "legacy inline update boundary candidate rejected: offset={offset} name_offset={name_offset} name_end={name_end} scan_end={scan_end} reason=name-overflow mask=0x{raw_mask:08X}"
+                );
+            }
+            continue;
+        }
+        if name_end == scan_end || looks_like_legacy_live_object_sub_message_boundary(bytes, name_end)
+        {
+            if debug_live_claim {
+                eprintln!(
+                    "legacy inline update boundary candidate accepted: offset={offset} name_offset={name_offset} name_end={name_end} scan_end={scan_end} mask=0x{raw_mask:08X}"
+                );
+            }
+            proven_end = match proven_end {
+                Some(existing) if existing != name_end => return None,
+                Some(existing) => Some(existing),
+                None => Some(name_end),
+            };
+        } else if debug_live_claim {
+            eprintln!(
+                "legacy inline update boundary candidate rejected: offset={offset} name_offset={name_offset} name_end={name_end} reason=no-following-boundary mask=0x{raw_mask:08X} following={:02X?}",
+                bytes
+                    .get(name_end..scan_end.min(name_end.saturating_add(16)))
+                    .unwrap_or(&[])
+            );
+        }
+    }
+
+    proven_end
+}
+
 fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> usize {
     if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
         return 2;
@@ -491,6 +656,25 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // Keep this as a mask-specific boundary floor and let the focused
         // creature cursor validator prove the exact final cursor and bits.
         return 32;
+    }
+
+    if raw_mask == 0x0000_4408 {
+        // Local Diamond bw167demo captures this compact creature self/status
+        // shape while entering the module:
+        //
+        //   U/5 header + mask
+        //   0x0008 status-effect delta: WORD count, 3-byte legacy effect row
+        //   0x0400 scalar/status branch: four WORDs
+        //   0x4000 self/status suffix: fragment BOOLs only for the no-master
+        //          branch observed here
+        //
+        // EE `sub_140781E80+0x1126` calls the status-effect reader for mask
+        // `0x0008`; the focused creature translator inserts the EE
+        // ObjectVisualTransformData identity map and then proves the whole
+        // record through `creature.rs`. This boundary floor merely prevents the
+        // generic live-object scanner from treating the interior `A` effect byte
+        // as a real `A/5` submessage boundary.
+        return LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8;
     }
 
     if raw_mask == 0x0000_C408 {

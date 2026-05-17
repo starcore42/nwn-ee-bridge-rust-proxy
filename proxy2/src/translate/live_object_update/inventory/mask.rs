@@ -140,11 +140,7 @@ fn generic_inventory_candidates_after_mask(
     candidates
 }
 
-fn trace_inventory_stage(
-    mask: u16,
-    stage: &'static str,
-    candidates: &[GenericInventoryCandidate],
-) {
+fn trace_inventory_stage(mask: u16, stage: &'static str, candidates: &[GenericInventoryCandidate]) {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
         return;
     }
@@ -224,7 +220,10 @@ fn apply_0200(
                 && byte_mask_count <= record_end - masks_offset
             {
                 if let Some(candidate) = candidate
-                    .advanced(masks_offset + byte_mask_count, candidate.bits.saturating_add(2))
+                    .advanced(
+                        masks_offset + byte_mask_count,
+                        candidate.bits.saturating_add(2),
+                    )
                     .require_fragment_bit(candidate.bits.saturating_add(1), true)
                 {
                     next.push(candidate);

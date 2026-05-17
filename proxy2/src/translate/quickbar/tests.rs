@@ -1,6 +1,12 @@
 use super::facade::parse_cnw_quickbar_payload;
 use super::*;
 
+fn hex_bytes(hex: &str) -> Vec<u8> {
+    hex.split_whitespace()
+        .map(|token| u8::from_str_radix(token, 16).expect("valid hex byte"))
+        .collect()
+}
+
 #[test]
 fn blank_placeholder_is_exact_36_slot_set_all_buttons_shape() {
     let payload =
@@ -10,7 +16,7 @@ fn blank_placeholder_is_exact_36_slot_set_all_buttons_shape() {
         payload.get(0..3),
         Some(&[b'P', QUICKBAR_MAJOR, SET_ALL_BUTTONS_MINOR][..])
     );
-    assert_eq!(read_u32_le(&payload, 3), Some(39));
+    assert_eq!(read_u32_le(&payload, 3), Some(43));
     assert_eq!(payload.len(), 44);
     assert!(
         payload[7..43].iter().all(|byte| *byte == 0),
@@ -101,23 +107,26 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
     println!("{summary:?}");
     assert!(!summary.direct_opcode_stream);
     assert_eq!(summary.old_declared, 1321);
-    assert_eq!(summary.read_size, 1318);
-    assert_eq!(summary.fragment_size, 15);
+    assert_eq!(summary.read_size, 1314);
+    assert_eq!(summary.fragment_size, 19);
     assert_eq!(summary.trailing_read_bytes, 0);
     assert!(
         summary.item_buttons_preserved + summary.item_buttons_blanked >= 18,
         "item slots should be either emitted from proven item-object models or deliberately blanked after boundary proof"
     );
-    assert_eq!(
-        summary.item_buttons_preserved, 0,
-        "item-bearing slots should stay blank until the state-aware object registry can prove EE client-item materialization"
+    assert!(
+        summary.item_buttons_preserved > 0,
+        "explicit type-1 item bodies are self-materializing in EE once the item-object model is exact"
     );
-    assert_eq!(summary.item_buttons_blanked, 18);
+    assert!(
+        summary.item_buttons_blanked < 18,
+        "only compact/recovered or otherwise unproven item bodies should remain deliberate blanks"
+    );
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(summary.spells_preserved >= 13);
     assert!(
-        payload.len() < 1515,
-        "unproven item materialization should be removed from the EE-facing packet while spell/general slots remain"
+        payload.len() > 1000,
+        "emitting exact EE item-object bodies should keep the item materialization payload instead of shrinking to spell-only quickbar slots"
     );
     assert!(
         ee_set_all_buttons_payload_shape_valid(&payload),
@@ -134,6 +143,60 @@ fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
         visible_first_page >= 6,
         "rewritten Starcore initial quickbar should keep visible F1-F12 records populated: {:?}",
         &slot_types[..12]
+    );
+}
+
+#[test]
+fn state_proven_quickbar_item_objects_emit_typed_ee_item_slots() {
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin")
+            .to_vec();
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("Starcore initial quickbar fixture should parse before rewriting");
+    let mut known_item_objects = std::collections::BTreeSet::new();
+    for button in &parsed.buttons {
+        if let QuickbarButtonKind::Item {
+            primary,
+            secondary,
+            recovered_type_tag: false,
+            ..
+        } = &button.kind
+        {
+            if primary.present {
+                known_item_objects.insert(primary.object_id);
+            }
+            if secondary.present {
+                known_item_objects.insert(secondary.object_id);
+            }
+        }
+    }
+    assert!(
+        !known_item_objects.is_empty(),
+        "fixture must contain explicit type-1 item slots for state-backed materialization proof"
+    );
+
+    let item_object_is_known = |object_id| known_item_objects.contains(&object_id);
+    let materialization = QuickbarMaterializationContext::new(&item_object_is_known);
+    let summary = rewrite_simple_quickbar_payload_with_context_if_possible(
+        &mut payload,
+        Some(&materialization),
+    )
+    .expect("state-backed Starcore initial quickbar capture should be semantically owned");
+
+    assert!(
+        summary.item_buttons_preserved > 0,
+        "verified object-registry proof should allow explicit item slots to be emitted"
+    );
+    assert!(
+        summary.item_buttons_blanked < 18,
+        "state proof should reduce deliberate item-slot blanking without allowing recovered compact slots"
+    );
+    assert!(ee_set_all_buttons_payload_shape_valid(&payload));
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten quickbar should expose validated EE slot types");
+    assert!(
+        slot_types.iter().any(|slot_type| *slot_type == 1),
+        "rewritten quickbar should contain at least one validated EE item slot"
     );
 }
 
@@ -174,20 +237,26 @@ fn starcore5_compact_item_body_without_source_type_preserves_spells_and_blanks_u
         "compact item bodies prove the boundary but must not be emitted until EE item materialization is state-proven"
     );
     assert_eq!(summary.old_declared, 1321);
-    assert_eq!(summary.read_size, 1318);
-    assert_eq!(summary.fragment_size, 15);
-    assert_eq!(summary.final_cursor, 1318);
+    assert_eq!(summary.read_size, 1314);
+    assert_eq!(summary.fragment_size, 19);
+    assert_eq!(summary.final_cursor, 1314);
     assert_eq!(summary.trailing_read_bytes, 0);
-    assert_eq!(summary.item_buttons_preserved, 0);
-    assert_eq!(summary.item_buttons_blanked, 18);
-    assert_eq!(summary.spells_preserved, 15);
-    assert_eq!(
-        summary.general_buttons_blanked, 0,
-        "verified byte-identical general/blank records should no longer be counted as translator-blanked"
+    assert!(
+        summary.item_buttons_preserved > 0,
+        "explicit type-1 item bodies should self-materialize while compact/recovered bodies remain blank"
     );
     assert!(
         summary.item_buttons_blanked >= recovered_item_slots as u32,
-        "recovered compact item branches should prove ownership but remain blank until typed EE item materialization proof exists"
+        "recovered compact item branches should remain deliberate blanks"
+    );
+    assert_eq!(summary.spells_preserved, 15);
+    assert_eq!(
+        summary.general_buttons_blanked, 0,
+        "this compact missing-type fixture has no unproven general command slot to blank"
+    );
+    assert!(
+        summary.item_buttons_preserved + summary.item_buttons_blanked >= 18,
+        "all item-like slots must be either emitted from explicit decompile-owned bodies or deliberately blanked"
     );
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(
@@ -253,14 +322,21 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
     assert!(!summary.direct_opcode_stream);
     assert_eq!(summary.old_payload_length, 1340);
     assert_eq!(summary.old_declared, 1321);
-    assert_eq!(summary.read_size, 1318);
-    assert_eq!(summary.fragment_size, 15);
-    assert_eq!(summary.final_cursor, 1318);
+    assert_eq!(summary.read_size, 1314);
+    assert_eq!(summary.fragment_size, 19);
+    assert_eq!(summary.final_cursor, 1314);
     assert_eq!(summary.trailing_read_bytes, 0);
-    assert_eq!(summary.item_buttons_preserved, 0);
+    assert_eq!(
+        summary.item_buttons_preserved, 18,
+        "the live fixture carries full explicit type-1 item bodies that EE can self-materialize"
+    );
     assert_eq!(summary.spells_preserved, 15);
-    assert_eq!(summary.general_buttons_preserved, 1);
-    assert_eq!(summary.item_buttons_blanked, 18);
+    assert_eq!(summary.general_buttons_preserved, 0);
+    assert_eq!(
+        summary.general_buttons_blanked, 1,
+        "the live Starcore5 command slot must not be emitted as byte-identical after the EE reader overflow proof"
+    );
+    assert_eq!(summary.item_buttons_blanked, 0);
     assert_eq!(summary.unsupported_buttons_blanked, 0);
     assert!(
         ee_set_all_buttons_payload_shape_valid(&payload),
@@ -288,10 +364,14 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
         &slot_types[..12]
     );
     assert_eq!(
-        first_page_items_after, 0,
-        "item slots are intentionally blanked until the proxy can prove EE client item materialization"
+        first_page_items_after, first_page_items_before,
+        "full explicit quickbar item bodies should self-materialize through the EE client reader"
     );
     assert_eq!(first_page_spells_after, first_page_spells_before);
+    assert_eq!(
+        slot_types[35], 0,
+        "the final type-18 command slot is intentionally blanked until a focused EE command-slot writer is proven"
+    );
     assert!(
         visible_after >= first_page_spells_before,
         "rewritten Starcore5 live quickbar should keep visible F1-F12 records populated: {:?}",
@@ -300,18 +380,60 @@ fn starcore5_live_driver_only_capture_keeps_visible_quickbar_page_populated() {
 }
 
 #[test]
+fn starcore5_compact_quickbar_with_valid_declared_offset_claims_spells() {
+    // Captured from the post-area Starcore5 driver-only coalesced stream on
+    // 2026-05-13. Rechecking EE `CNWMessage::SetReadMessage` showed that the
+    // DWORD at `P 1E 01 + 3` is a valid declared fragment offset for this
+    // compact packet, not a fragment-prefix artifact. The quickbar semantic
+    // translator should therefore claim it directly and the transport
+    // normalizer must not move those bytes to the fragment tail.
+    let mut payload = hex_bytes(
+        "50 1E 01 56 00 00 00 \
+         0A 01 00 00 00 04 2F 01 00 00 \
+         02 00 18 00 00 00 00 00 \
+         02 00 32 00 00 00 00 00 \
+         02 00 25 00 00 00 00 00 \
+         02 00 64 00 00 00 00 00 \
+         02 00 90 00 00 00 00 00 \
+         00 00 00 00 00 00 00 00 00 00 \
+         00 00 00 00 00 00 00 00 00 00 \
+         00 00 00 00 00 00 00 00 \
+         00 70",
+    );
+
+    assert!(
+        normalize_and_rewrite_quickbar_payload_if_possible(&mut payload.clone()).is_none(),
+        "a decompile-valid SetReadMessage declared offset must not be treated as prefixed fragments"
+    );
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("compact Starcore5 quickbar should be semantically owned");
+
+    assert_eq!(summary.old_declared, 0x56);
+    assert_eq!(summary.old_payload_length, 87);
+    assert_eq!(summary.read_size, 79);
+    assert_eq!(summary.fragment_size, 1);
+    assert_eq!(summary.spells_preserved, 5);
+    assert_eq!(summary.general_buttons_preserved, 2);
+    assert_eq!(summary.item_buttons_blanked, 0);
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten compact quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten compact quickbar should expose validated EE slot types");
+    assert_eq!(&slot_types[..7], &[10, 4, 2, 2, 2, 2, 2]);
+}
+
+#[test]
 fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_items() {
     let mut payload =
         include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
             .to_vec();
     let declared = read_u32_le(&payload, 3).expect("quickbar declared length") as usize;
-    let read_size = declared
-        .checked_sub(HIGH_LEVEL_HEADER_BYTES)
-        .expect("declared includes high-level header");
-    let fragment_start = HIGH_LEVEL_HEADER_BYTES
-        .checked_add(CNW_LENGTH_BYTES)
-        .and_then(|start| start.checked_add(read_size))
-        .expect("fragment start");
+    let fragment_start = declared;
     let fragments = payload
         .get_mut(fragment_start..)
         .expect("fixture has quickbar fragment tail");

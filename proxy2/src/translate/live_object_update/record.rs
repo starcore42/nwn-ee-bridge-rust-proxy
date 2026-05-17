@@ -5,14 +5,16 @@
 //! record and bit stream should be emitted?
 
 use super::{
-    DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
-    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
-    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
+    CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
+    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
+    EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
+    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, door, effects, locstring, placeable, read_u32_le, reader, trigger,
-    write_u32_le, writer,
+    TRIGGER_OBJECT_TYPE, bits, door, effects, locstring, placeable, read_u16_le, read_u32_le,
+    reader, trigger, write_u32_le, writer,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,7 +31,9 @@ pub(super) struct RecordRewrite {
 #[derive(Debug, Clone, Copy)]
 enum OrientationFragmentRewrite {
     PreserveExisting,
-    InsertScalarBranchBeforeLegacyLowBits,
+    ForceScalar,
+    ForceVector,
+    InsertLegacyByteScalarPad,
     InsertScalar(u16),
 }
 
@@ -55,7 +59,10 @@ pub(super) fn rewrite_update_record_for_ee(
     let object_type = live_bytes[record_offset + 1];
     let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+    if matches!(
+        object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE | CREATURE_OBJECT_TYPE
+    )
         && raw_mask == effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK
     {
         let effect_rewrite = effects::rewrite_legacy_looping_visual_effect_update_for_ee(
@@ -69,7 +76,11 @@ pub(super) fn rewrite_update_record_for_ee(
             ..RecordRewrite::default()
         });
     }
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+    let legacy_door_state_update_requires_translation =
+        object_type == DOOR_OBJECT_TYPE && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0;
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && !legacy_door_state_update_requires_translation
+    {
         if let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
             live_bytes,
             record_offset,
@@ -89,22 +100,22 @@ pub(super) fn rewrite_update_record_for_ee(
     let mut tail_ready = false;
     let mut tail_needs_empty_name = false;
     let mut inline_name_drop_begin = None;
+    let mut low_prefix_interleaved_fragment_span_begin = None;
     let mut fragment_source_mask = raw_mask;
-    let mut orientation_fragment_rewrite = if matches!(
-        object_type,
-        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
-    ) && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
-    {
-        // Diamond generic door/placeable updates (`sub_44F3D0`) read the
-        // compact orientation scalar directly. EE's matching reader
-        // (`sub_14079C050`) first consumes an orientation-mode BOOL, then reads
-        // the scalar path when that branch is false. If the exact EE verifier
-        // above did not already accept the record, the legacy scalar low bits
-        // need this one neutral branch bit inserted before them.
-        OrientationFragmentRewrite::InsertScalarBranchBeforeLegacyLowBits
-    } else {
-        OrientationFragmentRewrite::PreserveExisting
-    };
+    let mut orientation_fragment_rewrite =
+        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+            && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+        {
+            // Diamond `sub_467AE0` and EE `sub_14079C050` use the same generic
+            // orientation branch: BOOL false => scalar `ReadFLOAT(10,12)`;
+            // BOOL true => three `ReadFLOAT(-2,2,16)` vector components.
+            // Preserve that branch by default. The legacy-tail converter below
+            // is kept only for older captures that genuinely carried a compact
+            // facing WORD outside the shared generic reader shape.
+            OrientationFragmentRewrite::PreserveExisting
+        } else {
+            OrientationFragmentRewrite::PreserveExisting
+        };
 
     if object_type == TRIGGER_OBJECT_TYPE && translated_mask != raw_mask {
         let trigger_update = trigger::parse_legacy_trigger_update_for_ee(
@@ -195,24 +206,14 @@ pub(super) fn rewrite_update_record_for_ee(
     } else if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
     {
-        if let Some(inline_name) =
-            reader::parse_legacy_inline_named_door_placeable_update_record_for_ee(
-                live_bytes,
-                record_offset,
-                *record_end,
-            )
+        let legacy_tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
+        let raw_has_legacy_generic_tail =
+            (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
+        let legacy_tail = if legacy_tail_offset <= *record_end
+            && *record_end - legacy_tail_offset >= 9
         {
-            debug_assert_eq!(inline_name.name_end, *record_end);
-            inline_name_drop_begin = Some(inline_name.read_without_name_end);
-            can_translate_read_buffer = true;
-        } else {
-            let legacy_tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-            let raw_has_legacy_generic_tail =
-                (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
-            if legacy_tail_offset <= *record_end && *record_end - legacy_tail_offset >= 9 {
-                if let Some(tail) =
-                    reader::read_legacy_named_update_tail9(live_bytes, legacy_tail_offset, false)
-                {
+            reader::read_legacy_named_update_tail9(live_bytes, legacy_tail_offset, false)
+                .and_then(|tail| {
                     let following_payload_ready =
                         reader::legacy_named_update_tail_following_payload_ready(
                             live_bytes,
@@ -220,24 +221,166 @@ pub(super) fn rewrite_update_record_for_ee(
                             *record_end,
                         );
                     if following_payload_ready || raw_has_legacy_generic_tail {
-                        tail_ready = true;
-                        tail_needs_empty_name = !following_payload_ready;
-                        if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-                            translated_mask |= LEGACY_UPDATE_ORIENTATION_MASK;
-                            let orientation_scalar12 =
-                                writer::encode_ee_scalar_orientation_from_legacy_facing(
-                                    tail.facing,
-                                );
-                            orientation_fragment_rewrite =
-                                OrientationFragmentRewrite::InsertScalar(orientation_scalar12);
-                            fragment_source_mask &= !LEGACY_UPDATE_ORIENTATION_MASK;
-                        }
-                        if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-                            translated_mask |= LEGACY_UPDATE_SCALE_STATE_MASK;
-                        }
+                        Some((tail, following_payload_ready))
+                    } else {
+                        None
                     }
+                })
+        } else {
+            None
+        };
+
+        if let Some((tail, following_payload_ready)) = legacy_tail {
+            // Diamond's generic door/placeable update writer can append a
+            // decompile-owned nine-byte tail at the post-position cursor:
+            // WORD facing, one legacy generic byte, FLOAT scale, WORD generic
+            // state. Those bytes can also accidentally form a bounded
+            // CExoString candidate, so this typed tail reader must win before
+            // the compact inline-name repair is considered.
+            tail_ready = true;
+            tail_needs_empty_name = !following_payload_ready;
+            if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+                translated_mask |= LEGACY_UPDATE_ORIENTATION_MASK;
+                let orientation_scalar12 =
+                    writer::encode_ee_scalar_orientation_from_legacy_facing(tail.facing);
+                orientation_fragment_rewrite =
+                    OrientationFragmentRewrite::InsertScalar(orientation_scalar12);
+                fragment_source_mask &= !LEGACY_UPDATE_ORIENTATION_MASK;
+            }
+            if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+                translated_mask |= LEGACY_UPDATE_SCALE_STATE_MASK;
+            }
+        } else if let Some(inline_name) =
+            reader::parse_legacy_inline_named_door_placeable_update_record_for_ee(
+                live_bytes,
+                record_offset,
+                *record_end,
+                bits,
+                *bit_cursor,
+            )
+        {
+            debug_assert_eq!(inline_name.name_end, *record_end);
+            inline_name_drop_begin = Some(inline_name.read_without_name_end);
+            can_translate_read_buffer = true;
+            if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+                let orientation_bit_cursor = *bit_cursor
+                    + if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+                        LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    } else {
+                        0
+                    };
+                let compact_legacy_tail_bits =
+                    if (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+                        LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                    } else {
+                        0
+                    } + 1;
+                if bits.len().saturating_sub(orientation_bit_cursor) == compact_legacy_tail_bits
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        inline_name.read_without_name_end,
+                        raw_mask,
+                        false,
+                    ) == Some(inline_name.read_without_name_end)
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        inline_name.read_without_name_end,
+                        raw_mask,
+                        true,
+                    ) != Some(inline_name.read_without_name_end)
+                {
+                    // Some Diamond captures carry the scalar orientation high
+                    // byte in the read buffer but do not carry the scalar
+                    // low-nibble fragment bits before the state/name bits.
+                    // EE's reader still expects a scalar selector plus four
+                    // low bits, so insert zero padding at the decompile-owned
+                    // orientation branch instead of consuming state bits as
+                    // orientation data.
+                    orientation_fragment_rewrite =
+                        OrientationFragmentRewrite::InsertLegacyByteScalarPad;
                 }
             }
+        }
+    }
+
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && !tail_ready
+        && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+        && (raw_mask & !translated_mask) != 0
+    {
+        if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
+            live_bytes,
+            record_offset,
+            *record_end,
+            translated_mask,
+            false,
+        ) {
+            if prefix_end < *record_end {
+                // Diamond's low generic door/placeable update fields are
+                // byte-compatible with EE for the scalar orientation branch, but
+                // HG/Diamond can append the legacy name/fragment storage inside
+                // the read-body range before the next live-object boundary. EE
+                // has no generic name consumer for this family, so keep the
+                // exact shared low-mask prefix, promote only the source fragment
+                // bits needed to prove that prefix, then drop the legacy-only
+                // tail.
+                tail_ready = false;
+                tail_needs_empty_name = false;
+                can_translate_read_buffer = true;
+                inline_name_drop_begin = Some(prefix_end);
+                low_prefix_interleaved_fragment_span_begin = Some(prefix_end);
+                fragment_source_mask = translated_mask | LEGACY_UPDATE_NAME_MASK;
+                orientation_fragment_rewrite = OrientationFragmentRewrite::ForceScalar;
+            }
+        }
+    }
+
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+        && (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+    {
+        let orientation_read_target = inline_name_drop_begin.unwrap_or(*record_end);
+        let orientation_bit_cursor = *bit_cursor
+            + if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+                LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+            } else {
+                0
+            };
+        let scalar_read_end = door_placeable_update_read_end_for_orientation_branch(
+            live_bytes,
+            record_offset,
+            orientation_read_target,
+            raw_mask,
+            false,
+        );
+        let vector_read_end = door_placeable_update_read_end_for_orientation_branch(
+            live_bytes,
+            record_offset,
+            orientation_read_target,
+            raw_mask,
+            true,
+        );
+        match bits.get(orientation_bit_cursor).copied() {
+            Some(false) if scalar_read_end != Some(orientation_read_target)
+                && vector_read_end == Some(orientation_read_target) =>
+            {
+                // Diamond `sub_467AE0` and EE `sub_14079C050` both branch on
+                // this BOOL before reading orientation. If the byte cursor only
+                // matches the six-byte vector branch, force that exact reader
+                // path instead of letting a stale false bit shift later fields.
+                orientation_fragment_rewrite = OrientationFragmentRewrite::ForceVector;
+            }
+            Some(true) if scalar_read_end == Some(orientation_read_target)
+                && vector_read_end != Some(orientation_read_target) =>
+            {
+                // The inverse stale selector occurs in older HG fixtures:
+                // scalar read bytes land exactly on the record end, while the
+                // vector branch overflows into the next submessage.
+                orientation_fragment_rewrite = OrientationFragmentRewrite::ForceScalar;
+            }
+            _ => {}
         }
     }
 
@@ -261,7 +404,54 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     if !can_translate_read_buffer && translated_mask != raw_mask && !tail_ready {
+        debug_update_record_reject(
+            "read-buffer-unclaimed-before-bit-rewrite",
+            live_bytes,
+            record_offset,
+            *record_end,
+            raw_mask,
+            translated_mask,
+            *bit_cursor,
+        );
         return None;
+    }
+
+    if let Some(span_begin) = low_prefix_interleaved_fragment_span_begin {
+        let required_source_bits =
+            low_prefix_door_placeable_update_source_fragment_bits(fragment_source_mask);
+        let available_bits = bits.len().saturating_sub(*bit_cursor);
+        if available_bits < required_source_bits {
+            let missing_bits = required_source_bits - available_bits;
+            let promote_bytes = missing_bits.saturating_add(7) / 8;
+            if span_begin >= *record_end
+                || span_begin.saturating_add(promote_bytes) > *record_end
+                || promote_bytes == 0
+            {
+                debug_update_record_reject(
+                    "low-prefix-fragment-span-too-short",
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    raw_mask,
+                    translated_mask,
+                    *bit_cursor,
+                );
+                return None;
+            }
+            let promoted_bits = first_msb_bits(
+                &live_bytes[span_begin..span_begin + promote_bytes],
+                missing_bits,
+            )?;
+            bits::insert_msb_bits(bits, bit_cursor.saturating_add(available_bits), &promoted_bits)?;
+            live_bytes.drain(span_begin..span_begin + promote_bytes);
+            *record_end = record_end.saturating_sub(promote_bytes);
+            rewrite.bits_inserted = rewrite
+                .bits_inserted
+                .saturating_add(u32::try_from(missing_bits).unwrap_or(u32::MAX));
+            rewrite.bytes_removed = rewrite
+                .bytes_removed
+                .saturating_add(u32::try_from(promote_bytes).unwrap_or(u32::MAX));
+        }
     }
 
     let update_bits_present = update_record_owns_fragment_bits(object_type, translated_mask);
@@ -280,6 +470,15 @@ pub(super) fn rewrite_update_record_for_ee(
             &mut rewritten_bits,
             &mut rewritten_bit_cursor,
         ) else {
+            debug_update_record_reject(
+                "fragment-bit-rewrite-failed",
+                live_bytes,
+                record_offset,
+                *record_end,
+                raw_mask,
+                translated_mask,
+                *bit_cursor,
+            );
             *bit_cursor_reliable = false;
             return None;
         };
@@ -361,6 +560,15 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     if !can_translate_read_buffer && translated_mask != raw_mask {
+        debug_update_record_reject(
+            "read-buffer-unclaimed-after-byte-rewrite",
+            live_bytes,
+            record_offset,
+            *record_end,
+            raw_mask,
+            translated_mask,
+            *bit_cursor,
+        );
         return None;
     }
 
@@ -404,6 +612,26 @@ pub(super) fn rewrite_update_record_for_ee(
     Some(rewrite)
 }
 
+fn debug_update_record_reject(
+    reason: &'static str,
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    raw_mask: u32,
+    translated_mask: u32,
+    bit_cursor: usize,
+) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+    eprintln!(
+        "live-object update record rewrite rejected: reason={reason} offset={record_offset} record_end={record_end} bit_cursor={bit_cursor} raw_mask=0x{raw_mask:08X} translated_mask=0x{translated_mask:08X} preview={:02X?}",
+        live_bytes
+            .get(record_offset..record_end.min(record_offset.saturating_add(64)))
+            .unwrap_or(&[])
+    );
+}
+
 pub(super) fn advance_verified_update_record_for_ee(
     live_bytes: &[u8],
     offset: usize,
@@ -411,8 +639,7 @@ pub(super) fn advance_verified_update_record_for_ee(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end)
-    {
+    if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end) {
         return true;
     }
 
@@ -473,7 +700,8 @@ fn is_bridge_empty_state_update_mask(mask: u32) -> bool {
     let ee_supported_all = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
-        | LEGACY_UPDATE_STATE_MASK;
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK;
     mask == ee_supported_all || mask == (ee_supported_all | LEGACY_UPDATE_NAME_MASK)
 }
 
@@ -487,18 +715,51 @@ pub(super) fn door_placeable_update_name_cursor(record_start: usize, mask: u32) 
         }
 }
 
+fn door_placeable_update_read_end_for_orientation_branch(
+    bytes: &[u8],
+    record_start: usize,
+    record_end: usize,
+    mask: u32,
+    vector_orientation: bool,
+) -> Option<usize> {
+    let mut cursor = record_start.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        cursor = cursor.checked_add(if vector_orientation {
+            EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES
+        } else {
+            EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
+        })?;
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let appearance_word = read_u16_le(bytes, cursor)?;
+        cursor = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        if appearance_word >= 0xFFFE {
+            cursor = cursor.checked_add(super::EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        }
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        cursor = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+    }
+    (cursor <= record_end).then_some(cursor)
+}
+
 pub(super) fn door_placeable_legacy_inline_name_cursor(record_start: usize, mask: u32) -> usize {
-    door_placeable_update_name_cursor(record_start, mask)
+    let mut cursor = door_placeable_update_name_cursor(record_start, mask)
         + if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
             EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
         } else {
             0
-        }
-        + if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-            EE_UPDATE_SCALE_STATE_READ_BYTES
-        } else {
-            0
-        }
+        };
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        cursor += EE_UPDATE_APPEARANCE_WORD_READ_BYTES;
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        cursor += EE_UPDATE_SCALE_STATE_READ_BYTES;
+    }
+    cursor
 }
 
 fn door_placeable_ee_update_name_cursor(record_start: usize, mask: u32) -> usize {
@@ -512,9 +773,39 @@ fn update_record_owns_fragment_bits(object_type: u8, translated_mask: u32) -> bo
                 & (LEGACY_UPDATE_POSITION_MASK
                     | LEGACY_UPDATE_ORIENTATION_MASK
                     | LEGACY_UPDATE_SCALE_STATE_MASK
+                    | LEGACY_UPDATE_APPEARANCE_MASK
                     | LEGACY_UPDATE_STATE_MASK
                     | LEGACY_UPDATE_NAME_MASK))
                 != 0)
+}
+
+fn low_prefix_door_placeable_update_source_fragment_bits(source_mask: u32) -> usize {
+    let mut bits = 0usize;
+    if (source_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        bits = bits.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+    }
+    if (source_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        bits = bits.saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS);
+    }
+    if (source_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        bits = bits.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
+    }
+    if (source_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        bits = bits.saturating_add(1);
+    }
+    bits
+}
+
+fn first_msb_bits(bytes: &[u8], bit_count: usize) -> Option<Vec<bool>> {
+    if bit_count == 0 || bytes.len().saturating_mul(8) < bit_count {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bit_count);
+    for bit_index in 0..bit_count {
+        let byte = *bytes.get(bit_index / 8)?;
+        out.push((byte & (0x80 >> (bit_index % 8))) != 0);
+    }
+    Some(out)
 }
 
 fn rewrite_legacy_live_object_update_bits(
@@ -559,36 +850,46 @@ fn rewrite_legacy_live_object_update_bits(
     if translated_has_orientation {
         match orientation_rewrite {
             OrientationFragmentRewrite::PreserveExisting => {
+                if !source_has_orientation || bits.len().saturating_sub(cursor) < 1 {
+                    return None;
+                }
+                cursor += if bits[cursor] {
+                    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                } else {
+                    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                };
+            }
+            OrientationFragmentRewrite::ForceScalar => {
                 if !source_has_orientation
                     || bits.len().saturating_sub(cursor)
                         < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
                 {
                     return None;
                 }
-                // EE `sub_14079C050` reads one orientation-mode BOOL before
-                // the compact 12-bit scalar facing value. The byte model we
-                // preserve here is the scalar one-byte shape, so the emitted
-                // EE branch bit must be `false`. Diamond's writer at
-                // `0x4452EF/0x445306` uses that same scalar branch for this
-                // shape; if a mixed legacy stream leaves the branch bit dirty,
-                // canonicalize the typed scalar model instead of forwarding an
-                // invalid vector-branch claim with scalar bytes.
-                if bits[cursor] {
-                    bits[cursor] = false;
-                    rewrite.bits_changed = true;
-                }
+                let selector = bits.get_mut(cursor)?;
+                rewrite.bits_changed |= *selector;
+                *selector = false;
                 cursor += EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
             }
-            OrientationFragmentRewrite::InsertScalarBranchBeforeLegacyLowBits => {
-                if !source_has_orientation
-                    || bits.len().saturating_sub(cursor)
-                        < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS.saturating_sub(1)
-                {
+            OrientationFragmentRewrite::ForceVector => {
+                if !source_has_orientation || bits.len().saturating_sub(cursor) < 1 {
                     return None;
                 }
-                bits::insert_msb_bit(bits, cursor, false)?;
-                cursor += EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
-                rewrite.bits_inserted = rewrite.bits_inserted.saturating_add(1);
+                let selector = bits.get_mut(cursor)?;
+                rewrite.bits_changed |= !*selector;
+                *selector = true;
+                cursor += EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS;
+            }
+            OrientationFragmentRewrite::InsertLegacyByteScalarPad => {
+                if !source_has_orientation {
+                    return None;
+                }
+                let inserted_orientation_bits = [false, false, false, false, false];
+                bits::insert_msb_bits(bits, cursor, &inserted_orientation_bits)?;
+                cursor += inserted_orientation_bits.len();
+                rewrite.bits_inserted = rewrite
+                    .bits_inserted
+                    .saturating_add(inserted_orientation_bits.len() as u32);
             }
             OrientationFragmentRewrite::InsertScalar(orientation_scalar12) => {
                 let inserted_orientation_bits = [
@@ -606,10 +907,18 @@ fn rewrite_legacy_live_object_update_bits(
             }
         }
     } else if source_has_orientation {
-        bits::erase_msb_bits(bits, cursor, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS)?;
+        if bits.len().saturating_sub(cursor) < 1 {
+            return None;
+        }
+        let orientation_bits = if bits[cursor] {
+            EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+        } else {
+            EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+        };
+        bits::erase_msb_bits(bits, cursor, orientation_bits)?;
         rewrite.bits_removed = rewrite
             .bits_removed
-            .saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS as u32);
+            .saturating_add(orientation_bits as u32);
     }
 
     let source_has_state = (source_mask & LEGACY_UPDATE_STATE_MASK) != 0;

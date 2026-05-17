@@ -8,6 +8,16 @@ use super::*;
 // records. This module is the narrow allow-list for those byte-identical
 // shapes. Divergent or unowned records are still consumed and emitted as blank
 // slots by the writer instead of being forwarded raw.
+//
+// Important negative proof:
+// EE `sub_14079DB00` case 18 and Diamond `sub_469FD0` case 18 both read two
+// CExoString fields, but the Starcore5 driver-only capture showed the EE
+// receiver's immediate `MessageReadOverflow` check at `sub_14079DB00+0xBBF`
+// tripping on the proxy-emitted final-slot command record. That makes the
+// record family not yet proven byte-identical in the proxy-owned EE
+// SetAllButtons envelope. Consume typed source case-18 records for boundary
+// proof, but emit them as blank slots until a focused command-slot writer proves
+// the exact EE bounds/state behavior.
 
 pub(super) fn quickbar_general_bytes_are_verified_ee_identical(bytes: &[u8]) -> bool {
     let Some(&ty) = bytes.first() else {
@@ -23,7 +33,7 @@ pub(super) fn quickbar_general_bytes_are_verified_ee_identical(bytes: &[u8]) -> 
         }
         44 => bytes.len() == 1 + CNW_LENGTH_BYTES + 1,
         11..=17 => c_resref_string_general_len(bytes).is_some_and(|len| len == bytes.len()),
-        18 => two_string_general_len(bytes).is_some_and(|len| len == bytes.len()),
+        18 => false,
         29 | 30 => bytes.len() == 1 + C_RESREF_TEXT_BYTES,
         _ => false,
     }
@@ -39,8 +49,10 @@ pub(super) fn validate_ee_quickbar_general_button(
             .read_dword()
             .is_some_and(|value| legacy_quickbar_int_payload_is_valid_for_ee(ty, value)),
         44 => reader.read_dword().is_some() && reader.read_byte().is_some(),
-        11..=17 => reader.skip_bytes(C_RESREF_TEXT_BYTES).is_some() && reader.skip_string().is_some(),
-        18 => reader.skip_string().is_some() && reader.skip_string().is_some(),
+        11..=17 => {
+            reader.skip_bytes(C_RESREF_TEXT_BYTES).is_some() && reader.skip_string().is_some()
+        }
+        18 => false,
         29 | 30 => reader.skip_bytes(C_RESREF_TEXT_BYTES).is_some(),
         _ => false,
     }

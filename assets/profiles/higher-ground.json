@@ -89,6 +89,30 @@
       "insertAfterPrefix": "WalkMesh=",
       "line": "Orientation=0",
       "evidence": "EE tileset loader requires Orientation in each TILE block; CEP legacy ttr01.set TILE625 omits it."
+    },
+    {
+      "id": "hg-ee-pfh0-robe137-remove-disallowed-filedependency",
+      "kind": "erfTextResourceRemoveLines",
+      "sourceHak": "cep2_core3.hak",
+      "resource": "pfh0_robe137.mdl",
+      "linePrefixes": [
+        "filedependency ",
+        "filedependancy "
+      ],
+      "requireAnyMatch": true,
+      "evidence": "EE FuncInterp calls the model-loader whitelist and logs disallowed EXPORTFUNC commands; EE FindModel's model command classifier treats filedependency/filedependancy as the blocked command family. CEP's pfh0_robe137.mdl contains only a top-level 'filedependency Unknown' metadata line before newmodel/setsupermodel, so remove that directive in an override resource instead of changing packet translation or HAK order."
+    },
+    {
+      "id": "hg-ee-pmh0-robe161-remove-disallowed-filedependency",
+      "kind": "erfTextResourceRemoveLines",
+      "sourceHak": "cep2_core3.hak",
+      "resource": "pmh0_robe161.mdl",
+      "linePrefixes": [
+        "filedependency ",
+        "filedependancy "
+      ],
+      "requireAnyMatch": true,
+      "evidence": "EE FuncInterp calls the model-loader whitelist and logs disallowed EXPORTFUNC commands; EE FindModel's model command classifier treats filedependency/filedependancy as the blocked command family. The driver-only EE log reported PMH0_ROBE161.mdl through that disallowed path, and the CEP cep2_core3.hak resource contains the same top-level 'filedependency Unknown' metadata line as the already-proven pfh0_robe137.mdl case. Emit a staged override that removes only that metadata directive so Diamond-authored model geometry and appearance data remain otherwise unchanged."
     }
   ],
   "nwsync": {

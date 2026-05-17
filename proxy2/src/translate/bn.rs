@@ -42,9 +42,12 @@ pub struct SessionState {
     latest_bncs_udp_port: Option<u16>,
     latest_bncr_status: Option<u8>,
     latest_cd_key_challenge: Vec<u8>,
+    latest_client_build: Option<bnxi::ClientBuild>,
     nwsync_advertised_to_client: bool,
     server_bnvr_accept_seen: bool,
     nwsync_handoff_bndm_consumed: bool,
+    reliable_gameplay_seen: bool,
+    pending_server_to_client: Vec<Vec<u8>>,
 }
 
 impl SessionState {
@@ -58,6 +61,14 @@ impl SessionState {
 
     pub(crate) fn latest_bncs_udp_port(&self) -> Option<u16> {
         self.latest_bncs_udp_port
+    }
+
+    fn latest_client_build(&self) -> Option<bnxi::ClientBuild> {
+        self.latest_client_build
+    }
+
+    fn remember_client_build(&mut self, build: bnxi::ClientBuild) {
+        self.latest_client_build = Some(build);
     }
 
     pub(crate) fn remember_bncs_udp_port(&mut self, udp_port: u16) {
@@ -88,19 +99,43 @@ impl SessionState {
         }
     }
 
+    pub(crate) fn remember_reliable_gameplay_seen(&mut self) {
+        self.reliable_gameplay_seen = true;
+    }
+
     pub(crate) fn should_consume_nwsync_handoff_bndm(&self) -> bool {
         self.nwsync_advertised_to_client
-            && self.server_bnvr_accept_seen
             && !self.nwsync_handoff_bndm_consumed
+            && !self.reliable_gameplay_seen
+            // EE's native NWSync handoff can tear down the current net-layer
+            // session before the normal BNCS/BNVR verifier path exists. When
+            // BNCS is not yet captured there is no Diamond UDP-port disconnect
+            // shape to emit, and the exact four-byte BNDM is proxy-owned
+            // handoff control. If BNCS already exists, keep the older
+            // decompile-backed post-BNVR handoff allowance; otherwise BNDM is
+            // a real disconnect and must translate to legacy BNDS below.
+            && (self.latest_bncs_udp_port.is_none() || self.server_bnvr_accept_seen)
     }
 
     pub(crate) fn remember_nwsync_handoff_bndm_consumed(&mut self) {
         self.nwsync_handoff_bndm_consumed = true;
     }
+
+    pub(crate) fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.pending_server_to_client)
+    }
+
+    fn enqueue_server_to_client(&mut self, packet: Vec<u8>) {
+        self.pending_server_to_client.push(packet);
+    }
 }
 
 pub enum ClientTranslation {
     Packet(Vec<u8>),
+    PacketRetireSession {
+        packet: Vec<u8>,
+        reason: &'static str,
+    },
     Consumed,
     ConsumedRetireSession { reason: &'static str },
 }
@@ -108,8 +143,13 @@ pub enum ClientTranslation {
 pub fn translate_client_to_server(
     bytes: &[u8],
     identity: &DiamondIdentity,
+    legacy_udp_port: u16,
     bncs_private_build: u32,
     bncs_build_field: u16,
+    server_port: u16,
+    discovery_session_name: &str,
+    discovery_module_name: &str,
+    nwsync_advertisement: Option<&Advertisement>,
     state: &mut SessionState,
 ) -> anyhow::Result<ClientTranslation> {
     let packet = BnPacket::parse(bytes);
@@ -118,20 +158,23 @@ pub fn translate_client_to_server(
             anyhow::bail!("unknown BN control tag in client-to-server direction")
         }
         BnTag::Bncs => {
-            if bytes.len() >= 6 {
-                state.remember_bncs_udp_port(u16::from_le_bytes([bytes[4], bytes[5]]));
-            }
-            return Ok(ClientTranslation::Packet(bncs::rewrite_client_to_diamond(
+            let rewritten = bncs::rewrite_client_to_diamond(
                 bytes,
                 identity,
+                legacy_udp_port,
                 bncs_private_build,
                 bncs_build_field,
-            )?));
+            )?;
+            state.remember_bncs_udp_port(rewritten.advertised_udp_port);
+            return Ok(ClientTranslation::Packet(rewritten.packet));
         }
         BnTag::Bndm => {
             return match bndm::translate_client_bndm(bytes, state)? {
-                bndm::BndmTranslation::LegacyDisconnect(packet) => {
-                    Ok(ClientTranslation::Packet(packet))
+                bndm::BndmTranslation::LegacyDisconnectRetireSession(packet) => {
+                    Ok(ClientTranslation::PacketRetireSession {
+                        packet,
+                        reason: "post-gameplay-bndm-disconnect",
+                    })
                 }
                 bndm::BndmTranslation::NwsyncHandoffConsumedRetireSession => {
                     Ok(ClientTranslation::ConsumedRetireSession {
@@ -152,7 +195,20 @@ pub fn translate_client_to_server(
         }
         BnTag::Bnes => {
             if bnes::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_client_noop(bytes, "BNES", "verified server-enumerate request");
+                let response = bnes::build_proxy_owned_bner_response(bnes::ProxyEnumerateResponse {
+                    server_port,
+                    section: 0,
+                    session_name: discovery_session_name,
+                })?;
+                tracing::info!(
+                    tag = "BNES",
+                    len = bytes.len(),
+                    response_len = response.len(),
+                    session_name = discovery_session_name,
+                    "BN packet semantically claimed as verified server-enumerate request; forwarding to legacy server and queuing exact EE discovery-progress BNER"
+                );
+                state.enqueue_server_to_client(response);
+                return Ok(ClientTranslation::Packet(bytes.to_vec()));
             }
         }
         BnTag::Bnlm => {
@@ -161,8 +217,30 @@ pub fn translate_client_to_server(
             }
         }
         BnTag::Bnxi => {
-            if bnxi::claim_client_to_legacy_if_verified(bytes).is_some() {
-                return claimed_client_noop(bytes, "BNXI", "verified extended-info request");
+            if let Some(build) = bnxi::claim_client_to_legacy_if_verified(bytes) {
+                state.remember_client_build(build);
+                let response = bnxr::build_proxy_owned_bnxr_response(
+                    bnxr::ProxyExtendedInfoResponse {
+                        server_port,
+                        module_name: discovery_module_name,
+                        advertisement: nwsync_advertisement,
+                    },
+                )?;
+                if nwsync_advertisement.is_some() {
+                    state.remember_nwsync_advertised_to_client();
+                }
+                tracing::info!(
+                    tag = "BNXI",
+                    client_major = build.major,
+                    client_minor = build.minor,
+                    client_revision = build.revision,
+                    nwsync = nwsync_advertisement.is_some(),
+                    response_len = response.len(),
+                    module_name = discovery_module_name,
+                    "BN packet semantically claimed as verified extended-info request; consuming and queuing exact proxy-owned EE BNXR response"
+                );
+                state.enqueue_server_to_client(response);
+                return Ok(ClientTranslation::Consumed);
             }
         }
         _ => {}
@@ -187,9 +265,16 @@ pub fn translate_server_to_client(
             }
         }
         BnTag::Bnvr => {
-            if bnvr::claim_server_to_ee_if_verified(bytes).is_some() {
-                state.remember_bnvr_result(bytes.get(4).copied() == Some(b'A'));
-                return claimed_noop(bytes, "BNVR", "verified legacy verifier result");
+            if let Some(rewritten) =
+                bnvr::rewrite_server_to_ee_if_verified(bytes, state.latest_client_build())?
+            {
+                state.remember_bnvr_result(rewritten.get(4).copied() == Some(b'A'));
+                tracing::info!(
+                    tag = "BNVR",
+                    len = rewritten.len(),
+                    "BN packet semantically claimed as verified EE verifier result translation"
+                );
+                return Ok(rewritten);
             }
         }
         BnTag::Bndr => {

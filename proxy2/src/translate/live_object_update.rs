@@ -39,6 +39,7 @@ mod tail_repair;
 #[cfg(test)]
 mod tests;
 mod trigger;
+pub(crate) mod visual_transform;
 mod world_status;
 mod writer;
 
@@ -59,15 +60,20 @@ const LEGACY_UPDATE_POSITION_MASK: u32 = 0x0000_0001;
 const LEGACY_UPDATE_ORIENTATION_MASK: u32 = 0x0000_0002;
 const LEGACY_UPDATE_SCALE_STATE_MASK: u32 = 0x0000_0004;
 const LEGACY_UPDATE_STATE_MASK: u32 = 0x0000_0010;
+const LEGACY_UPDATE_APPEARANCE_MASK: u32 = 0x0000_0020;
 const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
 const EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES: usize = 1;
 const EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 5;
+const EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES: usize = 6;
+const EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS: usize = 1;
+const EE_UPDATE_APPEARANCE_WORD_READ_BYTES: usize = 2;
+const EE_UPDATE_APPEARANCE_RESREF_READ_BYTES: usize = 16;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 
-const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_1000;
+const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
 const MAX_REASONABLE_LIVE_PAYLOAD_BYTES: usize = 512 * 1024;
@@ -109,6 +115,8 @@ pub struct LiveObjectUpdateClaimSummary {
     pub live_gui_read_buffer_records: u32,
     pub live_gui_item_create_records: u32,
     pub live_gui_fragment_bits: u32,
+    pub materialized_item_object_ids: Vec<u32>,
+    pub world_status_records: u32,
     pub read_buffer_only_records: u32,
     pub add_records: u32,
     pub update_records: u32,
@@ -240,13 +248,15 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
         if live_bytes.get(offset).copied() == Some(b'P')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            if let Some(verified_end) = appearance::try_get_verified_ee_creature_appearance_record_end(
-                live_bytes,
-                offset,
-                live_bytes.len(),
-                &fragment_bits,
-                bit_cursor,
-            ) {
+            if let Some(verified_end) =
+                appearance::try_get_verified_ee_creature_appearance_record_end(
+                    live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
                 record_end = verified_end;
             }
         }
@@ -258,6 +268,17 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 &fragment_bits,
                 bit_cursor,
             ) {
+                record_end = verified_end;
+            }
+        }
+        if live_bytes.get(offset).copied() == Some(b'U') {
+            if let Some(verified_end) =
+                effects::try_get_verified_ee_looping_visual_effect_update_record_end(
+                    live_bytes,
+                    offset,
+                    live_bytes.len(),
+                )
+            {
                 record_end = verified_end;
             }
         }
@@ -280,7 +301,7 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                     .get(
                         offset
                             ..record_end
-                                .min(offset.saturating_add(24))
+                                .min(offset.saturating_add(96))
                                 .min(live_bytes.len())
                     )
                     .unwrap_or(&[])
@@ -321,14 +342,17 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             summary.live_gui_fragment_bits = summary
                 .live_gui_fragment_bits
                 .saturating_add(u32::try_from(gui_claim.fragment_bits).unwrap_or(u32::MAX));
+            summary.materialized_item_object_ids.extend(
+                gui::verified_item_materialization_object_ids(live_bytes, offset, record_end),
+            );
             trace_claim_accept("live-gui", live_bytes, offset, record_end, bit_cursor);
             offset = record_end;
             continue;
         }
-        if is_verified_read_buffer_only_record(live_bytes, offset, record_end) {
-            summary.read_buffer_only_records = summary.read_buffer_only_records.saturating_add(1);
+        if world_status::is_verified_work_remaining_record(live_bytes, offset, record_end) {
+            summary.world_status_records = summary.world_status_records.saturating_add(1);
             trace_claim_accept(
-                "read-buffer-only",
+                "world-status-work-remaining",
                 live_bytes,
                 offset,
                 record_end,
@@ -461,14 +485,16 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             offset = record_end;
             continue;
         }
+        let mut creature_probe_bit_cursor = bit_cursor;
         let creature_probe = creature::advance_verified_noop_creature_update_record(
             live_bytes,
             offset,
             record_end,
             &fragment_bits,
-            &mut bit_cursor,
+            &mut creature_probe_bit_cursor,
         );
         if creature_probe {
+            bit_cursor = creature_probe_bit_cursor;
             summary.creature_update_records = summary.creature_update_records.saturating_add(1);
             push_verified_record_mention(
                 &mut summary,
@@ -665,7 +691,7 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
             offset = record_end;
             continue;
         }
-        if is_verified_read_buffer_only_record(live_bytes, offset, record_end) {
+        if world_status::is_verified_work_remaining_record(live_bytes, offset, record_end) {
             offset = record_end;
             continue;
         }
@@ -839,7 +865,9 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
                     return None;
                 }
             }
-            (b'W', marker) if marker <= 0x0F && live_bytes.get(offset + 2) == Some(&0x0E) => {}
+            (b'W', _) if world_status::is_verified_work_remaining_record(
+                live_bytes, offset, record_end,
+            ) => {}
             (b'D', object_type) => {
                 let delete_bits =
                     cursor::legacy_live_delete_fragment_bit_count(live_bytes, offset, record_end)?;
@@ -944,11 +972,20 @@ fn repair_inline_door_add_name_bit(
         if fragment_bits.len().saturating_sub(*bit_cursor + 1) < 1 {
             return None;
         }
-        if fragment_bits[*bit_cursor + 1] {
-            fragment_bits[*bit_cursor + 1] = false;
-            summary.add_records_repaired = summary.add_records_repaired.saturating_add(1);
-        }
-        *bit_cursor = bit_cursor.saturating_add(7);
+        // EE door add (`sub_140796DD0`) has a decompile-owned direct-name
+        // reader path: outer BOOL false, then `ReadCExoString(0x20)`, then the
+        // fixed post-name door tail bits.  The outer=true branch enters
+        // `ReadCExoLocStringClient` and consumes an extra inner BOOL before it
+        // can reach an inline string.  Legacy/HG captures sometimes present a
+        // direct CExoString with that legacy helper bit still present; normalize
+        // it to the exact EE direct branch instead of letting a final exact
+        // claim fail or, worse, consume one extra bit and shift the following
+        // door/placeable records.
+        fragment_bits[*bit_cursor] = false;
+        fragment_bits.remove(*bit_cursor + 1);
+        summary.add_records_repaired = summary.add_records_repaired.saturating_add(1);
+        summary.bits_removed = summary.bits_removed.saturating_add(1);
+        *bit_cursor = bit_cursor.saturating_add(6);
     } else {
         if fragment_bits.get(*bit_cursor).copied().unwrap_or(true) {
             return None;
@@ -969,18 +1006,44 @@ fn repair_inline_placeable_add_name_bit(
     let name_offset = offset + 6;
     let inline_end = locstring::inline_cexo_string_end(live_bytes, name_offset)?;
     let tail_end = inline_end.checked_add(1 + 2 + 2)?;
-    if tail_end > record_end
-        || !creature::has_ee_identity_visual_transform_map_at(live_bytes, tail_end, record_end)
-    {
+    if tail_end > record_end {
+        return None;
+    }
+    let optional_object_bytes_present =
+        if creature::has_ee_identity_visual_transform_map_at(live_bytes, tail_end, record_end) {
+            false
+        } else {
+            let optional_end = tail_end.checked_add(4)?;
+            if optional_end <= record_end
+                && creature::has_ee_identity_visual_transform_map_at(
+                    live_bytes,
+                    optional_end,
+                    record_end,
+                )
+            {
+                true
+            } else {
+                return None;
+            }
+        };
+    if fragment_bits.len().saturating_sub(*bit_cursor) < 11 {
         return None;
     }
     if inline_end > name_offset + CNW_LENGTH_BYTES
         && fragment_bits.get(*bit_cursor).copied().unwrap_or(false)
     {
-        if fragment_bits.len().saturating_sub(*bit_cursor + 1) < 1 {
-            return None;
-        }
-        if fragment_bits[*bit_cursor + 1] {
+        if optional_object_bytes_present {
+            // EE `sub_1407A7800` selects direct inline CExoString placeable
+            // names with the outer locstring BOOL set false. The optional-
+            // object branch gives this repair an exact byte-side proof:
+            // without it, preserve the older locstring-inline cursor path
+            // already covered by existing HG fixtures.
+            fragment_bits[*bit_cursor] = false;
+            fragment_bits[*bit_cursor + 2] = true;
+            fragment_bits[*bit_cursor + 10] = false;
+            summary.add_records_repaired = summary.add_records_repaired.saturating_add(1);
+            *bit_cursor = bit_cursor.saturating_add(11);
+        } else if fragment_bits[*bit_cursor + 1] {
             fragment_bits[*bit_cursor] = false;
             summary.add_records_repaired = summary.add_records_repaired.saturating_add(1);
             *bit_cursor = bit_cursor.saturating_add(11);
@@ -992,6 +1055,10 @@ fn repair_inline_placeable_add_name_bit(
             && fragment_bits.get(*bit_cursor).copied().unwrap_or(true)
         {
             return None;
+        }
+        if optional_object_bytes_present {
+            fragment_bits[*bit_cursor + 2] = true;
+            fragment_bits[*bit_cursor + 10] = false;
         }
         *bit_cursor = bit_cursor.saturating_add(11);
     }
@@ -1031,6 +1098,24 @@ pub(crate) fn advance_verified_inventory_fragment_cursor_for_ee(
     .is_some()
 }
 
+pub(crate) fn advance_verified_add_fragment_cursor_for_ee(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    add::advance_verified_add_record(live_bytes, offset, record_end, fragment_bits, bit_cursor)
+}
+
+pub(crate) fn try_get_verified_door_placeable_add_record_end_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    boundary::try_get_ee_door_placeable_add_record_end_for_transport(live_bytes, offset, scan_end)
+}
+
 pub(crate) fn legacy_inventory_fragment_bit_count_for_transport(
     live_bytes: &[u8],
     offset: usize,
@@ -1038,8 +1123,9 @@ pub(crate) fn legacy_inventory_fragment_bit_count_for_transport(
 ) -> Option<usize> {
     inventory::try_get_legacy_live_inventory_fragment_bit_count(live_bytes, offset, record_end)
         .or_else(|| {
-            let claim =
-                inventory::try_get_legacy_live_inventory_prefix_claim(live_bytes, offset, record_end)?;
+            let claim = inventory::try_get_legacy_live_inventory_prefix_claim(
+                live_bytes, offset, record_end,
+            )?;
             (claim.interleaved_fragment_tail_allowed
                 && claim.read_end > offset
                 && claim.read_end < record_end)
@@ -1134,7 +1220,11 @@ pub(crate) fn trigger_add_min_record_bytes_for_ee() -> usize {
     trigger::TRIGGER_ADD_MIN_RECORD_BYTES
 }
 
-fn live_object_record_object_id(live_bytes: &[u8], offset: usize, record_end: usize) -> Option<u32> {
+fn live_object_record_object_id(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<u32> {
     if offset + 6 > record_end || record_end > live_bytes.len() {
         return None;
     }
@@ -1212,8 +1302,7 @@ fn verified_record_name(
         PLACEABLE_OBJECT_TYPE => offset.checked_add(6)?,
         DOOR_OBJECT_TYPE => {
             let first_dword = read_u32_le(live_bytes, offset.checked_add(6)?)?;
-            let visual_offset =
-                offset.checked_add(2 + if first_dword == 0 { 12 } else { 8 })?;
+            let visual_offset = offset.checked_add(2 + if first_dword == 0 { 12 } else { 8 })?;
             if creature::has_ee_identity_visual_transform_map_at(
                 live_bytes,
                 visual_offset,
@@ -1442,8 +1531,12 @@ fn trace_claim_reject(
 ) {
     let preview_end = record_end
         .min(live_bytes.len())
-        .min(offset.saturating_add(40));
+        .min(offset.saturating_add(96));
     let preview = live_bytes.get(offset..preview_end).unwrap_or(&[]);
+    let following_end = live_bytes
+        .len()
+        .min(record_end.saturating_add(48));
+    let following = live_bytes.get(record_end..following_end).unwrap_or(&[]);
     tracing::trace!(
         reason,
         offset,
@@ -1456,10 +1549,11 @@ fn trace_claim_reject(
     );
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
-            "live-object exact claim rejected: reason={reason} offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X} preview={:02X?}",
+            "live-object exact claim rejected: reason={reason} offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X} preview={:02X?} following={:02X?}",
             live_bytes.get(offset).copied().unwrap_or_default(),
             live_bytes.get(offset + 1).copied().unwrap_or_default(),
-            preview
+            preview,
+            following
         );
     }
 }
@@ -1499,8 +1593,17 @@ pub fn rewrite_update_records_payload_if_possible(
 
     let mut live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared].to_vec();
     let mut fragment_bytes = payload[declared..].to_vec();
-    let mut fragment_bits =
-        bits::decode_msb_valid_bits(&fragment_bytes, CNW_FRAGMENT_HEADER_BITS)?;
+    if !live_bytes.is_empty()
+        && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, 0)
+    {
+        // The update-family translator owns bounded live-object records, not
+        // arbitrary resync inside a declared read window.  If the first byte is
+        // not a decompile-backed live-object submessage boundary, a transport
+        // or gameplay-stream layer must claim and split the leading bytes
+        // before semantic mutation is safe.
+        return None;
+    }
+    let mut fragment_bits = bits::decode_msb_valid_bits(&fragment_bytes, CNW_FRAGMENT_HEADER_BITS)?;
     let old_live_bytes_length = live_bytes.len();
     let old_fragment_bytes = payload.len().saturating_sub(declared);
 
@@ -1522,19 +1625,18 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut last_verified_record_end = 0usize;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
     while offset + 2 <= live_bytes.len() {
-        let proven_gui_record_end = if bit_cursor_reliable
-            && live_bytes.get(offset).copied() == Some(b'G')
-        {
-            gui::try_get_legacy_live_gui_record_end_with_fragment_proof(
-                &live_bytes,
-                offset,
-                live_bytes.len(),
-                &fragment_bits,
-                bit_cursor,
-            )
-        } else {
-            None
-        };
+        let proven_gui_record_end =
+            if bit_cursor_reliable && live_bytes.get(offset).copied() == Some(b'G') {
+                gui::try_get_legacy_live_gui_record_end_with_fragment_proof(
+                    &live_bytes,
+                    offset,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            } else {
+                None
+            };
         if proven_gui_record_end.is_none()
             && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset)
         {
@@ -1576,18 +1678,39 @@ pub fn rewrite_update_records_payload_if_possible(
         });
         let mut creature_appearance_already_ee_shaped = false;
         let mut creature_appearance_verified_ee_shaped = false;
+        let mut creature_appearance_legacy_end: Option<usize> = None;
         if opcode == b'P' && object_type == CREATURE_OBJECT_TYPE {
             if bit_cursor_reliable {
-                if let Some(verified_end) = appearance::try_get_verified_ee_creature_appearance_record_end(
-                    &live_bytes,
-                    offset,
-                    live_bytes.len(),
-                    &fragment_bits,
-                    bit_cursor,
-                ) {
+                if let Some(verified_end) =
+                    appearance::try_get_verified_ee_creature_appearance_record_end(
+                        &live_bytes,
+                        offset,
+                        live_bytes.len(),
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
                     record_end = verified_end;
                     creature_appearance_already_ee_shaped = true;
                     creature_appearance_verified_ee_shaped = true;
+                }
+            }
+            if !creature_appearance_already_ee_shaped {
+                if let Some(legacy_end) = appearance::try_get_legacy_creature_appearance_record_end(
+                    &live_bytes,
+                    offset,
+                    live_bytes.len(),
+                ) {
+                    // Full creature appearance records own a counted
+                    // visible-equipment stream. Those embedded equipment rows
+                    // can begin with live-object-looking `A`/`D` bytes, so the
+                    // semantic appearance parser must claim the decompile-owned
+                    // record end before the generic live-object boundary
+                    // scanner splits the nested item add into a false top-level
+                    // packet. The transactional appearance rewrite below still
+                    // has to prove the fragment cursor before anything is sent.
+                    record_end = legacy_end;
+                    creature_appearance_legacy_end = Some(legacy_end);
                 }
             }
             if !creature_appearance_already_ee_shaped {
@@ -1598,8 +1721,13 @@ pub fn rewrite_update_records_payload_if_possible(
                         live_bytes.len(),
                     )
                 {
-                    record_end = byte_shape_end;
-                    creature_appearance_already_ee_shaped = true;
+                    if creature_appearance_legacy_end
+                        .map(|legacy_end| byte_shape_end >= legacy_end)
+                        .unwrap_or(true)
+                    {
+                        record_end = byte_shape_end;
+                        creature_appearance_already_ee_shaped = true;
+                    }
                 }
             }
         }
@@ -1633,20 +1761,23 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         if opcode == b'A' {
-            if bit_cursor_reliable {
-                if let Some(add_rewrite) =
-                    creature_add::insert_ee_visual_transform_for_legacy_creature_add(
-                        &mut live_bytes,
-                        offset,
-                        &mut record_end,
-                    )
-                {
-                    changed = true;
-                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
-                        u32::try_from(add_rewrite.bytes_inserted).unwrap_or(u32::MAX),
-                    );
-                }
+            if let Some(add_rewrite) =
+                creature_add::insert_ee_visual_transform_for_legacy_creature_add(
+                    &mut live_bytes,
+                    offset,
+                    &mut record_end,
+                )
+            {
+                changed = true;
+                summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                    u32::try_from(add_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                );
+                summary.bytes_removed = summary.bytes_removed.saturating_add(
+                    u32::try_from(add_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                );
+            }
 
+            if bit_cursor_reliable {
                 if let Some(item_rewrite) = appearance::insert_ee_item_add_extras_for_ee(
                     &mut live_bytes,
                     offset,
@@ -1657,6 +1788,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     if item_rewrite.bits_inserted != 0
                         || item_rewrite.bits_removed != 0
                         || item_rewrite.bytes_inserted != 0
+                        || item_rewrite.bytes_removed != 0
                     {
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
@@ -1667,6 +1799,9 @@ pub fn rewrite_update_records_payload_if_possible(
                         );
                         summary.bytes_inserted = summary.bytes_inserted.saturating_add(
                             u32::try_from(item_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                        );
+                        summary.bytes_removed = summary.bytes_removed.saturating_add(
+                            u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
                         );
                     }
                 }
@@ -1687,6 +1822,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     continue;
                 }
 
+                let add_record_start_bit_cursor = bit_cursor;
                 if !appearance::advance_verified_ee_item_add_record(
                     &live_bytes,
                     offset,
@@ -1706,6 +1842,38 @@ pub fn rewrite_update_records_payload_if_possible(
                     record_end,
                     &mut bit_cursor,
                 ) {
+                    bit_cursor = add_record_start_bit_cursor;
+                    if last_verified_record_allows_trailing_fragment_promotion
+                        && offset == last_verified_record_end
+                        && record_end == live_bytes.len()
+                    {
+                        if let Some(promotion) = fragment_spans::
+                            promote_boundary_collision_trailing_fragment_prefix_after_verified_record_for_ee(
+                                &mut live_bytes,
+                                &mut fragment_bits,
+                                offset,
+                                bit_cursor,
+                            )
+                        {
+                            changed = true;
+                            summary.interleaved_fragment_spans_promoted = summary
+                                .interleaved_fragment_spans_promoted
+                                .saturating_add(1);
+                            summary.interleaved_fragment_bytes_promoted =
+                                summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                    u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                                );
+                            summary.interleaved_fragment_bits_promoted =
+                                summary.interleaved_fragment_bits_promoted.saturating_add(
+                                    u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                                );
+                            summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                            );
+                            last_verified_record_allows_trailing_fragment_promotion = false;
+                            continue;
+                        }
+                    }
                     trace_update_rewrite_cursor_unreliable(
                         "add-record-cursor-advance-failed",
                         &live_bytes,
@@ -1730,8 +1898,9 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
-                    summary.interleaved_fragment_spans_promoted =
-                        summary.interleaved_fragment_spans_promoted.saturating_add(1);
+                    summary.interleaved_fragment_spans_promoted = summary
+                        .interleaved_fragment_spans_promoted
+                        .saturating_add(1);
                     summary.interleaved_fragment_bytes_promoted =
                         summary.interleaved_fragment_bytes_promoted.saturating_add(
                             u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
@@ -1786,7 +1955,7 @@ pub fn rewrite_update_records_payload_if_possible(
             let mut appearance_bits_inserted_for_tail_repair = 0usize;
             let mut appearance_tail_fragment_bits_adjusted = false;
             let may_attempt_appearance_rewrite = (bit_cursor_reliable
-                && !creature_appearance_verified_ee_shaped)
+                && !creature_appearance_already_ee_shaped)
                 || (!bit_cursor_reliable && creature_appearance_already_ee_shaped);
             if may_attempt_appearance_rewrite {
                 if let Some(appearance_rewrite) =
@@ -1802,6 +1971,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     if appearance_rewrite.bits_inserted != 0
                         || appearance_rewrite.bits_removed != 0
                         || appearance_rewrite.bytes_inserted != 0
+                        || appearance_rewrite.bytes_removed != 0
                     {
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
@@ -1812,6 +1982,33 @@ pub fn rewrite_update_records_payload_if_possible(
                         );
                         summary.bytes_inserted = summary.bytes_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                        );
+                        summary.bytes_removed = summary.bytes_removed.saturating_add(
+                            u32::try_from(appearance_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                        );
+                    }
+                }
+            }
+            if bit_cursor_reliable
+                && creature_appearance_already_ee_shaped
+                && !creature_appearance_verified_ee_shaped
+            {
+                if let Some(appearance_rewrite) =
+                    appearance::remove_ee_creature_appearance_zero_fragment_padding_if_possible(
+                        &live_bytes,
+                        offset,
+                        &mut record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    if appearance_rewrite.bits_inserted != 0 || appearance_rewrite.bits_removed != 0 {
+                        changed = true;
+                        summary.bits_inserted = summary.bits_inserted.saturating_add(
+                            u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
+                        );
+                        summary.bits_removed = summary.bits_removed.saturating_add(
+                            u32::try_from(appearance_rewrite.bits_removed).unwrap_or(u32::MAX),
                         );
                     }
                 }
@@ -1826,15 +2023,69 @@ pub fn rewrite_update_records_payload_if_possible(
             ) {
                 bit_cursor = advanced_appearance_cursor;
                 bit_cursor_reliable = true;
+                if let Some(removal) = appearance::
+                    remove_ee_appearance_trailing_legacy_tail_before_verified_creature_update_for_ee(
+                        &mut live_bytes,
+                        record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.bytes_removed = summary.bytes_removed.saturating_add(
+                        u32::try_from(removal.bytes_removed).unwrap_or(u32::MAX),
+                    );
+                    appearance_tail_fragment_bits_adjusted = true;
+                }
             } else if bit_cursor_reliable {
-                trace_update_rewrite_cursor_unreliable(
-                    "creature-appearance-cursor-advance-failed",
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    bit_cursor,
-                );
-                bit_cursor_reliable = false;
+                let mut repaired_tail = false;
+                if let Some(ee_shape_end) =
+                    appearance::try_get_ee_creature_appearance_record_end_before_verified_creature_update_tail_for_ee(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    let mut ee_shape_cursor = bit_cursor;
+                    if appearance::advance_verified_ee_creature_appearance_record(
+                        &live_bytes,
+                        offset,
+                        ee_shape_end,
+                        &fragment_bits,
+                        &mut ee_shape_cursor,
+                    ) {
+                        if let Some(removal) = appearance::
+                            remove_ee_appearance_trailing_legacy_tail_before_verified_creature_update_for_ee(
+                                &mut live_bytes,
+                                ee_shape_end,
+                                &fragment_bits,
+                                ee_shape_cursor,
+                            )
+                        {
+                            changed = true;
+                            summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                u32::try_from(removal.bytes_removed).unwrap_or(u32::MAX),
+                            );
+                            record_end = ee_shape_end;
+                            bit_cursor = ee_shape_cursor;
+                            bit_cursor_reliable = true;
+                            appearance_tail_fragment_bits_adjusted = true;
+                            repaired_tail = true;
+                        }
+                    }
+                }
+                if !repaired_tail {
+                    trace_update_rewrite_cursor_unreliable(
+                        "creature-appearance-cursor-advance-failed",
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        bit_cursor,
+                    );
+                    bit_cursor_reliable = false;
+                }
             }
             if bit_cursor_reliable {
                 if let Some(promotion) =
@@ -1863,6 +2114,36 @@ pub fn rewrite_update_records_payload_if_possible(
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     appearance_tail_fragment_bits_adjusted = true;
+                }
+                if !appearance_tail_fragment_bits_adjusted {
+                    if let Some(promotion) =
+                        fragment_spans::promote_appearance_following_item_add_span_for_ee(
+                            &mut live_bytes,
+                            &mut fragment_bits,
+                            record_end,
+                            bit_cursor,
+                        )
+                    {
+                        changed = true;
+                        summary.interleaved_fragment_spans_promoted = summary
+                            .interleaved_fragment_spans_promoted
+                            .saturating_add(1);
+                        summary.interleaved_fragment_bytes_promoted =
+                            summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.interleaved_fragment_bits_promoted =
+                            summary.interleaved_fragment_bits_promoted.saturating_add(
+                                u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.bytes_removed = summary.bytes_removed.saturating_add(
+                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                        );
+                        summary.bits_inserted = summary
+                            .bits_inserted
+                            .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                        appearance_tail_fragment_bits_adjusted = true;
+                    }
                 }
                 if let Some(removal) =
                     fragment_spans::remove_trailing_zero_fragment_storage_after_verified_record_for_ee(
@@ -1945,6 +2226,35 @@ pub fn rewrite_update_records_payload_if_possible(
 
         if opcode == b'U' && object_type == CREATURE_OBJECT_TYPE {
             if bit_cursor_reliable {
+                if let Some(effect_rewrite) =
+                    effects::rewrite_legacy_looping_visual_effect_update_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                    )
+                {
+                    if effect_rewrite.bytes_inserted != 0 {
+                        changed = true;
+                        summary.update_records_rewritten =
+                            summary.update_records_rewritten.saturating_add(1);
+                        summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                            u32::try_from(effect_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                        );
+                    }
+                    let mut advanced_effect_cursor = bit_cursor;
+                    if record::advance_verified_update_record_for_ee(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        &mut advanced_effect_cursor,
+                    ) {
+                        bit_cursor = advanced_effect_cursor;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                }
+
                 if let Some(visual_rewrite) =
                     appearance::rewrite_creature_visual_transform_update_for_ee(
                         &mut live_bytes,
@@ -1987,6 +2297,45 @@ pub fn rewrite_update_records_payload_if_possible(
                     offset = record_end.max(offset + 1);
                     continue;
                 }
+                if let Some(omitted_action_code_rewrite) =
+                    creature::insert_3967_hg_action_ffff_omitted_code_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(omitted_action_code_rewrite.bytes_inserted)
+                            .unwrap_or(u32::MAX),
+                    );
+                }
+                if let Some(action0_rewrite) =
+                    creature::remove_3967_action0_legacy_bridge_followup_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(action0_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                    );
+                    summary.bytes_removed = summary.bytes_removed.saturating_add(
+                        u32::try_from(action0_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                    );
+                    summary.bits_inserted = summary.bits_inserted.saturating_add(
+                        u32::try_from(action0_rewrite.bits_inserted).unwrap_or(u32::MAX),
+                    );
+                }
                 if creature::repair_3967_action2_optional_float_bool_for_ee(
                     &live_bytes,
                     offset,
@@ -2008,6 +2357,54 @@ pub fn rewrite_update_records_payload_if_possible(
                     changed = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
+                }
+                if let Some(status_effect_rewrite) =
+                    creature::insert_creature_update_status_effect_identity_maps_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(status_effect_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                    );
+                }
+                if let Some(promotion) =
+                    fragment_spans::promote_legacy_creature_update_3967_large_interleaved_fragment_span_for_ee(
+                        &mut live_bytes,
+                        &mut fragment_bits,
+                        offset,
+                        &mut record_end,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.interleaved_fragment_spans_promoted = summary
+                        .interleaved_fragment_spans_promoted
+                        .saturating_add(1);
+                    summary.interleaved_fragment_bytes_promoted =
+                        summary.interleaved_fragment_bytes_promoted.saturating_add(
+                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                        );
+                    summary.interleaved_fragment_bits_promoted = summary
+                        .interleaved_fragment_bits_promoted
+                        .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    summary.bytes_removed = summary.bytes_removed.saturating_add(
+                        u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                    );
+                    summary.bits_inserted = summary
+                        .bits_inserted
+                        .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    bit_cursor = promotion.end_bit_cursor;
+                    last_verified_record_end = record_end;
+                    last_verified_record_allows_trailing_fragment_promotion = true;
+                    offset = record_end.max(offset + 1);
+                    continue;
                 }
                 if let Some(promotion) =
                     fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
@@ -2036,6 +2433,8 @@ pub fn rewrite_update_records_payload_if_possible(
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     bit_cursor = promotion.end_bit_cursor;
+                    last_verified_record_end = record_end;
+                    last_verified_record_allows_trailing_fragment_promotion = true;
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -2049,6 +2448,8 @@ pub fn rewrite_update_records_payload_if_possible(
                 ) {
                     bit_cursor = advanced_cursor;
                     pending_creature_p_tail_repair = None;
+                    last_verified_record_end = record_end;
+                    last_verified_record_allows_trailing_fragment_promotion = true;
                 } else if let Some(pending) = pending_creature_p_tail_repair.as_ref() {
                     if let Some(repair) = tail_repair::try_repair_for_creature_update(
                         pending,
@@ -2059,8 +2460,9 @@ pub fn rewrite_update_records_payload_if_possible(
                         bit_cursor,
                     ) {
                         changed = true;
-                        summary.interleaved_fragment_spans_promoted =
-                            summary.interleaved_fragment_spans_promoted.saturating_add(1);
+                        summary.interleaved_fragment_spans_promoted = summary
+                            .interleaved_fragment_spans_promoted
+                            .saturating_add(1);
                         if repair.new_bits_len >= repair.old_bits_len {
                             summary.bits_inserted = summary.bits_inserted.saturating_add(
                                 u32::try_from(repair.new_bits_len - repair.old_bits_len)
@@ -2145,13 +2547,11 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         if inventory::owns_fragment_tail(opcode) {
-            if let Some(inventory_rewrite) =
-                inventory::rewrite_legacy_inventory_record_for_ee(
-                    &mut live_bytes,
-                    offset,
-                    &mut record_end,
-                )
-            {
+            if let Some(inventory_rewrite) = inventory::rewrite_legacy_inventory_record_for_ee(
+                &mut live_bytes,
+                offset,
+                &mut record_end,
+            ) {
                 changed = true;
                 summary.bytes_inserted = summary.bytes_inserted.saturating_add(
                     u32::try_from(inventory_rewrite.bytes_inserted).unwrap_or(u32::MAX),
@@ -2234,11 +2634,24 @@ pub fn rewrite_update_records_payload_if_possible(
             &mut bit_cursor_reliable,
             offset,
         ) else {
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                eprintln!(
+                    "live-object update rewrite skipped: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} opcode=0x{:02X} marker=0x{:02X} mask={:?}",
+                    live_bytes.get(offset).copied().unwrap_or_default(),
+                    live_bytes.get(offset + 1).copied().unwrap_or_default(),
+                    read_u32_le(&live_bytes, offset + 6).map(|mask| format!("0x{mask:08X}"))
+                );
+            }
             offset = record_end.max(offset + 1);
             continue;
         };
 
         if record_rewrite.rewritten {
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                eprintln!(
+                    "live-object update record rewrite applied: offset={offset} record_end={record_end} bit_cursor={bit_cursor} rewrite={record_rewrite:?}"
+                );
+            }
             changed = true;
             summary.update_records_rewritten = summary.update_records_rewritten.saturating_add(1);
             if record_rewrite.mask_changed {
@@ -2275,8 +2688,9 @@ pub fn rewrite_update_records_payload_if_possible(
             )
         {
             changed = true;
-            summary.interleaved_fragment_spans_promoted =
-                summary.interleaved_fragment_spans_promoted.saturating_add(1);
+            summary.interleaved_fragment_spans_promoted = summary
+                .interleaved_fragment_spans_promoted
+                .saturating_add(1);
             summary.interleaved_fragment_bytes_promoted = summary
                 .interleaved_fragment_bytes_promoted
                 .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
@@ -2291,6 +2705,14 @@ pub fn rewrite_update_records_payload_if_possible(
 
     if !changed {
         return None;
+    }
+
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object update rewrite summary before emit: bit_cursor_reliable={bit_cursor_reliable} bit_cursor={bit_cursor} fragment_bits={} live_bytes={} summary={summary:?}",
+            fragment_bits.len(),
+            live_bytes.len(),
+        );
     }
 
     if bit_cursor_reliable
@@ -2321,34 +2743,6 @@ pub fn rewrite_update_records_payload_if_possible(
     summary.new_fragment_bytes = fragment_bytes.len();
     *payload = rewritten;
     Some(summary)
-}
-
-fn is_verified_read_buffer_only_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
-    if offset >= record_end || record_end > bytes.len() {
-        return false;
-    }
-
-    if gui::is_verified_live_gui_read_buffer_record(bytes, offset, record_end) {
-        return true;
-    }
-
-    // `W` world-status records are three read-buffer bytes and fragment
-    // neutral. `world_status::normalize_record_for_ee` strips legacy tails; if
-    // the record is already exactly the legal length, this claim is a verified
-    // no-op.
-    if bytes[offset] == b'W'
-        && record_end == offset + 3
-        && bytes.get(offset + 1).copied().unwrap_or(0xFF) <= 0x0F
-        && bytes.get(offset + 2).copied() == Some(0x0E)
-    {
-        return true;
-    }
-
-    if bytes[offset] == b'D' {
-        return cursor::legacy_live_delete_fragment_bit_count(bytes, offset, record_end) == Some(0);
-    }
-
-    false
 }
 
 fn trace_claim_accept(

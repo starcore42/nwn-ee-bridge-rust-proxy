@@ -118,7 +118,9 @@ fn claim_or_rewrite_status_payload_if_verified(
     })
 }
 
-fn claim_select_panel_payload_if_verified(payload: &[u8]) -> Option<ClientGuiInventoryClaimSummary> {
+fn claim_select_panel_payload_if_verified(
+    payload: &[u8],
+) -> Option<ClientGuiInventoryClaimSummary> {
     if !select_panel_payload_shape_valid(payload) {
         return None;
     }

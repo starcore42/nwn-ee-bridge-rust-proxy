@@ -13,7 +13,7 @@
 //! the central M-frame layer still only routes transport events.
 
 use crate::{
-    packet::m::{HighLevel, MFrameView, LEGACY_GAMEPLAY_PAYLOAD_OFFSET},
+    packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
     translate::client_login,
 };
 
@@ -44,13 +44,26 @@ pub(super) fn maybe_queue_empty_waypoint_response(
         return Ok(());
     }
 
+    maybe_queue_empty_waypoint_response_payload(state, payload, view.sequence, view.ack_sequence)
+}
+
+pub(super) fn maybe_queue_empty_waypoint_response_payload(
+    state: &mut SessionState,
+    payload: &[u8],
+    server_sequence: u16,
+    server_ack_sequence: u16,
+) -> anyhow::Result<()> {
+    if !is_login_get_waypoint_payload(payload) {
+        return Ok(());
+    }
+
     if state
         .login_waypoint
         .last_server_get_waypoint_sequence
-        .is_some_and(|sequence| sequence == view.sequence)
+        .is_some_and(|sequence| sequence == server_sequence)
     {
         tracing::debug!(
-            sequence = view.sequence,
+            sequence = server_sequence,
             "duplicate Login_GetWaypoint server sequence already has a queued synthetic response"
         );
         return Ok(());
@@ -58,8 +71,8 @@ pub(super) fn maybe_queue_empty_waypoint_response(
 
     let Some(latest_client_sequence) = state.sequence.latest_client_sequence_from_client else {
         tracing::warn!(
-            server_sequence = view.sequence,
-            server_ack_sequence = view.ack_sequence,
+            server_sequence,
+            server_ack_sequence,
             "cannot queue Login_WaypointResponse because no client sequence has been observed"
         );
         return Ok(());
@@ -69,22 +82,20 @@ pub(super) fn maybe_queue_empty_waypoint_response(
     let shifted_sequence =
         shift_sequence_for_peer(&state.sequence.client_sequence_shifts, original_sequence);
     let payload = build_empty_waypoint_response_payload();
-    debug_assert!(client_login::waypoint_response_payload_shape_valid(&payload));
+    debug_assert!(client_login::waypoint_response_payload_shape_valid(
+        &payload
+    ));
 
     let packet =
-        synthetic_area::build_synthetic_gameplay_frame(shifted_sequence, view.sequence, &payload)?;
+        synthetic_area::build_synthetic_gameplay_frame(shifted_sequence, server_sequence, &payload)?;
 
-    state
-        .sequence
-        .pending_client_to_server_packets
-        .push(packet);
+    state.sequence.pending_client_to_server_packets.push(packet);
     state.sequence.client_sequence_shifts.push(SequenceShift {
         base: original_sequence,
         delta: 1,
     });
     trim_sequence_shifts(&mut state.sequence.client_sequence_shifts);
-    state.sequence.latest_client_sequence_from_client = Some(original_sequence);
-    state.login_waypoint.last_server_get_waypoint_sequence = Some(view.sequence);
+    state.login_waypoint.last_server_get_waypoint_sequence = Some(server_sequence);
     state.login_waypoint.synthetic_empty_response_count = state
         .login_waypoint
         .synthetic_empty_response_count
@@ -93,8 +104,8 @@ pub(super) fn maybe_queue_empty_waypoint_response(
     tracing::info!(
         original_sequence,
         shifted_sequence,
-        ack_sequence = view.sequence,
-        server_ack_sequence = view.ack_sequence,
+        ack_sequence = server_sequence,
+        server_ack_sequence,
         count = state.login_waypoint.synthetic_empty_response_count,
         "queued synthetic empty Login_WaypointResponse for legacy Login_GetWaypoint"
     );
@@ -128,7 +139,9 @@ mod tests {
     fn empty_waypoint_response_payload_matches_client_login_validator() {
         let payload = build_empty_waypoint_response_payload();
 
-        assert!(client_login::waypoint_response_payload_shape_valid(&payload));
+        assert!(client_login::waypoint_response_payload_shape_valid(
+            &payload
+        ));
         assert_eq!(
             payload,
             [0x70, 0x02, 0x0D, 0x0B, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x60]
@@ -154,9 +167,12 @@ mod tests {
             &pending[LEGACY_GAMEPLAY_PAYLOAD_OFFSET
                 ..LEGACY_GAMEPLAY_PAYLOAD_OFFSET + pending_view.payload_length]
         ));
-        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(75));
+        assert_eq!(state.sequence.latest_client_sequence_from_client, Some(74));
         assert_eq!(state.sequence.client_sequence_shifts.len(), 1);
-        assert_eq!(state.login_waypoint.last_server_get_waypoint_sequence, Some(21));
+        assert_eq!(
+            state.login_waypoint.last_server_get_waypoint_sequence,
+            Some(21)
+        );
     }
 
     #[test]

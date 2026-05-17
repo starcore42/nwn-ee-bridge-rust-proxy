@@ -100,6 +100,13 @@ impl EeCrypto {
 
     pub fn preprocess_client_packet(&mut self, bytes: &[u8]) -> Result<ClientPacket> {
         if bytes.starts_with(b"BNK") {
+            tracing::info!(
+                tag = %bnk_tag(bytes),
+                len = bytes.len(),
+                stage = self.stage,
+                have_session_keys = self.have_session_keys,
+                "EE crypto BNK control claimed by crypto layer"
+            );
             return self.handle_bnk(bytes).map(ClientPacket::ServerResponse);
         }
         if self.is_identity_encrypted(bytes) {
@@ -156,6 +163,10 @@ impl EeCrypto {
     }
 
     fn handle_bnk1(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        // EE 8193.37 `StartConnectToSession` emits `BNK1` as the four-byte tag
+        // plus `hydro_kx_XX_PACKET1BYTES` (32) from `hydro_kx_xx_1`. The proxy
+        // terminates this EE-only crypto handshake locally and translates only
+        // the decrypted BN control/gameplay packets toward Diamond.
         if bytes.len() != 4 + KX_PACKET1_BYTES {
             bail!("BNK1 length mismatch: got {}", bytes.len());
         }
@@ -177,10 +188,20 @@ impl EeCrypto {
         self.stage = 2;
         let mut out = b"BNK2".to_vec();
         out.extend_from_slice(&packet2);
+        tracing::info!(
+            request_len = bytes.len(),
+            response_len = out.len(),
+            stage = self.stage,
+            "EE crypto BNK1 accepted; emitting BNK2"
+        );
         Ok(out)
     }
 
     fn handle_bnk3(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        // EE `HandleBNK2Message` answers a valid `BNK2` with `BNK3` whose
+        // payload is `hydro_kx_XX_PACKET3BYTES` (48). After `hydro_kx_xx_4`,
+        // EE `HandleBNK4Message` stores the non-zero identity and immediately
+        // sends the encrypted `BNCS` connect-start packet.
         if bytes.len() != 4 + KX_PACKET3_BYTES {
             bail!("BNK3 length mismatch: got {}", bytes.len());
         }
@@ -205,6 +226,14 @@ impl EeCrypto {
         self.identity = generate_identity();
         let mut out = b"BNK4".to_vec();
         out.extend_from_slice(&self.identity.to_le_bytes());
+        tracing::info!(
+            request_len = bytes.len(),
+            response_len = out.len(),
+            identity = format_args!("0x{:08X}", self.identity),
+            stage = self.stage,
+            have_session_keys = self.have_session_keys,
+            "EE crypto BNK3 accepted; emitting BNK4"
+        );
         Ok(out)
     }
 
@@ -269,4 +298,92 @@ fn packet_requires_ee_encryption(bytes: &[u8]) -> bool {
         return false;
     }
     bytes.starts_with(b"BN") || bytes.first() == Some(&b'M')
+}
+
+fn bnk_tag(bytes: &[u8]) -> String {
+    match bytes.get(..4) {
+        Some(tag) => String::from_utf8_lossy(tag).into_owned(),
+        None => format!("short:{}", bytes.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" {
+        fn hydro_kx_xx_1(state: *mut u8, packet1: *mut u8, psk: *const u8) -> c_int;
+        fn hydro_kx_xx_3(
+            state: *mut u8,
+            kp: *mut u8,
+            packet3: *mut u8,
+            peer_static_pk: *mut u8,
+            packet2: *const u8,
+            psk: *const u8,
+            static_kp: *const u8,
+        ) -> c_int;
+    }
+
+    #[test]
+    fn proxy_bnk_flow_round_trips_with_ee_shapes() {
+        let mut proxy = EeCrypto::new().expect("proxy crypto initializes");
+
+        let mut client_state = [0_u8; KX_STATE_BYTES];
+        let mut client_keypair = [0_u8; KX_KEYPAIR_BYTES];
+        let mut client_session = [0_u8; KX_SESSION_KEYPAIR_BYTES];
+        let mut server_static_pk = [0_u8; KX_PUBLIC_KEY_BYTES];
+        let mut packet1 = [0_u8; KX_PACKET1_BYTES];
+        unsafe {
+            hydro_kx_keygen(client_keypair.as_mut_ptr());
+            assert_eq!(
+                hydro_kx_xx_1(
+                    client_state.as_mut_ptr(),
+                    packet1.as_mut_ptr(),
+                    std::ptr::null(),
+                ),
+                0
+            );
+        }
+
+        let mut bnk1 = b"BNK1".to_vec();
+        bnk1.extend_from_slice(&packet1);
+        let bnk2 = match proxy
+            .preprocess_client_packet(&bnk1)
+            .expect("proxy accepts BNK1")
+        {
+            ClientPacket::ServerResponse(packet) => packet,
+            other => panic!("expected BNK2 response, got {other:?}"),
+        };
+        assert_eq!(bnk2.len(), 4 + KX_PACKET2_BYTES);
+        assert_eq!(&bnk2[..4], b"BNK2");
+
+        let mut packet3 = [0_u8; KX_PACKET3_BYTES];
+        unsafe {
+            assert_eq!(
+                hydro_kx_xx_3(
+                    client_state.as_mut_ptr(),
+                    client_session.as_mut_ptr(),
+                    packet3.as_mut_ptr(),
+                    server_static_pk.as_mut_ptr(),
+                    bnk2[4..].as_ptr(),
+                    std::ptr::null(),
+                    client_keypair.as_ptr(),
+                ),
+                0
+            );
+        }
+
+        let mut bnk3 = b"BNK3".to_vec();
+        bnk3.extend_from_slice(&packet3);
+        let bnk4 = match proxy
+            .preprocess_client_packet(&bnk3)
+            .expect("proxy accepts BNK3")
+        {
+            ClientPacket::ServerResponse(packet) => packet,
+            other => panic!("expected BNK4 response, got {other:?}"),
+        };
+        assert_eq!(bnk4.len(), 8);
+        assert_eq!(&bnk4[..4], b"BNK4");
+        assert_ne!(u32::from_le_bytes(bnk4[4..8].try_into().unwrap()), 0);
+    }
 }

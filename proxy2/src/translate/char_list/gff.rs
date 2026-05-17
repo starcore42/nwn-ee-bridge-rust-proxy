@@ -1102,6 +1102,9 @@ mod tests {
             .expect("field-index tail truncation must rewrite the BIC");
         assert_eq!(read_u32(&canonical, 64).unwrap(), 2);
         assert_eq!(read_u32(&canonical, 44).unwrap(), 8);
-        assert_eq!(rewritten_layout_size(read_gff_layout(&canonical).unwrap().0).unwrap(), 132);
+        assert_eq!(
+            rewritten_layout_size(read_gff_layout(&canonical).unwrap().0).unwrap(),
+            132
+        );
     }
 }

@@ -80,7 +80,7 @@ pub struct Config {
     #[arg(long, default_value = "0.0.0.0:5121")]
     pub listen: SocketAddr,
 
-    #[arg(long, value_parser = parse_server, default_value = "213")]
+    #[arg(long, value_parser = parse_server, default_value = "111")]
     pub server: SocketAddr,
 
     #[arg(long)]
@@ -146,16 +146,43 @@ pub struct Config {
     /// Explicit local bind address for the built-in NWSync HTTP server.
     #[arg(long)]
     pub nwsync_http_bind: Option<SocketAddr>,
+
+    /// Diagnostic/compatibility switch: synthesize proxy-owned LoadBar
+    /// Start/End frames after an audited `Area_ClientArea` rewrite.
+    ///
+    /// This is intentionally opt-in. EE/Diamond decompiles show LoadBar as a
+    /// server stall-event UI family (`0x2C`) with exact Start/Update/End
+    /// readers, not as authoritative area/object stream state. Driver-only HG
+    /// captures on 2026-05-13 showed the EE client disconnecting immediately
+    /// after dispatching a proxy-owned synthetic `LoadBar_Start` during
+    /// `Area_ClientArea` load. The gateway therefore defaults to preserving the
+    /// area ACK gate and delayed `Area_AreaLoaded` fallback without injecting
+    /// LoadBar unless a specific test asks for it.
+    #[arg(long)]
+    pub synthetic_area_loadbar: bool,
+
+    /// Legacy diagnostic isolation switch retained for old harness scripts.
+    ///
+    /// If both flags are supplied, this disabling flag wins.
+    #[arg(long)]
+    pub no_synthetic_area_loadbar: bool,
 }
 
 impl Config {
     pub fn session_timeout(&self) -> Duration {
         Duration::from_millis(self.session_timeout_ms)
     }
+
+    pub fn synthetic_area_loadbar_enabled(&self) -> bool {
+        self.synthetic_area_loadbar && !self.no_synthetic_area_loadbar
+    }
 }
 
 fn parse_server(value: &str) -> anyhow::Result<SocketAddr> {
     match value {
+        "111" => "158.69.144.21:5121"
+            .parse()
+            .context("parsing HG server 111 address"),
         "213" => "158.69.144.21:5133"
             .parse()
             .context("parsing HG server 213 address"),

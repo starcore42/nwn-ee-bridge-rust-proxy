@@ -48,14 +48,19 @@ pub(crate) enum AreaEvent {
         observed: ObservedHighLevel,
         area_object_id: Option<u32>,
     },
-    AreaLoaded { observed: ObservedHighLevel },
-    LoadBar { observed: ObservedHighLevel },
+    AreaLoaded {
+        observed: ObservedHighLevel,
+    },
+    LoadBar {
+        observed: ObservedHighLevel,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiveObjectEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) mentions: Vec<LiveObjectMention>,
+    pub(crate) materialized_item_object_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

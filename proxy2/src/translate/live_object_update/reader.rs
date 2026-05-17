@@ -5,10 +5,12 @@
 //! structs, then the writer/validator decides what to emit or claim.
 
 use super::{
-    DOOR_OBJECT_TYPE, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
-    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
-    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
+    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+    EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
+    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, MAX_LIVE_OBJECT_NAME_BYTES,
     PLACEABLE_OBJECT_TYPE, read_f32_le, read_u16_le, read_u32_le,
@@ -89,6 +91,8 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
     bytes: &[u8],
     offset: usize,
     record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
 ) -> Option<LegacyInlineNamedDoorPlaceableUpdateRecord> {
     if offset + LEGACY_UPDATE_HEADER_BYTES > record_end || record_end > bytes.len() {
         return None;
@@ -102,48 +106,175 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
     }
 
     let mask = read_u32_le(bytes, offset + 6)?;
-    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
+    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    if (mask & LEGACY_UPDATE_NAME_MASK) == 0 {
+        return None;
+    }
+    let shared_generic_mask = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK
         | LEGACY_UPDATE_NAME_MASK;
-    if (mask & LEGACY_UPDATE_NAME_MASK) == 0 || (mask & !allowed_mask) != 0 {
-        return None;
-    }
-
-    // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` writes the
-    // generic door/placeable fields in decompile order:
-    //
-    // 1. position (`0x1`) as the shared packed XYZ field,
-    // 2. orientation (`0x2`) as the scalar branch BOOL plus `WriteFLOAT(10,12)`,
-    // 3. scale/state (`0x4`) as FLOAT scale plus WORD generic state,
-    // 4. state (`0x10`) in fragment BOOLs only,
-    // 5. legacy name (`0x80000`) as a fragment presence BOOL plus a CExoString
-    //    or locstring payload.
-    //
-    // EE's generic update reader consumes the same first three read-buffer
-    // fields but does not have the final bit-13 name branch. This parser proves
-    // the legacy inline-name byte span so the translator can drop exactly that
-    // Diamond-only branch instead of scanning around it.
-    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
-    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
-    }
-    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
-    }
-    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-        let scale = read_f32_le(bytes, read_cursor)?;
-        if !is_plausible_legacy_object_scale(scale) {
+    if (mask & !shared_generic_mask) != 0 {
+        // High sparse legacy masks often use the older Diamond tail shape that
+        // stores facing/scale/state at the post-position cursor. Defer to that
+        // focused converter only when its bounded reader proves a plausible
+        // tail9 record. Local Diamond captures can also carry sparse all-bits
+        // masks with a compact padded inline-name payload instead; rejecting
+        // those solely because the mask is sparse would quarantine a valid
+        // decompile-owned read shape.
+        let legacy_tail_offset = offset
+            .checked_add(LEGACY_UPDATE_HEADER_BYTES)?
+            .checked_add(if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+                LEGACY_UPDATE_POSITION_READ_BYTES
+            } else {
+                0
+            })?;
+        let raw_has_legacy_generic_tail =
+            (mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
+        if legacy_tail_offset <= record_end
+            && record_end - legacy_tail_offset >= 9
+            && read_legacy_named_update_tail9(bytes, legacy_tail_offset, false).is_some()
+            && (raw_has_legacy_generic_tail
+                || legacy_named_update_tail_following_payload_ready(
+                    bytes,
+                    legacy_tail_offset,
+                    record_end,
+                ))
+        {
             return None;
         }
-        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
     }
-    if read_cursor > record_end {
-        return None;
+    let byte_proven_inline_name_cursor =
+        legacy_inline_name_cursor_from_record_end(bytes, offset, record_end, mask);
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let mut compact_legacy_bits = 1usize; // Diamond-only legacy name branch.
+        if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+            compact_legacy_bits =
+                compact_legacy_bits.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+        }
+        if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+            compact_legacy_bits =
+                compact_legacy_bits.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
+        }
+        if let Some(read_without_name_end) = byte_proven_inline_name_cursor {
+            if fragment_bits.len().saturating_sub(bit_cursor) == compact_legacy_bits {
+                if debug_live_claim {
+                    eprintln!(
+                        "legacy inline door/placeable compact scalar name accepted offset={offset} record_end={record_end} read_without_name_end={read_without_name_end} bit_cursor={bit_cursor} mask=0x{mask:08X}"
+                    );
+                }
+                return Some(LegacyInlineNamedDoorPlaceableUpdateRecord {
+                    read_without_name_end,
+                    name_end: record_end,
+                });
+            }
+        }
     }
 
-    let name_end = inline_cexo_string_end(bytes, read_cursor)?;
+    // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` and EE
+    // `sub_14079C050` consume the shared generic door/placeable fields in
+    // decompile order:
+    //
+    // 1. position (`0x1`) as the shared packed XYZ field,
+    // 2. orientation (`0x2`) as BOOL scalar/vector branch plus the selected
+    //    scalar or three-component vector payload,
+    // 3. appearance/resref (`0x20`) as WORD plus optional CResRef,
+    // 4. scale/state (`0x4`) as FLOAT scale plus WORD generic state,
+    // 5. state (`0x10`) in fragment BOOLs only,
+    // 6. legacy name (`0x80000`) as a fragment presence BOOL plus a CExoString
+    //    or locstring payload.
+    //
+    // Diamond ignores many sparse high mask bits in this family, so unknown
+    // legacy input bits are not a reason to reject the input parser. They are
+    // still dropped from the emitted EE mask and the exact EE validator below
+    // rejects them on output.
+    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
+    let mut fragment_cursor = bit_cursor;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+        )?;
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
+        if vector_branch {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+            )?;
+        } else {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+            )?;
+        }
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let appearance_word = read_u16_le(bytes, read_cursor)?;
+        read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        if appearance_word >= 0xFFFE {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        }
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+    }
+    if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+        )?;
+    }
+    fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+    let _legacy_name_bit_cursor = fragment_cursor;
+    if read_cursor > record_end {
+        if let Some(byte_proven_cursor) = byte_proven_inline_name_cursor {
+            if debug_live_claim {
+                eprintln!(
+                    "legacy inline door/placeable name cursor recovered after stale branch offset={offset} record_end={record_end} old_read_cursor={read_cursor} new_read_cursor={byte_proven_cursor} bit_cursor={bit_cursor} mask=0x{mask:08X}"
+                );
+            }
+            read_cursor = byte_proven_cursor;
+        } else {
+            return None;
+        }
+    }
+
+    if inline_cexo_string_end(bytes, read_cursor) != Some(record_end) {
+        if let Some(byte_proven_cursor) = byte_proven_inline_name_cursor {
+            if debug_live_claim && byte_proven_cursor != read_cursor {
+                eprintln!(
+                    "legacy inline door/placeable name cursor repaired offset={offset} record_end={record_end} old_read_cursor={read_cursor} new_read_cursor={byte_proven_cursor} bit_cursor={bit_cursor} mask=0x{mask:08X}"
+                );
+            }
+            read_cursor = byte_proven_cursor;
+        }
+    }
+
+    let inline_name_end = inline_cexo_string_end(bytes, read_cursor);
+    let name_end = if inline_name_end == Some(record_end) {
+        record_end
+    } else if legacy_packed_name_tail_ready(bytes, read_cursor, record_end) {
+        record_end
+    } else {
+        if debug_live_claim {
+            eprintln!(
+                "legacy inline door/placeable name reject offset={offset} record_end={record_end} read_cursor={read_cursor} inline_name_end={inline_name_end:?} bit_cursor={bit_cursor} mask=0x{mask:08X} tail={:?}",
+                bytes.get(read_cursor..record_end.min(read_cursor.saturating_add(32))).unwrap_or(&[])
+            );
+        }
+        return None;
+    };
     if name_end != record_end {
         return None;
     }
@@ -152,6 +283,60 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
         read_without_name_end: read_cursor,
         name_end,
     })
+}
+
+fn legacy_inline_name_cursor_from_record_end(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    mask: u32,
+) -> Option<usize> {
+    let mut cursors = vec![offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?];
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        for cursor in &mut cursors {
+            *cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        }
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let mut branched = Vec::with_capacity(cursors.len().saturating_mul(2));
+        for cursor in cursors {
+            branched.push(cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?);
+            branched.push(cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?);
+        }
+        cursors = branched;
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let mut after_appearance = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            let appearance_word = read_u16_le(bytes, cursor)?;
+            let mut next = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+            if appearance_word >= 0xFFFE {
+                next = next.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+            }
+            after_appearance.push(next);
+        }
+        cursors = after_appearance;
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        for cursor in &mut cursors {
+            *cursor = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+        }
+    }
+
+    let mut proven_cursor = None;
+    for cursor in cursors {
+        if cursor > record_end {
+            continue;
+        }
+        if inline_cexo_string_end(bytes, cursor) == Some(record_end) {
+            proven_cursor = match proven_cursor {
+                Some(existing) if existing != cursor => return None,
+                Some(existing) => Some(existing),
+                None => Some(cursor),
+            };
+        }
+    }
+    proven_cursor
 }
 
 pub(super) fn parse_verified_ee_door_placeable_update_record(
@@ -181,7 +366,8 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let allowed_mask = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
-        | LEGACY_UPDATE_STATE_MASK;
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK;
     if mask == 0 || (mask & !allowed_mask) != 0 {
         return None;
     }
@@ -204,35 +390,48 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
         // EE `sub_14079C050` first reads a BOOL branch for generic
-        // orientation. The bridge writer only emits the scalar branch
-        // (`false`) plus the 12-bit `ReadFLOAT(10.0,12)` payload.
-        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
-        if read_cursor > record_end || fragment_bits.get(fragment_cursor).copied()? {
+        // orientation. `false` selects the compact scalar branch; `true`
+        // selects the three-component vector branch. Diamond's generic reader
+        // uses the same branch contract, so exact validation preserves either
+        // shape instead of canonicalizing everything to scalar.
+        let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
+        if vector_branch {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+            )?;
+        } else {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+            )?;
+        }
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let appearance_word = read_u16_le(bytes, read_cursor)?;
+        read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        if appearance_word >= 0xFFFE {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        }
+        if read_cursor > record_end {
             if debug_live_claim {
                 eprintln!(
-                    "door/placeable update reject orientation offset={offset} record_end={record_end} bit_cursor={bit_cursor} fragment_cursor={fragment_cursor} branch={:?} read_cursor={read_cursor}",
-                    fragment_bits.get(fragment_cursor).copied()
+                    "door/placeable update reject appearance cursor offset={offset} record_end={record_end} read_cursor={read_cursor}"
                 );
             }
             return None;
         }
-        fragment_cursor = advance_bits(
-            fragment_bits,
-            fragment_cursor,
-            EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
-        )?;
     }
 
     if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-        let scale = read_f32_le(bytes, read_cursor)?;
-        if !is_plausible_legacy_object_scale(scale) {
-            if debug_live_claim {
-                eprintln!(
-                    "door/placeable update reject scale offset={offset} record_end={record_end} read_cursor={read_cursor} scale={scale}"
-                );
-            }
-            return None;
-        }
         read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
         if read_cursor > record_end {
             if debug_live_claim {
@@ -285,6 +484,36 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     // decompiled reader consumes raw bytes, so embedded NUL padding is legal
     // and must not force a shifted short-name interpretation.
     Some(offset + 4 + length)
+}
+
+fn legacy_packed_name_tail_ready(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+    if offset >= record_end || record_end > bytes.len() {
+        return false;
+    }
+
+    let tail = &bytes[offset..record_end];
+    if tail.len() > MAX_LIVE_OBJECT_NAME_BYTES + 8 {
+        return false;
+    }
+
+    // Diamond's bit-packed `ReadCExoString(32)` branch may leave the printable
+    // name bytes byte-aligned while the length/control bits live in the CNW
+    // fragment tail. The translator never emits this Diamond-only name branch
+    // to EE; this check only proves the bounded payload we are about to drop
+    // does not overlap the next live-object record.
+    let text_start = tail.iter().position(|byte| *byte != 0).unwrap_or(tail.len());
+    if text_start == tail.len() {
+        return true;
+    }
+
+    // Some local Diamond records interleave zero control/padding bytes after
+    // the first printable byte. The decompile-owned payload is still bounded
+    // by the live-object record end, and the translator drops this legacy-only
+    // name branch rather than forwarding it to EE, so accept the tail when
+    // every non-zero byte is printable name material.
+    tail[text_start..]
+        .iter()
+        .all(|byte| *byte == 0 || matches!(*byte, 0x20..=0x7E | b'\t'))
 }
 
 fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {

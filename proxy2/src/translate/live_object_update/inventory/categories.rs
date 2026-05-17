@@ -28,14 +28,16 @@ pub(super) fn apply_rich_categories(
         if let Some((cursor, _, second_entries)) =
             advance_rich_category_block(bytes, candidate.cursor, record_end)
         {
-            next.push(candidate.advanced(
-                cursor,
-                candidate.bits.saturating_add(
-                    usize::try_from(second_entries)
-                        .unwrap_or(usize::MAX)
-                        .saturating_mul(2),
+            next.push(
+                candidate.advanced(
+                    cursor,
+                    candidate.bits.saturating_add(
+                        usize::try_from(second_entries)
+                            .unwrap_or(usize::MAX)
+                            .saturating_mul(2),
+                    ),
                 ),
-            ));
+            );
         }
     }
     next

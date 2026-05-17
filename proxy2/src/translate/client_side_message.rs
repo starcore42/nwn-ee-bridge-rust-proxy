@@ -31,6 +31,7 @@ const MAX_FRAGMENT_BYTES: usize = 64;
 const MAX_FEEDBACK_TEXT_BYTES: usize = 4096;
 const MAX_FIXED_ARGUMENT_BYTES: usize = 64;
 const BULK_FEEDBACK_STRING_ID: u16 = 0x00CC;
+const LEGACY_BOUNDED_CC_READ_WINDOW_BYTES: u32 = 0x0000_0079;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientSideMessageClaimSummary {
@@ -57,6 +58,9 @@ pub fn claim_or_rewrite_payload_if_verified(
         return claim_feedback(payload);
     }
     if rewrite_legacy_bulk_feedback_declared_text_window(payload).is_some() {
+        return claim_feedback(payload);
+    }
+    if rewrite_legacy_bulk_feedback_stale_declared_full_text_len(payload).is_some() {
         return claim_feedback(payload);
     }
     if rewrite_legacy_bulk_feedback_stale_declared_continued_text(payload).is_some() {
@@ -176,22 +180,28 @@ fn rewrite_legacy_feedback_94_preamble_cc_string(payload: &mut Vec<u8>) -> Optio
     //
     // HG can send its login/welcome bulk text as:
     //
-    //   P 12 0B 94 00 00 00 CC 00 <DWORD text length> <text> <fragments>
+    //   P 12 0B <stale prelude> CC 00 <DWORD text length> <text> <fragments>
     //
-    // The leading `94 00 00 00` is not the EE case-11 declared length, and it
-    // is not part of the EE 0x00CC string branch. Treat it as a legacy raw
-    // feedback preamble only when the following exact 0x00CC string window
-    // validates; otherwise leave the packet unclaimed for quarantine.
+    // The leading DWORD is not the EE case-11 declared length, and it is not
+    // part of the EE 0x00CC string branch. Treat it as a legacy raw feedback
+    // preamble only when the following exact 0x00CC string window validates;
+    // otherwise leave the packet unclaimed for quarantine.
     let legacy_preamble = read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?;
     // Diamond/HG feedback id 0x00CC is the decompile-backed "direct string"
     // path used by CNWSMessage::SendServerToPlayerCCMessage case 0x0B:
     // WORD feedback id, DWORD CExoString length, bytes, then fragment bits.
     //
     // Captures show this legacy/stale preamble value can be 0x93 or 0x94
-    // before the actual 0x00CC text window.  We only accept those exact
-    // preambles and only when the following id/length/text/trailing-fragment
-    // shape validates, so this does not create a raw pass-through path.
-    if !matches!(legacy_preamble, 0x0000_0093 | 0x0000_0094) {
+    // before the actual 0x00CC text window. A later HG area-entry capture uses
+    // 0x79, which matches the bounded CC read body window left behind by the
+    // legacy writer while the real bulk text is carried by the following
+    // CExoString. We only accept those exact preambles and only when the
+    // following id/length/text/trailing-fragment shape validates, so this does
+    // not create a raw pass-through path.
+    if !matches!(
+        legacy_preamble,
+        LEGACY_BOUNDED_CC_READ_WINDOW_BYTES | 0x0000_0093 | 0x0000_0094
+    ) {
         return None;
     }
 
@@ -425,6 +435,60 @@ fn rewrite_legacy_bulk_feedback_declared_text_window(payload: &mut Vec<u8>) -> O
     Some(())
 }
 
+/// HG can emit the area-entry bulk feedback with the EE/1.69-shared semantic
+/// body already present, but with the CNW declared field left at a stale
+/// Diamond-era bounded read window. The decompile-backed EE target remains the
+/// same case-11/id-0x00CC shape: WORD feedback id, DWORD CExoString byte count,
+/// then the whole text. Accept only that exact self-contained text-length proof
+/// and one trailing compact CNW fragment byte, then repair only the declared
+/// field so strict validation can prove the emitted packet.
+fn rewrite_legacy_bulk_feedback_stale_declared_full_text_len(payload: &mut Vec<u8>) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
+        return None;
+    }
+
+    let stale_declared =
+        usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
+    if stale_declared <= text_start || stale_declared >= payload.len() {
+        return None;
+    }
+    if payload.len().saturating_sub(stale_declared) <= MAX_FRAGMENT_BYTES {
+        return None;
+    }
+    if read_u16_le(payload, READ_START)? != BULK_FEEDBACK_STRING_ID {
+        return None;
+    }
+
+    let text_len =
+        usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text_len) {
+        return None;
+    }
+
+    let text_end = text_start.checked_add(text_len)?;
+    if text_end <= stale_declared || text_end > payload.len() {
+        return None;
+    }
+
+    // This capture family carries exactly one final compact CNW fragment byte
+    // after the visible text. Keep that byte outside the declared EE read span;
+    // if another fragment layout appears, it should get its own named rewrite.
+    if payload.len().checked_sub(text_end)? != 1 {
+        return None;
+    }
+    let text = &payload[text_start..text_end];
+    if !feedback_text_window_plausible(text) || !bulk_feedback_text_terminal_marker_valid(text) {
+        return None;
+    }
+
+    let declared_u32 = u32::try_from(text_end).ok()?;
+    payload[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+        .copy_from_slice(&declared_u32.to_le_bytes());
+    Some(())
+}
+
 /// HG can emit feedback id 0x00CC with a self-consistent first Diamond-era text
 /// window, then continue appending the rest of the bulk feedback text before the
 /// final compact CNW fragment byte. The EE client-side-message reader for case
@@ -433,9 +497,7 @@ fn rewrite_legacy_bulk_feedback_declared_text_window(payload: &mut Vec<u8>) -> O
 /// `CExoString`. Rewrite only this bounded legacy shape by deriving the EE
 /// string length from the full validated text window and preserving the final
 /// fragment byte outside the declared read span.
-fn rewrite_legacy_bulk_feedback_stale_declared_continued_text(
-    payload: &mut Vec<u8>,
-) -> Option<()> {
+fn rewrite_legacy_bulk_feedback_stale_declared_continued_text(payload: &mut Vec<u8>) -> Option<()> {
     let high = HighLevel::parse(payload)?;
     if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
         return None;
@@ -591,10 +653,14 @@ mod tests {
 
     #[test]
     fn legacy_feedback_94_preamble_cc_string_rewrites_to_exact_ee_text_shape() {
-        let legacy =
-            include_bytes!("../../fixtures/client_side_message/hg_feedback_94_preamble_cc_string_legacy.bin");
+        let legacy = include_bytes!(
+            "../../fixtures/client_side_message/hg_feedback_94_preamble_cc_string_legacy.bin"
+        );
         assert_eq!(&legacy[..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
-        assert_eq!(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES), Some(0x0000_0094));
+        assert_eq!(
+            read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES),
+            Some(0x0000_0094)
+        );
         assert_eq!(
             read_u16_le(legacy, HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES),
             Some(BULK_FEEDBACK_STRING_ID)
@@ -605,8 +671,8 @@ mod tests {
         let summary = claim_or_rewrite_payload_if_verified(&mut payload)
             .expect("legacy 0x94 preamble + 0xCC string feedback should rewrite exactly");
 
-        let declared = usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap())
-            .unwrap();
+        let declared =
+            usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
         let text_len =
             usize::try_from(read_le_u32(&payload, READ_START + FEEDBACK_ID_BYTES).unwrap())
                 .unwrap();
@@ -615,8 +681,56 @@ mod tests {
         assert_eq!(summary.declared, declared);
         assert_eq!(summary.fragment_bytes, 1);
         assert_eq!(declared, payload.len() - summary.fragment_bytes);
-        assert_eq!(text_len, declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES));
-        assert_eq!(read_u16_le(&payload, READ_START), Some(BULK_FEEDBACK_STRING_ID));
+        assert_eq!(
+            text_len,
+            declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
+        assert_eq!(
+            read_u16_le(&payload, READ_START),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
+        assert_eq!(payload.last(), legacy.last());
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn legacy_feedback_79_preamble_cc_string_rewrites_to_exact_ee_text_shape() {
+        let legacy = include_bytes!(
+            "../../fixtures/client_side_message/hg_feedback_79_preamble_cc_string_legacy.bin"
+        );
+        assert_eq!(&legacy[..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(
+            read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES),
+            Some(LEGACY_BOUNDED_CC_READ_WINDOW_BYTES)
+        );
+        assert_eq!(
+            read_u16_le(legacy, HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
+        assert!(claim_payload_if_verified(legacy).is_none());
+
+        let mut payload = legacy.to_vec();
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("legacy 0x79 preamble + 0xCC string feedback should rewrite exactly");
+
+        let declared =
+            usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
+        let text_len =
+            usize::try_from(read_le_u32(&payload, READ_START + FEEDBACK_ID_BYTES).unwrap())
+                .unwrap();
+
+        assert_eq!(summary.feedback_id, BULK_FEEDBACK_STRING_ID);
+        assert_eq!(summary.declared, declared);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(declared, payload.len() - summary.fragment_bytes);
+        assert_eq!(
+            text_len,
+            declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
+        assert_eq!(
+            read_u16_le(&payload, READ_START),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
         assert_eq!(payload.last(), legacy.last());
         assert!(claim_payload_if_verified(&payload).is_some());
     }
@@ -628,9 +742,14 @@ mod captured_hg_feedback_93_tests {
 
     #[test]
     fn legacy_feedback_93_preamble_cc_string_rewrites_to_exact_ee_text_shape() {
-        let legacy = include_bytes!("../../fixtures/client_side_message/hg_feedback_93_preamble_cc_string_legacy.bin");
+        let legacy = include_bytes!(
+            "../../fixtures/client_side_message/hg_feedback_93_preamble_cc_string_legacy.bin"
+        );
         assert_eq!(&legacy[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
-        assert_eq!(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES), Some(0x0000_0093));
+        assert_eq!(
+            read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES),
+            Some(0x0000_0093)
+        );
         assert_eq!(
             u16::from_le_bytes([legacy[LEGACY_READ_START], legacy[LEGACY_READ_START + 1]]),
             BULK_FEEDBACK_STRING_ID
@@ -646,11 +765,16 @@ mod captured_hg_feedback_93_tests {
         assert_eq!(&payload[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
         assert_eq!(payload.last(), legacy.last());
 
-        let declared = read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).expect("EE declared length") as usize;
+        let declared =
+            read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).expect("EE declared length") as usize;
         let text_len_offset = READ_START + FEEDBACK_ID_BYTES;
-        let text_len = read_le_u32(&payload, text_len_offset).expect("EE CExoString length") as usize;
+        let text_len =
+            read_le_u32(&payload, text_len_offset).expect("EE CExoString length") as usize;
         assert_eq!(declared, payload.len() - summary.fragment_bytes);
-        assert_eq!(text_len, declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES));
+        assert_eq!(
+            text_len,
+            declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
         assert!(claim_payload_if_verified(&payload).is_some());
     }
 
@@ -666,8 +790,7 @@ mod captured_hg_feedback_93_tests {
         let stale_declared =
             usize::try_from(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
         let stale_text_len =
-            usize::try_from(read_le_u32(legacy, READ_START + FEEDBACK_ID_BYTES).unwrap())
-                .unwrap();
+            usize::try_from(read_le_u32(legacy, READ_START + FEEDBACK_ID_BYTES).unwrap()).unwrap();
         assert_eq!(
             stale_text_len,
             stale_declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
@@ -689,6 +812,50 @@ mod captured_hg_feedback_93_tests {
         assert_eq!(declared, payload.len() - summary.fragment_bytes);
         assert_eq!(
             text_len,
+            declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
+        );
+        assert_eq!(&payload[declared - 4..declared], b"</c>");
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn stale_declared_full_len_bulk_feedback_rewrites_declared_to_exact_ee_text_window() {
+        let legacy = include_bytes!(
+            "../../fixtures/client_side_message/hg_welcome_feedback_594_stale_declared_full_len_legacy.bin"
+        );
+        assert_eq!(&legacy[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(
+            read_u16_le(legacy, READ_START),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
+
+        let stale_declared =
+            usize::try_from(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
+        let text_len =
+            usize::try_from(read_le_u32(legacy, READ_START + FEEDBACK_ID_BYTES).unwrap()).unwrap();
+        let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
+        assert_eq!(stale_declared, 95);
+        assert_eq!(text_len, 594);
+        assert_eq!(legacy.len() - (text_start + text_len), 1);
+        assert!(legacy.len() - stale_declared > MAX_FRAGMENT_BYTES);
+        assert!(claim_payload_if_verified(legacy).is_none());
+
+        let mut payload = legacy.to_vec();
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("captured HG stale-declared full-length 0xCC feedback should claim");
+
+        assert_eq!(summary.feedback_id, BULK_FEEDBACK_STRING_ID);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(&payload[0..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(payload.last(), legacy.last());
+
+        let declared = read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+        let rewritten_text_len =
+            read_le_u32(&payload, READ_START + FEEDBACK_ID_BYTES).unwrap() as usize;
+        assert_eq!(declared, payload.len() - summary.fragment_bytes);
+        assert_eq!(rewritten_text_len, text_len);
+        assert_eq!(
+            rewritten_text_len,
             declared - (READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES)
         );
         assert_eq!(&payload[declared - 4..declared], b"</c>");

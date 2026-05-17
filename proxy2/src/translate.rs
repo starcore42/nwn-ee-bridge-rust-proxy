@@ -17,6 +17,7 @@ pub(crate) mod char_list;
 pub(crate) mod chat;
 mod client_area;
 mod client_char_list;
+pub(crate) mod client_gui_event;
 pub(crate) mod client_gui_inventory;
 mod client_high;
 pub(crate) mod client_input;
@@ -30,12 +31,13 @@ mod custom_token;
 pub(crate) mod diagnostics;
 mod game_obj_update;
 pub(crate) mod gameplay_stream;
+pub(crate) mod genericdoors;
 mod inventory;
 pub(crate) mod journal;
 mod live_object;
 pub(crate) mod live_object_update;
 mod loadbar;
-mod login;
+pub(crate) mod login;
 mod m_frame;
 mod module;
 mod module_resources;
@@ -107,6 +109,7 @@ pub enum VerifiedFamily {
     Chat,
     ClientArea,
     ClientCharList,
+    ClientGuiEvent,
     ClientGuiInventory,
     ClientInput,
     ClientLogin,
@@ -137,6 +140,11 @@ pub enum VerifiedFamily {
         stream_epoch: u64,
         first_sequence: u16,
     },
+    ServerZlibZeroFillWindow {
+        first_sequence: u16,
+        inflated_length: usize,
+        compressed_length: usize,
+    },
     ServerStatusModuleResources,
 }
 
@@ -148,6 +156,7 @@ impl VerifiedFamily {
             Self::Chat => "Chat",
             Self::ClientArea => "ClientArea",
             Self::ClientCharList => "ClientCharList",
+            Self::ClientGuiEvent => "ClientGuiEvent",
             Self::ClientGuiInventory => "ClientGuiInventory",
             Self::ClientInput => "ClientInput",
             Self::ClientLogin => "ClientLogin",
@@ -174,6 +183,7 @@ impl VerifiedFamily {
             Self::SemanticDeflated => "SemanticDeflated",
             Self::SetCustomToken => "SetCustomToken",
             Self::ServerZlibStreamContinuation { .. } => "ServerZlibStreamContinuation",
+            Self::ServerZlibZeroFillWindow { .. } => "ServerZlibZeroFillWindow",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
         }
     }
@@ -225,6 +235,10 @@ impl VerifiedProof {
 #[derive(Debug, Clone)]
 pub enum Emit {
     Packet(Vec<u8>),
+    PacketRetireSession {
+        packet: Vec<u8>,
+        reason: &'static str,
+    },
     Packets(Vec<Vec<u8>>),
     PacketsPreShifted(Vec<Vec<u8>>),
     VerifiedPackets {
@@ -247,7 +261,9 @@ pub enum Emit {
     MixedVerifiedProofPackets(Vec<(VerifiedProof, Vec<u8>)>),
     MixedVerifiedProofPacketsPreShifted(Vec<(VerifiedProof, Vec<u8>)>),
     Consumed,
-    ConsumedRetireSession { reason: &'static str },
+    ConsumedRetireSession {
+        reason: &'static str,
+    },
     Drop,
 }
 
@@ -259,7 +275,11 @@ pub struct Translator {
     bncs_private_build: u32,
     bncs_build_field: u16,
     bnxr_nwsync_advertisement: Option<nwsync::Advertisement>,
+    server_port: u16,
+    discovery_session_name: &'static str,
+    discovery_module_name: &'static str,
     module_resources: module_resources::ModuleResourceRuntime,
+    synthetic_area_loadbar: bool,
 }
 
 #[derive(Debug)]
@@ -267,6 +287,7 @@ pub struct SessionTranslator {
     template: Translator,
     bn_state: bn::SessionState,
     m_state: m_frame::SessionState,
+    legacy_udp_port: u16,
 }
 
 impl Translator {
@@ -280,6 +301,7 @@ impl Translator {
                 .clone()
                 .filter(|_| config.nwsync_advertise_mode.advertises_module_resources()),
         );
+        let profile = profiles::module_resources_profile(&config.asset_profile);
         Ok(Self {
             strict_translate: config.strict_translate,
             strict_profile: config.strict_profile,
@@ -288,15 +310,23 @@ impl Translator {
             bncs_build_field: config.bncs_build_field,
             bnxr_nwsync_advertisement: nwsync_advertisement
                 .filter(|_| config.nwsync_advertise_mode.advertises_bnxr()),
+            server_port: config.server.port(),
+            discovery_session_name: profile.discovery_session_name,
+            discovery_module_name: profile.discovery_module_name,
             module_resources: module_resource_runtime,
+            synthetic_area_loadbar: config.synthetic_area_loadbar_enabled(),
         })
     }
 
-    pub fn new_session(&self) -> SessionTranslator {
+    pub fn new_session(&self, legacy_udp_port: u16) -> SessionTranslator {
         SessionTranslator {
             template: self.clone(),
             bn_state: bn::SessionState::default(),
-            m_state: m_frame::SessionState::new(self.module_resources.for_new_session()),
+            m_state: m_frame::SessionState::new(
+                self.module_resources.for_new_session(),
+                self.synthetic_area_loadbar,
+            ),
+            legacy_udp_port,
         }
     }
 }
@@ -307,8 +337,17 @@ impl SessionTranslator {
     }
 
     pub fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
+        let mut packets = Vec::new();
+        for packet in self.bn_state.take_pending_server_to_client_packets() {
+            packets.extend(packets_from_emit(
+                self.validate_emit(Direction::ServerToClientSynthetic, Emit::Packet(packet)),
+            ));
+        }
         let emit = m_frame::take_pending_server_to_client_packets(&mut self.m_state);
-        packets_from_emit(self.validate_emit(Direction::ServerToClientSynthetic, emit))
+        packets.extend(packets_from_emit(
+            self.validate_emit(Direction::ServerToClientSynthetic, emit),
+        ));
+        packets
     }
 
     pub fn translate(&mut self, direction: Direction, bytes: &[u8]) -> Emit {
@@ -336,12 +375,20 @@ impl SessionTranslator {
                 let translated = bn::translate_client_to_server(
                     bytes,
                     &self.template.diamond_identity,
+                    self.legacy_udp_port,
                     self.template.bncs_private_build,
                     self.template.bncs_build_field,
+                    self.template.server_port,
+                    self.template.discovery_session_name,
+                    self.template.discovery_module_name,
+                    self.template.bnxr_nwsync_advertisement.as_ref(),
                     &mut self.bn_state,
                 )?;
                 match translated {
                     bn::ClientTranslation::Packet(packet) => Ok(Emit::Packet(packet)),
+                    bn::ClientTranslation::PacketRetireSession { packet, reason } => {
+                        Ok(Emit::PacketRetireSession { packet, reason })
+                    }
                     bn::ClientTranslation::Consumed => Ok(Emit::Consumed),
                     bn::ClientTranslation::ConsumedRetireSession { reason } => {
                         Ok(Emit::ConsumedRetireSession { reason })
@@ -357,9 +404,11 @@ impl SessionTranslator {
                 Ok(Emit::Packet(translated))
             }
             (Direction::ClientToServer, Packet::M(_)) => {
+                self.bn_state.remember_reliable_gameplay_seen();
                 m_frame::translate_client_to_server(bytes, &mut self.m_state)
             }
             (Direction::ServerToClient, Packet::M(_)) => {
+                self.bn_state.remember_reliable_gameplay_seen();
                 m_frame::translate_server_to_client(bytes, &mut self.m_state)
             }
             (Direction::ServerToClientSynthetic, Packet::Bn(_))
@@ -378,6 +427,24 @@ impl SessionTranslator {
     fn validate_emit(&self, direction: Direction, emit: Emit) -> Emit {
         match emit {
             Emit::Packet(packet) => self.validate_packet(direction, packet),
+            Emit::PacketRetireSession { packet, reason } => {
+                match self.validate_packet(direction, packet) {
+                    Emit::Packet(packet) => Emit::PacketRetireSession { packet, reason },
+                    Emit::Consumed
+                    | Emit::ConsumedRetireSession { .. }
+                    | Emit::Drop
+                    | Emit::Packets(_)
+                    | Emit::PacketsPreShifted(_)
+                    | Emit::MixedVerifiedPackets(_)
+                    | Emit::MixedVerifiedProofPackets(_)
+                    | Emit::MixedVerifiedProofPacketsPreShifted(_)
+                    | Emit::PacketRetireSession { .. }
+                    | Emit::VerifiedPackets { .. }
+                    | Emit::VerifiedPacketsPreShifted { .. }
+                    | Emit::VerifiedProofPackets { .. }
+                    | Emit::VerifiedProofPacketsPreShifted { .. } => Emit::Drop,
+                }
+            }
             Emit::Packets(packets) | Emit::PacketsPreShifted(packets) => {
                 if packets.is_empty() {
                     return Emit::Drop;
@@ -390,6 +457,7 @@ impl SessionTranslator {
                         Emit::Consumed
                         | Emit::ConsumedRetireSession { .. }
                         | Emit::Drop
+                        | Emit::PacketRetireSession { .. }
                         | Emit::Packets(_)
                         | Emit::PacketsPreShifted(_)
                         | Emit::MixedVerifiedPackets(_)
@@ -586,6 +654,7 @@ impl SessionTranslator {
                 Emit::Consumed
                 | Emit::ConsumedRetireSession { .. }
                 | Emit::Drop
+                | Emit::PacketRetireSession { .. }
                 | Emit::Packets(_)
                 | Emit::PacketsPreShifted(_)
                 | Emit::MixedVerifiedPackets(_)
@@ -648,6 +717,7 @@ impl SessionTranslator {
                 Emit::Consumed
                 | Emit::ConsumedRetireSession { .. }
                 | Emit::Drop
+                | Emit::PacketRetireSession { .. }
                 | Emit::Packets(_)
                 | Emit::PacketsPreShifted(_)
                 | Emit::MixedVerifiedPackets(_)
@@ -806,6 +876,7 @@ impl SessionTranslator {
 fn packets_from_emit(emit: Emit) -> Vec<Vec<u8>> {
     match emit {
         Emit::Packet(packet) => vec![packet],
+        Emit::PacketRetireSession { packet, .. } => vec![packet],
         Emit::Packets(packets)
         | Emit::PacketsPreShifted(packets)
         | Emit::VerifiedPackets { packets, .. }

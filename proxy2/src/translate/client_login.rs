@@ -110,8 +110,8 @@ pub fn waypoint_response_payload_shape_valid(payload: &[u8]) -> bool {
     else {
         return false;
     };
-    let Some(tag_len) =
-        read_le_u32(payload, CEXOSTRING_LENGTH_OFFSET).and_then(|value| usize::try_from(value).ok())
+    let Some(tag_len) = read_le_u32(payload, CEXOSTRING_LENGTH_OFFSET)
+        .and_then(|value| usize::try_from(value).ok())
     else {
         return false;
     };
@@ -133,9 +133,10 @@ mod tests {
         let payload = [0x70, 0x02, 0x0D, 0x0B, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x60];
 
         assert!(waypoint_response_payload_shape_valid(&payload));
-        assert!(claim_payload_if_verified(&payload).is_some_and(|claim| {
-            claim.packet_name == "Login_WaypointResponse"
-        }));
+        assert!(
+            claim_payload_if_verified(&payload)
+                .is_some_and(|claim| { claim.packet_name == "Login_WaypointResponse" })
+        );
     }
 
     #[test]
@@ -161,9 +162,10 @@ mod tests {
         payload.push(0x60);
 
         assert!(server_subdirectory_character_shape_valid(&payload));
-        assert!(claim_payload_if_verified(&payload).is_some_and(|claim| {
-            claim.packet_name == "Login_ServerSubDirectoryCharacter"
-        }));
+        assert!(
+            claim_payload_if_verified(&payload)
+                .is_some_and(|claim| { claim.packet_name == "Login_ServerSubDirectoryCharacter" })
+        );
     }
 
     #[test]

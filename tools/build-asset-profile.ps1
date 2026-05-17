@@ -8,6 +8,7 @@ param(
     [switch]$Apply,
     [switch]$Force,
     [switch]$HashStagedFiles,
+    [switch]$SkipSourceExtract,
     [switch]$SkipNwsync
 )
 
@@ -164,6 +165,17 @@ function Find-StagedFile {
     return $null
 }
 
+function Get-ErfResourceTypeForExtension {
+    param([string]$ResourceName)
+
+    switch ([System.IO.Path]::GetExtension($ResourceName).ToLowerInvariant()) {
+        ".mdl" { return 2002 }
+        ".set" { return 2013 }
+        ".2da" { return 2017 }
+        default { return $null }
+    }
+}
+
 function Read-ErfResource {
     param(
         [string]$ContainerPath,
@@ -171,6 +183,7 @@ function Read-ErfResource {
     )
 
     $targetResref = [System.IO.Path]::GetFileNameWithoutExtension($ResourceName).ToLowerInvariant()
+    $targetResourceType = Get-ErfResourceTypeForExtension -ResourceName $ResourceName
     $fs = [System.IO.File]::OpenRead($ContainerPath)
     try {
         $br = New-Object System.IO.BinaryReader($fs)
@@ -198,7 +211,7 @@ function Read-ErfResource {
             $resourceId = $br.ReadUInt32()
             $resourceType = $br.ReadUInt16()
             [void]$br.ReadUInt16()
-            if ($resref -eq $targetResref) {
+            if ($resref -eq $targetResref -and ($null -eq $targetResourceType -or [int]$resourceType -eq [int]$targetResourceType)) {
                 $matches += [pscustomobject]@{
                     ResourceId = [int]$resourceId
                     ResourceType = [int]$resourceType
@@ -207,10 +220,12 @@ function Read-ErfResource {
         }
 
         if ($matches.Count -eq 0) {
-            throw "Resource '$ResourceName' was not found in $ContainerPath"
+            $typeDetail = if ($null -eq $targetResourceType) { "any resource type" } else { "resource type $targetResourceType" }
+            throw "Resource '$ResourceName' ($typeDetail) was not found in $ContainerPath"
         }
         if ($matches.Count -gt 1) {
-            throw "Resource '$ResourceName' matched more than once in $ContainerPath"
+            $typeDetail = if ($null -eq $targetResourceType) { "any resource type" } else { "resource type $targetResourceType" }
+            throw "Resource '$ResourceName' ($typeDetail) matched more than once in $ContainerPath"
         }
 
         $entry = $matches[0]
@@ -402,6 +417,48 @@ function Apply-NwsyncSanitizers {
         }
     }
     return $outputs
+}
+
+function Remove-TextLinesByPrefix {
+    param(
+        [string]$Text,
+        [string[]]$LinePrefixes,
+        [bool]$RequireAnyMatch = $false
+    )
+
+    if ($LinePrefixes.Count -eq 0) {
+        throw "Text line-removal fix must declare at least one line prefix."
+    }
+
+    $lines = $Text -split "`r?`n"
+    $kept = New-Object System.Collections.Generic.List[string]
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        $trimmed = $line.TrimStart()
+        $shouldRemove = $false
+        foreach ($prefix in $LinePrefixes) {
+            if ($trimmed.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $shouldRemove = $true
+                break
+            }
+        }
+
+        if ($shouldRemove) {
+            $removed.Add($line)
+        } else {
+            $kept.Add($line)
+        }
+    }
+
+    if ($RequireAnyMatch -and $removed.Count -eq 0) {
+        throw "Text line-removal fix did not match any declared line prefix."
+    }
+
+    return [pscustomobject]@{
+        Text = ($kept.ToArray() -join "`r`n")
+        Changed = $removed.Count -gt 0
+        RemovedLines = @($removed.ToArray())
+    }
 }
 
 function Patch-TileBlockLine {
@@ -603,6 +660,42 @@ function Apply-CompatibilityFixes {
             continue
         }
 
+        if ($fix.kind -eq "erfTextResourceRemoveLines") {
+            $sourceHak = Find-StagedFile -FileName $fix.sourceHak -Roots $LookupRoots
+            if (-not $sourceHak) {
+                throw "Could not find source HAK '$($fix.sourceHak)' for compatibility fix '$($fix.id)'"
+            }
+
+            $bytes = Read-ErfResource -ContainerPath $sourceHak -ResourceName $fix.resource
+            $encoding = [System.Text.Encoding]::GetEncoding(1252)
+            $text = $encoding.GetString($bytes)
+            $patched = Remove-TextLinesByPrefix `
+                -Text $text `
+                -LinePrefixes ([string[]]$fix.linePrefixes) `
+                -RequireAnyMatch ([bool]$fix.requireAnyMatch)
+
+            $sourceOut = Join-Path $FixRoot "sources\$($fix.resource)"
+            $overrideOut = Join-Path $StageRoot "override\$($fix.resource)"
+            Ensure-Directory (Split-Path -Parent $sourceOut)
+            Ensure-Directory (Split-Path -Parent $overrideOut)
+            if ($patched.Changed -or $Force -or -not (Test-Path -LiteralPath $sourceOut)) {
+                [System.IO.File]::WriteAllBytes($sourceOut, $encoding.GetBytes($patched.Text))
+            }
+            Link-Or-Copy -Source $sourceOut -Destination $overrideOut -Force:$Force
+
+            $outputs += [pscustomobject]@{
+                id = $fix.id
+                sourceHak = $sourceHak
+                resource = $fix.resource
+                stagedPath = $overrideOut
+                changed = [bool]$patched.Changed
+                removedLines = @($patched.RemovedLines)
+                evidence = $fix.evidence
+                sha256 = Get-FileSha256 $overrideOut
+            }
+            continue
+        }
+
         if ($fix.kind -ne "erfTextResourcePatch") {
             throw "Unsupported compatibility fix kind '$($fix.kind)' in profile '$($Profile.id)'"
         }
@@ -773,7 +866,7 @@ function Get-NwsyncModuleResourceManifestAdverts {
         "" { return @() }
         "none" { return @() }
         "generated-non-root" {
-            return @($WrittenManifests | Where-Object { [int]$_.index -ne 1 } | ForEach-Object {
+            return @($WrittenManifests | Where-Object { [string]$_.role -ne "root" } | ForEach-Object {
                 [pscustomobject]@{
                     hash = [string]$_.hash
                     flags = [int]$_.flags
@@ -783,7 +876,7 @@ function Get-NwsyncModuleResourceManifestAdverts {
             })
         }
         "generatednonroot" {
-            return @($WrittenManifests | Where-Object { [int]$_.index -ne 1 } | ForEach-Object {
+            return @($WrittenManifests | Where-Object { [string]$_.role -ne "root" } | ForEach-Object {
                 [pscustomobject]@{
                     hash = [string]$_.hash
                     flags = [int]$_.flags
@@ -808,7 +901,7 @@ function Format-NwsyncManifestAdvertText {
         }
         $flags = $(if ($null -ne $_.flags) { [int]$_.flags } else { 1 })
         $language = $(if ($null -ne $_.language) { [int]$_.language } else { 255 })
-        "$($hash.Trim()):$flags:0x$('{0:X2}' -f $language)"
+        "{0}:{1}:0x{2:X2}" -f $hash.Trim(), $flags, $language
     }) -join ","
 }
 
@@ -918,9 +1011,14 @@ foreach ($archiveSpec in $profile.sourceArchives) {
         $entry.sha256 = Get-FileSha256 $archive.FullName
         $archiveExtractRoot = Join-Path $extractRoot ([System.IO.Path]::GetFileNameWithoutExtension($archive.Name))
         if ($Apply) {
-            Invoke-ArchiveExtract -Archive $archive.FullName -Destination $archiveExtractRoot
-            Copy-ExtractedAssetsToStage -ExtractRoot $archiveExtractRoot -StageRoot $stageRoot -Force:$Force
-            $entry.extracted = $true
+            if ($SkipSourceExtract) {
+                $entry.warning = "Archive extraction skipped; existing staged assets were reused."
+                Write-Warning "$($archive.Name) extraction skipped; using existing staged assets."
+            } else {
+                Invoke-ArchiveExtract -Archive $archive.FullName -Destination $archiveExtractRoot
+                Copy-ExtractedAssetsToStage -ExtractRoot $archiveExtractRoot -StageRoot $stageRoot -Force:$Force
+                $entry.extracted = $true
+            }
         }
         $sourceManifest += $entry
     }
@@ -1095,7 +1193,7 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         $writtenManifests += [pscustomobject]@{
             index = $shard.index
             hash = $hash
-            role = $(if ($shard.index -eq 1) { "root" } else { "advertised" })
+            role = $(if ($shard.index -eq 1) { "root" } else { "module-resource-extra" })
             flags = 1
             language = 255
             estimatedBytes = $shard.estimatedBytes
@@ -1105,6 +1203,19 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         }
     }
 
+    # EE's `CNWCModule::LoadModuleResources` mounts the advertisement root with
+    # `CExoResMan::AddManifest(root)` and then walks the explicit module
+    # manifest vector, calling `AddManifest(extra)` for every client-loadable
+    # entry. `CExoKeyTable::AddManifestContents` then feeds each manifest's
+    # entries through the normal key-table `AddKey` path, so generated NWSync
+    # shards need to be mounted as one ordered stack: base shard first, then the
+    # later generated shards that carry higher HAK/TLK/override precedence.
+    #
+    # The same decompile shows `AddManifest` returning failure when the client
+    # has not already learned the manifest. Therefore these module-resource
+    # extras are valid only with a BNXR preflight advertisement that lets EE
+    # download/cache every generated shard before module load. They are not
+    # generic hints that can be safely emitted in module-only mode.
     $rootHash = [string]$writtenManifests[0].hash
     $moduleResourceManifestAdverts = Get-NwsyncModuleResourceManifestAdverts -Profile $profile -WrittenManifests $writtenManifests
     $nwsyncManifest = [pscustomobject]@{
@@ -1114,7 +1225,7 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         rootHash = $rootHash
         url = $profile.nwsync.url
         maxManifestTotalBytes = $maxManifestBytes
-        loadOrder = "root manifest first, then advertised manifests in listed order"
+        loadOrder = "root manifest is the base shard; generated non-root shards are explicit module-resource extras and must also be BNXR-advertised before module load"
         specs = @($specs.ToArray())
         manifests = $writtenManifests
         moduleResourceManifests = @($moduleResourceManifestAdverts)
@@ -1141,8 +1252,20 @@ $hakOrderBottomFirst = @($profile.hakOrderTopFirst)
         "HG_BRIDGE_NWSYNC_MODULE_MANIFESTS=$moduleManifestText"
     ) -join "`r`n"
     $envText += "`r`n"
-    Set-Content -LiteralPath (Join-Path $buildRoot "nwsync.env") -Value $envText -Encoding ASCII
-    Set-Content -LiteralPath ".\hg-bridge-nwsync.env" -Value $envText -Encoding ASCII
+    $envTargets = New-Object System.Collections.Generic.List[string]
+    $envTargets.Add((Join-Path $buildRoot "nwsync.env"))
+    $envTargets.Add((Resolve-ProjectPath ".\hg-bridge-nwsync.env"))
+    $assetRootParent = Split-Path -Parent $assetRootResolved
+    if (-not [string]::IsNullOrWhiteSpace($assetRootParent)) {
+        $envTargets.Add((Join-Path $assetRootParent "hg-bridge-nwsync.env"))
+    }
+    $writtenEnvTargets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($envTarget in $envTargets) {
+        $resolvedEnvTarget = [System.IO.Path]::GetFullPath($envTarget)
+        if ($writtenEnvTargets.Add($resolvedEnvTarget)) {
+            Set-Content -LiteralPath $resolvedEnvTarget -Value $envText -Encoding ASCII
+        }
+    }
 }
 
 Write-Host "Asset profile '$($profile.id)' staged at $stageRoot"

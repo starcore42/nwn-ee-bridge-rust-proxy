@@ -6,7 +6,7 @@
 
 use crate::{
     packet::m::HighLevel,
-    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar},
+    translate::{ContinuationOwner, Emit, VerifiedFamily, quickbar, semantic},
 };
 use std::{
     env, fs,
@@ -58,8 +58,27 @@ fn build_blank_quickbar_placeholder_frames(
 
 fn rewrite_quickbar_payload_for_stream(
     payload: &mut Vec<u8>,
+    object_registry: Option<&semantic::ObjectRegistry>,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
-    if let Some((_, summary)) = quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload)
+    if let Some(registry) = object_registry {
+        let item_object_is_known = |object_id| registry.has_active_object_id(object_id);
+        let materialization =
+            quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
+        if let Some((_, summary)) =
+            quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
+                payload,
+                Some(&materialization),
+            )
+        {
+            return Some(summary);
+        }
+        return quickbar::rewrite_simple_quickbar_payload_with_context_if_possible(
+            payload,
+            Some(&materialization),
+        );
+    }
+    if let Some((_, summary)) =
+        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(payload)
     {
         return Some(summary);
     }
@@ -83,7 +102,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         let target_length = quickbar::full_set_all_buttons_target_length(bytes);
         if target_length.is_none() {
             let mut probe = bytes.to_vec();
-            match rewrite_quickbar_payload_for_stream(&mut probe) {
+            match rewrite_quickbar_payload_for_stream(&mut probe, Some(&state.semantic.objects)) {
                 Some(summary) => {
                     if !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary) {
                         return Ok(None);
@@ -192,7 +211,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         }
     } else {
         let mut rewritten_payload = pending.payload.clone();
-        let rewrite = rewrite_quickbar_payload_for_stream(&mut rewritten_payload);
+            let rewrite = rewrite_quickbar_payload_for_stream(
+                &mut rewritten_payload,
+                Some(&state.semantic.objects),
+            );
         let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
             && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
         let should_wait = rewrite
@@ -255,7 +277,7 @@ pub(super) fn force_flush_pending_server_quickbar_stream(
         && pending.duplicate_replays >= MAX_PENDING_QUICKBAR_DUPLICATE_REPLAYS_BEFORE_CLAIM
         && {
             let mut probe = pending.payload.clone();
-            rewrite_quickbar_payload_for_stream(&mut probe).is_some()
+            rewrite_quickbar_payload_for_stream(&mut probe, Some(&state.semantic.objects)).is_some()
         };
     tracing::warn!(
         first_sequence = pending.first_sequence,
@@ -358,7 +380,7 @@ fn flush_pending_server_quickbar_stream(
         pending.payload.clone()
     };
     let quickbar_rewrite =
-        rewrite_quickbar_payload_for_stream(&mut quickbar_payload);
+        rewrite_quickbar_payload_for_stream(&mut quickbar_payload, Some(&state.semantic.objects));
     let trailing_bytes = pending
         .target_length
         .map(|target_length| pending.payload.len().saturating_sub(target_length))

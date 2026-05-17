@@ -24,6 +24,7 @@ mod general;
 mod item;
 mod model;
 mod reader;
+mod spell;
 mod split;
 mod transport;
 mod validator;
@@ -41,13 +42,18 @@ use general::*;
 use item::*;
 pub(super) use model::*;
 use reader::*;
+use spell::*;
 use split::*;
 use transport::*;
 use wire::*;
 
 pub use facade::{
     full_set_all_buttons_target_length, normalize_and_rewrite_quickbar_payload_if_possible,
-    rewrite_simple_quickbar_payload_if_possible, rewrite_summary_needs_more_quickbar_bytes,
+    normalize_and_rewrite_quickbar_payload_with_context_if_possible,
+    rewrite_simple_quickbar_payload_if_possible,
+    rewrite_simple_quickbar_payload_with_context_if_possible,
+    rewrite_summary_needs_more_quickbar_bytes,
 };
+pub(crate) use model::QuickbarMaterializationContext;
 pub(crate) use validator::ee_set_all_buttons_payload_shape_valid;
 pub use writer::build_blank_set_all_buttons_payload;

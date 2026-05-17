@@ -7,6 +7,33 @@
 
 use super::constants::NWN_OBJECT_INVALID;
 
+/// Session-state proof used by the EE quickbar writer when deciding whether a
+/// parsed legacy item button may be emitted as an EE item button.
+///
+/// The quickbar reader/writer remains packet-pure: it does not own the object
+/// registry and it does not decide game truth. The gateway may provide this
+/// narrow predicate after verified live-object / GUI item-create packets have
+/// populated a wire-derived registry. Full explicit type-1 item bodies may also
+/// be self-materializing: EE `sub_14079DB00` calls `sub_14079FAC0`, constructs a
+/// client item object when the id is not already present, then registers it with
+/// `CGameObjectArray::AddExternalObject` before applying the quickbar slot.
+/// Ambiguous/recovered compact item bodies still remain blanked by policy.
+pub struct QuickbarMaterializationContext<'a> {
+    item_object_is_known: &'a dyn Fn(u32) -> bool,
+}
+
+impl<'a> QuickbarMaterializationContext<'a> {
+    pub fn new(item_object_is_known: &'a dyn Fn(u32) -> bool) -> Self {
+        Self {
+            item_object_is_known,
+        }
+    }
+
+    pub(in crate::translate::quickbar) fn item_object_is_known(&self, object_id: u32) -> bool {
+        (self.item_object_is_known)(object_id)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuickbarRewriteSummary {
     pub old_payload_length: usize,
@@ -47,19 +74,38 @@ pub(in crate::translate::quickbar) enum QuickbarButtonKind {
     Item {
         primary: QuickbarItemObject,
         secondary: QuickbarItemObject,
+        source: QuickbarItemSource,
         recovered_type_tag: bool,
     },
     Spell {
-        spell_class: u8,
+        class_byte: u8,
         spell_id: u32,
-        metamagic: u8,
-        domain: u8,
+        legacy_metamagic: u8,
+        legacy_level: u8,
     },
     General {
         bytes: Vec<u8>,
     },
     ItemCandidate,
     Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::translate::quickbar) enum QuickbarItemSource {
+    /// Normal decompile-owned source: the slot carried type byte `1`, then the
+    /// primary/secondary item BOOL/object bodies were read through the CNW
+    /// fragment cursor.
+    ExplicitTypeAndFragmentBits,
+
+    /// Compatibility source: the slot carried type byte `1`, but the legacy
+    /// source only became bounded through the compact byte-owned item parser
+    /// after fragment-bit ownership failed. This proves the quickbar boundary
+    /// but not EE-visible item materialization.
+    CompactByteOwnedWithSourceType,
+
+    /// Compatibility source: the item body was recovered at a slot boundary
+    /// without a source type byte. This proves the quickbar boundary only.
+    RecoveredMissingType,
 }
 
 #[derive(Debug, Clone, Default)]

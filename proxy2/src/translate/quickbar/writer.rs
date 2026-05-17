@@ -67,36 +67,35 @@ impl QuickbarPacketWriter {
 }
 
 pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8>> {
+    build_ee_quickbar_payload_with_context(parsed, None)
+}
+
+pub(super) fn build_ee_quickbar_payload_with_context(
+    parsed: &QuickbarParse,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<Vec<u8>> {
     let mut writer = QuickbarPacketWriter::new();
     for button in &parsed.buttons {
         match &button.kind {
             QuickbarButtonKind::Item {
                 primary,
                 secondary,
+                source,
                 recovered_type_tag,
             } => {
                 if !quickbar_item_button_has_verified_ee_materialization(
                     primary,
                     secondary,
+                    *source,
                     *recovered_type_tag,
+                    materialization,
                 ) {
-                    // EE `CNWCMessage::HandleServerToPlayerGuiQuickbar_SetButton`
-                    // does more than consume bytes for type-1 buttons: after
-                    // `sub_14079FAC0` reads the item-object body, the receiver
-                    // resolves or creates a client item object and aborts the
-                    // all-buttons application if that object materialization
-                    // fails. Diamond's server writer similarly emits the item
-                    // branch only after resolving a real `CNWSItem`.
-                    //
-                    // The parser below owns the legacy item bytes well enough
-                    // to prove the 36-slot quickbar boundary, but the bridge
-                    // does not yet have an exact decompile-backed proof that
-                    // every captured item appearance/active-property subobject
-                    // can be materialized by EE. A type-0 blank is therefore
-                    // the strict translation for item slots until that focused
-                    // item-materialization translator exists. This preserves
-                    // later spell/general slots instead of letting one unproven
-                    // item poison the entire SetAllButtons packet.
+                    // The item branch is only emitted after the focused item
+                    // materialization proof below accepts it. Ambiguous compact
+                    // bodies, invalid object ids, missing active-property
+                    // payloads, or appearance/baseitem mismatches become
+                    // deliberate type-0 blanks so one unproven item cannot abort
+                    // the whole SetAllButtons update.
                     writer.write_byte(0);
                     continue;
                 }
@@ -111,16 +110,38 @@ pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8
                 write_quickbar_item_object(&mut writer, secondary, false)?;
             }
             QuickbarButtonKind::Spell {
-                spell_class,
+                class_byte,
                 spell_id,
-                metamagic,
-                domain,
+                legacy_metamagic,
+                legacy_level,
             } => {
+                if !quickbar_spell_slot_has_verified_ee_materialization(
+                    *class_byte,
+                    *spell_id,
+                    *legacy_metamagic,
+                    *legacy_level,
+                ) {
+                    // Diagnostic-only strict downgrade. The spell tuple was
+                    // parsed as the decompile-owned type-2 shape, but the
+                    // harness can force blank spell slots to prove whether the
+                    // client stall is caused by spell/resource materialization
+                    // rather than by reliable-window/zlib framing. This path
+                    // is never enabled by default and never forwards unknown
+                    // bytes.
+                    writer.write_byte(0);
+                    continue;
+                }
+                let ee_spell = spell::legacy_spell_tuple_to_ee_wire(
+                    *class_byte,
+                    *spell_id,
+                    *legacy_metamagic,
+                    *legacy_level,
+                )?;
                 writer.write_byte(2);
-                writer.write_byte(*spell_class);
-                writer.write_dword(*spell_id);
-                writer.write_byte(*metamagic);
-                writer.write_byte(*domain);
+                writer.write_byte(ee_spell.class_byte);
+                writer.write_dword(ee_spell.spell_id);
+                writer.write_byte(ee_spell.ee_metamagic);
+                writer.write_byte(ee_spell.ee_level);
             }
             QuickbarButtonKind::General { bytes } => {
                 if quickbar_general_bytes_are_verified_ee_identical(bytes) {
@@ -141,8 +162,12 @@ pub(super) fn build_ee_quickbar_payload(parsed: &QuickbarParse) -> Option<Vec<u8
     }
 
     let fragments = writer.clone().fragment_bytes();
-    let declared =
-        u32::try_from(HIGH_LEVEL_HEADER_BYTES.checked_add(writer.read_buffer.len())?).ok()?;
+    let declared = u32::try_from(
+        HIGH_LEVEL_HEADER_BYTES
+            .checked_add(CNW_LENGTH_BYTES)?
+            .checked_add(writer.read_buffer.len())?,
+    )
+    .ok()?;
     let mut payload = Vec::with_capacity(
         HIGH_LEVEL_HEADER_BYTES
             .checked_add(CNW_LENGTH_BYTES)?
@@ -192,7 +217,9 @@ pub fn build_blank_set_all_buttons_payload(envelope: u8) -> Option<Vec<u8>> {
 pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     primary: &QuickbarItemObject,
     secondary: &QuickbarItemObject,
+    source: QuickbarItemSource,
     recovered_type_tag: bool,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
 ) -> bool {
     // EE's server writer only emits a type-1 quickbar item branch after it has
     // resolved a real CNWSItem, then writes a BOOL-gated primary item object and
@@ -206,21 +233,40 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     // Any failure jumps to the function-wide abort path before later spell slots
     // are applied.
     //
-    // A bounded legacy item parse is therefore necessary but not sufficient. The
-    // proxy must also prove that the EE-facing object materialization will
-    // succeed. That proof belongs in the state-aware object registry layer:
-    //   legacy item object -> verified EE client item object -> quickbar slot
+    // A bounded legacy item parse is therefore necessary but not sufficient.
+    // The accepted proof is intentionally narrow and decompile-backed:
+    //   1. recovered compact slots are not promoted;
+    //   2. each present item has a non-invalid id;
+    //   3. the packet carries the active-property payload read by
+    //      `sub_14076BD30`;
+    //   4. the appearance body length matches the baseitems.2da appearance
+    //      family and begins with the same base item DWORD.
     //
-    // Until that focused translator exists, item slots are deliberately emitted
-    // as type-0 blanks. This is a strict semantic downgrade, not a passthrough:
-    // it preserves the decompile-owned SetAllButtons boundary and lets verified
-    // spell/general slots apply instead of letting one unproven item abort the
-    // whole quickbar update.
-    let _ = (primary, secondary, recovered_type_tag);
-    false
+    // If the object registry already knows the id, that is a state proof. If it
+    // does not, EE `sub_14079DB00` still has a verified self-materialization
+    // path: after `sub_14079FAC0` succeeds it calls `sub_140769130`, assigns the
+    // quickbar item id, and registers the new client item with
+    // `CGameObjectArray::AddExternalObject` before applying the slot. Therefore
+    // a complete explicit item body is also a valid proof. Anything less remains
+    // a deliberate blank rather than a raw passthrough.
+    if recovered_type_tag || source != QuickbarItemSource::ExplicitTypeAndFragmentBits {
+        // Compact/recovered item bodies prove the 36-slot read boundary, but
+        // not the decompile-owned CNW fragment cursor path that EE uses before
+        // client item construction. Keep those as blanks until a focused
+        // compact-slot fixture proves an exact opposite-dialect writer.
+        return false;
+    }
+    if !primary.present && !secondary.present {
+        return false;
+    }
+    quickbar_item_object_has_verified_ee_materialization(primary, materialization)
+        && quickbar_item_object_has_verified_ee_materialization(secondary, materialization)
 }
 
-fn quickbar_item_object_has_verified_ee_materialization(item: &QuickbarItemObject) -> bool {
+fn quickbar_item_object_has_verified_ee_materialization(
+    item: &QuickbarItemObject,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> bool {
     if !item.present {
         return true;
     }
@@ -233,8 +279,18 @@ fn quickbar_item_object_has_verified_ee_materialization(item: &QuickbarItemObjec
     let Some(expected_legacy) = legacy_item_appearance_read_size(item.appearance_type) else {
         return false;
     };
-    item.appearance_bytes.len() == expected_legacy
-        && read_u32_le(&item.appearance_bytes, 0) == Some(item.base_item)
+    if item.appearance_bytes.len() != expected_legacy
+        || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
+    {
+        return false;
+    }
+    let Some(materialization) = materialization else {
+        return true;
+    };
+    if materialization.item_object_is_known(item.object_id) {
+        return true;
+    }
+    true
 }
 
 fn write_quickbar_item_object(

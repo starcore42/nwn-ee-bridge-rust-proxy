@@ -166,3 +166,55 @@ fn dump_server_stream_continuation(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_live_object_zlib_stream_tail_requires_known_owner() {
+        let inflated = include_bytes!(
+            "../../../fixtures/m_frame/hg_starc5_epoch9_seq30_live_object_zlib_continuation_20260513.bin"
+        );
+
+        assert_eq!(
+            proxy_owned_continuation_family(
+                ContinuationOwner::UnknownProxyOwned,
+                9,
+                30,
+                inflated
+            ),
+            None,
+            "captured no-header zlib tail must not be claimed without a remembered semantic owner"
+        );
+        assert_eq!(
+            proxy_owned_continuation_family(
+                ContinuationOwner::GameObjUpdateLiveObject,
+                9,
+                30,
+                inflated
+            ),
+            Some(VerifiedFamily::ServerZlibStreamContinuation {
+                owner: ContinuationOwner::GameObjUpdateLiveObject,
+                stream_epoch: 9,
+                first_sequence: 30,
+            }),
+            "captured live-object tail is a consume-only proof, not a raw gameplay emit"
+        );
+    }
+
+    #[test]
+    fn zlib_stream_tail_rejects_zero_epoch_even_with_owner() {
+        let inflated = b"tail bytes without high-level header";
+
+        assert_eq!(
+            proxy_owned_continuation_family(
+                ContinuationOwner::GameObjUpdateLiveObject,
+                0,
+                30,
+                inflated
+            ),
+            None
+        );
+    }
+}

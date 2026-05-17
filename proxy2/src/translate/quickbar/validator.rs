@@ -28,17 +28,12 @@ pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
     else {
         return None;
     };
-    if declared < HIGH_LEVEL_HEADER_BYTES {
+    let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    if declared < read_start {
         return None;
     }
 
-    let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
-    let Some(read_size) = declared.checked_sub(HIGH_LEVEL_HEADER_BYTES) else {
-        return None;
-    };
-    let Some(read_end) = read_start.checked_add(read_size) else {
-        return None;
-    };
+    let read_end = declared;
     if read_end >= payload.len() {
         return None;
     }

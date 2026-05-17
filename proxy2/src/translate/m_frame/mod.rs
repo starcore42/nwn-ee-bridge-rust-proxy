@@ -24,13 +24,14 @@ use crate::{
 };
 
 mod client_filters;
+mod client_ack;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
 mod live_stream;
 mod live_update;
-mod login_waypoint;
 mod local_ack;
+mod login_waypoint;
 mod parse_window;
 mod quickbar_stream;
 mod reassembly;
@@ -40,14 +41,14 @@ mod state;
 mod stream_continuation;
 mod synthetic_area;
 mod transport_identity;
+mod zlib_zero_fill;
 
 use deflate::{deflate_zlib, looks_like_zlib_wrapped_deflate};
-use reassembly::{
-    CompletedDeflatedReplay, InflatedGameplayPayload, ServerDeflatedReassembly,
-};
+use reassembly::{CompletedDeflatedReplay, InflatedGameplayPayload, ServerDeflatedReassembly};
 use sequence::{
-    SequenceShift, record_forward_progress, sequence_at_or_after, shift_sequence_for_peer,
-    trim_sequence_shifts, unshift_ack_for_origin,
+    SequenceElision, SequenceShift, record_forward_progress, sequence_at_or_after,
+    shift_sequence_for_peer, shift_sequence_for_peer_with_elisions, trim_sequence_elisions,
+    trim_sequence_shifts, unshift_ack_for_origin, unshift_ack_for_origin_with_elisions,
 };
 
 const MAX_REASSEMBLY_FRAMES: usize = 256;
@@ -61,23 +62,37 @@ pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Ve
 }
 
 pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> Emit {
-    let mut packets = deferred_module_resources::take_releasable_held_server_packets(
+    let mut proof_packets = deferred_module_resources::take_releasable_held_server_packets(
         &mut state.deferred_module_resources.pending,
+    );
+    proof_packets.extend(
+        take_due_pending_server_packets(
+            state,
+            Instant::now(),
+            "pending server-to-client proxy-owned packet released from session drain",
+            true,
+        )
+        .into_iter()
+        .map(|pending| (VerifiedProof::family(pending.family), pending.packet)),
     );
 
     if state.synthetic_area.server_hold_gate.is_some() {
         let mut area_filtered = Vec::new();
-        for (proof, packet) in packets {
+        for (proof, packet) in proof_packets {
             area_filtered.extend(hold_or_release_server_packets(
                 state,
                 proof,
                 vec![packet],
-                "module-resource released packet still gated by area-load ACK",
+                "module-resource released packet still gated by area-load completion proof",
             ));
         }
-        packets = area_filtered;
-    } else if !state.synthetic_area.held_server_to_client_packets.is_empty() {
-        packets.extend(
+        proof_packets = area_filtered;
+    } else if !state
+        .synthetic_area
+        .held_server_to_client_packets
+        .is_empty()
+    {
+        proof_packets.extend(
             state
                 .synthetic_area
                 .held_server_to_client_packets
@@ -87,18 +102,18 @@ pub fn take_pending_server_to_client_packets(state: &mut SessionState) -> Emit {
                         proof = pending.proof.as_str(),
                         reason = pending.reason,
                         len = pending.packet.len(),
-                        "server-to-client held packet released after area-load ACK gate opened"
+                        "server-to-client held packet released after area-load completion gate opened"
                     );
                     (pending.proof, pending.packet)
                 }),
         );
     }
 
-    if packets.is_empty() {
+    if proof_packets.is_empty() {
         return Emit::Consumed;
     }
 
-    let emit = Emit::MixedVerifiedProofPacketsPreShifted(packets);
+    let emit = Emit::MixedVerifiedProofPacketsPreShifted(proof_packets);
     record_server_emit_window_state(state, &emit);
     emit
 }
@@ -107,12 +122,11 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let Some(view) = MFrameView::parse(bytes) else {
         anyhow::bail!("client M frame failed reliable-window parse");
     };
-    let defer_module_loaded_until_released_packets_are_acked =
-        is_client_module_loaded(view.high)
-            && deferred_module_resources::client_ack_would_release_held_server_packets(
-                &state.deferred_module_resources.pending,
-                view.ack_sequence,
-            );
+    let defer_module_loaded_until_released_packets_are_acked = is_client_module_loaded(view.high)
+        && deferred_module_resources::client_ack_would_release_held_server_packets(
+            &state.deferred_module_resources.pending,
+            view.ack_sequence,
+        );
     observe_client_window_state(state, &view);
     synthetic_area::observe_server_hold_gate_client_ack(
         &mut state.synthetic_area.server_hold_gate,
@@ -133,8 +147,20 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     }
 
     let native_area_loaded = synthetic_area::is_native_area_loaded(view.high);
-    let duplicate_native_area_loaded_after_synthetic =
-        native_area_loaded && state.synthetic_area.in_flight_area_loaded.is_some();
+    // EE/Diamond decompiles identify 0x04/0x03 as the client
+    // `Area_AreaLoaded` acknowledgement sent through
+    // `CNWCMessage::SendPlayerToServerMessage`. Native wins while the proxy
+    // fallback is only pending. Once the server has ACKed a proxy-owned
+    // fallback, a matching late native packet is the same semantic area-load
+    // acknowledgement and is consumed as an empty reliable frame so the legacy
+    // server does not see two area-loaded events for one area transition.
+    let duplicate_native_area_loaded_after_synthetic = native_area_loaded
+        && (state.synthetic_area.in_flight_area_loaded.is_some()
+            || synthetic_area::consume_late_native_area_loaded_after_completed_synthetic(
+                &mut state.synthetic_area.completed_area_loaded,
+                view.sequence,
+                view.ack_sequence,
+            ));
     if native_area_loaded {
         synthetic_area::clear_pending_area_loaded(&mut state.synthetic_area.pending_area_loaded);
         synthetic_area::clear_in_flight_area_loaded(
@@ -165,22 +191,39 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
     let packet = if duplicate_native_area_loaded_after_synthetic {
         translate_duplicate_native_area_loaded_after_synthetic(state, outbound, &shifted_view)?
     } else {
-        translate_client_to_server_packet(state, outbound, &shifted_view)?
+        translate_client_to_server_packet(state, outbound, &shifted_view, view.sequence)?
     };
     if let Some(synthetic) = synthetic_area_loaded {
         let synthetic_view = MFrameView::parse(&synthetic)
             .ok_or_else(|| anyhow::anyhow!("synthetic Area_AreaLoaded M frame failed to parse"))?;
-        let synthetic = translate_client_to_server_packet(state, synthetic, &synthetic_view)?;
-        return Ok(Emit::MixedVerifiedPackets(vec![
-            (packet.family, packet.packet),
-            (synthetic.family, synthetic.packet),
-        ]));
+        let synthetic = translate_client_to_server_packet(
+            state,
+            synthetic,
+            &synthetic_view,
+            synthetic_view.sequence,
+        )?;
+        let mut packets = Vec::new();
+        if let Some(packet_bytes) = packet.packet {
+            packets.push((packet.family, packet_bytes));
+        }
+        if let Some(synthetic_bytes) = synthetic.packet {
+            packets.push((synthetic.family, synthetic_bytes));
+        }
+        return if packets.is_empty() {
+            Ok(Emit::Consumed)
+        } else {
+            Ok(Emit::MixedVerifiedPackets(packets))
+        };
     }
 
-    Ok(Emit::VerifiedPackets {
-        family: packet.family,
-        packets: vec![packet.packet],
-    })
+    if let Some(packet_bytes) = packet.packet {
+        Ok(Emit::VerifiedPackets {
+            family: packet.family,
+            packets: vec![packet_bytes],
+        })
+    } else {
+        Ok(Emit::Consumed)
+    }
 }
 
 fn translate_duplicate_native_area_loaded_after_synthetic(
@@ -194,7 +237,9 @@ fn translate_duplicate_native_area_loaded_after_synthetic(
         "Area_AreaLoaded",
         "native Area_AreaLoaded arrived after proxy-owned synthetic fallback was already sent",
     )?;
-    observe_verified_client_m_packet(state, translated.family, &translated.packet);
+    if let Some(packet) = translated.packet.as_ref() {
+        observe_verified_client_m_packet(state, translated.family, packet);
+    }
     Ok(translated)
 }
 
@@ -202,10 +247,99 @@ fn translate_client_to_server_packet(
     state: &mut SessionState,
     bytes: Vec<u8>,
     view: &MFrameView,
+    origin_client_sequence: u16,
 ) -> anyhow::Result<client_filters::ClientFrameTranslation> {
     let translated = client_filters::translate_client_frame(bytes, view, &mut state.semantic)?;
-    observe_verified_client_m_packet(state, translated.family, &translated.packet);
+    if translated.proxy_ack_client_sequence.is_some() && origin_client_sequence != 0 {
+        queue_proxy_owned_ack_for_consumed_client_frame(state, origin_client_sequence)?;
+    }
+    if translated.elide_client_sequence && origin_client_sequence != 0 {
+        record_client_sequence_elision(state, origin_client_sequence);
+    }
+    if let Some(packet) = translated.packet.as_ref() {
+        observe_verified_client_m_packet(state, translated.family, packet);
+    }
     Ok(translated)
+}
+
+fn record_client_sequence_elision(state: &mut SessionState, origin_client_sequence: u16) {
+    if state
+        .sequence
+        .client_sequence_elisions
+        .iter()
+        .any(|elision| elision.sequence == origin_client_sequence)
+    {
+        tracing::debug!(
+            sequence = origin_client_sequence,
+            "client M sequence elision already recorded"
+        );
+        return;
+    }
+
+    state
+        .sequence
+        .client_sequence_elisions
+        .push(SequenceElision {
+            sequence: origin_client_sequence,
+        });
+    trim_sequence_elisions(&mut state.sequence.client_sequence_elisions);
+    tracing::info!(
+        sequence = origin_client_sequence,
+        elisions = state.sequence.client_sequence_elisions.len(),
+        "client M sequence elided for proxy-owned EE-only packet"
+    );
+}
+
+fn queue_proxy_owned_ack_for_consumed_client_frame(
+    state: &mut SessionState,
+    ack_sequence: u16,
+) -> anyhow::Result<()> {
+    client_ack::queue_consumed_ee_only_ack(&mut state.client_ack.pending, ack_sequence);
+    Ok(())
+}
+
+fn take_due_pending_server_packets(
+    state: &mut SessionState,
+    now: Instant,
+    release_log: &'static str,
+    include_client_ack: bool,
+) -> Vec<synthetic_area::PendingServerPacket> {
+    let mut due = Vec::new();
+    let mut kept = Vec::new();
+    if include_client_ack {
+        due.extend(client_ack::take_due_consumed_ee_only_ack_packets(
+            &mut state.client_ack.pending,
+            now,
+        ));
+    }
+    let pending_packets = state
+        .synthetic_area
+        .pending_server_to_client_packets
+        .drain(..)
+        .collect::<Vec<_>>();
+
+    for pending in pending_packets {
+        if pending.due_at > now {
+            kept.push(pending);
+            continue;
+        }
+
+        tracing::info!(
+            reason = pending.reason,
+            due_ms_ago = now.saturating_duration_since(pending.due_at).as_millis(),
+            "{release_log}"
+        );
+        state.semantic.synthetic.server_synthetic_packets = state
+            .semantic
+            .synthetic
+            .server_synthetic_packets
+            .saturating_add(1);
+        observe_verified_synthetic_server_m_packet(state, pending.family, &pending.packet);
+        due.push(pending);
+    }
+
+    state.synthetic_area.pending_server_to_client_packets = kept;
+    due
 }
 
 fn is_client_module_loaded(high: Option<HighLevel>) -> bool {
@@ -218,6 +352,7 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
     };
     synthetic_area::maybe_queue_area_loaded_retransmit(
         &mut state.synthetic_area.in_flight_area_loaded,
+        &mut state.synthetic_area.completed_area_loaded,
         &mut state.sequence.pending_client_to_server_packets,
         view.ack_sequence,
     );
@@ -408,11 +543,23 @@ fn shift_client_sequence_for_server(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if view.sequence == 0 || state.sequence.client_sequence_shifts.is_empty() {
+    if view.sequence == 0
+        || (state.sequence.client_sequence_shifts.is_empty()
+            && state.sequence.client_sequence_elisions.is_empty())
+    {
         return Ok(());
     }
 
-    let shifted = shift_sequence_for_peer(&state.sequence.client_sequence_shifts, view.sequence);
+    let Some(shifted) = shift_sequence_for_peer_with_elisions(
+        &state.sequence.client_sequence_shifts,
+        &state.sequence.client_sequence_elisions,
+        view.sequence,
+    ) else {
+        anyhow::bail!(
+            "client M sequence {} was already claimed as proxy-owned and cannot be forwarded",
+            view.sequence
+        );
+    };
     if shifted == view.sequence {
         return Ok(());
     }
@@ -428,7 +575,8 @@ fn shift_client_sequence_for_server(
         shifted_sequence = shifted,
         ack_sequence = view.ack_sequence,
         shifts = state.sequence.client_sequence_shifts.len(),
-        "client M sequence shifted for synthetic Area_AreaLoaded"
+        elisions = state.sequence.client_sequence_elisions.len(),
+        "client M sequence shifted after proxy-owned client M transport transform"
     );
     Ok(())
 }
@@ -438,12 +586,18 @@ fn unshift_server_ack_for_client(
     packet: &mut [u8],
     view: &MFrameView,
 ) -> anyhow::Result<()> {
-    if view.ack_sequence == 0 || state.sequence.client_sequence_shifts.is_empty() {
+    if view.ack_sequence == 0
+        || (state.sequence.client_sequence_shifts.is_empty()
+            && state.sequence.client_sequence_elisions.is_empty())
+    {
         return Ok(());
     }
 
-    let unshifted =
-        unshift_ack_for_origin(&state.sequence.client_sequence_shifts, view.ack_sequence);
+    let unshifted = unshift_ack_for_origin_with_elisions(
+        &state.sequence.client_sequence_shifts,
+        &state.sequence.client_sequence_elisions,
+        view.ack_sequence,
+    );
     if unshifted == view.ack_sequence {
         return Ok(());
     }
@@ -459,7 +613,8 @@ fn unshift_server_ack_for_client(
         unshifted_ack_sequence = unshifted,
         server_sequence = view.sequence,
         shifts = state.sequence.client_sequence_shifts.len(),
-        "server M ack unshifted after synthetic Area_AreaLoaded"
+        elisions = state.sequence.client_sequence_elisions.len(),
+        "server M ack unshifted after proxy-owned client M transport transform"
     );
     Ok(())
 }
@@ -490,7 +645,7 @@ fn unshift_client_ack_for_server(
         unshifted_ack_sequence = unshifted,
         client_sequence = view.sequence,
         shifts = state.sequence.server_sequence_shifts.len(),
-        "client M ack unshifted after synthetic LoadBar frames"
+        "client M ack unshifted after proxy-owned server M insertion"
     );
     Ok(())
 }
@@ -519,6 +674,8 @@ fn queue_area_client_area_side_effects_after_sequence(
     summary: &area::AreaRewriteSummary,
 ) -> anyhow::Result<()> {
     let fallback_reason = synthetic_area::fallback_reason_for_area_rewrite(summary);
+    let area_release_client_ack_sequence =
+        shift_sequence_for_peer(&state.sequence.server_sequence_shifts, original_after_sequence);
     synthetic_area::queue_loadbar_and_area_loaded_fallback(
         &mut state.synthetic_area.pending_server_to_client_packets,
         &mut state.synthetic_area.pending_area_loaded,
@@ -526,7 +683,24 @@ fn queue_area_client_area_side_effects_after_sequence(
         original_after_sequence,
         ack_sequence,
         fallback_reason,
-    )
+        state.synthetic_area.synthesize_loadbar,
+    )?;
+
+    // The post-Area_ClientArea server stream can immediately contain the
+    // live-object adds/updates EE needs before it sends native Area_AreaLoaded.
+    // Driver-only Starcore5 Docks captures showed that holding these verified
+    // packets until native Area_AreaLoaded deadlocks the load, while releasing
+    // them before the rewritten Area_ClientArea window is ACKed can race the
+    // reader. The stable boundary is therefore the reliable ACK for the final
+    // rewritten Area_ClientArea frame; synthetic Area_AreaLoaded remains a
+    // later fallback, not the server-packet release trigger.
+    synthetic_area::arm_server_hold_gate_after_area_release(
+        &mut state.synthetic_area.server_hold_gate,
+        area_release_client_ack_sequence,
+        fallback_reason,
+    );
+
+    Ok(())
 }
 
 fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> anyhow::Result<()> {
@@ -557,7 +731,7 @@ fn shift_server_sequence_for_client(state: &SessionState, packet: &mut [u8]) -> 
         shifted_sequence = shifted,
         ack_sequence = view.ack_sequence,
         shifts = state.sequence.server_sequence_shifts.len(),
-        "server M sequence shifted after synthetic LoadBar frames"
+        "server M sequence shifted after proxy-owned server M insertion"
     );
     Ok(())
 }
@@ -570,30 +744,11 @@ fn finalize_server_to_client_emit(
     let now = Instant::now();
     let mut prefix = Vec::new();
     let mut suffix = Vec::new();
-    let mut kept = Vec::new();
     let mut released_synthetic_loadbar_end = false;
 
-    let pending_packets = state
-        .synthetic_area
-        .pending_server_to_client_packets
-        .drain(..)
-        .enumerate()
-        .collect::<Vec<_>>();
-    for (index, pending) in pending_packets
-    {
-        if pending.due_at > now {
-            kept.push(pending);
-            continue;
-        }
-
-        tracing::info!(
-            reason = pending.reason,
-            due_ms_ago = now.saturating_duration_since(pending.due_at).as_millis(),
-            "server synthetic M packet released"
-        );
-        state.semantic.synthetic.server_synthetic_packets =
-            state.semantic.synthetic.server_synthetic_packets.saturating_add(1);
-        observe_verified_synthetic_server_m_packet(state, pending.family, &pending.packet);
+    let pending_packets =
+        take_due_pending_server_packets(state, now, "server synthetic M packet released", false);
+    for (index, pending) in pending_packets.into_iter().enumerate() {
         if pending.reason == "Area_ClientArea synthetic LoadBar_End" {
             released_synthetic_loadbar_end = true;
             tracing::info!(
@@ -610,11 +765,9 @@ fn finalize_server_to_client_emit(
             suffix.push((pending.family, pending.packet));
         }
     }
-    state.synthetic_area.pending_server_to_client_packets = kept;
     if released_synthetic_loadbar_end {
-        synthetic_area::arm_server_hold_gate_after_loadbar_release(
-            &mut state.synthetic_area.server_hold_gate,
-            state.synthetic_area.pending_area_loaded.as_ref(),
+        tracing::info!(
+            "synthetic LoadBar_End released without re-arming area hold gate; LoadBar is UI state, not the server-authoritative area stream gate"
         );
     }
 
@@ -664,6 +817,15 @@ fn finalize_server_to_client_emit(
                 mixed.extend(suffix);
                 Ok(Emit::MixedVerifiedPackets(mixed))
             }
+        }
+        Emit::PacketRetireSession { reason, .. } => {
+            tracing::warn!(
+                reason,
+                pending_verified_prefix = prefix.len(),
+                pending_verified_suffix = suffix.len(),
+                "client-side retire-session packet reached server M-frame finalizer; dropping instead of releasing or buffering pending server packets"
+            );
+            Ok(Emit::Drop)
         }
         Emit::Packets(mut packets) => {
             for packet in &mut packets {
@@ -876,9 +1038,45 @@ fn record_server_emit_window_state(state: &mut SessionState, emit: &Emit) {
                 record_server_packet_window_state(state, packet);
             }
         }
-        Emit::Consumed
-        | Emit::ConsumedRetireSession { .. }
-        | Emit::Drop => {}
+        Emit::PacketRetireSession { .. } => {}
+        Emit::Consumed | Emit::ConsumedRetireSession { .. } | Emit::Drop => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_owned_client_ack_coalesces_and_releases_from_session_drain() {
+        let mut state = SessionState::default();
+    state.sequence.latest_server_sequence_to_client = Some(7);
+    queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 40).expect("queue ACK");
+    queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 42).expect("coalesce ACK");
+
+    let emit = take_pending_server_to_client_packets(&mut state);
+    let Emit::MixedVerifiedProofPacketsPreShifted(packets) = emit else {
+        panic!("expected immediate pending ACK release, got {emit:?}");
+    };
+
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].0,
+            VerifiedProof::family(VerifiedFamily::ConsumedEmptyMFrame)
+        );
+        let view = MFrameView::parse(&packets[0].1).expect("pending ACK should parse");
+        assert_eq!(view.sequence, 0);
+        assert_eq!(view.ack_sequence, 42);
+        assert_eq!(view.flags, 0x10);
+        assert_eq!(view.payload_length, 0);
+        assert!(
+            state
+                .client_ack
+                .pending
+                .pending_consumed_ee_only_ack
+                .is_some()
+        );
+        assert_eq!(state.sequence.latest_server_sequence_to_client, Some(7));
     }
 }
 
@@ -1003,9 +1201,15 @@ fn hold_server_emit_until_module_resource_ack(
                 Ok(Emit::MixedVerifiedProofPacketsPreShifted(released))
             }
         }
-        Emit::Consumed
-        | Emit::ConsumedRetireSession { .. }
-        | Emit::Drop => Ok(emit),
+        Emit::PacketRetireSession { reason, .. } => {
+            tracing::warn!(
+                release_client_ack_sequence,
+                reason,
+                "client-side retire-session packet reached module-resource server hold gate; dropping instead of holding without a server proof"
+            );
+            Ok(Emit::Drop)
+        }
+        Emit::Consumed | Emit::ConsumedRetireSession { .. } | Emit::Drop => Ok(emit),
     }
 }
 
@@ -1081,7 +1285,6 @@ fn hold_server_emit_until_area_load_ack(
             "area-load hold gate already open",
         ));
     };
-
     match emit {
         Emit::VerifiedPackets { family, packets }
         | Emit::VerifiedPacketsPreShifted { family, packets } => {
@@ -1089,7 +1292,7 @@ fn hold_server_emit_until_area_load_ack(
                 state,
                 VerifiedProof::family(family),
                 packets,
-                "post-area server packet held until EE ACKs synthetic LoadBar_End",
+                "post-area server packet held until EE ACKs rewritten Area_ClientArea",
             );
             if released.is_empty() {
                 Ok(Emit::Consumed)
@@ -1103,7 +1306,7 @@ fn hold_server_emit_until_area_load_ack(
                 state,
                 proof,
                 packets,
-                "post-area server packet held until EE ACKs synthetic LoadBar_End",
+                "post-area server packet held until EE ACKs rewritten Area_ClientArea",
             );
             if released.is_empty() {
                 Ok(Emit::Consumed)
@@ -1118,7 +1321,7 @@ fn hold_server_emit_until_area_load_ack(
                     state,
                     VerifiedProof::family(family),
                     vec![packet],
-                    "post-area mixed server packet held until EE ACKs synthetic LoadBar_End",
+                    "post-area mixed server packet held until EE ACKs rewritten Area_ClientArea",
                 ));
             }
             if released.is_empty() {
@@ -1135,7 +1338,7 @@ fn hold_server_emit_until_area_load_ack(
                     state,
                     proof,
                     vec![packet],
-                    "post-area mixed server packet held until EE ACKs synthetic LoadBar_End",
+                    "post-area mixed server packet held until EE ACKs rewritten Area_ClientArea",
                 ));
             }
             if released.is_empty() {
@@ -1223,9 +1426,18 @@ fn release_held_area_packets_into_emit(
             }
             Emit::MixedVerifiedProofPacketsPreShifted(released)
         }
+        Emit::PacketRetireSession { reason, .. } => {
+            tracing::warn!(
+                trigger,
+                reason,
+                "client-side retire-session packet reached area-load held-packet release; dropping current packet and not releasing held server packets"
+            );
+            Emit::Drop
+        }
         Emit::Packets(packets) | Emit::PacketsPreShifted(packets) => {
             for packet in packets {
-                if let Some(family) = transport_only_verified_family_for_plain_server_packet(&packet)
+                if let Some(family) =
+                    transport_only_verified_family_for_plain_server_packet(&packet)
                 {
                     released.push((VerifiedProof::family(family), packet));
                 } else {
@@ -1282,7 +1494,7 @@ fn drain_held_area_packets(
                 reason = pending.reason,
                 len = pending.packet.len(),
                 trigger,
-                "server-to-client held packet released after area-load ACK gate opened"
+                "server-to-client held packet released after area-load completion gate opened"
             );
             (pending.proof, pending.packet)
         })
@@ -1297,7 +1509,7 @@ fn hold_or_release_server_packets(
 ) -> Vec<(VerifiedProof, Vec<u8>)> {
     let mut released = Vec::new();
     for packet in packets {
-        if area_load_gate_window_packet_can_pass(state, &packet) {
+        if let Some(release_mode) = area_load_gate_packet_release_mode(state, &packet) {
             let release_client_ack_sequence = state
                 .synthetic_area
                 .server_hold_gate
@@ -1308,7 +1520,8 @@ fn hold_or_release_server_packets(
                 release_client_ack_sequence,
                 len = packet.len(),
                 reason,
-                "server-to-client packet released through area-load ACK gate because its sequence belongs to the gated area/loadbar window"
+                release_mode,
+                "server-to-client packet released through area-load gate"
             );
             released.push((proof.clone(), packet));
         } else {
@@ -1318,18 +1531,28 @@ fn hold_or_release_server_packets(
     released
 }
 
-fn area_load_gate_window_packet_can_pass(state: &SessionState, packet: &[u8]) -> bool {
+fn area_load_gate_packet_release_mode(
+    state: &SessionState,
+    packet: &[u8],
+) -> Option<&'static str> {
     let Some(gate) = state.synthetic_area.server_hold_gate.as_ref() else {
-        return false;
+        return None;
     };
     let Some(view) = MFrameView::parse(packet) else {
-        return false;
+        return None;
     };
     if view.sequence == 0 {
-        return false;
+        return None;
     }
 
-    !sequence_at_or_after(view.sequence, gate.release_client_ack_sequence.wrapping_add(1))
+    if !sequence_at_or_after(
+        view.sequence,
+        gate.release_client_ack_sequence.wrapping_add(1),
+    ) {
+        Some("packet sequence belongs to the rewritten Area_ClientArea window")
+    } else {
+        None
+    }
 }
 
 fn hold_one_server_packet(
@@ -1343,22 +1566,39 @@ fn hold_one_server_packet(
         .server_hold_gate
         .as_ref()
         .map(|gate| gate.release_client_ack_sequence);
-    tracing::info!(
-        proof = proof.as_str(),
-        release_client_ack_sequence,
-        len = packet.len(),
+    let proof_name = proof.as_str();
+    let packet_len = packet.len();
+    match synthetic_area::queue_pending_verified_server_packet(
+        &mut state.synthetic_area.held_server_to_client_packets,
+        proof,
+        packet,
         reason,
-        held_packets = state.synthetic_area.held_server_to_client_packets.len() + 1,
-        "server-to-client verified packet held behind area-load ACK gate"
-    );
-    state
-        .synthetic_area
-        .held_server_to_client_packets
-        .push(synthetic_area::PendingVerifiedServerPacket {
-            proof,
-            packet,
-            reason,
-        });
+    ) {
+        synthetic_area::PendingVerifiedServerPacketQueueResult::Queued { held_packets } => {
+            tracing::info!(
+                proof = proof_name,
+                release_client_ack_sequence,
+                len = packet_len,
+                reason,
+                held_packets,
+                "server-to-client verified packet held behind area-load completion gate"
+            );
+        }
+        synthetic_area::PendingVerifiedServerPacketQueueResult::CollapsedReliableReplay {
+            sequence,
+            held_packets,
+        } => {
+            tracing::info!(
+                proof = proof_name,
+                release_client_ack_sequence,
+                sequence,
+                len = packet_len,
+                reason,
+                held_packets,
+                "server-to-client reliable replay collapsed while area-load completion gate is closed"
+            );
+        }
+    }
 }
 
 fn record_server_packet_window_state(state: &mut SessionState, packet: &[u8]) {
@@ -1447,7 +1687,9 @@ fn record_extra_deflated_output_sequence_shift(
     if inserted_extra_packets > u16::MAX as usize {
         anyhow::bail!("deflated output inserted too many reliable frames");
     }
-    let base = reassembly.first_sequence.wrapping_add(original_count as u16);
+    let base = reassembly
+        .first_sequence
+        .wrapping_add(original_count as u16);
     state.sequence.server_sequence_shifts.push(SequenceShift {
         base,
         delta: inserted_extra_packets as u16,
@@ -1636,6 +1878,15 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let old_inflated_length = bytes.len();
     log_inflated_high_level_summary(&bytes, &reassembly);
+    if let Some(emit) = zlib_zero_fill::maybe_claim_server_zlib_zero_fill_window(
+        state,
+        &reassembly,
+        source_compressed_length,
+        used_server_stream,
+        &bytes,
+    )? {
+        return Ok(emit);
+    }
     if let Some(emit) = quickbar_stream::maybe_buffer_or_flush_server_quickbar_stream(
         state,
         &reassembly,
@@ -1703,6 +1954,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         Some(&state.area_context.latest_area_placeables),
         server_dispatch::SemanticScope::DeflatedReassembly,
         Some(&state.module_resources),
+        Some(&state.semantic.objects),
         None,
     );
     if semantic_rewrite_summary.should_quarantine() {
@@ -1848,11 +2100,21 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         state.deflate.server_zlib_stream_owner = Some(owner);
     }
 
+    // Preserve the server-stream transport envelope after semantic rewrites.
+    // EE decompiles prove raw reliable M payloads are accepted when flag 0x04
+    // is clear, but that does not prove replacing one packet from an already
+    // deflated server stream with raw gameplay bytes is session-equivalent.
+    // Driver-only captures showed the next raw Chat_ServerTell could then
+    // become the first unacked packet. The translator therefore keeps the
+    // dialect rewrite semantic (`P 1E 01` quickbar, live-object updates, etc.)
+    // separate from the transport contract: deflated input windows emit
+    // verified deflated replacement windows unless a family has its own
+    // decompile-backed transport reason to do otherwise.
     let compressed = deflate_zlib(&bytes)?;
     let mut combined = Vec::with_capacity(4 + compressed.len());
     combined.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     combined.extend_from_slice(&compressed);
-
+    let replacement_payload_length = compressed.len();
     let mut outputs =
         reassembly::build_server_deflated_output_frames(&reassembly, &combined, 0x01, true)?;
     let inserted_extra_output_frames = outputs.len() > reassembly.frames.len();
@@ -1881,7 +2143,7 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
             packetized_sequence: reassembly.packetized_sequence,
             old_inflated_length,
             rewritten_inflated_length: bytes.len(),
-            compressed_length: compressed.len(),
+            compressed_length: replacement_payload_length,
             used_server_stream,
             proxy_owned_stream: state.deflate.server_zlib_stream_proxy_owned,
         },

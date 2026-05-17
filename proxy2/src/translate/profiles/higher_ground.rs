@@ -42,5 +42,10 @@ pub(crate) fn module_resources_profile() -> ModuleResourceProfile {
         name: "higher-ground",
         hak_order_top_first: &HAK_ORDER_TOP_FIRST,
         advertise_nwsync: false,
+        // Live server-discovery captures from HG 213 show BNER advertising this
+        // session label and BNXR advertising this module name. Keep these
+        // server-specific facts in the profile rather than in BN packet code.
+        discovery_session_name: "Higher Ground (Party 2-3)",
+        discovery_module_name: "Path of Ascension CEP Legends",
     }
 }

@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         strict_translate = config.strict_translate,
         strict_profile = config.strict_profile.as_str(),
         asset_profile = %config.asset_profile,
+        synthetic_area_loadbar = config.synthetic_area_loadbar_enabled(),
         allow_remote_clients = config.allow_remote_clients,
         "hgbridge_proxy2 starting"
     );

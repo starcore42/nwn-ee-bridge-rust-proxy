@@ -33,7 +33,8 @@ pub(super) fn candidate_inside_inline_string(
 ) -> bool {
     let mut string_offset = search_start;
     while string_offset + 4 <= candidate && string_offset < bytes.len() {
-        if let Some(string_end) = inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
+        if let Some(string_end) =
+            inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
         {
             if string_offset + 4 <= candidate && candidate < string_end {
                 return true;
@@ -44,13 +45,13 @@ pub(super) fn candidate_inside_inline_string(
     false
 }
 
-fn inline_cexo_string_end_for_boundary_suppression(
-    bytes: &[u8],
-    offset: usize,
-) -> Option<usize> {
+fn inline_cexo_string_end_for_boundary_suppression(bytes: &[u8], offset: usize) -> Option<usize> {
     let end = inline_cexo_string_end(bytes, offset)?;
     let text = bytes.get(offset + 4..end)?;
-    if text.iter().all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e)) {
+    if text
+        .iter()
+        .all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e))
+    {
         Some(end)
     } else {
         None

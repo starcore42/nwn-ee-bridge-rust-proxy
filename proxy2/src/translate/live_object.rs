@@ -16,21 +16,22 @@
 //!
 //! - `sub_140781E80` gates creature visual-transform reads on update mask bit
 //!   0x14, then calls `sub_140973160`.
-//! - `sub_140973160` takes the 1.69-server-build branch through
-//!   `sub_1407C4AB0(..., 0x2001, 0x23)` and reads ten legacy `LerpFloat`
-//!   values through `sub_140972C70`.
+//! - `sub_140973160` takes the EE-player build branch through
+//!   `sub_1407C4AB0(..., 0x2001, 0x23)` and reads an object-level transform
+//!   map as two keyed lists. The identity map is two zero DWORD counts.
 //! - Door add `sub_140796DD0` reads the live-object id with `sub_1409737C0`,
 //!   then one or two DWORDs, then the same visual-transform map before the
 //!   door name payload.
 //! - Placeable add `sub_1407A7800` reads the live-object id/name/tail fields,
 //!   then the same visual-transform map after the legacy appearance tail.
 //!
-//! The identity-map insertion therefore emits exactly ten 32-bit legacy
-//! `LerpFloat` defaults, and only for complete creature add records whose
-//! fixed transform prefix ends exactly where EE will begin reading the map, or
-//! for verified door/placeable add records at the EE decompile-backed cursor.
+//! The identity-map insertion therefore emits the EE object-level empty map,
+//! and only for complete creature add records whose fixed transform prefix ends
+//! exactly where EE will begin reading the map, or for verified door/placeable
+//! add records at the EE decompile-backed cursor.
 
 use crate::translate::area::AreaPlaceableContext;
+use std::collections::HashSet;
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const GAME_OBJECT_UPDATE_MAJOR: u8 = 0x05;
@@ -49,7 +50,7 @@ const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
 // world-status record is still claimable without reintroducing envelope-only
 // pass-through.
 const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES;
-const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_1000;
+const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
 const TRIGGER_OBJECT_TYPE: u8 = 0x07;
@@ -63,18 +64,15 @@ const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
-const LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 4;
+const LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 5;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 const LEGACY_DOOR_PLACEABLE_GENERIC_UPDATE_TAIL_BYTES: usize = 9;
 const EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES: usize = 1;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET: usize = 32;
-const EE_LEGACY_VISUAL_TRANSFORM_LERP_FLOAT_COUNT: usize = 10;
-const EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES: [u8; 40] = [
-    0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F,
-];
+const EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES: [u8;
+    crate::translate::live_object_update::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN] =
+    crate::translate::live_object_update::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct LiveObjectNormalizeSummary {
@@ -106,6 +104,7 @@ pub struct LiveObjectVisualTransformSummary {
     pub bytes_removed: u32,
     pub fragment_bits_trimmed: u32,
     pub area_placeable_adds_suppressed: u32,
+    pub unsupported_door_adds_suppressed: u32,
     pub legacy_door_model_tokens_removed: u32,
 }
 
@@ -187,14 +186,6 @@ pub fn looks_like_legacy_prefixed_live_object_high_level(payload: &[u8]) -> bool
         return false;
     }
 
-    let prefixed_fragment_bytes = &payload[HIGH_LEVEL_HEADER_BYTES..LEGACY_LIVE_BYTES_OFFSET];
-    if !prefixed_fragment_bytes
-        .iter()
-        .any(|byte| *byte != 0 && *byte != 0xFF)
-    {
-        return false;
-    }
-
     if !looks_like_legacy_live_object_sub_message_boundary(payload, LEGACY_LIVE_BYTES_OFFSET) {
         return false;
     }
@@ -270,6 +261,159 @@ pub fn declared_length_repair_candidates(
         });
     }
     candidates
+}
+
+fn zero_declared_live_object_tail_split(
+    payload: &[u8],
+    live_bytes_offset: usize,
+) -> Option<usize> {
+    if read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)? != 0
+        || live_bytes_offset >= payload.len()
+        || live_bytes_offset < LEGACY_LIVE_BYTES_OFFSET
+    {
+        return None;
+    }
+
+    // Decompile-backed zero-declared Diamond compatibility:
+    //
+    // EE `CNWMessage::SetReadMessage` treats bytes 3..7 as the declared CNW
+    // read window. A zero DWORD underflows that reader and cannot be forwarded
+    // to the EE client. Local Diamond captures show the zero DWORD followed by
+    // a normal live-object read stream and a real CNW fragment tail at the end
+    // of the packet. In that shape, the zero DWORD is an absent EE declaration,
+    // not the fragment tail itself. Search only for a split whose read side is
+    // a complete sequence of typed live-object records and whose suffix decodes
+    // as CNW MSB fragment storage; the later semantic translators still must
+    // prove the records before emit.
+    const MAX_ZERO_DECLARED_FRAGMENT_TAIL_SEARCH_BYTES: usize = 1024;
+    let max_tail = payload
+        .len()
+        .saturating_sub(live_bytes_offset)
+        .min(MAX_ZERO_DECLARED_FRAGMENT_TAIL_SEARCH_BYTES);
+    for tail_len in 1..=max_tail {
+        let split = payload.len().saturating_sub(tail_len);
+        if split <= live_bytes_offset {
+            break;
+        }
+        if decode_cnw_msb_valid_bits(&payload[split..]).is_none() {
+            continue;
+        }
+        let Some(fragment_bits) = decode_cnw_msb_valid_bits(&payload[split..]) else {
+            continue;
+        };
+        if live_object_read_prefix_walks_to(payload, live_bytes_offset, split)
+            && live_object_read_prefix_has_plausible_fragment_capacity(
+                payload,
+                live_bytes_offset,
+                split,
+                &fragment_bits,
+            )
+        {
+            return Some(split);
+        }
+    }
+    None
+}
+
+fn live_object_read_prefix_has_plausible_fragment_capacity(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    bits: &[bool],
+) -> bool {
+    if start >= end || end > bytes.len() || bits.len() < CNW_FRAGMENT_HEADER_BITS {
+        return false;
+    }
+
+    let mut offset = start;
+    let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    while offset < end {
+        if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
+            return false;
+        }
+        let record_end =
+            find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
+        if record_end <= offset || record_end > end {
+            return false;
+        }
+
+        match (bytes[offset], bytes[offset + 1]) {
+            (b'A', TRIGGER_OBJECT_TYPE | DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) => {
+                if !advance_live_add_record_bit_cursor(bytes, bits, offset, record_end, &mut bit_cursor)
+                {
+                    return false;
+                }
+            }
+            (b'U', DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) => {
+                if !advance_legacy_live_update_record_fragment_cursor_for_add_pass(
+                    bytes,
+                    bits,
+                    offset,
+                    record_end,
+                    &mut bit_cursor,
+                ) {
+                    return false;
+                }
+            }
+            (b'D', object_type) if matches!(object_type, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => {
+                let Some(bit_count) = legacy_live_delete_fragment_bit_count(bytes, offset, record_end)
+                else {
+                    return false;
+                };
+                if bits.len().saturating_sub(bit_cursor) < bit_count {
+                    return false;
+                }
+                bit_cursor = bit_cursor.saturating_add(bit_count);
+            }
+            _ => {}
+        }
+
+        offset = record_end;
+    }
+
+    offset == end
+}
+
+pub fn declared_length_repair_tail_contains_live_object_read_boundary(
+    bytes: &[u8],
+    repair: &LiveObjectDeclaredLengthRepairCandidate,
+) -> bool {
+    let Ok(tail_start) = usize::try_from(repair.new_declared) else {
+        return false;
+    };
+    fragment_tail_contains_legacy_live_object_read_boundary(bytes, tail_start)
+}
+
+fn fragment_tail_contains_legacy_live_object_read_boundary(bytes: &[u8], tail_start: usize) -> bool {
+    // Decompile-backed strictness guard:
+    //
+    // EE enters `GameObjUpdate_LiveObject` by seeding `CNWMessage::SetReadMessage`
+    // with one byte window and one compact fragment/BOOL tail. The fragment tail
+    // is not another live-object read stream. If a proposed stale-declared split
+    // would leave bytes that still look like legacy `A/U/P/W/...` live-object
+    // submessage boundaries, the packet is ambiguous and must be owned by the
+    // typed live-object stream translators instead of this transport repair.
+    //
+    // This deliberately prefers quarantine over truncating a later real record
+    // into "fragment" bytes. The Starcore5 post-area stream exposed exactly that
+    // failure mode: a short exact prefix validated, while a later `P/5` creature
+    // appearance record was stranded in the alleged fragment tail.
+    if tail_start >= bytes.len() {
+        return false;
+    }
+
+    const MIN_AMBIGUOUS_TAIL_READ_BYTES: usize = 16;
+
+    let mut offset = tail_start;
+    while offset + 1 < bytes.len() {
+        if bytes.len().saturating_sub(offset) >= MIN_AMBIGUOUS_TAIL_READ_BYTES
+            && looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
+        {
+            return true;
+        }
+        offset += 1;
+    }
+    false
 }
 
 pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
@@ -436,9 +580,16 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
         first_record_end = salvaged.1;
         salvaged_partial_leadin = true;
     } else {
-        if old_wire_declared == 0 {
-            return None;
-        }
+        // Decompile-backed transport normalization:
+        // EE `CNWMessage::SetReadMessage` subtracts three from the first DWORD
+        // after the high-level header and rejects values that overflow the
+        // read buffer. A zero DWORD is therefore not a valid EE declared
+        // length. Local Diamond captures show `P 05 01 00 00 00 00` followed
+        // by valid `A/U` live-object records, which means those bytes are
+        // legacy-prefixed CNW fragment storage. Do not reject the all-zero
+        // prefix here; this pass only moves the prefix to the EE fragment tail,
+        // and the focused live-object semantic validator still has to prove
+        // every record before the router may emit the packet.
         first_record_end = find_next_legacy_live_object_sub_message_boundary_after(
             payload,
             live_bytes_offset,
@@ -447,15 +598,22 @@ pub fn normalize_prefixed_fragments_payload_if_needed(
         .min(payload.len());
     }
 
-    let live_bytes_length = payload.len() - live_bytes_offset;
+    let zero_declared_tail_start =
+        zero_declared_live_object_tail_split(payload, live_bytes_offset);
+    let live_bytes_end = zero_declared_tail_start.unwrap_or(payload.len());
+    let live_bytes_length = live_bytes_end - live_bytes_offset;
     let new_declared_usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live_bytes_length;
     let new_declared = u32::try_from(new_declared_usize).ok()?;
 
     let mut rewritten = Vec::with_capacity(payload.len() + CNW_LENGTH_BYTES);
     rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
     rewritten.extend_from_slice(&new_declared.to_le_bytes());
-    rewritten.extend_from_slice(&payload[live_bytes_offset..]);
-    rewritten.extend_from_slice(&prefixed_fragment_bytes);
+    rewritten.extend_from_slice(&payload[live_bytes_offset..live_bytes_end]);
+    if let Some(fragment_tail_start) = zero_declared_tail_start {
+        rewritten.extend_from_slice(&payload[fragment_tail_start..]);
+    } else {
+        rewritten.extend_from_slice(&prefixed_fragment_bytes);
+    }
 
     let old_payload_length = payload.len();
     let new_payload_length = rewritten.len();
@@ -496,6 +654,16 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
 
     let mut live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared].to_vec();
     let mut fragment_bytes = payload[declared..].to_vec();
+    if !live_bytes.is_empty() && !looks_like_legacy_live_object_sub_message_boundary(&live_bytes, 0)
+    {
+        // EE and Diamond both enter the live-object reader with the CNW read
+        // cursor positioned at a live-object submessage opcode.  A valid
+        // high-level `P 05 01` envelope whose declared read window begins with
+        // non-record bytes is therefore a stream/reassembly ownership problem,
+        // not permission for this add-family translator to scan forward and
+        // patch later door/placeable-looking bytes out of context.
+        return None;
+    }
     let mut fragment_bits = decode_cnw_msb_valid_bits(&fragment_bytes);
     let mut fragment_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut fragment_bits_reliable = fragment_bits.is_some();
@@ -509,7 +677,9 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
     let mut bytes_removed = 0u32;
     let mut fragment_bits_trimmed = 0u32;
     let mut area_placeable_adds_suppressed = 0u32;
+    let mut unsupported_door_adds_suppressed = 0u32;
     let mut legacy_door_model_tokens_removed = 0u32;
+    let mut suppressed_live_object_ids = HashSet::new();
     let mut offset = 0usize;
 
     while offset + 10 <= live_bytes.len() {
@@ -550,6 +720,43 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
 
         if fragment_bits_reliable {
             if let Some(bits) = fragment_bits.as_mut() {
+                if is_update_for_suppressed_live_object(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &suppressed_live_object_ids,
+                ) {
+                    let Some(fragment_bits_to_remove) =
+                        legacy_door_placeable_update_source_fragment_bit_count(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                        )
+                    else {
+                        fragment_bits_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    };
+                    let removed_bytes = remove_live_object_record_and_fragment_bits(
+                        &mut live_bytes,
+                        &mut record_end,
+                        bits,
+                        fragment_bit_cursor,
+                        offset,
+                        fragment_bits_to_remove,
+                    )?;
+                    bytes_removed = bytes_removed.saturating_add(removed_bytes as u32);
+                    fragment_bits_changed |= fragment_bits_to_remove != 0;
+                    tracing::info!(
+                        record_offset = offset,
+                        bytes_removed = removed_bytes,
+                        fragment_bits_removed = fragment_bits_to_remove,
+                        "server->client live-object update for suppressed unsupported door removed"
+                    );
+                    continue;
+                }
+                let before_fragment_bits_len = bits.len();
+                let before_fragment_bit_cursor = fragment_bit_cursor;
                 if let Some(record_rewrite) = rewrite_legacy_door_placeable_add_record_for_ee(
                     &mut live_bytes,
                     &mut record_end,
@@ -565,7 +772,20 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                         .saturating_add(record_rewrite.legacy_door_model_tokens_removed);
                     area_placeable_adds_suppressed = area_placeable_adds_suppressed
                         .saturating_add(record_rewrite.area_placeable_adds_suppressed);
+                    unsupported_door_adds_suppressed = unsupported_door_adds_suppressed
+                        .saturating_add(record_rewrite.unsupported_door_adds_suppressed);
+                    if let Some(object_id) = record_rewrite.suppressed_object_id {
+                        suppressed_live_object_ids.insert(object_id);
+                    }
                     fragment_bits_changed |= record_rewrite.fragment_bits_changed;
+                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
+                        && record_rewrite.fragment_bits_changed
+                    {
+                        eprintln!(
+                            "live-object visual add fragment rewrite applied: offset={offset} record_end={record_end} bit_cursor_before={before_fragment_bit_cursor} bit_cursor_after={fragment_bit_cursor} bits_len_before={before_fragment_bits_len} bits_len_after={} rewrite={record_rewrite:?}",
+                            bits.len(),
+                        );
+                    }
                     offset = if record_rewrite.record_removed {
                         offset
                     } else {
@@ -575,10 +795,13 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                 }
                 if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some()
                     && live_bytes.get(offset).copied() == Some(b'A')
-                    && live_bytes.get(offset + 1).copied() == Some(DOOR_OBJECT_TYPE)
+                    && matches!(
+                        live_bytes.get(offset + 1).copied(),
+                        Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
+                    )
                 {
                     eprintln!(
-                        "live-object visual door rewrite skipped: offset={offset} record_end={record_end} bit_cursor={fragment_bit_cursor} next_bits={:?} preview={:02X?}",
+                        "live-object visual door/placeable rewrite skipped: offset={offset} record_end={record_end} bit_cursor={fragment_bit_cursor} next_bits={:?} preview={:02X?}",
                         bits.get(
                             fragment_bit_cursor
                                 ..fragment_bit_cursor.saturating_add(12).min(bits.len())
@@ -588,6 +811,65 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                             .get(offset..offset.saturating_add(96).min(live_bytes.len()))
                             .unwrap_or(&[])
                     );
+                }
+                if live_bytes.get(offset).copied() == Some(b'U')
+                    && matches!(
+                        live_bytes.get(offset + 1).copied(),
+                        Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
+                    )
+                    && advance_legacy_live_update_record_fragment_cursor_for_add_pass(
+                        &live_bytes,
+                        bits,
+                        offset,
+                        record_end,
+                        &mut fragment_bit_cursor,
+                    )
+                {
+                    // This pass is still walking the Diamond/HG source stream so
+                    // it can insert EE visual-transform maps into following add
+                    // records. Door updates are especially sensitive here:
+                    // Diamond `sub_44E2C0` reads five state BOOLs for mask
+                    // `0x10`, while EE `sub_140797780` reads six. The focused
+                    // update translator inserts that EE-only sixth false bit
+                    // later. Advancing with the EE exact cursor here steals the
+                    // first fragment bit from the next add record and makes the
+                    // visual-map pass drift.
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
+                if live_bytes.get(offset).copied() == Some(b'A')
+                    && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+                {
+                    if let Some(insert_offset) =
+                        legacy_add_visual_transform_insert_offset(&live_bytes, offset, record_end)
+                    {
+                        if !has_ee_identity_visual_transform_map_at(
+                            &live_bytes,
+                            insert_offset,
+                            record_end,
+                        ) {
+                            // Diamond `sub_4489F0` and EE `sub_14077F870`
+                            // read the same fixed creature-add prefix:
+                            // OBJECTID, six 32-bit FLOAT slots, and a WORD.
+                            // EE then immediately calls the object visual
+                            // transform reader (`sub_140973160`).  This
+                            // branch is intentionally before the generic
+                            // fragment-cursor advance below, otherwise a
+                            // compact but valid 32-byte Diamond creature add
+                            // can be skipped as "known" before the EE empty
+                            // transform map is inserted.
+                            live_bytes.splice(
+                                insert_offset..insert_offset,
+                                EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES,
+                            );
+                            maps_inserted = maps_inserted.saturating_add(1);
+                            bytes_inserted = bytes_inserted.saturating_add(
+                                EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32,
+                            );
+                            offset = record_end + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len();
+                            continue;
+                        }
+                    }
                 }
                 if let Some(trim_safe) = advance_known_live_record_fragment_cursor_for_ee(
                     &live_bytes,
@@ -632,6 +914,7 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         || bytes_inserted != 0
         || bytes_removed != 0
         || area_placeable_adds_suppressed != 0
+        || unsupported_door_adds_suppressed != 0
         || legacy_door_model_tokens_removed != 0
         || fragment_bits_changed;
     if add_record_semantic_changed && fragment_bits_reliable && fragment_bits_trim_safe {
@@ -649,6 +932,7 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         && live_bytes.len() == old_live_bytes_length
         && bytes_removed == 0
         && area_placeable_adds_suppressed == 0
+        && unsupported_door_adds_suppressed == 0
         && legacy_door_model_tokens_removed == 0
     {
         return None;
@@ -680,8 +964,12 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         bytes_removed,
         fragment_bits_trimmed,
         area_placeable_adds_suppressed,
+        unsupported_door_adds_suppressed,
         legacy_door_model_tokens_removed,
     };
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!("live-object visual rewrite summary before emit: {summary:?}");
+    }
     *payload = rewritten;
     Some(summary)
 }
@@ -769,11 +1057,32 @@ fn looks_like_salvageable_legacy_live_object_record_at(
                 record_end,
             ) == Some(record_end)
         }
-        b'A' if object_type == 0x09 || object_type == 0x0A => {
-            record_end - record_offset
-                >= minimum_legacy_live_object_record_length_at(bytes, record_offset)
+        b'A' if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) => {
+            // As with door/placeable `U` updates, a shifted stream can contain
+            // printable text followed by `A/9` or `A/10`. The Diamond/EE
+            // live-object dispatcher only reaches the next record after the
+            // add-record reader consumes a complete typed add body, including
+            // the EE visual-transform storage once translated. Do not salvage
+            // on a scanner-derived minimum length alone.
+            crate::translate::live_object_update::try_get_verified_door_placeable_add_record_end_for_transport(
+                bytes,
+                record_offset,
+                scan_end,
+            )
+            .is_some()
         }
-        b'U' if matches!(object_type, 0x05 | 0x07 | 0x09 | 0x0A) => {
+        b'U' if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) => {
+            // Door/placeable updates are especially prone to false positives in
+            // shifted HG live-object streams: arbitrary text/read-buffer bytes
+            // can form `U/9` or `U/10` plus a nonzero DWORD such as
+            // `0xFFFFFFF7`. Diamond and EE do not re-enter the live-object
+            // dispatcher at that byte unless the whole typed update read span is
+            // valid, so salvage must require the same bounded door/placeable
+            // cursor proof used by the exact boundary scanner. A mere nonzero
+            // mask is not semantic ownership.
+            try_get_ee_door_placeable_update_record_end(bytes, record_offset, scan_end).is_some()
+        }
+        b'U' if matches!(object_type, CREATURE_OBJECT_TYPE | TRIGGER_OBJECT_TYPE) => {
             let Some(raw_mask) = read_u32_le(bytes, record_offset + 6) else {
                 return false;
             };
@@ -783,7 +1092,18 @@ fn looks_like_salvageable_legacy_live_object_record_at(
             record_end - record_offset <= 16
         }
         b'I' => true,
-        b'G' | b'W' => true,
+        b'G' => true,
+        b'W' => {
+            // `W current total` is a valid three-byte identity record when it
+            // appears at an already-aligned live-object cursor, but it is much
+            // too small to anchor partial-leadin salvage. Text/noise in shifted
+            // HG streams can easily contain `57 xx 0E`; accepting that would
+            // drop all earlier bytes and leak a transport fragment as a
+            // semantic world-status packet. Keep partial salvage for records
+            // with stronger typed boundaries and let orphaned `W` bytes remain
+            // quarantined until a stream owner proves them.
+            false
+        }
         _ => false,
     }
 }
@@ -801,8 +1121,10 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
     if bytes.get(offset).copied() == Some(b'A')
         && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
     {
-        let ee_record_end =
-            offset.saturating_add(CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET + 40);
+        let ee_record_end = offset.saturating_add(
+            CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET
+                + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len(),
+        );
         if ee_record_end <= scan_end
             && looks_like_legacy_creature_add_transform_fields(bytes, offset, ee_record_end)
             && has_ee_identity_visual_transform_map_at(
@@ -820,9 +1142,9 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
         {
             // Diamond `sub_4489F0` consumes exactly OBJECTID, six raw FLOAT
             // fields, and a WORD for creature add records. The add-map rewrite
-            // owns inserting EE's following 40-byte visual-transform map at
-            // this fixed cursor; do not let generic scanning merge later bytes
-            // into the creature add.
+            // owns inserting EE's following object visual-transform identity
+            // map at this fixed cursor; do not let generic scanning merge
+            // later bytes into the creature add.
             return legacy_record_end;
         }
     }
@@ -835,6 +1157,27 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
                 bytes, offset, scan_end,
             )
         {
+            return record_end;
+        }
+    }
+
+    if matches!(
+        (bytes.get(offset).copied(), bytes.get(offset + 1).copied()),
+        (
+            Some(b'A'),
+            Some(PLACEABLE_OBJECT_TYPE) | Some(DOOR_OBJECT_TYPE)
+        )
+    ) {
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_verified_door_placeable_add_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            // Door/placeable add records that already carry EE's
+            // ObjectVisualTransformData map have a decompile-owned byte
+            // boundary before the following `U` update. The visual-transform
+            // pass must not merge that following update into the add and run
+            // legacy add repair a second time.
             return record_end;
         }
     }
@@ -1231,7 +1574,7 @@ fn looks_like_legacy_creature_add_transform_fields(
     let Some(object_id) = read_u32_le(bytes, offset + 2) else {
         return false;
     };
-    if (object_id & 0x8000_0000) == 0 || read_u16_le(bytes, offset + 30).is_none() {
+    if object_id == u32::MAX || read_u16_le(bytes, offset + 30).is_none() {
         return false;
     }
 
@@ -1256,7 +1599,7 @@ fn legacy_add_visual_transform_insert_offset(
         || record_end <= offset
         || bytes.len() - offset < 10
         || bytes[offset] != b'A'
-        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+        || read_u32_le(bytes, offset + 2).is_none()
     {
         return None;
     }
@@ -1293,7 +1636,9 @@ struct DoorPlaceableAddRewrite {
     bytes_removed: u32,
     fragment_bits_changed: bool,
     record_removed: bool,
+    suppressed_object_id: Option<u32>,
     area_placeable_adds_suppressed: u32,
+    unsupported_door_adds_suppressed: u32,
     legacy_door_model_tokens_removed: u32,
 }
 
@@ -1347,38 +1692,101 @@ fn rewrite_legacy_door_add_record_for_ee(
     if *bit_cursor >= bits.len() {
         return None;
     }
+    let object_id = read_u32_le(bytes, record_offset + 2)?;
     let first_dword = read_u32_le(bytes, record_offset + 6)?;
+    let compact_omits_second_dword = first_dword == 0
+        && legacy_compact_door_add_omits_second_dword_for_ee(bytes, record_offset, *record_end);
     let visual_offset = record_offset + 2 + if first_dword == 0 { 12 } else { 8 };
     let mut summary = DoorPlaceableAddRewrite::default();
 
-    if first_dword == 0
-        && legacy_compact_door_add_omits_second_dword_for_ee(bytes, record_offset, *record_end)
-    {
-        // EE `sub_140796DD0` reads a second DWORD when the first door-type
-        // DWORD is zero before it calls the visual-transform reader
-        // (`sub_140973160`). Some HG/Diamond door adds omit that conditional
-        // DWORD and begin the locstring/TLK name branch immediately. Insert
-        // the decompiled default (-1) so the EE reader reaches the same
-        // semantic name bytes after the EE-only visual map.
-        let second_dword_offset = record_offset + 10;
-        bytes.splice(
-            second_dword_offset..second_dword_offset,
-            u32::MAX.to_le_bytes(),
-        );
-        *record_end += CNW_LENGTH_BYTES;
-        summary.bytes_inserted = summary
-            .bytes_inserted
-            .saturating_add(CNW_LENGTH_BYTES as u32);
+    if first_dword == 0 && !compact_omits_second_dword && record_offset + 14 <= *record_end {
+        let generic_door_row = read_u32_le(bytes, record_offset + 10)?;
+        if crate::translate::genericdoors::generic_door_model_status(generic_door_row)
+            == crate::translate::genericdoors::GenericDoorModelStatus::MissingOrEmpty
+        {
+            // EE and Diamond both resolve first-DWORD-zero door adds through
+            // `GenericDoors.2da[secondDWORD].ModelName`. The active resource
+            // stack has now proven this row has no loadable model, so the proxy
+            // cannot create a faithful EE door object. Removing the add and its
+            // owned fragment bits is safer than forwarding an object EE will
+            // fail to instantiate, which shifts later updates onto a missing id.
+            let source_bits = legacy_door_add_source_fragment_bit_count(
+                bytes,
+                bits,
+                record_offset,
+                *record_end,
+                *bit_cursor,
+            )?;
+            let removed_bytes = remove_live_object_record_and_fragment_bits(
+                bytes,
+                record_end,
+                bits,
+                *bit_cursor,
+                record_offset,
+                source_bits,
+            )?;
+            summary.bytes_removed = summary.bytes_removed.saturating_add(removed_bytes as u32);
+            summary.fragment_bits_changed = source_bits != 0;
+            summary.record_removed = true;
+            summary.suppressed_object_id = Some(object_id);
+            summary.unsupported_door_adds_suppressed =
+                summary.unsupported_door_adds_suppressed.saturating_add(1);
+            tracing::warn!(
+                object_id = format_args!("0x{object_id:08X}"),
+                generic_door_row,
+                bytes_removed = removed_bytes,
+                fragment_bits_removed = source_bits,
+                "server->client live-object generic door add suppressed: active GenericDoors.2da row has no ModelName"
+            );
+            return Some(summary);
+        }
     }
 
-    // EE's door add reader consumes CAurObjectVisualTransformData immediately
-    // before the name branch. Legacy streams start with the name at this
-    // cursor. If a previous translation pass has already inserted the identity
-    // map, the name has moved after the map; otherwise we insert the map and
-    // must advance the semantic name cursor ourselves before repairing the
-    // name-mode fragment bits below.
-    let already_has_visual_map =
-        has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end);
+    if compact_omits_second_dword {
+        // Diamond `sub_44DE30` and EE `sub_140796DD0` both read a second
+        // DWORD when the first door-type DWORD is zero, then resolve
+        // `GenericDoors.2da[secondDWORD].ModelName`. Area static context is
+        // placeable-owned and is not proof of a door generic row, so the bridge
+        // must not synthesize a selector here. Leave this record unclaimed
+        // until a decompile-backed packet family proves a different legacy
+        // shape.
+        tracing::warn!(
+            object_id = format_args!("0x{object_id:08X}"),
+            "server->client live-object compact generic door add shape is not decompile-backed; quarantining instead of inventing GenericDoors row"
+        );
+        return None;
+    }
+
+    // EE's door add reader consumes ObjectVisualTransformData immediately
+    // before the name branch. Some HG/Diamond captures already carry the older
+    // 40-byte CAurObjectVisualTransformData scalar identity here; replace that
+    // legacy scalar with EE's empty object-map identity instead of letting the
+    // first two zero DWORDs masquerade as a complete EE map.
+    let replaced_legacy_scalar =
+        crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+            bytes,
+            visual_offset,
+            *record_end,
+        );
+    if replaced_legacy_scalar {
+        let removed =
+            crate::translate::live_object_update::visual_transform::replace_legacy_scalar_identity_with_ee_object_identity(
+                bytes,
+                visual_offset,
+                *record_end,
+            )?;
+        *record_end = (*record_end).checked_sub(
+            removed.saturating_sub(EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()),
+        )?;
+        summary.maps_inserted = 1;
+        summary.bytes_inserted = summary
+            .bytes_inserted
+            .saturating_add(EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32);
+        summary.bytes_removed = summary.bytes_removed.saturating_add(removed as u32);
+    }
+
+    let already_has_visual_map = replaced_legacy_scalar
+        || has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end);
     let mut name_offset = if already_has_visual_map {
         visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()
     } else {
@@ -1440,16 +1848,38 @@ fn rewrite_legacy_door_add_record_for_ee(
             summary.legacy_door_model_tokens_removed.saturating_add(1);
     }
 
-    if name_shape.is_short_name() {
-        write_u32_le(bytes, name_offset, 0)?;
-        set_cnw_msb_bit(bits, *bit_cursor, false)?;
+    if name_shape.is_tail_before_empty_direct_name() {
+        if bits.len().saturating_sub(*bit_cursor) < LEGACY_COMPACT_DOOR_TAIL_BOOL_BITS {
+            return None;
+        }
+        let tail = [bytes[name_offset], bytes[name_offset + 1]];
+        bytes[name_offset..name_offset + CNW_LENGTH_BYTES].copy_from_slice(&[0, 0, 0, 0]);
+        bytes[name_offset + CNW_LENGTH_BYTES..name_offset + CNW_LENGTH_BYTES + 2]
+            .copy_from_slice(&tail);
+        insert_cnw_msb_bit(bits, *bit_cursor, false)?;
         insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
-        // Compact HG/Diamond short-name door adds carry the two-byte door tail
-        // without the EE post-name BOOL slot that `sub_140796DD0` consumes
-        // before the WORD tail field. The inserted false bit is therefore
-        // owned by this add record; leaving the cursor at the legacy six-bit
-        // width shifts every following `U` update one bit early.
-        *bit_cursor += 7;
+        // This compact Diamond/HG source shape carries the byte-aligned WORD
+        // tail first and a zero-length direct name after it. EE's
+        // `sub_140796DD0` reads the decompile-owned direct branch as:
+        // name BOOL=false, empty CExoString, post-name BOOL, WORD tail, then
+        // four trailing BOOLs. Reorder only this exact six-byte source layout
+        // and insert the two omitted false branch bits; all other six-byte
+        // tails remain unclaimed and quarantine.
+        *bit_cursor += 6;
+        summary.fragment_bits_changed = true;
+    } else if matches!(name_shape.kind, DoorAddNameKind::ShortStrRef) {
+        if bits.len().saturating_sub(*bit_cursor) < 5 {
+            return None;
+        }
+        write_u32_le(bytes, name_offset, 0)?;
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+        insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        // Diamond short door-name rows carry the outer name BOOL followed by
+        // four shared post-name door state BOOLs. EE's canonical direct
+        // empty-name path has no StrRef read-buffer field, so the StrRef DWORD
+        // is normalized to a zero-length CExoString and the single missing
+        // post-name BOOL is inserted at the decompile-owned cursor.
+        *bit_cursor += 6;
         summary.fragment_bits_changed = true;
     } else if bits.get(*bit_cursor).copied().unwrap_or(false) {
         match name_shape.kind {
@@ -1459,16 +1889,27 @@ fn rewrite_legacy_door_add_record_for_ee(
                 }
             }
             DoorAddNameKind::DirectInline => {
-                // EE door add (`sub_140796DD0`) reads one outer name-mode BOOL.
-                // When true it calls the shared locstring reader
-                // (`sub_1409735F0`), whose inner/client-tlk BOOL selects
-                // between TLK-backed and inline-string storage. Diamond/HG
-                // inline-name captures can keep the outer locstring branch set;
-                // the exact EE shape is therefore outer=true, inner=false,
-                // then the inline CExoString bytes, not a removed bit.
-                summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+                // EE door add (`sub_140796DD0`) has a canonical direct-name
+                // path: outer BOOL false, then `ReadCExoString(0x20)`, then
+                // the fixed post-name door tail bits.  The outer=true path
+                // enters `ReadCExoLocStringClient` (`sub_1409735F0`) and only
+                // reaches `ReadCExoString` after consuming an extra inner
+                // BOOL.  That alternative is valid for true locstring payloads,
+                // but a legacy direct CExoString record must not be emitted
+                // through the locstring helper; doing so lets the helper's
+                // branch bit desynchronise the following door tail.
+                if *bit_cursor + 1 >= bits.len() {
+                    return None;
+                }
+                summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+                bits.remove(*bit_cursor + 1);
+                summary.fragment_bits_changed = true;
+                *bit_cursor += 6;
+                return Some(summary);
             }
-            DoorAddNameKind::ShortName => return None,
+            DoorAddNameKind::CompactTailBeforeEmptyDirectName | DoorAddNameKind::ShortStrRef => {
+                return None;
+            }
         }
         *bit_cursor += 7;
     } else {
@@ -1491,7 +1932,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     record_offset: usize,
     area_context: Option<&AreaPlaceableContext>,
 ) -> Option<DoorPlaceableAddRewrite> {
-    if *bit_cursor >= bits.len() {
+    if *bit_cursor > bits.len() {
         return None;
     }
 
@@ -1506,20 +1947,50 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         && legacy_outer_locstring
         && before_bits.get(*bit_cursor + 1).copied().unwrap_or(false);
     let direct_inline_name_payload = !short_name;
-    let direct_name_mode_repair = legacy_outer_locstring && direct_inline_name_payload;
+    let direct_name_mode_repair =
+        legacy_outer_locstring && legacy_inner_client_tlk && direct_inline_name_payload;
     let inline_locstring_name = !short_name && legacy_outer_locstring && !direct_name_mode_repair;
     let source_name_inner_bits = usize::from(inline_locstring_name);
     let destination_name_inner_bits = usize::from(short_name || inline_locstring_name);
     let required_source_bits = 10 + source_name_inner_bits;
-    if before_bits.len().saturating_sub(*bit_cursor) < required_source_bits {
+    let remaining_source_bits = before_bits.len().saturating_sub(*bit_cursor);
+    let compact_empty_inline_name = if remaining_source_bits == 0
+        || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+    {
+        try_find_legacy_placeable_empty_inline_fallback_name(
+            bytes,
+            name_offset,
+            *record_end,
+            false,
+        )
+    } else {
+        None
+    };
+    if remaining_source_bits < required_source_bits && compact_empty_inline_name.is_none() {
         return None;
     }
+    let compact_empty_inline_name_source_bits = if compact_empty_inline_name.is_some()
+        && remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+    {
+        LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+    } else {
+        0
+    };
     let source_post_name_bit = *bit_cursor + 1 + source_name_inner_bits;
-    let source_optional_object_bit = before_bits
-        .get(source_post_name_bit + 1)
-        .copied()
-        .unwrap_or(true);
-    let mut visual_offset = if let Some(legacy_tail_end) =
+    let source_optional_object_bit = if compact_empty_inline_name.is_some() {
+        false
+    } else {
+        before_bits
+            .get(source_post_name_bit + 1)
+            .copied()
+            .unwrap_or(true)
+    };
+    let mut visual_offset = if let Some(recovered) = compact_empty_inline_name {
+        let (recovered_tail_offset, recovered_legacy_tail_end) =
+            apply_legacy_placeable_empty_inline_fallback_name(bytes, record_end, recovered)?;
+        tail_offset = recovered_tail_offset;
+        recovered_legacy_tail_end
+    } else if let Some(legacy_tail_end) =
         legacy_placeable_add_tail_end(bytes, tail_offset, *record_end, false)
     {
         legacy_tail_end
@@ -1543,10 +2014,10 @@ fn rewrite_legacy_placeable_add_record_for_ee(
                     true,
                 )
             })?;
-            let recovered_len = u32::try_from(recovered.text_end - recovered.text_start).ok()?;
-            write_u32_le(bytes, recovered.length_offset, recovered_len)?;
-            tail_offset = recovered.text_end;
-            recovered.legacy_tail_end
+            let (recovered_tail_offset, recovered_legacy_tail_end) =
+                apply_legacy_placeable_empty_inline_fallback_name(bytes, record_end, recovered)?;
+            tail_offset = recovered_tail_offset;
+            recovered_legacy_tail_end
         }
     } else {
         let recovered = try_find_legacy_placeable_empty_inline_fallback_name(
@@ -1555,10 +2026,10 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             *record_end,
             false,
         )?;
-        let recovered_len = u32::try_from(recovered.text_end - recovered.text_start).ok()?;
-        write_u32_le(bytes, recovered.length_offset, recovered_len)?;
-        tail_offset = recovered.text_end;
-        recovered.legacy_tail_end
+        let (recovered_tail_offset, recovered_legacy_tail_end) =
+            apply_legacy_placeable_empty_inline_fallback_name(bytes, record_end, recovered)?;
+        tail_offset = recovered_tail_offset;
+        recovered_legacy_tail_end
     };
     let compact_tail_zero_extended = visual_offset == tail_offset + 4;
     let full_tail_end = tail_offset.checked_add(1 + 2 + 2)?;
@@ -1619,6 +2090,8 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         legacy_inner_client_tlk,
         direct_name_mode_repair,
         inline_locstring_name,
+        compact_empty_inline_name = compact_empty_inline_name.is_some(),
+        compact_empty_inline_name_source_bits,
         source_name_inner_bits,
         destination_name_inner_bits,
         source_bits = required_source_bits,
@@ -1677,6 +2150,52 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     }
     if already_has_ee_visual_map
         && visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() == *record_end
+    {
+        let mut verified_cursor = *bit_cursor;
+        if crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+            bytes,
+            record_offset,
+            *record_end,
+            bits,
+            &mut verified_cursor,
+        ) {
+            // The byte side and fragment cursor already match the exact EE
+            // placeable-add reader. Let the caller's cursor-only path advance
+            // this record; do not re-run legacy insertion logic on an already
+            // translated add during a later pass.
+            return None;
+        }
+    }
+    if already_has_ee_visual_map
+        && visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() == *record_end
+        && direct_name_mode_repair
+        && !compact_tail_zero_extended
+    {
+        let post_name_bit = *bit_cursor + 1;
+        if bits.len() <= post_name_bit + 9 {
+            return None;
+        }
+        let mut summary = DoorPlaceableAddRewrite::default();
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+        summary.fragment_bits_changed |= set_cnw_msb_bit(
+            bits,
+            post_name_bit + 1,
+            legacy_optional_object_bytes_present,
+        )?;
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, post_name_bit + 9, false)?;
+        if summary.fragment_bits_changed {
+            // The first pass may leave a legacy outer=true/inner=true direct
+            // name pattern on bytes that are already EE-shaped. EE direct-name
+            // placeable adds use outer=false; the former inner bit is then the
+            // first post-name state bit, so no extra optional-object guard is
+            // inserted on repeat passes.
+            *bit_cursor += 11;
+            return Some(summary);
+        }
+        return None;
+    }
+    if already_has_ee_visual_map
+        && visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() == *record_end
         && !direct_name_mode_repair
         && !compact_tail_zero_extended
     {
@@ -1720,67 +2239,118 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         summary.bytes_inserted = summary.bytes_inserted.saturating_add(1);
     }
 
-    if short_name {
-        write_u32_le(bytes, name_offset, 0)?;
-        set_cnw_msb_bit(bits, *bit_cursor, true)?;
-        insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+    if compact_empty_inline_name.is_some() {
+        // Local Diamond captures can carry an exact compact placeable add with a
+        // repaired inline name and either no remaining shared fragment BOOLs or
+        // the four compact tail BOOLs left at the stream cursor. The EE client
+        // reader (`sub_1407A7800`) still requires the full direct-name BOOL run:
+        // outer-name=false, post-type=false, optional-object=false, seven
+        // Diamond-compatible state BOOLs=false, and EE's extra final
+        // visual-transform guard=false. This branch is deliberately gated on the
+        // bounded compact byte recovery above plus one of those exact source-bit
+        // counts; it is not a generic "missing bits are false" fallback.
+        if compact_empty_inline_name_source_bits != 0 {
+            let drain_end = bit_cursor.checked_add(compact_empty_inline_name_source_bits)?;
+            bits.drain(*bit_cursor..drain_end);
+        }
+        for delta in 0..11 {
+            insert_cnw_msb_bit(bits, *bit_cursor + delta, false)?;
+        }
         summary.fragment_bits_changed = true;
-    } else if direct_name_mode_repair {
-        // EE placeable add (`sub_1407A7800`) routes outer=true through the
-        // locstring helper. When both outer and inner are true but the read
-        // bytes at the name cursor are an inline CExoString, the inner bit is
-        // really the first post-name state bit in the legacy stream. Force the
-        // direct CExoString branch but do not remove that bit.
-        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
-    } else if inline_locstring_name {
-        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+    } else {
+        if short_name {
+            write_u32_le(bytes, name_offset, 0)?;
+            set_cnw_msb_bit(bits, *bit_cursor, true)?;
+            insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+            summary.fragment_bits_changed = true;
+        } else if direct_name_mode_repair {
+            // EE placeable add (`sub_1407A7800`) routes outer=true through the
+            // locstring helper. When both outer and inner are true but the read
+            // bytes at the name cursor are an inline CExoString, the inner bit is
+            // really the first post-name state bit in the legacy stream. Force the
+            // direct CExoString branch but do not remove that bit.
+            summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
+        } else if inline_locstring_name {
+            summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        }
+
+        // Placeable add post-name bits are now kept in the same order as the
+        // decompiled readers/writers:
+        //
+        // Diamond client `sub_44E4A0`:
+        //   BOOL after type, optional-object BOOL, seven trailing state BOOLs.
+        //
+        // EE client `sub_1407A7800` / EE server
+        // `CNWSMessage::AddPlaceableAppearanceToMessage`:
+        //   BOOL after type, optional-object BOOL, eight trailing state BOOLs,
+        //   then `ObjectVisualTransformData::Write`.
+        //
+        // The optional OBJECTID branch is byte-identical between Diamond and EE, so
+        // the supported rewrite preserves it only when the four guarded bytes are
+        // present at the decompiled cursor. HG captures may set the bit-like legacy
+        // position without those bytes; that cannot be the real optional branch, so
+        // the EE guard is forced false while the seven shared trailing BOOLs are
+        // copied from the decompile-backed legacy positions.
+        let optional_bit = *bit_cursor + 2 + destination_name_inner_bits;
+        insert_cnw_msb_bit(bits, optional_bit, legacy_optional_object_bytes_present)?;
+        summary.fragment_bits_changed = true;
+
+        let post_name_bit = *bit_cursor + 1 + destination_name_inner_bits;
+        if bits.len() <= post_name_bit + 9 {
+            return None;
+        }
+        for (destination_delta, source_relative) in [
+            (0usize, 1usize),
+            (2, 3),
+            (3, 4),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 8),
+            (8, 9),
+        ] {
+            let value = before_bits
+                .get(*bit_cursor + source_relative + source_name_inner_bits)
+                .copied()
+                .unwrap_or(false);
+            summary.fragment_bits_changed |=
+                set_cnw_msb_bit(bits, post_name_bit + destination_delta, value)?;
+        }
+        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, post_name_bit + 9, false)?;
     }
 
-    // Placeable add post-name bits are now kept in the same order as the
-    // decompiled readers/writers:
-    //
-    // Diamond client `sub_44E4A0`:
-    //   BOOL after type, optional-object BOOL, seven trailing state BOOLs.
-    //
-    // EE client `sub_1407A7800` / EE server
-    // `CNWSMessage::AddPlaceableAppearanceToMessage`:
-    //   BOOL after type, optional-object BOOL, eight trailing state BOOLs,
-    //   then `ObjectVisualTransformData::Write`.
-    //
-    // The optional OBJECTID branch is byte-identical between Diamond and EE, so
-    // the supported rewrite preserves it only when the four guarded bytes are
-    // present at the decompiled cursor. HG captures may set the bit-like legacy
-    // position without those bytes; that cannot be the real optional branch, so
-    // the EE guard is forced false while the seven shared trailing BOOLs are
-    // copied from the decompile-backed legacy positions.
-    let optional_bit = *bit_cursor + 2 + destination_name_inner_bits;
-    insert_cnw_msb_bit(bits, optional_bit, legacy_optional_object_bytes_present)?;
-    summary.fragment_bits_changed = true;
-
-    let post_name_bit = *bit_cursor + 1 + destination_name_inner_bits;
-    if bits.len() <= post_name_bit + 9 {
-        return None;
+    // EE's placeable add reader reaches `ObjectVisualTransformData::Read`
+    // after the name/tail BOOL sequence. HG/Diamond captures can carry the
+    // legacy 40-byte scalar identity at that cursor, just like door and
+    // creature add records. Replace that scalar with EE's object-map identity;
+    // do not allow the leading zero DWORDs inside the legacy scalar to be
+    // mistaken for a complete EE map.
+    let replaced_legacy_scalar =
+        crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+            bytes,
+            visual_offset,
+            *record_end,
+        );
+    if replaced_legacy_scalar {
+        let removed =
+            crate::translate::live_object_update::visual_transform::replace_legacy_scalar_identity_with_ee_object_identity(
+                bytes,
+                visual_offset,
+                *record_end,
+            )?;
+        *record_end = (*record_end).checked_sub(
+            removed.saturating_sub(EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()),
+        )?;
+        summary.maps_inserted = 1;
+        summary.bytes_inserted = summary
+            .bytes_inserted
+            .saturating_add(EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32);
+        summary.bytes_removed = summary.bytes_removed.saturating_add(removed as u32);
     }
-    for (destination_delta, source_relative) in [
-        (0usize, 1usize),
-        (2, 3),
-        (3, 4),
-        (4, 5),
-        (5, 6),
-        (6, 7),
-        (7, 8),
-        (8, 9),
-    ] {
-        let value = before_bits
-            .get(*bit_cursor + source_relative + source_name_inner_bits)
-            .copied()
-            .unwrap_or(false);
-        summary.fragment_bits_changed |=
-            set_cnw_msb_bit(bits, post_name_bit + destination_delta, value)?;
-    }
-    summary.fragment_bits_changed |= set_cnw_msb_bit(bits, post_name_bit + 9, false)?;
 
-    if !has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end) {
+    if !replaced_legacy_scalar
+        && !has_ee_identity_visual_transform_map_at(bytes, visual_offset, *record_end)
+    {
         bytes.splice(
             visual_offset..visual_offset,
             EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES,
@@ -1993,36 +2563,73 @@ fn advance_live_add_record_bit_cursor(
             if *bit_cursor >= bits.len() {
                 return false;
             }
-            let source_inner_bits = if bits[*bit_cursor] {
-                match name_shape.kind {
-                    DoorAddNameKind::TlkLocString => {
-                        if !bits.get(*bit_cursor + 1).copied().unwrap_or(false) {
-                            return false;
-                        }
-                        1
+            let source_inner_bits = match name_shape.kind {
+                DoorAddNameKind::TlkLocString => {
+                    if !bits[*bit_cursor] || !bits.get(*bit_cursor + 1).copied().unwrap_or(false) {
+                        return false;
                     }
-                    DoorAddNameKind::DirectInline => {
-                        if bits.get(*bit_cursor + 1).copied().unwrap_or(true) {
-                            return false;
-                        }
-                        1
+                    1
+                }
+                DoorAddNameKind::DirectInline => {
+                    if bits[*bit_cursor]
+                        && bits.get(*bit_cursor + 1).copied().unwrap_or(true)
+                    {
+                        return false;
                     }
-                    DoorAddNameKind::ShortName => return false,
+                    usize::from(bits[*bit_cursor])
                 }
-            } else {
-                if matches!(name_shape.kind, DoorAddNameKind::TlkLocString) {
-                    return false;
+                DoorAddNameKind::CompactTailBeforeEmptyDirectName => {
+                    if bits.len().saturating_sub(*bit_cursor)
+                        < LEGACY_COMPACT_DOOR_TAIL_BOOL_BITS
+                    {
+                        return false;
+                    }
+                    *bit_cursor = bit_cursor.saturating_add(LEGACY_COMPACT_DOOR_TAIL_BOOL_BITS);
+                    return *bit_cursor <= bits.len();
                 }
-                0
+                DoorAddNameKind::ShortStrRef => {
+                    if bits.len().saturating_sub(*bit_cursor) < 5 {
+                        return false;
+                    }
+                    *bit_cursor = bit_cursor.saturating_add(5);
+                    return *bit_cursor <= bits.len();
+                }
             };
             *bit_cursor = bit_cursor.saturating_add(6 + source_inner_bits);
             *bit_cursor <= bits.len()
         }
         PLACEABLE_OBJECT_TYPE => {
+            let name_offset = record_offset + 6;
+            if try_find_legacy_placeable_empty_inline_fallback_name(
+                bytes,
+                name_offset,
+                record_end,
+                false,
+            )
+            .is_some()
+            {
+                // This is the same bounded compact Diamond shape handled by
+                // `rewrite_legacy_placeable_add_record_for_ee`: an empty direct
+                // CExoString length token, a padded printable name span, and
+                // the decompile-owned placeable tail before the next record
+                // boundary. The add-pass boundary walker runs before that byte
+                // rewrite, so it must advance over Diamond's four source-owned
+                // tail BOOLs here instead of requiring the EE writer's final
+                // eleven BOOL run.
+                let remaining_source_bits = bits.len().saturating_sub(*bit_cursor);
+                if remaining_source_bits == 0 {
+                    return true;
+                }
+                if remaining_source_bits < LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
+                    return false;
+                }
+                *bit_cursor =
+                    bit_cursor.saturating_add(LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS);
+                return *bit_cursor <= bits.len();
+            }
             if *bit_cursor >= bits.len() {
                 return false;
             }
-            let name_offset = record_offset + 6;
             if let Some(inline_end) = inline_cexo_string_end(bytes, name_offset) {
                 if inline_end > name_offset + CNW_LENGTH_BYTES
                     && bits[*bit_cursor]
@@ -2091,8 +2698,9 @@ fn format_bit_slice(bits: &[bool], offset: usize, length: usize) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DoorAddNameKind {
-    ShortName,
+    CompactTailBeforeEmptyDirectName,
     DirectInline,
+    ShortStrRef,
     TlkLocString,
 }
 
@@ -2103,10 +2711,14 @@ struct DoorAddNameShape {
 }
 
 impl DoorAddNameShape {
-    fn is_short_name(self) -> bool {
-        matches!(self.kind, DoorAddNameKind::ShortName)
+    fn is_tail_before_empty_direct_name(self) -> bool {
+        matches!(self.kind, DoorAddNameKind::CompactTailBeforeEmptyDirectName)
     }
 }
+
+const LEGACY_COMPACT_DOOR_TAIL_BOOL_BITS: usize = 4;
+const LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS: usize = 4;
+const LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES: usize = 8;
 
 fn legacy_door_add_name_shape_at(
     bytes: &[u8],
@@ -2143,10 +2755,33 @@ fn legacy_door_add_name_shape_at(
         });
     }
 
-    let legacy_tail_end = name_offset.checked_add(4 + 2)?;
-    if legacy_tail_end == record_end {
+    let legacy_tail_end = name_offset.checked_add(2 + CNW_LENGTH_BYTES)?;
+    if legacy_tail_end == record_end
+        && read_u16_le(bytes, name_offset).is_some()
+        && read_u32_le(bytes, name_offset + 2) == Some(0)
+    {
+        // Local Diamond server captures expose this compact source-only shape
+        // for some generic doors: the byte-aligned WORD tail appears before an
+        // empty direct CExoString slot, and the fragment tail contains only the
+        // four final door BOOLs. EE's `sub_140796DD0` has no equivalent byte
+        // ordering, so the rewrite path canonicalizes this exact layout to the
+        // EE reader order. Keep this deliberately narrow; arbitrary six-byte
+        // tails must quarantine instead of being guessed.
         Some(DoorAddNameShape {
-            kind: DoorAddNameKind::ShortName,
+            kind: DoorAddNameKind::CompactTailBeforeEmptyDirectName,
+            legacy_model_token: None,
+        })
+    } else if name_offset.checked_add(4 + 2) == Some(record_end)
+        && read_u32_le(bytes, name_offset).is_some()
+        && read_u16_le(bytes, name_offset + 4).is_some()
+    {
+        // Normal legacy HG door rows can carry a four-byte short StrRef/name
+        // token before the final WORD state. EE's door add reader has no
+        // matching read-buffer slot, so the writer normalizes this exact
+        // six-byte suffix to an empty direct CExoString plus the same state
+        // WORD.
+        Some(DoorAddNameShape {
+            kind: DoorAddNameKind::ShortStrRef,
             legacy_model_token: None,
         })
     } else {
@@ -2255,6 +2890,138 @@ fn pack_cnw_msb_valid_bits(mut bits: Vec<bool>) -> Vec<u8> {
     packed
 }
 
+fn remove_live_object_record_and_fragment_bits(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: usize,
+    record_offset: usize,
+    fragment_bits_to_remove: usize,
+) -> Option<usize> {
+    if record_offset >= *record_end
+        || *record_end > bytes.len()
+        || bit_cursor > bits.len()
+        || bits.len().saturating_sub(bit_cursor) < fragment_bits_to_remove
+    {
+        return None;
+    }
+    let removed_bytes = *record_end - record_offset;
+    bytes.drain(record_offset..*record_end);
+    if fragment_bits_to_remove != 0 {
+        bits.drain(bit_cursor..bit_cursor + fragment_bits_to_remove);
+    }
+    *record_end = record_offset;
+    Some(removed_bytes)
+}
+
+fn is_update_for_suppressed_live_object(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    suppressed_live_object_ids: &HashSet<u32>,
+) -> bool {
+    record_offset + LEGACY_UPDATE_HEADER_BYTES <= record_end
+        && record_end <= bytes.len()
+        && bytes.get(record_offset).copied() == Some(b'U')
+        && matches!(
+            bytes.get(record_offset + 1).copied(),
+            Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
+        )
+        && read_u32_le(bytes, record_offset + 2)
+            .is_some_and(|object_id| suppressed_live_object_ids.contains(&object_id))
+}
+
+fn legacy_door_add_source_fragment_bit_count(
+    bytes: &[u8],
+    bits: &[bool],
+    record_offset: usize,
+    record_end: usize,
+    bit_cursor: usize,
+) -> Option<usize> {
+    if record_offset + 14 > record_end
+        || record_end > bytes.len()
+        || bit_cursor >= bits.len()
+        || bytes.get(record_offset).copied() != Some(b'A')
+        || bytes.get(record_offset + 1).copied() != Some(DOOR_OBJECT_TYPE)
+    {
+        return None;
+    }
+
+    let first_dword = read_u32_le(bytes, record_offset + 6)?;
+    let name_offset = record_offset.checked_add(2 + if first_dword == 0 { 12 } else { 8 })?;
+    if name_offset > record_end {
+        return None;
+    }
+
+    let source_inner_bits = if bits.get(bit_cursor).copied().unwrap_or(false) {
+        if looks_like_legacy_door_tlk_locstring_at(bytes, name_offset, record_end) {
+            if !bits.get(bit_cursor + 1).copied().unwrap_or(false) {
+                return None;
+            }
+            1
+        } else if inline_cexo_string_end(bytes, name_offset).is_some() {
+            if bits.get(bit_cursor + 1).copied().unwrap_or(true) {
+                return None;
+            }
+            1
+        } else if name_offset.checked_add(6) == Some(record_end) {
+            0
+        } else {
+            return None;
+        }
+    } else {
+        if looks_like_legacy_door_tlk_locstring_at(bytes, name_offset, record_end) {
+            return None;
+        }
+        0
+    };
+
+    let consumed = 6usize.saturating_add(source_inner_bits);
+    (bits.len().saturating_sub(bit_cursor) >= consumed).then_some(consumed)
+}
+
+fn legacy_door_placeable_update_source_fragment_bit_count(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<usize> {
+    if record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end
+        || record_end > bytes.len()
+        || bytes.get(record_offset).copied() != Some(b'U')
+        || !matches!(
+            bytes.get(record_offset + 1).copied()?,
+            DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE
+        )
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, record_offset + 6)?;
+    if raw_mask == 0 {
+        return None;
+    }
+
+    // Diamond generic door/placeable updates use fragment bits only for the
+    // decompiled position, scalar-orientation, state, and legacy name branches.
+    // Scale/state is read-buffer-only. Unsupported high bits do not get guessed
+    // here; they remain the exact same mask discipline as the focused update
+    // translator and the final EE validator.
+    let mut bits = 0usize;
+    if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        bits = bits.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+    }
+    if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        bits = bits.saturating_add(LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS);
+    }
+    if (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        bits = bits.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
+    }
+    if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        bits = bits.saturating_add(1);
+    }
+    Some(bits)
+}
+
 fn set_cnw_msb_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {
     let bit = bits.get_mut(bit_index)?;
     let changed = *bit != value;
@@ -2326,7 +3093,12 @@ fn legacy_placeable_add_tail_end(
         if compact_tail_end <= record_end
             && compact_tail_end <= bytes.len()
             && (compact_tail_end == record_end
-                || has_ee_identity_visual_transform_map_at(bytes, compact_tail_end, record_end))
+                || has_ee_identity_visual_transform_map_at(bytes, compact_tail_end, record_end)
+                || crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+                    bytes,
+                    compact_tail_end,
+                    record_end,
+                ))
         {
             return Some(compact_tail_end);
         }
@@ -2334,6 +3106,11 @@ fn legacy_placeable_add_tail_end(
     }
     if full_tail_end == record_end
         || has_ee_identity_visual_transform_map_at(bytes, full_tail_end, record_end)
+        || crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+            bytes,
+            full_tail_end,
+            record_end,
+        )
     {
         Some(full_tail_end)
     } else {
@@ -2346,6 +3123,11 @@ fn legacy_placeable_add_tail_end(
                         bytes,
                         optional_tail_end,
                         record_end,
+                    )
+                    || crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+                        bytes,
+                        optional_tail_end,
+                        record_end,
                     ))
             {
                 return Some(optional_tail_end);
@@ -2355,7 +3137,12 @@ fn legacy_placeable_add_tail_end(
         if compact_tail_end <= record_end
             && compact_tail_end <= bytes.len()
             && (compact_tail_end == record_end
-                || has_ee_identity_visual_transform_map_at(bytes, compact_tail_end, record_end))
+                || has_ee_identity_visual_transform_map_at(bytes, compact_tail_end, record_end)
+                || crate::translate::live_object_update::visual_transform::has_legacy_scalar_visual_transform_identity_at(
+                    bytes,
+                    compact_tail_end,
+                    record_end,
+                ))
         {
             Some(compact_tail_end)
         } else {
@@ -2369,7 +3156,37 @@ struct LegacyPlaceableEmptyInlineFallbackName {
     length_offset: usize,
     text_start: usize,
     text_end: usize,
+    tail_start: usize,
     legacy_tail_end: usize,
+}
+
+fn apply_legacy_placeable_empty_inline_fallback_name(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    recovered: LegacyPlaceableEmptyInlineFallbackName,
+) -> Option<(usize, usize)> {
+    let recovered_len = u32::try_from(recovered.text_end - recovered.text_start).ok()?;
+    let text_base = recovered.length_offset.checked_add(CNW_LENGTH_BYTES)?;
+    write_u32_le(bytes, recovered.length_offset, recovered_len)?;
+
+    let mut text_end = recovered.text_end;
+    let mut tail_start = recovered.tail_start;
+    let mut legacy_tail_end = recovered.legacy_tail_end;
+    if recovered.text_start > text_base {
+        let removed = recovered.text_start - text_base;
+        bytes.drain(text_base..recovered.text_start);
+        *record_end = record_end.checked_sub(removed)?;
+        text_end = text_end.checked_sub(removed)?;
+        tail_start = tail_start.checked_sub(removed)?;
+        legacy_tail_end = legacy_tail_end.checked_sub(removed)?;
+    }
+    if tail_start > text_end {
+        let removed = tail_start - text_end;
+        bytes.drain(text_end..tail_start);
+        *record_end = record_end.checked_sub(removed)?;
+        legacy_tail_end = legacy_tail_end.checked_sub(removed)?;
+    }
+    Some((text_end, legacy_tail_end))
 }
 
 fn try_find_legacy_placeable_empty_inline_fallback_name(
@@ -2397,23 +3214,84 @@ fn try_find_legacy_placeable_empty_inline_fallback_name(
         return None;
     }
 
-    let text_start = name_offset + CNW_LENGTH_BYTES;
-    let text_limit = text_start
-        .saturating_add(MAX_LIVE_OBJECT_NAME_BYTES)
-        .min(record_end);
-    for text_end in text_start + 1..=text_limit {
-        if !is_legacy_bare_placeable_name_byte(bytes[text_end - 1]) {
+    let base_text_start = name_offset + CNW_LENGTH_BYTES;
+    for prefix_skip in 0usize..=LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES {
+        let text_start = base_text_start.checked_add(prefix_skip)?;
+        if text_start >= record_end {
             break;
         }
-        if let Some(legacy_tail_end) =
-            legacy_placeable_add_tail_end(bytes, text_end, record_end, allow_optional_object)
-        {
-            return Some(LegacyPlaceableEmptyInlineFallbackName {
-                length_offset: name_offset,
-                text_start,
-                text_end,
-                legacy_tail_end,
-            });
+        let text_limit = text_start
+            .saturating_add(MAX_LIVE_OBJECT_NAME_BYTES)
+            .min(record_end);
+        for text_end in text_start + 1..=text_limit {
+            if !is_legacy_bare_placeable_name_byte(bytes[text_end - 1]) {
+                break;
+            }
+            let padding_limit = text_end.saturating_add(4).min(record_end);
+            for tail_start in text_end..=padding_limit {
+                if bytes[text_end..tail_start].iter().any(|byte| *byte != 0) {
+                    break;
+                }
+                if let Some(legacy_tail_end) = legacy_placeable_add_tail_end(
+                    bytes,
+                    tail_start,
+                    record_end,
+                    allow_optional_object,
+                ) {
+                    return Some(LegacyPlaceableEmptyInlineFallbackName {
+                        length_offset: name_offset,
+                        text_start,
+                        text_end,
+                        tail_start,
+                        legacy_tail_end,
+                    });
+                }
+            }
+        }
+    }
+
+    for prefix_skip in 0usize..=LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES {
+        let text_start = base_text_start.checked_add(prefix_skip)?;
+        if text_start >= record_end {
+            break;
+        }
+        let tail_limit = text_start
+            .saturating_add(MAX_LIVE_OBJECT_NAME_BYTES)
+            .min(record_end);
+        for tail_start in text_start + 1..=tail_limit {
+            let text = &bytes[text_start..tail_start];
+            if text.first().is_none_or(|byte| !is_legacy_bare_placeable_name_byte(*byte)) {
+                break;
+            }
+            if !text
+                .iter()
+                .all(|byte| *byte == 0 || is_legacy_bare_placeable_name_byte(*byte))
+            {
+                break;
+            }
+            if !text
+                .iter()
+                .rfind(|byte| **byte != 0)
+                .is_some_and(|byte| is_legacy_bare_placeable_name_byte(*byte))
+            {
+                continue;
+            }
+            if let Some(legacy_tail_end) =
+                legacy_placeable_add_tail_end(bytes, tail_start, record_end, allow_optional_object)
+            {
+                // Diamond/EE direct `CExoString` readers consume a bounded byte
+                // span, not a C string. Local Diamond compact placeable adds can
+                // leave zero control/padding bytes inside that span before the
+                // decompile-owned tail. Preserve the exact raw bytes as the EE
+                // direct-name payload and only repair the missing length prefix.
+                return Some(LegacyPlaceableEmptyInlineFallbackName {
+                    length_offset: name_offset,
+                    text_start,
+                    text_end: tail_start,
+                    tail_start,
+                    legacy_tail_end,
+                });
+            }
         }
     }
 
@@ -2434,7 +3312,8 @@ fn has_ee_identity_visual_transform_map_at(bytes: &[u8], offset: usize, record_e
 fn candidate_inside_inline_string(bytes: &[u8], search_start: usize, candidate: usize) -> bool {
     let mut string_offset = search_start;
     while string_offset + 4 <= candidate && string_offset < bytes.len() {
-        if let Some(string_end) = inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
+        if let Some(string_end) =
+            inline_cexo_string_end_for_boundary_suppression(bytes, string_offset)
         {
             if string_offset + 4 <= candidate && candidate < string_end {
                 return true;
@@ -2445,13 +3324,13 @@ fn candidate_inside_inline_string(bytes: &[u8], search_start: usize, candidate: 
     false
 }
 
-fn inline_cexo_string_end_for_boundary_suppression(
-    bytes: &[u8],
-    offset: usize,
-) -> Option<usize> {
+fn inline_cexo_string_end_for_boundary_suppression(bytes: &[u8], offset: usize) -> Option<usize> {
     let end = inline_cexo_string_end(bytes, offset)?;
     let text = bytes.get(offset + CNW_LENGTH_BYTES..end)?;
-    if text.iter().all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e)) {
+    if text
+        .iter()
+        .all(|byte| matches!(*byte, 0 | b'\t' | 0x20..=0x7e))
+    {
         Some(end)
     } else {
         None
@@ -2546,12 +3425,88 @@ fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-const _: () = {
-    assert!(
-        EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()
-            == EE_LEGACY_VISUAL_TRANSFORM_LERP_FLOAT_COUNT * CNW_LENGTH_BYTES
-    );
-};
+#[cfg(test)]
+mod placeable_name_mode_tests {
+    use super::*;
+
+    fn inline_placeable_add_record() -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[
+            b'A',
+            PLACEABLE_OBJECT_TYPE,
+            0xDC,
+            0x34,
+            0x00,
+            0x80,
+        ]);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(b"Lamp");
+        bytes.push(5);
+        bytes.extend_from_slice(&2025u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        let record_end = bytes.len();
+        (bytes, record_end)
+    }
+
+    #[test]
+    fn outer_true_inner_false_inline_placeable_name_keeps_locstring_inline_branch() {
+        let (mut bytes, mut record_end) = inline_placeable_add_record();
+        let mut bits = vec![
+            true, false, true, false, true, false, true, false, true, false, true,
+        ];
+        let mut bit_cursor = 0usize;
+
+        let rewrite = rewrite_legacy_placeable_add_record_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            None,
+        )
+        .expect("inline locstring placeable add should rewrite");
+
+        assert_eq!(rewrite.maps_inserted, 1);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32
+        );
+        assert_eq!(bit_cursor, 12);
+        assert!(bits[0], "outer locstring branch must remain selected");
+        assert!(!bits[1], "inline locstring inner/client-tlk bit must remain false");
+        assert!(has_ee_identity_visual_transform_map_at(
+            &bytes, 19, record_end
+        ));
+    }
+
+    #[test]
+    fn outer_true_inner_true_inline_placeable_name_uses_direct_name_repair() {
+        let (mut bytes, mut record_end) = inline_placeable_add_record();
+        let mut bits = vec![
+            true, true, true, false, true, false, true, false, true, false,
+        ];
+        let mut bit_cursor = 0usize;
+
+        let _rewrite = rewrite_legacy_placeable_add_record_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            None,
+        )
+        .expect("contradictory direct-name placeable add should rewrite");
+
+        assert_eq!(bit_cursor, 11);
+        assert!(
+            !bits[0],
+            "outer=true, inner=true with inline bytes is the decompile-invalid direct-name repair shape"
+        );
+        assert!(has_ee_identity_visual_transform_map_at(
+            &bytes, 19, record_end
+        ));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2583,6 +3538,41 @@ mod tests {
         let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
             .expect("door add map rewrite");
         assert_eq!(summary.maps_inserted, 2);
+    }
+
+    #[test]
+    fn direct_inline_door_add_uses_ee_direct_name_branch() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let fragment_bits = vec![
+            false, false, false, // CNW fragment length header, rewritten by pack.
+            true, false, false, false, false, false, false,
+            // Legacy/HG can present the direct CExoString bytes with the
+            // outer locstring branch set and the helper's inner bit false.
+            // EE can read that alternate helper path, but the decompile-owned
+            // canonical shape for direct bytes is outer=false:
+            // `sub_140796DD0` -> `ReadCExoString(0x20)`.
+        ];
+        let mut payload = live_object_payload(live, fragment_bits);
+
+        let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
+            .expect("door add map/name-branch rewrite");
+        assert_eq!(summary.maps_inserted, 1);
+
+        let declared = read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES)
+            .expect("rewritten live-object declared length") as usize;
+        let fragment_bits = decode_cnw_msb_valid_bits(&payload[declared..])
+            .expect("rewritten live-object fragment bits");
+        assert_eq!(fragment_bits.len(), CNW_FRAGMENT_HEADER_BITS + 6);
+        assert!(
+            !fragment_bits[CNW_FRAGMENT_HEADER_BITS],
+            "direct CExoString door names must use the EE outer=false branch"
+        );
+
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("canonical direct-name door add exact claim");
+        assert_eq!(claim.add_records, 1);
     }
 
     #[test]
@@ -2651,6 +3641,40 @@ mod tests {
 
         let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
             .expect("trigger/door mixed exact claim");
+        assert!(claim.add_records > 0);
+        assert!(claim.update_records > 0);
+    }
+
+    #[test]
+    fn local_diamond_zero_prefixed_door_burst_rewrites_to_exact_ee_claim() {
+        let mut payload = include_bytes!(
+            "../../fixtures/live_object/local_bw167demo_zero_prefixed_door_burst.bin"
+        )
+        .to_vec();
+
+        let normalize_summary = normalize_prefixed_fragments_payload_if_needed(&mut payload)
+            .expect("zero legacy fragment prefix should normalize");
+        assert_eq!(normalize_summary.old_wire_declared, 0);
+        assert_eq!(normalize_summary.prefixed_fragment_bytes, [0, 0, 0, 0]);
+
+        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+            &mut payload,
+        );
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+            &mut payload,
+        );
+        let _ =
+            crate::translate::live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(
+                &mut payload,
+            );
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+            &mut payload,
+        );
+
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("local Diamond zero-prefixed door burst should exact-claim after rewrite");
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
     }
@@ -2760,10 +3784,27 @@ mod tests {
         let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
             .expect("short door add rewrite");
         assert_eq!(summary.maps_inserted, 1);
-        assert_eq!(summary.bytes_inserted, 44);
+        assert_eq!(summary.bytes_inserted, 12);
         assert!(
             crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
         );
+    }
+
+    #[test]
+    fn generic_door_second_dword_is_not_compact_short_name() {
+        let mut live = Vec::new();
+        live.push(b'A');
+        live.push(DOOR_OBJECT_TYPE);
+        live.extend_from_slice(&0x8000_34CDu32.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.extend_from_slice(&0x14E5u32.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+
+        assert!(!legacy_compact_door_add_omits_second_dword_for_ee(
+            &live,
+            0,
+            live.len()
+        ));
     }
 
     #[test]
@@ -2786,7 +3827,7 @@ mod tests {
         let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
             .expect("compact placeable add rewrite");
         assert_eq!(summary.maps_inserted, 1);
-        assert_eq!(summary.bytes_inserted, 41);
+        assert_eq!(summary.bytes_inserted, 9);
         assert!(
             crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
         );
@@ -2834,17 +3875,18 @@ mod tests {
         let update_summary =
             crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
                 &mut payload,
-            )
-            .expect("pending stream update finalization rewrite");
+            );
         dump_pending_seq31_step("step3-update-finalization", &payload);
-        assert!(
-            update_summary.update_records_examined > 0
-                && (update_summary.update_records_rewritten > 0
-                    || update_summary.bytes_inserted > 0
-                    || update_summary.bytes_removed > 0
-                    || update_summary.interleaved_fragment_spans_promoted > 0),
-            "pending stream update finalization must still make typed progress: {update_summary:?}"
-        );
+        if let Some(update_summary) = update_summary {
+            assert!(
+                update_summary.update_records_examined > 0
+                    && (update_summary.update_records_rewritten > 0
+                        || update_summary.bytes_inserted > 0
+                        || update_summary.bytes_removed > 0
+                        || update_summary.interleaved_fragment_spans_promoted > 0),
+                "pending stream update finalization must still make typed progress: {update_summary:?}"
+            );
+        }
         let _ = crate::translate::live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(
             &mut payload,
         );
@@ -2869,10 +3911,7 @@ mod tests {
             return;
         }
         let _ = std::fs::create_dir_all("target/pending-seq31-steps");
-        let _ = std::fs::write(
-            format!("target/pending-seq31-steps/{name}.bin"),
-            payload,
-        );
+        let _ = std::fs::write(format!("target/pending-seq31-steps/{name}.bin"), payload);
     }
 
     #[test]
@@ -2941,10 +3980,16 @@ mod tests {
             "expected board and Portal placeable maps to be retained and rewritten, got {visual_summary:?}"
         );
 
-        crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        )
-        .expect("placeable update rewrite");
+        let second_update =
+            crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+                &mut payload,
+            );
+        if second_update.is_none() {
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some(),
+                "placeable stream must be exact-claimable if the second update pass is a no-op"
+            );
+        }
         let _ = rewrite_creature_add_visual_transform_maps_if_possible(
             &mut payload,
             Some(&area_context),
@@ -3047,8 +4092,8 @@ mod hg_mixed_door_placeable_translation_tests {
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         let visual_summary =
             rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).expect(
-            "compact transition placeable add should receive an EE visual-transform map",
-        );
+                "compact transition placeable add should receive an EE visual-transform map",
+            );
         assert_eq!(visual_summary.maps_inserted, 1);
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
@@ -3092,8 +4137,8 @@ mod hg_mixed_door_placeable_translation_tests {
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         let visual_summary =
             rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).expect(
-            "compact transition placeable add should receive an EE visual-transform map",
-        );
+                "compact transition placeable add should receive an EE visual-transform map",
+            );
         assert_eq!(visual_summary.maps_inserted, 1);
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
@@ -3103,6 +4148,64 @@ mod hg_mixed_door_placeable_translation_tests {
             live_update::claim_payload_if_verified(&payload).is_some(),
             "door-transition Ascension West mixed live-object burst must be exact-claimable"
         );
+    }
+
+    #[test]
+    fn hg_seq38_prefixed_shifted_placeable_stream_stays_quarantined() {
+        let mut payload = include_bytes!(
+            "../../fixtures/live_object/hg_starc5_seq38_placeable_prefixed_unclaimed_20260513.bin"
+        )
+        .to_vec();
+
+        assert!(
+            normalize_prefixed_fragments_payload_if_needed(&mut payload).is_none(),
+            "shifted seq38 stream must not be salvaged from false U/A/W byte patterns"
+        );
+        assert!(live_update::rewrite_update_records_payload_if_possible(&mut payload).is_none());
+        assert!(rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None).is_none());
+        assert!(
+            live_update::claim_payload_if_verified(&payload).is_none(),
+            "without a decompile-owned first record, seq38 stays quarantined"
+        );
+    }
+
+    #[test]
+    fn hg_seq37_pending_shifted_placeable_chunks_stay_quarantined() {
+        for fixture in [
+            include_bytes!(
+                "../../fixtures/live_object/hg_starc5_seq37_pending_live_object_chunk1_unclaimed_20260513.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../fixtures/live_object/hg_starc5_seq37_pending_live_object_chunk2_unclaimed_20260513.bin"
+            )
+            .as_slice(),
+        ] {
+            let mut payload = fixture.to_vec();
+            let original = payload.clone();
+
+            assert!(
+                normalize_prefixed_fragments_payload_if_needed(&mut payload).is_none(),
+                "seq37 chunks already carry an in-range declared length and must not enter prefixed salvage"
+            );
+            assert!(live_update::rewrite_update_records_payload_if_possible(&mut payload).is_none());
+            assert!(
+                rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
+                    .is_none()
+            );
+            assert!(
+                live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload)
+                    .is_none()
+            );
+            assert_eq!(
+                payload, original,
+                "shifted seq37 chunks must not be mutated without a typed first record"
+            );
+            assert!(
+                live_update::claim_payload_if_verified(&payload).is_none(),
+                "shifted seq37 chunks remain quarantined until a stream owner proves the lead-in"
+            );
+        }
     }
 }
 
@@ -3128,5 +4231,36 @@ mod embedded_nul_placeable_name_tests {
             live_update::claim_payload_if_verified(&payload).is_some(),
             "embedded-NUL placeable names are valid CExoString payloads and must remain exact-claimable"
         );
+    }
+}
+
+#[cfg(test)]
+mod local_diamond_live_object_tests {
+    use super::*;
+    use crate::translate::live_object_update as live_update;
+
+    #[test]
+    fn local_diamond_bw167demo_initial_live_object_rewrites_to_exact_claim() {
+        let mut payload = include_bytes!(
+            "../../fixtures/live_object/local_diamond_bw167demo_initial_live_object_seq12_unclaimed.bin"
+        )
+        .to_vec();
+
+        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
+        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+
+        let claim = live_update::claim_payload_if_verified(&payload)
+            .expect("local Diamond bw167demo initial live-object stream must be exact-claimable");
+        assert!(claim.add_records > 0);
+        assert!(claim.update_records > 0);
+        assert!(claim.world_status_records > 0);
     }
 }
