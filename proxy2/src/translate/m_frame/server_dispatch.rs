@@ -952,6 +952,10 @@ fn translate_live_object_prefixed_fragments(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if !is_live_object_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     let mut candidate = payload.clone();
     let Some(summary) = live_object::normalize_prefixed_fragments_payload_if_needed(&mut candidate)
     else {
@@ -1023,6 +1027,10 @@ fn translate_live_object_declared_length_repair(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if !is_live_object_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     // Decompile-backed transport repair, not a passthrough fallback:
     // EE reaches live-object handling through `P 05 01`, then calls
     // `CNWMessage::SetReadMessage` with the declared byte window and reads the
@@ -1103,6 +1111,10 @@ fn translate_live_object_exact_records(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if !is_live_object_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     let mut candidate = payload.clone();
     if let Some(summary) =
         live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate)
@@ -1135,6 +1147,10 @@ fn translate_live_object_records_if_verified(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     source: &'static str,
 ) -> ServerTranslatorOutcome {
+    if !is_live_object_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     dump_live_object_probe_if_enabled(payload, source);
 
     let mut candidate = payload.clone();
@@ -1348,6 +1364,10 @@ fn translate_live_object_claimed_records(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if !is_live_object_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     if crate::translate::live_object_update::payload_contains_door_or_placeable_add_update_record(
         payload,
     ) {
@@ -1689,6 +1709,81 @@ mod live_object_dispatch_tests {
         assert_eq!(claim.declared, emitted_declared);
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
+    }
+
+    #[test]
+    fn live_object_translators_ignore_non_live_high_level_payloads() {
+        for original in [
+            vec![b'P', 0x03, 0x01, 0x00, 0x00, 0x00, 0x00],
+            vec![b'P', 0x04, 0x01, 0x00, 0x00, 0x00, 0x00],
+        ] {
+            let mut payload = original.clone();
+            assert!(matches!(
+                translate_live_object_prefixed_fragments(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+
+            assert!(matches!(
+                translate_live_object_exact_records(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+
+            assert!(matches!(
+                translate_live_object_add_records(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+
+            assert!(matches!(
+                translate_live_object_update_records(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+
+            assert!(matches!(
+                translate_live_object_claimed_records(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+
+            assert!(matches!(
+                translate_live_object_declared_length_repair(
+                    &mut payload,
+                    None,
+                    SemanticScope::CoalescedSpan,
+                    None
+                ),
+                ServerTranslatorOutcome::None
+            ));
+            assert_eq!(payload, original);
+        }
     }
 }
 
