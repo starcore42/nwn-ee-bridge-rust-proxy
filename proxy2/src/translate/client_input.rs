@@ -1397,6 +1397,52 @@ mod tests {
     }
 
     #[test]
+    fn local_diamond_door_open_fixture_matches_decompile_cursor_shape() {
+        // Captured from the local Diamond harness door auto-use path against
+        // bw167demo's compact door id.
+        let fixture = [
+            0x70, 0x06, 0x03, 0x0D, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x80, 0x15, 0x00, 0x68,
+        ];
+        let summary =
+            claim_payload_if_verified(&fixture).expect("local door-open should be claimed");
+        let parsed = parse_change_door_state(&fixture).expect("local door-open should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::ChangeDoorState);
+        assert_eq!(summary.packet_name, "Input_ChangeDoorState");
+        assert_eq!(summary.declared, DOOR_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_0003);
+        assert_eq!(parsed.door_id, 0x8000_0003);
+        assert_eq!(parsed.state, DOOR_OPEN_STATE);
+    }
+
+    #[test]
+    fn local_diamond_door_transition_walk_fixture_matches_decompile_cursor_shape() {
+        // Captured from the local Diamond harness transition-click follow-up
+        // after opening bw167demo's compact door id.
+        let fixture = [
+            0x70, 0x06, 0x01, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x9A, 0x99, 0xDD,
+            0x41, 0x00, 0x00, 0x10, 0x42, 0x6F, 0x12, 0x03, 0x3B, 0x00, 0x00, 0x03, 0x00, 0x00,
+            0x80, 0xB0,
+        ];
+        let summary =
+            claim_payload_if_verified(&fixture).expect("local transition walk should be claimed");
+        let parsed = parse_walk_to_waypoint(&fixture).expect("local transition walk should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::WalkToWaypoint);
+        assert_eq!(summary.packet_name, "Input_WalkToWaypoint");
+        assert_eq!(summary.declared, WALK_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_0000);
+        assert_eq!(parsed.area_id, 0x8000_0000);
+        assert_eq!(parsed.action_object_id, 0x8000_0003);
+        assert_eq!(parsed.input_byte, 0);
+        assert_eq!(parsed.action_byte, 0);
+        assert!(parsed.first_bool);
+        assert!(!parsed.second_bool);
+    }
+
+    #[test]
     fn unlock_object_only_shape_matches_decompile_cursor_shape() {
         let payload = build_object_only_payload(UNLOCK_OBJECT_MINOR, 0x8000_34D1);
         let summary = claim_payload_if_verified(&payload).expect("unlock packet should be claimed");
