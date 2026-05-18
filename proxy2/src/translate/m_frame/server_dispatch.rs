@@ -1892,6 +1892,33 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_claims_local_diamond_auto_inventory_gui_rows() {
+        // Local Diamond auto-open-inventory stream from 2026-05-19: declared
+        // `G I A` / `G R A` item-create rows are owned by the focused GUI
+        // item-create translator. The dispatcher may emit it only after the
+        // typed rewrite and exact EE live-object validator agree.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_diamond_seq20_auto_inventory_gia_gra_20260519.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "dispatcher local auto-inventory GUI claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned local auto-inventory GUI payload must be exact EE live-object shape");
+        assert!(claim.live_gui_item_create_records >= 5);
+    }
+
+    #[test]
     fn dispatcher_claims_hg_seq36_declared_repair_without_retry_storm() {
         // Live HG Starcore5 Docks seq36 carries a stale CNW declared value
         // inside a legal live-object burst. The dispatcher may repair the
@@ -1918,6 +1945,79 @@ mod tests {
         assert!(
             crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
         );
+    }
+
+    #[test]
+    fn dispatcher_claims_current_hg_town_npc_ids_without_retry_storm() {
+        for (name, fixture) in current_hg_town_npc_fixtures() {
+            let mut payload = fixture.to_vec();
+
+            let started = std::time::Instant::now();
+            let rewrite = dispatch_live_object_fixture(&mut payload);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{name} dispatcher live-object current HG town ids must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject,
+                "{name} should verify as live-object"
+            );
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some(),
+                "{name} should exact-claim after rewrite"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatcher_claims_current_hg_town_npc_ids_with_session_registry() {
+        for (name, fixture) in current_hg_town_npc_fixtures() {
+            let mut payload = fixture.to_vec();
+            let state = semantic::SemanticSessionState::default();
+
+            let started = std::time::Instant::now();
+            let rewrite = rewrite_single_inflated_payload_for_ee(
+                &mut payload,
+                None,
+                SemanticScope::DeflatedReassembly,
+                None,
+                Some(&state.objects),
+                None,
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{name} dispatcher live-object current HG town ids with registry must stay bounded"
+            );
+            assert!(
+                !rewrite.should_quarantine(),
+                "{name} registry finalization should not quarantine in-payload add/P/U lifecycle"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject,
+                "{name} should verify as live-object"
+            );
+        }
+    }
+
+    fn current_hg_town_npc_fixtures() -> [(&'static str, &'static [u8]); 2] {
+        [
+            (
+                "2026-05-19-live-hg-seq40-town-greeter-northern-trader",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_seq40_town_greeter_northern_trader_20260519.bin"
+                ),
+            ),
+            (
+                "2026-05-19-live-hg-seq39-town-greeter-northern-trader",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_seq39_town_greeter_northern_trader_20260519.bin"
+                ),
+            ),
+        ]
     }
 
     #[test]

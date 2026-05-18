@@ -250,6 +250,32 @@ mod tests {
     }
 
     #[test]
+    fn local_diamond_seq20_auto_inventory_gia_gra_claims_exact_ee_shape() {
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/local_diamond_seq20_auto_inventory_gia_gra_20260519.bin"
+        )
+        .as_slice();
+
+        let started = std::time::Instant::now();
+        let claim = claim_payload_if_verified(payload)
+            .expect("rebuilt local auto-inventory GUI stream must be exact EE live-object shape");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "auto-inventory GUI live-object claim must stay bounded"
+        );
+
+        assert!(
+            claim.live_gui_item_create_records >= 5,
+            "fixture should retain the inventory/repository GUI item-create rows"
+        );
+        assert_eq!(
+            claim.live_bytes_length + 7,
+            claim.declared,
+            "declared CNW read window should exactly cover the rewritten GUI live bytes"
+        );
+    }
+
+    #[test]
     fn pending_seq12_local_diamond_stream_uses_bounded_typed_passes_until_exact_claim() {
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_bw167demo_initial_live_object_seq12_20260517_unclaimed.bin"
@@ -448,6 +474,40 @@ mod tests {
         assert!(
             claim.creature_update_records >= 1,
             "fixture should retain the typed creature update record"
+        );
+    }
+
+    #[test]
+    fn hg_live_seq37_creature_4008_burst_rewrites_to_exact_ee_shape() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_seq37_creature_4008_captain_ogric_20260519.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw HG seq37 0x4008 creature burst documents the pre-rewrite Diamond live-object shape"
+        );
+
+        let started = std::time::Instant::now();
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None).expect(
+            "bounded typed live-object passes should rewrite the HG seq37 0x4008 creature burst",
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "seq37 0x4008 rewrite must stay bounded enough for the reliable window"
+        );
+
+        assert!(summary.changed());
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten HG seq37 0x4008 creature burst must be exact EE live-object shape");
+        assert!(
+            claim.creature_update_records >= 1,
+            "fixture should retain the typed 0x4008 creature update record"
+        );
+        assert!(
+            claim.add_records >= 1 && claim.creature_appearance_records >= 1,
+            "fixture should retain the following Captain/Ogric add and appearance records"
         );
     }
 
