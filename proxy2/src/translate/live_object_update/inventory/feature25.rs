@@ -268,9 +268,12 @@ pub(super) fn inventory_2a00_object_id_is_allowed(object_id: u32) -> bool {
     // clients do not require the owner to look like a materialized server oid
     // before advancing the read buffer; they resolve it for game-state updates
     // separately. HG can therefore send negative session-local sentinels such
-    // as 0xFFFFFF8E in this family. Keep that allowance local to this exact
-    // mask so other inventory packets still need their own decompile proof.
+    // as 0xFFFFFF8E in this family. The local Diamond auto-inventory stream
+    // also uses the compact current-player alias `0x000000FE` immediately
+    // before GUI inventory rows. Keep both allowances local to this exact mask
+    // so other inventory packets still need their own decompile proof.
     matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
+        || object_id == 0x0000_00FE
         || looks_like_legacy_live_object_id_value(object_id)
         || (object_id & 0xFFFF_FF00) == 0xFFFF_FF00
 }

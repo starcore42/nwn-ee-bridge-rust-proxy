@@ -115,6 +115,30 @@ impl GenericInventoryCandidate {
         }
         true
     }
+
+    fn materialize_missing_true_fragment_requirements(
+        self,
+        fragment_bits: &mut [bool],
+        bit_cursor: usize,
+    ) -> bool {
+        for bit_index in 0..u128::BITS as usize {
+            let bit = 1u128 << bit_index;
+            let Some(target) = bit_cursor.checked_add(bit_index) else {
+                return false;
+            };
+            if (self.required_false_bits & bit) != 0 {
+                if fragment_bits.get(target) != Some(&false) {
+                    return false;
+                }
+            } else if (self.required_true_bits & bit) != 0 {
+                let Some(slot) = fragment_bits.get_mut(target) else {
+                    return false;
+                };
+                *slot = true;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -450,6 +474,126 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
         interleaved_fragment_tail_allowed:
             generic_inventory_prefix_allows_interleaved_fragment_tail(mask, candidate),
     })
+}
+
+pub(super) fn try_get_missing_current_player_2a00_record_end(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+) -> Option<usize> {
+    try_get_missing_current_player_2a00_candidate(bytes, record_offset, search_end)
+        .map(|(record_end, _)| record_end)
+}
+
+fn try_get_missing_current_player_2a00_candidate(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+) -> Option<(usize, GenericInventoryCandidate)> {
+    if record_offset > bytes.len()
+        || search_end > bytes.len()
+        || search_end <= record_offset
+        || search_end - record_offset < 8
+        || bytes.get(record_offset).copied()? != 0
+        || read_u32_le(bytes, record_offset + 1)? != 0x0000_00FE
+        || read_u16_le(bytes, record_offset + 5)? != 0x2A00
+    {
+        return None;
+    }
+
+    let mut candidate = bytes.get(..search_end)?.to_vec();
+    candidate[record_offset] = b'I';
+    for record_end in record_offset + 8..search_end.saturating_sub(1) {
+        if !matches!(
+            (
+                bytes.get(record_end).copied(),
+                bytes.get(record_end + 1).copied()
+            ),
+            (Some(b'G'), Some(b'I' | b'R' | b'Q'))
+        ) {
+            continue;
+        }
+        if let Some(claim) =
+            try_get_legacy_live_inventory_claim_candidate(&candidate, record_offset, record_end)
+        {
+            return Some((record_end, claim));
+        }
+    }
+    None
+}
+
+pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(
+    bytes: &mut Vec<u8>,
+    record_offset: usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: usize,
+) -> Option<usize> {
+    let (record_end, claim) = match try_get_missing_current_player_2a00_candidate(
+        bytes,
+        record_offset,
+        bytes.len(),
+    ) {
+        Some(candidate) => candidate,
+        None => {
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                eprintln!(
+                    "live-object missing current-player inventory repair rejected: reason=byte-shape offset={record_offset} preview={:02X?}",
+                    bytes
+                        .get(record_offset..record_offset.saturating_add(48).min(bytes.len()))
+                        .unwrap_or(&[])
+                );
+            }
+            return None;
+        }
+    };
+    let original = *bytes.get(record_offset)?;
+
+    // Local Diamond auto-inventory captures can place the current-player
+    // `0x2A00` inventory body after a compact `U/5 0x4408` status record with
+    // a zero byte in the live-object opcode slot. The EE/Diamond dispatchers
+    // both require top-level inventory rows to enter through opcode `I`; only
+    // rewrite this exact compact owner/mask/body shape after the byte parser
+    // proves the 0x0200 byte-mask branch, Feature-25 list, and 0x0800 tail.
+    // Local auto-inventory can also omit the true selector bits for that body;
+    // materialize only those decompile-owned true bits, while any required
+    // false bit must already be false on the wire, then re-run the exact EE
+    // inventory cursor validator before committing the mutation.
+    bytes[record_offset] = b'I';
+    let mut proof_bits = fragment_bits.clone();
+    if claim.bits > proof_bits.len().saturating_sub(bit_cursor)
+        || !claim.materialize_missing_true_fragment_requirements(&mut proof_bits, bit_cursor)
+    {
+        bytes[record_offset] = original;
+        return None;
+    }
+    let mut proof_cursor = bit_cursor;
+    if advance_verified_inventory_record(
+        bytes,
+        record_offset,
+        record_end,
+        &proof_bits,
+        &mut proof_cursor,
+    )
+    .is_none()
+    {
+        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            eprintln!(
+                "live-object missing current-player inventory repair rejected: reason=fragment-proof offset={record_offset} record_end={record_end} bit_cursor={bit_cursor} next_bits={:?}",
+                fragment_bits
+                    .get(bit_cursor..bit_cursor.saturating_add(16).min(fragment_bits.len()))
+                    .unwrap_or(&[])
+            );
+        }
+        bytes[record_offset] = original;
+        return None;
+    }
+    *fragment_bits = proof_bits;
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object missing current-player inventory repair accepted: offset={record_offset} record_end={record_end} bit_cursor={bit_cursor} proof_cursor={proof_cursor}"
+        );
+    }
+    Some(record_end)
 }
 
 fn generic_inventory_prefix_allows_interleaved_fragment_tail(

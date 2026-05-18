@@ -2090,6 +2090,7 @@ pub fn rewrite_update_records_payload_if_possible(
     > = None;
     let mut offset = 0usize;
     let mut last_verified_record_end = 0usize;
+    let mut last_verified_creature_4408_record_end = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
     while offset + 2 <= live_bytes.len() {
         let proven_gui_record_end =
@@ -2117,6 +2118,20 @@ pub fn rewrite_update_records_payload_if_possible(
                     .unwrap_or(&[])
             );
         }
+        if bit_cursor_reliable
+            && last_verified_creature_4408_record_end == Some(offset)
+            && inventory::repair_missing_current_player_2a00_opcode_after_4408_for_ee(
+                &mut live_bytes,
+                offset,
+                &mut fragment_bits,
+                bit_cursor,
+            )
+            .is_some()
+        {
+            changed = true;
+            last_verified_creature_4408_record_end = None;
+            continue;
+        }
         if proven_gui_record_end.is_none()
             && !legacy_gui_rewrite_boundary
             && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset)
@@ -2142,6 +2157,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 }
             }
             last_verified_record_allows_trailing_fragment_promotion = false;
+            last_verified_creature_4408_record_end = None;
             offset += 1;
             continue;
         }
@@ -2792,6 +2808,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         &mut advanced_effect_cursor,
                     ) {
                         bit_cursor = advanced_effect_cursor;
+                        last_verified_creature_4408_record_end = None;
                         offset = record_end.max(offset + 1);
                         continue;
                     }
@@ -2836,6 +2853,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     offset,
                     record_end,
                 ) {
+                    last_verified_creature_4408_record_end = None;
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -2974,6 +2992,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     bit_cursor = promotion.end_bit_cursor;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
+                    last_verified_creature_4408_record_end = None;
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3006,6 +3025,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     bit_cursor = promotion.end_bit_cursor;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
+                    last_verified_creature_4408_record_end = None;
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3021,6 +3041,9 @@ pub fn rewrite_update_records_payload_if_possible(
                     pending_creature_p_tail_repair = None;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
+                    last_verified_creature_4408_record_end = (read_u32_le(&live_bytes, offset + 6)
+                        == Some(0x0000_4408))
+                    .then_some(record_end);
                 } else if let Some(pending) = pending_creature_p_tail_repair.as_ref() {
                     if let Some(repair) = tail_repair::try_repair_for_creature_update(
                         pending,
@@ -3056,6 +3079,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         );
                         bit_cursor = repair.bit_cursor;
                         pending_creature_p_tail_repair = None;
+                        last_verified_creature_4408_record_end = None;
                     } else {
                         trace_update_rewrite_cursor_unreliable(
                             "creature-update-cursor-advance-failed",

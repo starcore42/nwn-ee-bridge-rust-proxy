@@ -77,6 +77,25 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         {
             return record_end;
         }
+        if read_u32_le(bytes, offset + 6) == Some(0x0000_4408) {
+            let legacy_4408_end = offset.saturating_add(LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8);
+            if legacy_4408_end < scan_end
+                && inventory::try_get_missing_current_player_2a00_record_end(
+                    bytes,
+                    legacy_4408_end,
+                    scan_end,
+                )
+                .is_some()
+            {
+                // Local Diamond auto-inventory can follow the compact
+                // `U/5 0x4408` self/status record with a current-player
+                // `0x2A00` inventory body whose live-object opcode byte is
+                // zero. The inventory translator repairs that slot only after
+                // exact parser/fragment-bit proof; the boundary scanner merely
+                // prevents the preceding status record from swallowing it.
+                return legacy_4408_end;
+            }
+        }
     }
 
     if bytes.get(offset).copied() == Some(b'A')
