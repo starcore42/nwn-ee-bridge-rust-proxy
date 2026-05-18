@@ -417,6 +417,58 @@ pub(super) fn try_get_ee_creature_update_c408_record_end(
     (cursor <= scan_end).then_some(cursor)
 }
 
+pub(super) fn try_get_ee_creature_update_4008_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // EE `CNWSMessage::WriteGameObjUpdate_UpdateObject` handles mask bit
+    // `0x0008` by writing the visual-effect delta count and current-build
+    // ObjectVisualTransformData after each three-byte effect entry. Mask bit
+    // `0x4000` then consumes only seven fragment BOOLs in the no-master branch
+    // proven by the paired cursor validator. This boundary helper owns only the
+    // byte span after the focused rewrite inserted identity maps.
+    if offset + 12 > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(bytes, offset + 6)? != 0x0000_4008
+    {
+        return None;
+    }
+
+    let count = usize::from(read_u16_le(bytes, offset + 10)?);
+    if count == 0 || count > 256 {
+        return None;
+    }
+
+    let mut cursor = offset.checked_add(12)?;
+    for _ in 0..count {
+        if scan_end.saturating_sub(cursor)
+            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+        {
+            return None;
+        }
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
+            return None;
+        }
+        cursor = cursor.checked_add(3)?;
+        let after_visual_transform = cursor
+            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
+            bytes,
+            cursor,
+            after_visual_transform,
+        ) {
+            return None;
+        }
+        cursor = after_visual_transform;
+    }
+
+    (cursor <= scan_end).then_some(cursor)
+}
+
 pub(super) fn try_get_ee_creature_update_c40f_record_end(
     bytes: &[u8],
     offset: usize,

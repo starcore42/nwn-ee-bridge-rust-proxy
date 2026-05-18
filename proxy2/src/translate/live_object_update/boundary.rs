@@ -288,7 +288,8 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
     // BOOL control before returning to the live-object dispatcher. Only the
     // compact numeric update families with decompile-owned byte lengths may
     // claim a boundary here.
-    creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end)
+    creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end)
+        .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
 }
@@ -702,6 +703,28 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // generic live-object scanner from treating the interior `A` effect byte
         // as a real `A/5` submessage boundary.
         return LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8;
+    }
+
+    if raw_mask == 0x0000_4008 {
+        // HG live seq37 proves the same status-effect/self-status writer
+        // family without the `0x0400`/`0x8000` scalar/visibility suffixes:
+        //
+        //   U/5 header + mask
+        //   0x0008 status-effect delta: WORD count, count * 3 legacy bytes
+        //   0x4000 self/status suffix: fragment BOOLs only
+        //
+        // The encoded status-effect rows start with `A`/`D` bytes that are not
+        // live-object submessage boundaries. Keep this as a count-derived read
+        // floor only; the focused creature translator still inserts EE object
+        // visual-transform maps and the exact validator proves the fragment
+        // cursor before emission.
+        let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        };
+        if count > 256 {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        }
+        return LEGACY_UPDATE_HEADER_BYTES + 2 + usize::from(count) * 3;
     }
 
     if raw_mask == 0x0000_C408 {
