@@ -4,7 +4,10 @@
 //! richer typed models later, but the reducer should only receive facts already
 //! proven by an exact parser/writer/validator path.
 
-use crate::{packet::Direction, translate::VerifiedFamily};
+use crate::{
+    packet::Direction,
+    translate::{VerifiedFamily, player_list::PlayerListObjectIds},
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedHighLevel {
@@ -23,6 +26,7 @@ pub(crate) enum ProtocolEvent {
     ServerStatus(ServerStatusEvent),
     Area(AreaEvent),
     LiveObject(LiveObjectEvent),
+    PlayerList(PlayerListEvent),
     Quickbar(QuickbarEvent),
     Inventory(InventoryEvent),
     ClientInput(ClientInputEvent),
@@ -61,6 +65,12 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) mentions: Vec<LiveObjectMention>,
     pub(crate) materialized_item_object_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlayerListEvent {
+    pub(crate) observed: ObservedHighLevel,
+    pub(crate) object_ids: Vec<PlayerListObjectIds>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

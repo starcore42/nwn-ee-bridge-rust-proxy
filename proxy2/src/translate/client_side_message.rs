@@ -448,8 +448,7 @@ fn rewrite_legacy_bulk_feedback_stale_declared_full_text_len(payload: &mut Vec<u
         return None;
     }
 
-    let stale_declared =
-        usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let stale_declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
     if stale_declared <= text_start || stale_declared >= payload.len() {
         return None;
@@ -461,8 +460,7 @@ fn rewrite_legacy_bulk_feedback_stale_declared_full_text_len(payload: &mut Vec<u
         return None;
     }
 
-    let text_len =
-        usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
+    let text_len = usize::try_from(read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)?).ok()?;
     if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text_len) {
         return None;
     }

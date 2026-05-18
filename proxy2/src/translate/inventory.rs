@@ -8,6 +8,11 @@
 //! - EE `CNWSMessage::SendServerToPlayerInventory_Equip` creates family
 //!   `0x0C`, minor `0x01`, then writes `WriteOBJECTIDServer(object_id)`,
 //!   `WriteBOOL(result)`, and `WriteDWORD(equip_slot, 0x20)`.
+//! - EE `CNWCMessage::HandleServerToPlayerInventory` mirrors that reader shape:
+//!   `sub_1409737C0` for the object id, `ReadBOOL`, and for cases 1/2
+//!   `ReadDWORD(0x20)`. The bool is owned by CNW's MSB fragment stream, so the
+//!   exact proof is the final-bit cursor (`3` header bits + `1` semantic bool),
+//!   not zero-filled padding in the unused low bits of the final fragment byte.
 //! - EE `SendServerToPlayerInventory_EquipCancel` uses the same body shape and
 //!   sends minor `0x02`.
 //! - The previous driver-side compatibility hook documented HG/1.69 packets
@@ -26,7 +31,10 @@ const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const EE_READ_BYTES: usize = 8;
 const LEGACY_READ_BYTES: usize = 12;
-const MAX_FRAGMENT_BYTES: usize = 8;
+const SINGLE_BOOL_FRAGMENT_BYTES: usize = 1;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const INVENTORY_EQUIP_BOOL_BITS: usize = 1;
+const SINGLE_BOOL_FINAL_BITS: usize = CNW_FRAGMENT_HEADER_BITS + INVENTORY_EQUIP_BOOL_BITS;
 const SERVER_OBJECT_ID_NAMESPACE_MASK: u32 = 0xFF00_0000;
 const SERVER_ITEM_OBJECT_ID_NAMESPACE: u32 = 0x8000_0000;
 
@@ -53,16 +61,23 @@ pub fn claim_or_rewrite_payload_if_verified(
     }
 }
 
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<InventoryClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    match (high.major, high.minor) {
+        (INVENTORY_MAJOR, EQUIP_MINOR | EQUIP_CANCEL_MINOR) => {
+            claim_equip_shape(payload, high.minor)
+        }
+        _ => None,
+    }
+}
+
 fn claim_or_rewrite_equip_shape(payload: &mut Vec<u8>, minor: u8) -> Option<InventoryClaimSummary> {
     if payload.len() < READ_START + EE_READ_BYTES {
         return None;
     }
 
     let old_declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
-    if old_declared < READ_START
-        || old_declared > payload.len()
-        || payload.len().saturating_sub(old_declared) > MAX_FRAGMENT_BYTES
-    {
+    if old_declared < READ_START || old_declared > payload.len() {
         return None;
     }
 
@@ -74,6 +89,24 @@ fn claim_or_rewrite_equip_shape(payload: &mut Vec<u8>, minor: u8) -> Option<Inve
     }
 }
 
+fn claim_equip_shape(payload: &[u8], minor: u8) -> Option<InventoryClaimSummary> {
+    if payload.len() < READ_START + EE_READ_BYTES {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < READ_START || declared > payload.len() {
+        return None;
+    }
+
+    let read_len = declared.checked_sub(READ_START)?;
+    if read_len != EE_READ_BYTES {
+        return None;
+    }
+
+    claim_ee_equip_shape(payload, minor, declared)
+}
+
 fn claim_ee_equip_shape(
     payload: &[u8],
     minor: u8,
@@ -81,7 +114,10 @@ fn claim_ee_equip_shape(
 ) -> Option<InventoryClaimSummary> {
     let object_id = read_le_u32(payload, READ_START)?;
     let equip_slot = read_le_u32(payload, READ_START + CNW_LENGTH_BYTES)?;
-    if !looks_like_server_item_object_id(object_id) || !looks_like_equip_slot(equip_slot) {
+    if !looks_like_server_item_object_id(object_id)
+        || !looks_like_equip_slot(equip_slot)
+        || !single_bool_fragment_shape_valid(&payload[declared..])
+    {
         return None;
     }
 
@@ -92,7 +128,7 @@ fn claim_ee_equip_shape(
         legacy_prefix_removed: false,
         object_id,
         equip_slot,
-        fragment_bytes: payload.len() - declared,
+        fragment_bytes: SINGLE_BOOL_FRAGMENT_BYTES,
     })
 }
 
@@ -107,6 +143,7 @@ fn rewrite_legacy_prefixed_equip_shape(
     if legacy_prefix > 0xFF
         || !looks_like_server_item_object_id(object_id)
         || !looks_like_equip_slot(equip_slot)
+        || !single_bool_fragment_shape_valid(&payload[old_declared..])
     {
         return None;
     }
@@ -123,7 +160,7 @@ fn rewrite_legacy_prefixed_equip_shape(
         legacy_prefix_removed: true,
         object_id,
         equip_slot,
-        fragment_bytes: payload.len() - new_declared,
+        fragment_bytes: SINGLE_BOOL_FRAGMENT_BYTES,
     })
 }
 
@@ -135,8 +172,137 @@ fn looks_like_equip_slot(equip_slot: u32) -> bool {
     equip_slot != 0 && (equip_slot & SERVER_OBJECT_ID_NAMESPACE_MASK) == 0
 }
 
+fn single_bool_fragment_shape_valid(fragment: &[u8]) -> bool {
+    if fragment.len() != SINGLE_BOOL_FRAGMENT_BYTES {
+        return false;
+    }
+
+    usize::from((fragment[0] & 0xE0) >> 5) == SINGLE_BOOL_FINAL_BITS
+}
+
 fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     let target = bytes.get_mut(offset..offset.checked_add(CNW_LENGTH_BYTES)?)?;
     target.copy_from_slice(&value.to_le_bytes());
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claims_exact_ee_inventory_equip_shape() {
+        let payload = [
+            b'P',
+            INVENTORY_MAJOR,
+            EQUIP_MINOR,
+            0x0F,
+            0x00,
+            0x00,
+            0x00,
+            0x34,
+            0x12,
+            0x00,
+            0x80,
+            0x04,
+            0x00,
+            0x00,
+            0x00,
+            0x90,
+        ];
+
+        let claim = claim_payload_if_verified(&payload).expect("exact EE inventory equip claim");
+        assert_eq!(claim.minor, EQUIP_MINOR);
+        assert_eq!(claim.object_id, 0x8000_1234);
+        assert_eq!(claim.equip_slot, 4);
+        assert_eq!(claim.fragment_bytes, 1);
+        assert!(!claim.legacy_prefix_removed);
+    }
+
+    #[test]
+    fn rewrites_legacy_prefixed_inventory_equip_to_exact_ee_shape() {
+        let mut payload = vec![
+            b'P',
+            INVENTORY_MAJOR,
+            EQUIP_MINOR,
+            0x13,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x34,
+            0x12,
+            0x00,
+            0x80,
+            0x04,
+            0x00,
+            0x00,
+            0x00,
+            0x80,
+        ];
+
+        let rewrite = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("legacy prefixed inventory equip should rewrite");
+        assert!(rewrite.legacy_prefix_removed);
+        assert_eq!(rewrite.old_declared, 0x13);
+        assert_eq!(rewrite.new_declared, 0x0F);
+        assert_eq!(&payload[3..7], &0x0Fu32.to_le_bytes());
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn rejects_inventory_equip_without_exact_single_bool_fragment() {
+        let payload = [
+            b'P',
+            INVENTORY_MAJOR,
+            EQUIP_MINOR,
+            0x0F,
+            0x00,
+            0x00,
+            0x00,
+            0x34,
+            0x12,
+            0x00,
+            0x80,
+            0x04,
+            0x00,
+            0x00,
+            0x00,
+            0xA0,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn claims_captured_hg_inventory_equip_with_dirty_fragment_padding() {
+        let payload = [
+            b'P',
+            INVENTORY_MAJOR,
+            EQUIP_MINOR,
+            0x0F,
+            0x00,
+            0x00,
+            0x00,
+            0x69,
+            0x8E,
+            0x01,
+            0x80,
+            0x00,
+            0x00,
+            0x02,
+            0x00,
+            0x8B,
+        ];
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("captured HG Inventory_Equip should prove one bool fragment");
+        assert_eq!(claim.object_id, 0x8001_8E69);
+        assert_eq!(claim.equip_slot, 0x0002_0000);
+        assert_eq!(claim.fragment_bytes, 1);
+        assert!(!claim.legacy_prefix_removed);
+    }
 }

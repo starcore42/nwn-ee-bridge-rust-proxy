@@ -40,6 +40,13 @@ const MAX_MODULE_RESOURCE_COUNT: u32 = 4096;
 const MAX_AREA_NAME_LENGTH: usize = 512;
 const ZERO_NAME_TERMINATOR_MIN_ENTRIES: u32 = 32;
 const RESREF_BYTES: usize = 16;
+const HIGH_LEVEL_HEADER_BYTES: usize = 3;
+const CNW_LENGTH_BYTES: usize = 4;
+const MODULE_MAJOR: u8 = 0x03;
+const MODULE_END_GAME_MINOR: u8 = 0x0E;
+const MODULE_END_GAME_MAX_TEXT_BYTES: usize = 4096;
+const MODULE_END_GAME_SHA1_HEX_BYTES: usize = 40;
+const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
 
 #[derive(Debug, Clone)]
 pub struct RewriteSummary {
@@ -126,6 +133,55 @@ pub fn rewrite_module_info_payload(payload: &mut Vec<u8>) -> Option<RewriteSumma
 
 pub fn first_module_info_candidate_offset(payload: &[u8]) -> Option<usize> {
     module_info_candidate_offsets(payload).into_iter().next()
+}
+
+pub fn module_end_game_shape_valid(payload: &[u8]) -> bool {
+    // Decompile anchor: `CNWSMessage::SendServerToPlayerModule_EndGame`
+    // creates a CNW write message, writes the end-game `CExoString`, and for
+    // clients satisfying build `0x2001/0x1C` appends a second `CExoString`
+    // containing the module SHA1 hex string. Both Diamond and EE use the same
+    // read-buffer order, so this is an identity translator with an exact cursor
+    // proof rather than a byte patch.
+    if !is_high_level_envelope(payload.first().copied().unwrap_or_default())
+        || payload.get(1) != Some(&MODULE_MAJOR)
+        || payload.get(2) != Some(&MODULE_END_GAME_MINOR)
+    {
+        return false;
+    }
+
+    let Some(declared) =
+        read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+
+    if declared <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload.len() != declared + 1
+        || payload[declared] != FINAL_EMPTY_FRAGMENT_BYTE
+    {
+        return false;
+    }
+
+    let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let Some((next, _message_len)) =
+        read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_MAX_TEXT_BYTES)
+    else {
+        return false;
+    };
+    cursor = next;
+    if cursor == declared {
+        return true;
+    }
+
+    let Some((next, hash_len)) =
+        read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_SHA1_HEX_BYTES)
+    else {
+        return false;
+    };
+    next == declared
+        && (hash_len == 0
+            || (hash_len == MODULE_END_GAME_SHA1_HEX_BYTES
+                && payload[cursor + 4..next].iter().copied().all(is_ascii_hex)))
 }
 
 fn rewrite_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Option<RewriteSummary> {
@@ -384,11 +440,7 @@ fn sanitized_fixed_resref16(payload: &[u8], offset: usize, allow_empty: bool) ->
     sanitized_fixed_resref16_len(payload, offset, allow_empty).is_some()
 }
 
-fn sanitized_fixed_resref16_len(
-    payload: &[u8],
-    offset: usize,
-    allow_empty: bool,
-) -> Option<usize> {
+fn sanitized_fixed_resref16_len(payload: &[u8], offset: usize, allow_empty: bool) -> Option<usize> {
     let Some(bytes) = payload.get(offset..offset + RESREF_BYTES) else {
         return None;
     };
@@ -482,9 +534,11 @@ fn compact_area_object_id_near(payload: &[u8], name_start: usize) -> Option<u32>
         if (raw & 0x8000_0000) != 0 {
             return Some(raw);
         }
-        if best.is_none() && payload.get(offset..offset + 4).is_some_and(|bytes| {
-            bytes.iter().any(|byte| *byte == 0x80)
-        }) {
+        if best.is_none()
+            && payload
+                .get(offset..offset + 4)
+                .is_some_and(|bytes| bytes.iter().any(|byte| *byte == 0x80))
+        {
             best = Some(normalized);
         }
     }
@@ -857,6 +911,22 @@ fn read_raw_string_bounded_value(
     Some(value)
 }
 
+fn read_c_exo_string_shape(
+    payload: &[u8],
+    cursor: usize,
+    declared: usize,
+    max_len: usize,
+) -> Option<(usize, usize)> {
+    if cursor > declared || declared > payload.len() || declared.saturating_sub(cursor) < 4 {
+        return None;
+    }
+    let length = usize::try_from(read_le_u32(payload, cursor)?).ok()?;
+    if length > max_len || length > declared.saturating_sub(cursor + 4) {
+        return None;
+    }
+    Some((cursor + 4 + length, length))
+}
+
 fn skip_exact(payload: &[u8], cursor: &mut usize, length: usize, bound: usize) -> Option<()> {
     if *cursor > bound
         || bound > payload.len()
@@ -978,6 +1048,10 @@ fn is_resref_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
+fn is_ascii_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
 fn is_high_level_envelope(byte: u8) -> bool {
     byte == b'P' || byte == 0x70
 }
@@ -1048,6 +1122,28 @@ mod tests {
     }
 
     #[test]
+    fn claims_decompile_backed_module_end_game_single_string_shape() {
+        let payload = module_end_game_payload(&["The End"]);
+
+        assert!(module_end_game_shape_valid(&payload));
+    }
+
+    #[test]
+    fn claims_decompile_backed_module_end_game_with_sha1_shape() {
+        let payload =
+            module_end_game_payload(&["The End", "0123456789abcdef0123456789ABCDEF01234567"]);
+
+        assert!(module_end_game_shape_valid(&payload));
+    }
+
+    #[test]
+    fn rejects_module_end_game_with_unverified_second_string_shape() {
+        let payload = module_end_game_payload(&["The End", "not-a-sha1"]);
+
+        assert!(!module_end_game_shape_valid(&payload));
+    }
+
+    #[test]
     fn parses_legacy_custom_tlk_as_string_not_module_resref() {
         let payload = legacy_module_info_payload(
             "Path of Ascension CEP Legends",
@@ -1074,16 +1170,16 @@ mod tests {
     #[test]
     fn rewrites_compact_diamond_no_resource_module_info_to_exact_ee_shape() {
         let mut payload = vec![
-            0x50, 0x03, 0x01, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x77,
-            0x31, 0x36, 0x37, 0x64, 0x65, 0x6D, 0x6F, 0x00, 0x00, 0x00, 0x00, 0x62, 0x77,
-            0x31, 0x36, 0x37, 0x64, 0x65, 0x6D, 0x6F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x53, 0x75, 0x6E, 0x73, 0x68, 0x69, 0x6E,
-            0x65, 0x20, 0x56, 0x69, 0x6C, 0x6C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
-            0x00, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x4D, 0x61, 0x67, 0x69, 0x63,
-            0x20, 0x54, 0x00, 0x00, 0x00, 0x74, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
-            0x00, 0x52, 0x00, 0x00, 0x00, 0x00, 0x20, 0x48, 0x6F, 0x6D, 0x65, 0x00, 0xC0,
+            0x50, 0x03, 0x01, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x77, 0x31,
+            0x36, 0x37, 0x64, 0x65, 0x6D, 0x6F, 0x00, 0x00, 0x00, 0x00, 0x62, 0x77, 0x31, 0x36,
+            0x37, 0x64, 0x65, 0x6D, 0x6F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x00, 0x53, 0x75, 0x6E, 0x73, 0x68, 0x69, 0x6E, 0x65, 0x20, 0x56, 0x69, 0x6C, 0x6C,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00,
+            0x00, 0x4D, 0x61, 0x67, 0x69, 0x63, 0x20, 0x54, 0x00, 0x00, 0x00, 0x74, 0x00, 0x00,
+            0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x52, 0x00, 0x00, 0x00, 0x00, 0x20, 0x48, 0x6F,
+            0x6D, 0x65, 0x00, 0xC0,
         ];
 
         let summary = rewrite_module_info_payload(&mut payload)
@@ -1124,6 +1220,17 @@ mod tests {
         payload.push(0);
         let declared = (payload.len() - 1) as u32;
         payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload
+    }
+
+    fn module_end_game_payload(strings: &[&str]) -> Vec<u8> {
+        let mut payload = vec![b'P', MODULE_MAJOR, MODULE_END_GAME_MINOR, 0, 0, 0, 0];
+        for value in strings {
+            write_string(&mut payload, value);
+        }
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.push(FINAL_EMPTY_FRAGMENT_BYTE);
         payload
     }
 

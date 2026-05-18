@@ -94,6 +94,10 @@ impl ModuleResourceRuntime {
         self.nwsync_advertisement.as_ref()
     }
 
+    pub(crate) fn observed_declaration_requires_resource_status(&self) -> bool {
+        self.observed_module_resource_declaration().is_some()
+    }
+
     pub fn observe_legacy_module_info_resources(
         &self,
         hak_order_top_first: &[String],
@@ -116,6 +120,7 @@ impl ModuleResourceRuntime {
         // active stack for this session.
         crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
         crate::translate::genericdoors::observe_hak_order_top_first(hak_order_top_first);
+        crate::translate::placeables::observe_hak_order_top_first(hak_order_top_first);
 
         let Ok(mut observed) = self.observed_declaration.lock() else {
             return false;
@@ -223,7 +228,7 @@ pub fn rewrite_server_status_module_resources_payload(
     payload: &mut Vec<u8>,
     runtime: &ModuleResourceRuntime,
 ) -> Option<ModuleResourcesRewriteSummary> {
-    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES
         || !is_high_level_envelope(payload[0])
         || payload[1] != SERVER_STATUS_MAJOR
         || payload[2] != MODULE_RUNNING_MINOR
@@ -232,6 +237,29 @@ pub fn rewrite_server_status_module_resources_payload(
     }
 
     let observed = runtime.observed_module_resource_declaration()?;
+
+    if payload.len() == HIGH_LEVEL_HEADER_BYTES {
+        // Diamond can emit a bare `P 01/03` module-running status marker. EE's
+        // `CNWCMessage::HandleServerToPlayerServerStatus` enters the same
+        // high-level family but immediately reads a leading `CExoString` and
+        // then calls `CNWCModule::LoadModuleResources`, so a three-byte legacy
+        // marker is not an EE-valid no-op. Treat it as an empty status string
+        // shell and rewrite it into the exact EE resource block below.
+        let old_payload_length = payload.len();
+        let mut legacy_shell = build_legacy_status_payload_shell("")?;
+        legacy_shell[0] = payload[0];
+        let mut summary =
+            rewrite_payload_for_observed_declaration(&mut legacy_shell, runtime, observed)?;
+        summary.old_declared = u32::try_from(HIGH_LEVEL_HEADER_BYTES).ok()?;
+        summary.old_payload_length = old_payload_length;
+        *payload = legacy_shell;
+        return Some(summary);
+    }
+
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+        return None;
+    }
+
     rewrite_payload_for_observed_declaration(payload, runtime, observed)
 }
 
@@ -422,5 +450,54 @@ mod tests {
         assert_eq!(&payload[..3], &[b'P', 0x01, 0x03]);
         assert_eq!(read_u32_le(&payload, 3), Some(summary.new_declared));
         assert!(summary.new_declared > summary.old_declared);
+    }
+
+    #[test]
+    fn rewrites_bare_diamond_module_running_marker_into_ee_resource_block() {
+        // Local Diamond harness shape: a direct high-level module-running
+        // marker with no CNW read buffer. Diamond's client tolerates it as a
+        // status transition; EE's reader does not, because minor 0x03 reads a
+        // leading `CExoString` before `LoadModuleResources`.
+        let mut payload = vec![b'P', 0x01, 0x03];
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+
+        let summary = rewrite_server_status_module_resources_payload(&mut payload, &runtime)
+            .expect("bare module-running marker should be rewritten");
+
+        assert_eq!(summary.old_declared, 3);
+        assert_eq!(summary.old_payload_length, 3);
+        assert_eq!(summary.status_module_name, "");
+        assert_eq!(summary.custom_tlk.as_deref(), Some("cep23_v1"));
+        assert_eq!(summary.hak_count, 2);
+        assert_eq!(&payload[..3], &[b'P', 0x01, 0x03]);
+        assert_eq!(read_u32_le(&payload, 3), Some(summary.new_declared));
+        assert!(payload.len() > 3);
+    }
+
+    #[test]
+    fn observed_module_info_requires_resource_status_even_when_empty() {
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(&[], None));
+
+        // EE's `CNWCMessage::HandleServerToPlayerServerStatus` enters
+        // `CNWCModule::LoadModuleResources` from the `P 01/03` resource status
+        // packet. The packet is therefore a module-load state transition, not
+        // only a container for non-empty HAK/TLK/NWSync data.
+        assert!(runtime.observed_declaration_requires_resource_status());
+    }
+
+    #[test]
+    fn hak_or_custom_tlk_requires_resource_status() {
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(&["cep2_top_v23".to_string()], None));
+        assert!(runtime.observed_declaration_requires_resource_status());
+
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(&[], Some("cep23_v1")));
+        assert!(runtime.observed_declaration_requires_resource_status());
     }
 }

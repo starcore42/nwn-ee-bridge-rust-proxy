@@ -74,7 +74,10 @@ fn claim_frame_if_verified(
         });
     }
 
-    if view.packetized_sequence != 0 && view.declared_payload_length != 0 {
+    if matches!(direction, DirectionKind::ServerToClient)
+        && view.packetized_sequence != 0
+        && view.declared_payload_length != 0
+    {
         return Some(TransportIdentityClaim {
             packet_name: "packetized reliable-window continuation",
             reason: "verified-window-packetized-continuation",

@@ -59,6 +59,9 @@ mod tests {
 
         assert_eq!(&packet[..9], b"BNER\x55\x0D\x14\x00\x19");
         assert_eq!(&packet[9..], b"Higher Ground (Party 2-3)");
-        assert_eq!(claim_client_to_legacy_if_verified(b"BNES\x01\x14\x00"), Some(()));
+        assert_eq!(
+            claim_client_to_legacy_if_verified(b"BNES\x01\x14\x00"),
+            Some(())
+        );
     }
 }

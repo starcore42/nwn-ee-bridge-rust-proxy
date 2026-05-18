@@ -252,6 +252,7 @@ impl HighLevel {
     pub fn name(self) -> &'static str {
         match (self.major, self.minor) {
             (0x01, 0x00) => "ServerStatus_0",
+            (0x01, 0x01) => "ServerStatus_Status",
             (0x01, 0x03) => "ServerStatus_ModuleRunning",
             (0x02, 0x05) => "Login_Confirm",
             (0x02, 0x0A) => "Login_CharacterQuery",
@@ -338,6 +339,16 @@ impl HighLevel {
             (0x11, 0x03) => "CharList_RequestUpdateChar",
             (0x11, 0x04) => "CharList_UpdateCharResponse",
             (0x12, 0x0B) => "ClientSideMessage_Feedback",
+            // Dialog family is byte-identical for the currently-owned local
+            // Diamond shapes only after `translate::dialog` proves the exact
+            // decompiled cursor model.  Major 0x14 is routed to Diamond's
+            // dialog handler; minor 1 is the dialog entry text and minor 2 is
+            // the reply-list payload observed during door/placeable use.
+            (0x14, 0x01) => "Dialog_Entry",
+            (0x14, 0x02) => "Dialog_Replies",
+            (0x14, 0x03) => "Dialog_Reply",
+            (0x14, 0x04) => "Dialog_ReplyChosen",
+            (0x14, 0x05) => "Dialog_Close",
             // Journal family verified from EE `CNWSMessage::SendServerToPlayerJournal*`
             // senders and Diamond's Journal client dispatcher. These payloads are
             // accepted unchanged when their high-level shape is otherwise valid.

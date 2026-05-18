@@ -205,11 +205,58 @@ fn apply_0200(
     let mut next = Vec::with_capacity(candidates.len().saturating_mul(2));
     for candidate in candidates {
         if candidate.cursor <= record_end && record_end - candidate.cursor >= 4 {
-            if let Some(candidate) = candidate
-                .advanced(candidate.cursor + 4, candidate.bits.saturating_add(2))
-                .require_fragment_bit(candidate.bits.saturating_add(1), false)
+            if let Some(count) =
+                read_u32_le(bytes, candidate.cursor).and_then(|value| usize::try_from(value).ok())
             {
-                next.push(candidate);
+                if count == 0 {
+                    if let Some(candidate) = candidate
+                        .advanced(candidate.cursor + 4, candidate.bits.saturating_add(2))
+                        .require_fragment_bit(candidate.bits.saturating_add(1), false)
+                    {
+                        next.push(candidate);
+                    }
+                } else if count <= usize::from(MAX_REASONABLE_VALUE_GROUPS) {
+                    let Some(cells_end) = candidate
+                        .cursor
+                        .checked_add(4)
+                        .and_then(|cursor| cursor.checked_add(count.checked_mul(2)?))
+                    else {
+                        continue;
+                    };
+                    if cells_end <= record_end {
+                        // Diamond `sub_455940` and EE `sub_1407B4F70` both
+                        // read two CNW BOOLs for mask 0x0200 before choosing
+                        // the branch body.  When the second BOOL is false,
+                        // the branch begins with a DWORD count.  If the first
+                        // BOOL is false as well, each counted two-byte cell is
+                        // followed by one CNW BOOL; if the first BOOL is true,
+                        // the counted cells are byte-buffer only.  Model both
+                        // decompiled cursor shapes here, then let the final
+                        // fragment-bit proof select the exact one.
+                        if let Some(candidate) = candidate
+                            .advanced(cells_end, candidate.bits.saturating_add(2 + count))
+                            .require_fragment_bit(candidate.bits, false)
+                            .and_then(|candidate| {
+                                candidate.require_fragment_bit(
+                                    candidate.bits.saturating_sub(1 + count),
+                                    false,
+                                )
+                            })
+                        {
+                            next.push(candidate);
+                        }
+                        if let Some(candidate) = candidate
+                            .advanced(cells_end, candidate.bits.saturating_add(2))
+                            .require_fragment_bit(candidate.bits, true)
+                            .and_then(|candidate| {
+                                candidate
+                                    .require_fragment_bit(candidate.bits.saturating_sub(1), false)
+                            })
+                        {
+                            next.push(candidate);
+                        }
+                    }
+                }
             }
         }
         if candidate.cursor < record_end {

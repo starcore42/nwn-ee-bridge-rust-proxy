@@ -39,11 +39,11 @@ static OBSERVED_HAK_ORDER_TOP_FIRST: OnceLock<RwLock<Vec<String>>> = OnceLock::n
 /// order over any HG fallback profile so item appearance parsing follows the
 /// active module instead of a stale hard-coded list.
 pub(crate) fn observe_hak_order_top_first(hak_order_top_first: &[String]) {
-    if hak_order_top_first.is_empty() {
-        return;
-    }
     let observed = OBSERVED_HAK_ORDER_TOP_FIRST.get_or_init(|| RwLock::new(Vec::new()));
     if let Ok(mut observed) = observed.write() {
+        // `hak_count=0` is explicit module state, not an unknown resource stack.
+        // Keep the empty observation so model-type lookup does not fall back to
+        // a stale HG profile while testing or bridging a no-HAK Diamond module.
         *observed = hak_order_top_first.to_vec();
     }
 }
@@ -178,38 +178,12 @@ fn load_baseitems_model_types_from_haks() -> Option<(PathBuf, Vec<i8>)> {
         }
     }
 
-    for dir in hak_dirs {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut haks = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("hak"))
-            })
-            .collect::<Vec<_>>();
-        haks.sort_by(|a, b| {
-            a.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .cmp(
-                    b.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_default(),
-                )
-        });
-        for path in haks {
-            if !tried.insert(path_key(&path)) {
-                continue;
-            }
-            if let Some(parsed) = read_baseitems_model_types_from_hak(&path) {
-                return Some((path, parsed));
-            }
-        }
-    }
+    // Do not scan every available HAK as a fallback. Diamond/EE module loading
+    // resolves resources through the server-declared HAK stack; an unrelated
+    // staged HAK with `baseitems.2da` is not proof for this session and can make
+    // item/quickbar/live-object appearance parsers accept shapes from the wrong
+    // module. If the active order has no baseitems table, fall back to direct
+    // base-game candidates or the conservative built-in table instead.
     None
 }
 
@@ -265,7 +239,8 @@ fn configured_hak_order_top_first() -> Vec<String> {
         return order;
     }
 
-    let profile_name = configured_asset_profile_name().unwrap_or_else(|| "generic-169".to_owned());
+    let profile_name = crate::translate::resource_config::configured_asset_profile_name()
+        .unwrap_or_else(|| "generic-169".to_owned());
     crate::translate::profiles::module_resources_profile(&profile_name)
         .hak_order_top_first
         .iter()
@@ -276,40 +251,7 @@ fn configured_hak_order_top_first() -> Vec<String> {
 fn observed_hak_order_top_first() -> Option<Vec<String>> {
     let observed = OBSERVED_HAK_ORDER_TOP_FIRST.get()?;
     let observed = observed.read().ok()?;
-    if observed.is_empty() {
-        None
-    } else {
-        Some(observed.clone())
-    }
-}
-
-fn configured_asset_profile_name() -> Option<String> {
-    for key in ["NWN_BRIDGE_ASSET_PROFILE", "HG_BRIDGE_ASSET_PROFILE"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-        }
-    }
-    read_env_file_value(Path::new("hg-bridge-nwsync.env"), "HG_BRIDGE_ASSET_PROFILE")
-}
-
-fn read_env_file_value(path: &Path, key: &str) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    text.lines().find_map(|line| {
-        let (lhs, rhs) = line.split_once('=')?;
-        if lhs.trim() == key {
-            let value = rhs.trim();
-            if value.is_empty() {
-                None
-            } else {
-                Some(value.to_owned())
-            }
-        } else {
-            None
-        }
-    })
+    Some(observed.clone())
 }
 
 fn split_env_list(value: &str) -> impl Iterator<Item = &str> {

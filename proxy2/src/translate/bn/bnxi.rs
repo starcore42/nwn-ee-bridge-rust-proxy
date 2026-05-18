@@ -78,8 +78,8 @@ mod tests {
     #[test]
     fn parses_ee_build_from_observed_bnxi_shape() {
         let packet = [
-            b'B', b'N', b'X', b'I', 0x69, 0xC9, 0, 0, 0, 0, 0, 2, 4, b'8', b'1', b'9', b'3',
-            2, b'3', b'7', 2, b'1', b'7', 8, b'2', b'6', b'c', b'6', b'e', b'5', b'7', b'3',
+            b'B', b'N', b'X', b'I', 0x69, 0xC9, 0, 0, 0, 0, 0, 2, 4, b'8', b'1', b'9', b'3', 2,
+            b'3', b'7', 2, b'1', b'7', 8, b'2', b'6', b'c', b'6', b'e', b'5', b'7', b'3',
         ];
 
         let build = claim_client_to_legacy_if_verified(&packet).expect("BNXI build");

@@ -33,7 +33,11 @@ pub(super) fn build_proxy_owned_bnxr_response(
             + response.module_name.len()
             + response
                 .advertisement
-                .map(|advertisement| advertisement.build_bnxr_section().map(|section| section.len()))
+                .map(|advertisement| {
+                    advertisement
+                        .build_bnxr_section()
+                        .map(|section| section.len())
+                })
                 .transpose()?
                 .unwrap_or(0),
     );
@@ -119,7 +123,10 @@ mod tests {
         })
         .expect("valid BNXR response");
 
-        assert_eq!(&packet[..20], b"BNXR\x0D\x14\xFD\x00\x01\x28\x00\x10\x00\x01\x00\x00\x00\x01\x03\x1D");
+        assert_eq!(
+            &packet[..20],
+            b"BNXR\x0D\x14\xFD\x00\x01\x28\x00\x10\x00\x01\x00\x00\x00\x01\x03\x1D"
+        );
         assert_eq!(&packet[20..], b"Path of Ascension CEP Legends");
         assert!(claim_server_to_ee_if_verified(&packet).is_some());
     }

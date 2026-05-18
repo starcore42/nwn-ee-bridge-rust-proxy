@@ -86,8 +86,11 @@ pub(super) fn maybe_queue_empty_waypoint_response_payload(
         &payload
     ));
 
-    let packet =
-        synthetic_area::build_synthetic_gameplay_frame(shifted_sequence, server_sequence, &payload)?;
+    let packet = synthetic_area::build_synthetic_gameplay_frame(
+        shifted_sequence,
+        server_sequence,
+        &payload,
+    )?;
 
     state.sequence.pending_client_to_server_packets.push(packet);
     state.sequence.client_sequence_shifts.push(SequenceShift {

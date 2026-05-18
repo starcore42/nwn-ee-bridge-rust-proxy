@@ -62,8 +62,7 @@ fn rewrite_quickbar_payload_for_stream(
 ) -> Option<quickbar::QuickbarRewriteSummary> {
     if let Some(registry) = object_registry {
         let item_object_is_known = |object_id| registry.has_active_object_id(object_id);
-        let materialization =
-            quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
+        let materialization = quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
         if let Some((_, summary)) =
             quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
                 payload,
@@ -127,6 +126,7 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                     if !starts_with_implausible_quickbar_set_all_buttons(bytes) {
                         return Ok(None);
                     }
+                    dump_quickbar_payload_for_diagnostics("buffering_unclaimable_start", bytes);
                     fragment_wait = true;
                     tracing::info!(
                         first_sequence = reassembly.first_sequence,
@@ -211,10 +211,10 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
         }
     } else {
         let mut rewritten_payload = pending.payload.clone();
-            let rewrite = rewrite_quickbar_payload_for_stream(
-                &mut rewritten_payload,
-                Some(&state.semantic.objects),
-            );
+        let rewrite = rewrite_quickbar_payload_for_stream(
+            &mut rewritten_payload,
+            Some(&state.semantic.objects),
+        );
         let under_wait_budget = pending.chunks < MAX_PENDING_QUICKBAR_STREAM_CHUNKS
             && pending.payload.len() < MAX_PENDING_QUICKBAR_STREAM_BYTES;
         let should_wait = rewrite

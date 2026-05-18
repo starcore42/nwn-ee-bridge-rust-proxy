@@ -24,29 +24,33 @@ pub(crate) mod client_input;
 pub(crate) mod client_login;
 mod client_module;
 pub(crate) mod client_quickbar;
+pub(crate) mod client_server_admin;
 mod client_server_status;
 pub(crate) mod client_side_message;
 mod cnw_message;
 mod custom_token;
 pub(crate) mod diagnostics;
+pub(crate) mod dialog;
 mod game_obj_update;
 pub(crate) mod gameplay_stream;
 pub(crate) mod genericdoors;
-mod inventory;
+pub(crate) mod inventory;
 pub(crate) mod journal;
 mod live_object;
 pub(crate) mod live_object_update;
 mod loadbar;
 pub(crate) mod login;
 mod m_frame;
-mod module;
+pub(crate) mod module;
 mod module_resources;
 mod module_time;
 mod party;
+pub(crate) mod placeables;
 pub(crate) mod play_module_character_list;
 pub(crate) mod player_list;
 mod profiles;
 pub(crate) mod quickbar;
+pub(crate) mod resource_config;
 pub(crate) mod semantic;
 
 use crate::{
@@ -116,10 +120,12 @@ pub enum VerifiedFamily {
     ClientModule,
     ClientParty,
     ClientQuickbar,
+    ClientServerAdmin,
     ClientServerStatus,
     ClientSideMessage,
     CoalescedWindow,
     ConsumedEmptyMFrame,
+    Dialog,
     GameObjUpdateLiveObject,
     GameObjUpdateObjectControl,
     GuiQuickbar,
@@ -135,6 +141,7 @@ pub enum VerifiedFamily {
     PlayerList,
     SemanticDeflated,
     SetCustomToken,
+    ServerStatusStatus,
     ServerZlibStreamContinuation {
         owner: ContinuationOwner,
         stream_epoch: u64,
@@ -163,10 +170,12 @@ impl VerifiedFamily {
             Self::ClientModule => "ClientModule",
             Self::ClientParty => "ClientParty",
             Self::ClientQuickbar => "ClientQuickbar",
+            Self::ClientServerAdmin => "ClientServerAdmin",
             Self::ClientServerStatus => "ClientServerStatus",
             Self::ClientSideMessage => "ClientSideMessage",
             Self::CoalescedWindow => "CoalescedWindow",
             Self::ConsumedEmptyMFrame => "ConsumedEmptyMFrame",
+            Self::Dialog => "Dialog",
             Self::GameObjUpdateLiveObject => "GameObjUpdate_LiveObject",
             Self::GameObjUpdateObjectControl => "GameObjUpdate_ObjectControl",
             Self::GuiQuickbar => "GuiQuickbar",
@@ -182,6 +191,7 @@ impl VerifiedFamily {
             Self::PlayerList => "PlayerList",
             Self::SemanticDeflated => "SemanticDeflated",
             Self::SetCustomToken => "SetCustomToken",
+            Self::ServerStatusStatus => "ServerStatus_Status",
             Self::ServerZlibStreamContinuation { .. } => "ServerZlibStreamContinuation",
             Self::ServerZlibZeroFillWindow { .. } => "ServerZlibZeroFillWindow",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
@@ -339,9 +349,10 @@ impl SessionTranslator {
     pub fn take_pending_server_to_client_packets(&mut self) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
         for packet in self.bn_state.take_pending_server_to_client_packets() {
-            packets.extend(packets_from_emit(
-                self.validate_emit(Direction::ServerToClientSynthetic, Emit::Packet(packet)),
-            ));
+            packets.extend(packets_from_emit(self.validate_emit(
+                Direction::ServerToClientSynthetic,
+                Emit::Packet(packet),
+            )));
         }
         let emit = m_frame::take_pending_server_to_client_packets(&mut self.m_state);
         packets.extend(packets_from_emit(
@@ -401,7 +412,12 @@ impl SessionTranslator {
                     &mut self.bn_state,
                     self.template.bnxr_nwsync_advertisement.as_ref(),
                 )?;
-                Ok(Emit::Packet(translated))
+                match translated {
+                    bn::ServerTranslation::Packet(packet) => Ok(Emit::Packet(packet)),
+                    bn::ServerTranslation::PacketRetireSession { packet, reason } => {
+                        Ok(Emit::PacketRetireSession { packet, reason })
+                    }
+                }
             }
             (Direction::ClientToServer, Packet::M(_)) => {
                 self.bn_state.remember_reliable_gameplay_seen();

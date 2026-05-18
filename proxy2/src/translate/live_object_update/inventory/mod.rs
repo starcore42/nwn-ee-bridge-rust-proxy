@@ -15,6 +15,8 @@ const LEGACY_INVENTORY_CATEGORY_COUNT: usize = 3;
 const MAX_REASONABLE_CATEGORY_ENTRIES: u16 = 4096;
 const MAX_REASONABLE_VALUE_GROUPS: u8 = 64;
 const MAX_REASONABLE_FEATURE25_OBJECTS: u32 = 128;
+const LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER: u32 = 0xFFFF_FFEC;
+const LEGACY_INVENTORY_CURRENT_PLAYER_OWNER: u32 = 0xFFFF_FFFE;
 const GENERIC_INVENTORY_PARSE_MASK: u16 = 0x0001
     | 0x0002
     | LEGACY_INVENTORY_LEGACY_ICON_LIST_MASK
@@ -133,44 +135,67 @@ pub(super) fn advance_verified_inventory_record(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> Option<InventoryRecordClaim> {
-    if let Some(shape) =
-        try_parse_inventory_2e00_or_2e01_gui_quickbar_link_shape(bytes, offset, record_end)
-    {
-        if shape.fragment_bits > fragment_bits.len().saturating_sub(*bit_cursor) {
-            return None;
-        }
-        // The 0x2E01 sibling prepends the same 0x0001 compact inventory delta
-        // branch that Diamond `sub_455940` and EE `sub_1407B4F70` both read as
-        // WORD, DWORD, INT, BOOL. This shape is exact only for the compact
-        // branch; if the BOOL is true, the extended row/string branch must be
-        // modelled separately instead of accepting this cursor.
-        if let Some(bit_index) = shape.branch_0001_extended_bit {
-            if fragment_bits.get(*bit_cursor + bit_index) != Some(&false) {
-                return None;
-            }
-        }
-        // Diamond `sub_455940` and EE `sub_1407B4F70` both drive the 0x0200
-        // inventory branch from two CNW BOOLs. The first BOOL can choose either
-        // clear path, but the second BOOL must be false for the captured
-        // zero-count DWORD shape; otherwise the reader switches to the byte-mask
-        // path and the following Feature-25 cursor is not valid.
-        if fragment_bits.get(*bit_cursor + shape.branch_0200_second_bit) != Some(&false) {
-            return None;
-        }
-        // The same readers gate the 0x0800 appearance/status byte block behind
-        // one CNW BOOL. Most exact quickbar-link shapes require the bit to be
-        // true because they own the 12-byte read-buffer block. The focused
-        // Sooty Crow large-equipment sibling below records its expected value
-        // explicitly so this verifier remains shape-owned, not generic.
-        if fragment_bits.get(*bit_cursor + shape.branch_0800_present_bit)
-            != Some(&shape.branch_0800_present_value)
-        {
-            return None;
-        }
+    let mut matched_gui_quickbar_link_shape =
+        try_parse_inventory_2e00_or_2e01_gui_quickbar_link_shape(bytes, offset, record_end).filter(
+            |shape| {
+                inventory_2e00_or_2e01_gui_quickbar_link_fragment_bits_match(
+                    shape,
+                    fragment_bits,
+                    *bit_cursor,
+                )
+            },
+        );
+    if matched_gui_quickbar_link_shape.is_none() {
+        matched_gui_quickbar_link_shape =
+            try_parse_inventory_2e00_gui_hand_trap_interleaved_tail_exact_shape(
+                bytes, offset, record_end,
+            )
+            .filter(|shape| {
+                inventory_2e00_or_2e01_gui_quickbar_link_fragment_bits_match(
+                    shape,
+                    fragment_bits,
+                    *bit_cursor,
+                )
+            });
+    }
+    if matched_gui_quickbar_link_shape.is_none() {
+        matched_gui_quickbar_link_shape =
+            try_parse_inventory_2e00_gui_hand_trap_promoted_false_0800_shape(
+                bytes, offset, record_end,
+            )
+            .filter(|shape| {
+                inventory_2e00_or_2e01_gui_quickbar_link_fragment_bits_match(
+                    shape,
+                    fragment_bits,
+                    *bit_cursor,
+                )
+            });
+    }
+    if let Some(shape) = matched_gui_quickbar_link_shape {
         *bit_cursor = bit_cursor.saturating_add(shape.fragment_bits);
         return Some(InventoryRecordClaim {
             fragment_bits: shape.fragment_bits,
         });
+    }
+
+    if let Some(claim) = try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        return Some(claim);
+    }
+
+    if let Some(claim) = advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        return Some(claim);
     }
 
     let candidate = try_get_legacy_live_inventory_claim_candidate(bytes, offset, record_end)?;
@@ -210,15 +235,19 @@ fn try_get_legacy_live_inventory_claim_candidate(
 
     let object_id = read_u32_le(bytes, record_offset + 1)?;
     let mask = read_u16_le(bytes, record_offset + 5)?;
-    if !matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
-        && !looks_like_legacy_live_object_id_value(object_id)
+    let object_id_is_legacy_shaped = matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
+        || looks_like_legacy_live_object_id_value(object_id)
+        || (matches!(mask, 0x2E00 | 0x2E01)
+            && inventory_gui_quickbar_link_owner_id_is_allowed(object_id))
+        || (mask == 0x2A00 && inventory_2a00_object_id_is_allowed(object_id));
+    if !object_id_is_legacy_shaped
+        && !(mask == 0xD5FF && d5ff_small_live_stream_object_id_is_allowed(object_id))
     {
         return None;
     }
 
     if mask == 0x2A00 {
-        return try_parse_inventory_2a00_shape(bytes, record_offset, record_end)
-            .map(|bits| GenericInventoryCandidate::new(record_end, bits));
+        return try_parse_inventory_2a00_shape(bytes, record_offset, record_end);
     }
 
     if mask == 0x2000 {
@@ -249,15 +278,15 @@ fn try_get_legacy_live_inventory_claim_candidate(
         let set_count = try_parse_inventory_0400(bytes, base_cursor, record_end)
             .or_else(|| try_parse_inventory_0400(bytes, base_cursor.checked_add(2)?, record_end))?;
         // Diamond `sub_455940` and EE `sub_1407B4F70` both read the 0x0001
-        // branch as SHORT, DWORD, INT, BOOL before the 0x0400 equipment delta.
-        // This compact 0x0401 parser is exact only when that BOOL is false; a
-        // true branch enters the extended row/string reader and must be modelled
-        // by a separate typed parser before it can claim bytes.
-        return GenericInventoryCandidate::new(
+        // branch as SHORT, DWORD, INT, BOOL before immediately continuing into
+        // the 0x0400 equipment delta.  The BOOL is semantic UI/state data, not
+        // a byte-side branch selector; accepting only `false` falsely rejects
+        // valid HG packets such as the sequence-38 `I/0x0401` player inventory
+        // delta before the Town Greeter/Northern Trader live-object burst.
+        return Some(GenericInventoryCandidate::new(
             record_end,
             1usize.saturating_add(usize::from(set_count)),
-        )
-        .require_fragment_bit(0, false);
+        ));
     }
 
     if mask == 0x2400 {
@@ -286,6 +315,16 @@ fn try_get_legacy_live_inventory_claim_candidate(
             ));
         }
         return None;
+    }
+
+    if mask == 0xD5FF {
+        if let Some(candidate) = try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
+            bytes,
+            record_offset,
+            record_end,
+        ) {
+            return Some(candidate);
+        }
     }
 
     if (mask & !GENERIC_INVENTORY_PARSE_MASK) == 0 {
@@ -321,8 +360,13 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
 
     let object_id = read_u32_le(bytes, record_offset + 1)?;
     let mask = read_u16_le(bytes, record_offset + 5)?;
+    if mask == 0x2A00 {
+        return try_parse_inventory_2a00_prefix_shape(bytes, record_offset, search_end);
+    }
     if !matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
         && !looks_like_legacy_live_object_id_value(object_id)
+        && !(matches!(mask, 0x2E00 | 0x2E01)
+            && inventory_gui_quickbar_link_owner_id_is_allowed(object_id))
     {
         return None;
     }
@@ -340,6 +384,34 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
     }
 
     if matches!(mask, 0x2E00 | 0x2E01) {
+        if let Some(shape) = try_parse_inventory_2e00_gui_hand_trap_interleaved_tail_exact_shape(
+            bytes,
+            record_offset,
+            search_end,
+        ) {
+            if shape.read_end > record_offset + 7 && shape.read_end < search_end {
+                return Some(InventoryRecordPrefixClaim {
+                    read_end: shape.read_end,
+                    fragment_bits: shape.fragment_bits,
+                    interleaved_fragment_tail_allowed: true,
+                });
+            }
+        }
+
+        if let Some(shape) = try_parse_inventory_2e00_gui_hand_trap_promoted_false_0800_prefix_shape(
+            bytes,
+            record_offset,
+            search_end,
+        ) {
+            if shape.read_end > record_offset + 7 && shape.read_end < search_end {
+                return Some(InventoryRecordPrefixClaim {
+                    read_end: shape.read_end,
+                    fragment_bits: shape.fragment_bits,
+                    interleaved_fragment_tail_allowed: false,
+                });
+            }
+        }
+
         let shape = try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
             bytes,
             record_offset,
@@ -489,6 +561,17 @@ pub(super) fn rewrite_legacy_inventory_record_for_ee(
                 record_offset,
                 *record_end,
             )?
+        }
+        0x2A00 => {
+            return insert_missing_inventory_2a00_feature25_second_count_zero_for_ee(
+                bytes,
+                record_offset,
+                record_end,
+            )
+            .map(|bytes_inserted| InventoryRecordRewrite {
+                bytes_inserted,
+                bytes_removed: 0,
+            });
         }
         _ => return None,
     };
@@ -684,6 +767,7 @@ struct Inventory2e00Or2e01GuiQuickbarLinkShape {
     branch_0800_present_bit: usize,
     branch_0800_present_value: bool,
     interleaved_fragment_tail_allowed: bool,
+    interleaved_fragment_tail_bytes: usize,
 }
 
 fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_shape(
@@ -696,7 +780,306 @@ fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_shape(
         record_offset,
         record_end,
     )?;
-    (shape.read_end == record_end).then_some(shape)
+    if shape.read_end == record_end {
+        return Some(shape);
+    }
+    if shape.interleaved_fragment_tail_allowed
+        && shape.interleaved_fragment_tail_bytes > 0
+        && shape
+            .read_end
+            .checked_add(shape.interleaved_fragment_tail_bytes)?
+            == record_end
+    {
+        return Some(shape);
+    }
+    None
+}
+
+fn try_parse_inventory_2e00_gui_hand_trap_interleaved_tail_exact_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    if object_id != LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER || mask != 0x2E00 {
+        return None;
+    }
+
+    let mut cursor = record_offset.checked_add(7)?;
+    let mut fragment_bits = 0usize;
+    let set_count = try_parse_inventory_0400_prefix(bytes, &mut cursor, record_end)?;
+    fragment_bits = fragment_bits.saturating_add(usize::from(set_count));
+
+    let shape = try_parse_inventory_2e00_gui_hand_trap_interleaved_tail(
+        bytes,
+        object_id,
+        mask,
+        cursor,
+        record_end,
+        fragment_bits,
+    )?;
+    if shape
+        .read_end
+        .checked_add(shape.interleaved_fragment_tail_bytes)?
+        == record_end
+    {
+        Some(shape)
+    } else {
+        None
+    }
+}
+
+fn try_parse_inventory_2e00_gui_hand_trap_promoted_false_0800_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    if object_id != LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER || mask != 0x2E00 {
+        return None;
+    }
+
+    // Same decompile-owned `0x2E00` GUI hand-trap reader shape as the
+    // interleaved-tail form above, after the adjacent twelve read-buffer bytes
+    // have been promoted into the CNW fragment bitstream.  EE and Diamond both
+    // gate the fixed 12-byte `0x0800` read-buffer branch on one BOOL; this
+    // post-promotion shape is valid only when that BOOL proves false.
+    let mut cursor = record_offset.checked_add(7)?;
+    let mut fragment_bits = 0usize;
+    let set_count = try_parse_inventory_0400_prefix(bytes, &mut cursor, record_end)?;
+    fragment_bits = fragment_bits.saturating_add(usize::from(set_count));
+
+    let branch_0200_second_bit = fragment_bits.checked_add(1)?;
+    if cursor > record_end || record_end - cursor < 4 || read_u32_le(bytes, cursor)? != 0 {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    fragment_bits = fragment_bits.checked_add(2)?;
+
+    let feature25 = try_parse_inventory_2000_prefix_at(bytes, cursor, record_end)?;
+    cursor = feature25.block_end;
+    fragment_bits = fragment_bits.checked_add(
+        usize::try_from(feature25.second_count)
+            .ok()?
+            .checked_mul(3)?,
+    )?;
+
+    let branch_0800_present_bit = fragment_bits;
+    fragment_bits = fragment_bits.checked_add(1)?;
+    if cursor != record_end {
+        return None;
+    }
+
+    Some(Inventory2e00Or2e01GuiQuickbarLinkShape {
+        read_end: cursor,
+        fragment_bits,
+        branch_0001_extended_bit: None,
+        branch_0200_second_bit,
+        branch_0800_present_bit,
+        branch_0800_present_value: false,
+        interleaved_fragment_tail_allowed: false,
+        interleaved_fragment_tail_bytes: 0,
+    })
+}
+
+fn try_parse_inventory_2e00_gui_hand_trap_promoted_false_0800_prefix_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    scan_end: usize,
+) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
+    if record_offset > bytes.len()
+        || scan_end > bytes.len()
+        || scan_end <= record_offset
+        || scan_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    if object_id != LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER || mask != 0x2E00 {
+        return None;
+    }
+
+    // Prefix sibling of the post-promotion exact validator above.  The raw
+    // legacy stream carries twelve adjacent bytes of chunk-local CNW fragment
+    // storage before the next `GQ` row; once those bytes have been promoted into
+    // the fragment bitstream, the decompile-owned inventory read cursor ends
+    // immediately before that following `GQ` submessage.  This is intentionally
+    // scoped to the `0xFFFFFFEC/0x2E00` GUI hand-trap family so it cannot become
+    // a general "split before GQ" heuristic.
+    let mut cursor = record_offset.checked_add(7)?;
+    let mut fragment_bits = 0usize;
+    let set_count = try_parse_inventory_0400_prefix(bytes, &mut cursor, scan_end)?;
+    fragment_bits = fragment_bits.saturating_add(usize::from(set_count));
+
+    let branch_0200_second_bit = fragment_bits.checked_add(1)?;
+    if cursor > scan_end || scan_end - cursor < 4 || read_u32_le(bytes, cursor)? != 0 {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    fragment_bits = fragment_bits.checked_add(2)?;
+
+    let feature25 = try_parse_inventory_2000_prefix_at(bytes, cursor, scan_end)?;
+    cursor = feature25.block_end;
+    fragment_bits = fragment_bits.checked_add(
+        usize::try_from(feature25.second_count)
+            .ok()?
+            .checked_mul(3)?,
+    )?;
+
+    let branch_0800_present_bit = fragment_bits;
+    fragment_bits = fragment_bits.checked_add(1)?;
+
+    if cursor >= scan_end
+        || bytes.get(cursor).copied() != Some(b'G')
+        || bytes.get(cursor + 1).copied() != Some(b'Q')
+    {
+        return None;
+    }
+
+    Some(Inventory2e00Or2e01GuiQuickbarLinkShape {
+        read_end: cursor,
+        fragment_bits,
+        branch_0001_extended_bit: None,
+        branch_0200_second_bit,
+        branch_0800_present_bit,
+        branch_0800_present_value: false,
+        interleaved_fragment_tail_allowed: false,
+        interleaved_fragment_tail_bytes: 0,
+    })
+}
+
+fn inventory_2e00_or_2e01_gui_quickbar_link_fragment_bits_match(
+    shape: &Inventory2e00Or2e01GuiQuickbarLinkShape,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    if shape.fragment_bits > fragment_bits.len().saturating_sub(bit_cursor) {
+        return false;
+    }
+    // The 0x2E01 sibling prepends the same 0x0001 compact inventory delta
+    // branch that Diamond `sub_455940` and EE `sub_1407B4F70` both read as
+    // WORD, DWORD, INT, BOOL. This shape is exact only for the compact branch;
+    // if the BOOL is true, the extended row/string branch must be modelled
+    // separately instead of accepting this cursor.
+    if let Some(bit_index) = shape.branch_0001_extended_bit {
+        if fragment_bits.get(bit_cursor + bit_index) != Some(&false) {
+            return false;
+        }
+    }
+    // Diamond `sub_455940` and EE `sub_1407B4F70` both drive the 0x0200
+    // inventory branch from two CNW BOOLs. The first BOOL can choose either
+    // clear path, but the second BOOL must be false for the captured zero-count
+    // DWORD shape; otherwise the reader switches to the byte-mask path and the
+    // following Feature-25 cursor is not valid.
+    if fragment_bits.get(bit_cursor + shape.branch_0200_second_bit) != Some(&false) {
+        return false;
+    }
+    // Mask 0x0800 is the discriminant for the sibling ambiguity this helper
+    // resolves: true means the 12 bytes are owned by the reader, false means
+    // this exact HG GUI sentinel uses those bytes as an interleaved fragment
+    // tail before the next live-object record.
+    fragment_bits.get(bit_cursor + shape.branch_0800_present_bit)
+        == Some(&shape.branch_0800_present_value)
+}
+
+fn try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> Option<InventoryRecordClaim> {
+    // Focused HG GUI hand-trap inventory record seen after area load:
+    //
+    //   I <0xFFFFFFEC> <mask 0x2000>
+    //     0x2000: DWORD first_count, first-list OBJECTIDs,
+    //             DWORD second_count, second-list OBJECTIDs,
+    //             three CNW BOOLs per second-list object.
+    //
+    // Diamond `sub_455940` and EE `sub_1407B4F70` share this Feature-25
+    // inventory branch shape. The `0xFFFFFFEC` owner remains scoped to the GUI
+    // hand-trap sentinel proved from Diamond `IR_HAND_TRAP` (`sub_587890`) and
+    // EE GUI quick-add handling (`sub_140860760`); generic negative sentinels
+    // still do not become object-shaped inventory records.
+    if offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= offset
+        || record_end - offset < 7
+        || bytes.get(offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+    let object_id = read_u32_le(bytes, offset + 1)?;
+    let mask = read_u16_le(bytes, offset + 5)?;
+    if object_id != LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER || mask != 0x2000 {
+        return None;
+    }
+
+    let feature25 = try_parse_inventory_2000_prefix_at(bytes, offset.checked_add(7)?, record_end)?;
+    if feature25.block_end != record_end {
+        return None;
+    }
+    let consumed_bits = usize::try_from(feature25.second_count)
+        .ok()?
+        .checked_mul(3)?;
+    if consumed_bits > fragment_bits.len().saturating_sub(*bit_cursor) {
+        return None;
+    }
+
+    *bit_cursor = bit_cursor.saturating_add(consumed_bits);
+    Some(InventoryRecordClaim {
+        fragment_bits: consumed_bits,
+    })
+}
+
+#[cfg(test)]
+mod gui_hand_trap_feature25_tests {
+    use super::*;
+
+    #[test]
+    fn hg_inventory_2000_gui_hand_trap_feature25_object_list_claims_exactly() {
+        let record = [
+            b'I', 0xEC, 0xFF, 0xFF, 0xFF, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+            0x00, 0x21, 0x70, 0x01, 0x80, 0x35, 0x70, 0x01, 0x80,
+        ];
+        let fragment_bits = [true, false, true, true, false, true];
+        let mut bit_cursor = 0usize;
+
+        let claim = try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
+            &record,
+            0,
+            record.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        )
+        .expect("HG I/0x2000 GUI hand-trap Feature-25 list should claim exactly");
+
+        assert_eq!(claim.fragment_bits, 6);
+        assert_eq!(bit_cursor, 6);
+    }
 }
 
 fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
@@ -739,7 +1122,7 @@ fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
     }
 
     let object_id = read_u32_le(bytes, record_offset + 1)?;
-    if !looks_like_legacy_live_object_id_value(object_id) {
+    if !inventory_gui_quickbar_link_owner_id_is_allowed(object_id) {
         return None;
     }
 
@@ -809,6 +1192,7 @@ fn try_parse_inventory_2e00_or_2e01_gui_quickbar_link_prefix(
         branch_0800_present_bit,
         branch_0800_present_value: true,
         interleaved_fragment_tail_allowed: false,
+        interleaved_fragment_tail_bytes: 0,
     })
 }
 
@@ -856,7 +1240,94 @@ fn try_parse_inventory_2e01_large_equipment_quickbar_link_tail(
         branch_0800_present_bit,
         branch_0800_present_value: false,
         interleaved_fragment_tail_allowed: true,
+        interleaved_fragment_tail_bytes: SOOTY_CROW_QUICKBAR_LINK_FRAGMENT_TAIL_BYTES,
     })
+}
+
+fn try_parse_inventory_2e00_gui_hand_trap_interleaved_tail(
+    bytes: &[u8],
+    object_id: u32,
+    mask: u16,
+    cursor: usize,
+    scan_end: usize,
+    fragment_bits: usize,
+) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
+    // Focused HG area-entry sibling exposed by the live Starcore5 stream:
+    //
+    //   I <0xFFFFFFEC> <mask 0x2E00>
+    //     0x0400 equipment-delta bytes,
+    //     0x0200 two BOOLs + DWORD zero-count branch,
+    //     0x2000 Feature-25 object lists,
+    //     0x0800 BOOL=false,
+    //     12 bytes of chunk-local CNW fragment storage before the next P/5 add.
+    //
+    // EE `sub_1407B4F70` proves the key branch behavior: after the 0x2000
+    // object-list reader, mask 0x0800 reads one BOOL and consumes the 12-byte
+    // appearance/status read-buffer block only when that BOOL is true. Diamond
+    // `sub_455940` follows the same mask order. Therefore this shape is not an
+    // alternate raw pass-through; it is the false 0x0800 branch plus a bounded
+    // interleaved fragment-storage span owned by this exact GUI sentinel family.
+    const GUI_HAND_TRAP_FRAGMENT_TAIL_BYTES: usize = 12;
+
+    if mask != 0x2E00 || object_id != LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER {
+        return None;
+    }
+
+    let branch_0200_second_bit = fragment_bits.checked_add(1)?;
+    if cursor > scan_end || scan_end - cursor < 4 || read_u32_le(bytes, cursor)? != 0 {
+        return None;
+    }
+    let cursor = cursor.checked_add(4)?;
+    let fragment_bits = fragment_bits.checked_add(2)?;
+
+    let feature25 = try_parse_inventory_2000_prefix_at(bytes, cursor, scan_end)?;
+    let cursor = feature25.block_end;
+    let fragment_bits = fragment_bits.checked_add(
+        usize::try_from(feature25.second_count)
+            .ok()?
+            .checked_mul(3)?,
+    )?;
+
+    let branch_0800_present_bit = fragment_bits;
+    let fragment_bits = fragment_bits.checked_add(1)?;
+    if cursor
+        .checked_add(GUI_HAND_TRAP_FRAGMENT_TAIL_BYTES)
+        .is_none_or(|tail_end| tail_end > scan_end)
+    {
+        return None;
+    }
+
+    Some(Inventory2e00Or2e01GuiQuickbarLinkShape {
+        read_end: cursor,
+        fragment_bits,
+        branch_0001_extended_bit: None,
+        branch_0200_second_bit,
+        branch_0800_present_bit,
+        branch_0800_present_value: false,
+        interleaved_fragment_tail_allowed: true,
+        interleaved_fragment_tail_bytes: GUI_HAND_TRAP_FRAGMENT_TAIL_BYTES,
+    })
+}
+
+fn inventory_gui_quickbar_link_owner_id_is_allowed(object_id: u32) -> bool {
+    // Diamond also uses 0xFFFFFFFE as the current-player/inventory traversal
+    // sentinel. In the Diamond decompile this appears in the inventory row walk
+    // state (`sub_4567C0`, e.g. 00456850/00456A92/00456AAC), and the EE/Diamond
+    // live-inventory readers still consume the same 0x2E00/0x2E01 mask branches
+    // before the following `GQ` row stream. Keep the allowance scoped to this
+    // exact quickbar-link family so other negative sentinels still need their
+    // own parser proof.
+    // Diamond registers the `0xFFFFFFEC` inventory/GUI sentinel in the
+    // `IR_HAND_TRAP` action table (`sub_587890` around `00587979`), and EE's
+    // GUI quick-add handler branches on the same signed high-word value
+    // (`sub_140860760` around `140860845`).  The live HG stream uses that
+    // sentinel as the owner id for the already-modelled `I/0x2E00` GUI
+    // quickbar-link row packet.  Keep the exception scoped to this exact
+    // packet family rather than teaching generic inventory that every negative
+    // sentinel is object-shaped.
+    looks_like_legacy_live_object_id_value(object_id)
+        || object_id == LEGACY_INVENTORY_CURRENT_PLAYER_OWNER
+        || object_id == LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER
 }
 
 fn try_parse_inventory_0400_prefix(
@@ -887,6 +1358,7 @@ fn try_parse_inventory_0400_prefix(
 
 mod bit_count;
 mod categories;
+mod d5ff;
 mod equipment_delta;
 mod feature25;
 mod icon_list;
@@ -895,6 +1367,7 @@ mod opcode_stream;
 
 use bit_count::*;
 use categories::*;
+use d5ff::*;
 use equipment_delta::*;
 use feature25::*;
 use icon_list::*;

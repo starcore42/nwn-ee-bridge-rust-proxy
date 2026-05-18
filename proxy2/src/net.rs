@@ -53,7 +53,7 @@ pub fn run(config: Config, nwsync_runtime: Option<nwsync::Runtime>) -> Result<()
 
     loop {
         drain_pending_ee_crypto_responses(&listen, &mut sessions)?;
-        drain_pending_server_to_client_packets_for_all_sessions(&listen, &mut sessions)?;
+        drain_pending_proxy_packets_for_all_sessions(&config, &listen, &mut sessions)?;
         drain_client_socket(
             &config,
             &translator_template,
@@ -200,6 +200,7 @@ fn drain_client_socket(
                     );
                     sessions.remove(&client);
                 } else {
+                    send_pending_client_to_server_packets(session, config.server)?;
                     send_pending_server_to_client_packets(listen, session)?;
                 }
             }
@@ -226,6 +227,7 @@ fn drain_server_sockets(
 ) -> Result<()> {
     let clients: Vec<SocketAddr> = sessions.keys().copied().collect();
     for client in clients {
+        let mut retire_session_after_emit: Option<&'static str> = None;
         let Some(session) = sessions.get_mut(&client) else {
             continue;
         };
@@ -237,15 +239,7 @@ fn drain_server_sockets(
                     let emit = session
                         .translator
                         .translate(Direction::ServerToClient, bytes);
-                    for outbound in session.translator.take_pending_client_to_server_packets() {
-                        log_proxy_generated_client_packet(session.client, server, &outbound);
-                        session
-                            .upstream
-                            .send_to(&outbound, server)
-                            .with_context(|| {
-                                format!("sending local consumed-frame ACK to server {server}")
-                            })?;
-                    }
+                    send_pending_client_to_server_packets(session, server)?;
                     send_pending_server_to_client_packets(listen, session)?;
                     match emit {
                         Emit::Packet(outbound) => {
@@ -257,13 +251,19 @@ fn drain_server_sockets(
                                 format!("sending server datagram to client {}", session.client)
                             })?;
                         }
-                        Emit::PacketRetireSession { reason, .. } => {
-                            tracing::warn!(
-                                %server,
-                                client = %session.client,
-                                reason,
-                                "server path produced client-retire packet; dropping unsupported emit"
-                            );
+                        Emit::PacketRetireSession { packet, reason } => {
+                            let outbound = session
+                                .ee_crypto
+                                .encrypt_server_packet_if_needed(&packet)
+                                .context("encrypting server retire packet for EE client")?;
+                            listen.send_to(&outbound, session.client).with_context(|| {
+                                format!(
+                                    "sending server retire datagram to client {}",
+                                    session.client
+                                )
+                            })?;
+                            retire_session_after_emit = Some(reason);
+                            break;
                         }
                         Emit::Packets(outbounds)
                         | Emit::PacketsPreShifted(outbounds)
@@ -314,12 +314,8 @@ fn drain_server_sockets(
                         }
                         Emit::Consumed => {}
                         Emit::ConsumedRetireSession { reason } => {
-                            tracing::warn!(
-                                %server,
-                                client = %session.client,
-                                reason,
-                                "server path requested session retirement; ignoring"
-                            );
+                            retire_session_after_emit = Some(reason);
+                            break;
                         }
                         Emit::Drop => {
                             tracing::warn!(%server, client = %session.client, "server datagram quarantined");
@@ -337,6 +333,14 @@ fn drain_server_sockets(
                 }
                 Err(err) => return Err(err).context("receiving from upstream server socket"),
             }
+        }
+        if let Some(reason) = retire_session_after_emit {
+            tracing::info!(
+                %client,
+                reason,
+                "retiring proxy2 session after server disconnect control packet"
+            );
+            sessions.remove(&client);
         }
     }
     Ok(())
@@ -368,11 +372,24 @@ fn send_pending_server_to_client_packets(listen: &UdpSocket, session: &mut Sessi
     Ok(())
 }
 
-fn drain_pending_server_to_client_packets_for_all_sessions(
+fn send_pending_client_to_server_packets(session: &mut Session, server: SocketAddr) -> Result<()> {
+    for outbound in session.translator.take_pending_client_to_server_packets() {
+        log_proxy_generated_client_packet(session.client, server, &outbound);
+        session
+            .upstream
+            .send_to(&outbound, server)
+            .with_context(|| format!("sending proxy-owned client datagram to server {server}"))?;
+    }
+    Ok(())
+}
+
+fn drain_pending_proxy_packets_for_all_sessions(
+    config: &Config,
     listen: &UdpSocket,
     sessions: &mut HashMap<SocketAddr, Session>,
 ) -> Result<()> {
     for session in sessions.values_mut() {
+        send_pending_client_to_server_packets(session, config.server)?;
         send_pending_server_to_client_packets(listen, session)?;
     }
     Ok(())

@@ -178,12 +178,7 @@ mod tests {
         );
 
         assert_eq!(
-            proxy_owned_continuation_family(
-                ContinuationOwner::UnknownProxyOwned,
-                9,
-                30,
-                inflated
-            ),
+            proxy_owned_continuation_family(ContinuationOwner::UnknownProxyOwned, 9, 30, inflated),
             None,
             "captured no-header zlib tail must not be claimed without a remembered semantic owner"
         );

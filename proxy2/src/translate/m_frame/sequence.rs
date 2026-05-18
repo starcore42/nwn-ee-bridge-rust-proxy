@@ -13,6 +13,13 @@ pub(super) struct SequenceShift {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct CoalescedSplitSequenceShift {
+    pub(super) source_sequence: u16,
+    pub(super) base: u16,
+    pub(super) delta: u16,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct SequenceElision {
     pub(super) sequence: u16,
 }
@@ -53,7 +60,10 @@ pub(super) fn shift_sequence_for_peer_with_elisions(
     elisions: &[SequenceElision],
     original_sequence: u16,
 ) -> Option<u16> {
-    if elisions.iter().any(|elision| elision.sequence == original_sequence) {
+    if elisions
+        .iter()
+        .any(|elision| elision.sequence == original_sequence)
+    {
         return None;
     }
 
@@ -109,6 +119,14 @@ pub(super) fn trim_sequence_shifts(shifts: &mut Vec<SequenceShift>) {
     }
 }
 
+pub(super) fn trim_coalesced_split_sequence_shifts(shifts: &mut Vec<CoalescedSplitSequenceShift>) {
+    const MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS: usize = 16;
+    if shifts.len() > MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS {
+        let overflow = shifts.len() - MAX_COALESCED_SPLIT_SEQUENCE_SHIFTS;
+        shifts.drain(0..overflow);
+    }
+}
+
 pub(super) fn trim_sequence_elisions(elisions: &mut Vec<SequenceElision>) {
     const MAX_SEQUENCE_ELISIONS: usize = 64;
     if elisions.len() > MAX_SEQUENCE_ELISIONS {
@@ -143,7 +161,10 @@ mod tests {
 
     #[test]
     fn client_sequence_elision_maps_later_sequences_down() {
-        let elisions = vec![SequenceElision { sequence: 3 }, SequenceElision { sequence: 5 }];
+        let elisions = vec![
+            SequenceElision { sequence: 3 },
+            SequenceElision { sequence: 5 },
+        ];
 
         assert_eq!(
             shift_sequence_for_peer_with_elisions(&[], &elisions, 2),
@@ -165,7 +186,10 @@ mod tests {
 
     #[test]
     fn client_sequence_elision_maps_server_ack_back_up() {
-        let elisions = vec![SequenceElision { sequence: 3 }, SequenceElision { sequence: 5 }];
+        let elisions = vec![
+            SequenceElision { sequence: 3 },
+            SequenceElision { sequence: 5 },
+        ];
 
         assert_eq!(unshift_ack_for_origin_with_elisions(&[], &elisions, 2), 3);
         assert_eq!(unshift_ack_for_origin_with_elisions(&[], &elisions, 3), 5);

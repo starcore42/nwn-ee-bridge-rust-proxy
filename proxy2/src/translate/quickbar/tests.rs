@@ -79,6 +79,105 @@ fn unproven_trailing_quickbar_read_bytes_still_wait_for_more_stream_data() {
 }
 
 #[test]
+fn local_diamond_zero_declared_quickbar_uses_typed_boundary_not_placeholder() {
+    // Captured from the local Diamond `bw167demo` bridge harness on
+    // 2026-05-17, sequence 16. Diamond emits a GuiQuickbar_SetAllButtons
+    // window whose CNW declared value is zero, so the four bytes after
+    // `P 1E 01` are treated as prefixed fragment bytes by the transport
+    // normalizer. The decompile-backed 36-slot reader still proves the
+    // complete slot model: 17 spell buttons, 18 general buttons, and one
+    // unmaterialized item candidate. This must be claimed by the typed
+    // quickbar translator, not replaced by a visible blank placeholder frame.
+    let mut payload = include_bytes!(
+        "../../../fixtures/quickbar/local_diamond_bw167demo_zero_declared_seq16_set_all_buttons.bin"
+    )
+    .to_vec();
+
+    assert_eq!(
+        read_u32_le(&payload, 3),
+        Some(0),
+        "fixture documents the local-Diamond zero-declared transport shape"
+    );
+
+    let (_normalization, summary) =
+        normalize_and_rewrite_quickbar_payload_if_possible(&mut payload)
+            .expect("zero-declared local Diamond quickbar should be semantically owned");
+
+    println!("{summary:?}");
+    assert_eq!(summary.spells_preserved, 17);
+    assert_eq!(
+        summary.item_buttons_preserved + summary.item_buttons_blanked,
+        1
+    );
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert_eq!(summary.trailing_read_bytes, 42);
+    assert!(
+        !rewrite_summary_needs_more_quickbar_bytes(&summary),
+        "typed 36-slot ownership should emit the real quickbar instead of buffering into a placeholder"
+    );
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten zero-declared quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten zero-declared quickbar should expose validated EE slot types");
+    assert_eq!(
+        slot_types,
+        vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+            2, 2, 2, 2, 2, 2, 2,
+        ],
+        "local Diamond zero-declared fixture keeps the source spell slots in their proven positions"
+    );
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 2)
+            .count(),
+        17,
+        "all proven spell buttons should remain visible after typed rewrite"
+    );
+}
+
+#[test]
+fn local_diamond_zero_declared_quickbar_split_stops_at_tail_zero_boundary() {
+    // This pins the fast path used by the local Diamond harness. The first
+    // four bytes after `P 1E 01` are the prefixed fragment bytes; the 36-slot
+    // reader can already prove the complete quickbar at fragment_tail_len=0.
+    // Later tail candidates are scoring artifacts, not better semantic proof.
+    let payload = include_bytes!(
+        "../../../fixtures/quickbar/local_diamond_bw167demo_zero_declared_seq16_set_all_buttons.bin"
+    );
+
+    assert_eq!(
+        read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES),
+        Some(0),
+        "fixture documents the zero-declared source transport shape"
+    );
+
+    let prefixed_fragment_bytes = payload
+        .get(HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES)
+        .expect("fixture should contain prefixed fragment bytes");
+    let body_and_tail = payload
+        .get(HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..)
+        .expect("fixture should contain a quickbar body");
+
+    let split = super::split::choose_quickbar_split(
+        body_and_tail,
+        prefixed_fragment_bytes,
+        super::split::QuickbarSplitPolicy::DecompileOwnedBoundary,
+    )
+    .expect("zero-declared quickbar should have a decompile-owned split");
+
+    assert_eq!(split.fragment_tail_len, 0);
+    assert_eq!(split.read_body_len, body_and_tail.len());
+    assert_eq!(split.spell_slots, 17);
+    assert_eq!(split.item_candidate_slots, 1);
+    assert_eq!(split.unsupported_slots, 0);
+    assert_eq!(split.trailing_read_bytes, 42);
+}
+
+#[test]
 fn starcore_druid60_initial_quickbar_rewrites_item_slots_from_msb_fragments() {
     let mut payload =
         include_bytes!("../../../fixtures/quickbar/starcore_druid60_initial_set_all_buttons.bin")

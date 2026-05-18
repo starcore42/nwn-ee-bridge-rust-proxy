@@ -15,17 +15,23 @@
 //! Modern gameplay readers call `CNetLayer::ServerSatisfiesBuild` to decide
 //! which packet dialect the server is writing. The bridge must therefore
 //! advertise the EE-facing server dialect it actually emits, not the raw EE
-//! client build. At the moment that dialect intentionally satisfies the
-//! decompiled build-35 visual-transform/static-area gates, but not the later
-//! build-36.3 `CNWCArea::LoadArea` grass-info gate. Advertising the client build
-//! made the client read legacy tile bytes as grass rows, causing cursor
-//! overflow before the tile loop.
+//! client build. `CNetLayerInternal::ServerSatisfiesBuild` compares the BNVR
+//! server build against each requested gate, so the advertised build is a
+//! protocol contract: if a translator emits a build-gated field, the BNVR build
+//! must satisfy that exact reader branch, and if BNVR advertises a newer gate
+//! then the bridge must be able to write every packet family affected by it.
+//!
+//! The current upper bound is build `0x2001.0x24.5`: Area_ClientArea now emits
+//! the decompile-backed build-35 static triplets, the build-36.3 empty
+//! tileset-options block, and the build-36.5 pre-tile-loop BOOL. We intentionally
+//! do not advertise the raw client build because that would enable later,
+//! unmodeled packet dialect branches.
 
 use super::bnxi::ClientBuild;
 
 const EE_FACING_SERVER_DIALECT_BUILD_MAJOR: u32 = 0x2001;
-const EE_FACING_SERVER_DIALECT_BUILD_MINOR: u32 = 0x23;
-const EE_FACING_SERVER_DIALECT_BUILD_REVISION: u32 = 0;
+const EE_FACING_SERVER_DIALECT_BUILD_MINOR: u32 = 0x24;
+const EE_FACING_SERVER_DIALECT_BUILD_REVISION: u32 = 5;
 
 pub(super) fn rewrite_server_to_ee_if_verified(
     bytes: &[u8],
@@ -96,9 +102,7 @@ mod tests {
 
     #[test]
     fn extends_legacy_accept_with_proxy_owned_ee_server_dialect_build() {
-        let legacy = [
-            b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53,
-        ];
+        let legacy = [b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53];
         let rewritten = rewrite_server_to_ee_if_verified(
             &legacy,
             Some(ClientBuild {
@@ -112,16 +116,22 @@ mod tests {
 
         assert_eq!(rewritten.len(), 21);
         assert_eq!(&rewritten[..9], &legacy);
-        assert_eq!(u32::from_le_bytes(rewritten[9..13].try_into().unwrap()), 8193);
-        assert_eq!(u32::from_le_bytes(rewritten[13..17].try_into().unwrap()), 35);
-        assert_eq!(u32::from_le_bytes(rewritten[17..21].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_le_bytes(rewritten[9..13].try_into().unwrap()),
+            8193
+        );
+        assert_eq!(
+            u32::from_le_bytes(rewritten[13..17].try_into().unwrap()),
+            36
+        );
+        assert_eq!(u32::from_le_bytes(rewritten[17..21].try_into().unwrap()), 5);
     }
 
     #[test]
     fn normalizes_extended_accept_to_proxy_owned_ee_server_dialect_build() {
         let mut extended = [
-            b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53, 0x01, 0x20, 0x00, 0x00,
-            0x25, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00,
+            b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53, 0x01, 0x20, 0x00, 0x00, 0x25,
+            0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00,
         ];
         let rewritten = rewrite_server_to_ee_if_verified(
             &extended,
@@ -134,16 +144,14 @@ mod tests {
         .expect("rewrite should not fail")
         .expect("extended accept should be claimed");
 
-        extended[13] = 0x23;
-        extended[17] = 0x00;
+        extended[13] = 0x24;
+        extended[17] = 0x05;
         assert_eq!(rewritten, extended);
     }
 
     #[test]
     fn rejects_client_too_old_for_proxy_owned_ee_server_dialect_build() {
-        let legacy = [
-            b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53,
-        ];
+        let legacy = [b'B', b'N', b'V', b'R', b'A', 0xB0, 0xF5, 0x63, 0x53];
         let err = rewrite_server_to_ee_if_verified(
             &legacy,
             Some(ClientBuild {
@@ -153,6 +161,9 @@ mod tests {
             }),
         )
         .expect_err("old client cannot accept the bridge's EE-facing dialect");
-        assert!(err.to_string().contains("does not satisfy proxy EE-facing server dialect"));
+        assert!(
+            err.to_string()
+                .contains("does not satisfy proxy EE-facing server dialect")
+        );
     }
 }

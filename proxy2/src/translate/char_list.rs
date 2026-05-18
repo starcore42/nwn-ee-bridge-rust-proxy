@@ -273,7 +273,8 @@ impl<'a> CharListListResponseReader<'a> {
     }
 
     fn finished_exactly(&self) -> bool {
-        self.cursor == self.declared && self.consumed_fragment_bits() == self.meaningful_fragment_bits
+        self.cursor == self.declared
+            && self.consumed_fragment_bits() == self.meaningful_fragment_bits
     }
 }
 

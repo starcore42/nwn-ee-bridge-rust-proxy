@@ -1,14 +1,12 @@
-//! Active `genericdoors.2da` lookup for door-add compatibility checks.
+//! Active `placeables.2da` lookup for placeable-add compatibility checks.
 //!
-//! EE and Diamond door add readers both use the same decompiled branch:
-//!
-//! - if the first door DWORD is non-zero, read `DoorTypes.2da` column `Model`;
-//! - otherwise read `GenericDoors.2da` column `ModelName` from the second DWORD.
-//!
-//! The bridge must not invent a replacement model when the active resource
-//! stack has no row/model for that second value. This module only answers the
-//! resource-table question from the observed module HAK order; live-object
-//! translation decides what to do with that proof.
+//! Diamond `CNWSMessage::AddPlaceableAppearanceToMessage` and EE
+//! `CNWCMessage::HandleServerToPlayerPlaceableUpdate_Add` both resolve the
+//! add-record appearance WORD through `placeables.2da` and load the row's
+//! `ModelName` value. The bridge must not invent a model when the active
+//! module resource stack has no row/model for that appearance. This module only
+//! answers that resource-table question from the observed `Module_Info` HAK
+//! order; live-object translation decides what to do with the proof.
 
 use std::{
     collections::HashSet,
@@ -18,24 +16,24 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-const GENERICDOORS_2DA_NAME: &str = "genericdoors.2da";
-const GENERICDOORS_RESREF: &str = "genericdoors";
+const PLACEABLES_2DA_NAME: &str = "placeables.2da";
+const PLACEABLES_RESREF: &str = "placeables";
 const RESTYPE_2DA: u16 = 2017;
 const MAX_ERF_KEY_COUNT: u32 = 250_000;
-const MAX_GENERICDOORS_2DA_BYTES: u32 = 8 * 1024 * 1024;
+const MAX_PLACEABLES_2DA_BYTES: u32 = 8 * 1024 * 1024;
 
 static OBSERVED_HAK_ORDER_TOP_FIRST: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
-static GENERIC_DOOR_TABLE_CACHE: OnceLock<RwLock<GenericDoorTableCache>> = OnceLock::new();
+static PLACEABLE_TABLE_CACHE: OnceLock<RwLock<PlaceableTableCache>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GenericDoorModelStatus {
+pub(crate) enum PlaceableModelStatus {
     KnownModel,
     MissingOrEmpty,
     TableUnavailable,
 }
 
 #[derive(Debug, Default)]
-struct GenericDoorTableCache {
+struct PlaceableTableCache {
     loaded: bool,
     table: Option<Vec<Option<String>>>,
 }
@@ -52,23 +50,22 @@ pub(crate) fn observe_hak_order_top_first(hak_order_top_first: &[String]) {
         // `hak_count=0` from Module_Info is a real, server-authored resource
         // state. Treating it as "not observed yet" lets an ambient HG profile
         // from `hg-bridge-nwsync.env` leak into generic Diamond sessions and
-        // falsely validate door rows the server never mounted.
+        // falsely validate placeable rows the server never mounted.
         *observed = hak_order_top_first.to_vec();
     }
 
-    if let Some(cache) = GENERIC_DOOR_TABLE_CACHE.get() {
+    if let Some(cache) = PLACEABLE_TABLE_CACHE.get() {
         if let Ok(mut cache) = cache.write() {
-            *cache = GenericDoorTableCache::default();
+            *cache = PlaceableTableCache::default();
         }
     }
 }
 
-pub(crate) fn generic_door_model_status(row: u32) -> GenericDoorModelStatus {
+pub(crate) fn placeable_model_status(row: u32) -> PlaceableModelStatus {
     let Some(row) = usize::try_from(row).ok() else {
-        return GenericDoorModelStatus::MissingOrEmpty;
+        return PlaceableModelStatus::MissingOrEmpty;
     };
-    let cache =
-        GENERIC_DOOR_TABLE_CACHE.get_or_init(|| RwLock::new(GenericDoorTableCache::default()));
+    let cache = PLACEABLE_TABLE_CACHE.get_or_init(|| RwLock::new(PlaceableTableCache::default()));
 
     if let Ok(cache_read) = cache.read() {
         if cache_read.loaded {
@@ -76,123 +73,123 @@ pub(crate) fn generic_door_model_status(row: u32) -> GenericDoorModelStatus {
         }
     }
 
-    let loaded_table = load_genericdoors_model_names();
+    let loaded_table = load_placeables_model_names();
     if let Ok(mut cache_write) = cache.write() {
         cache_write.loaded = true;
         cache_write.table = loaded_table;
         return status_from_table(cache_write.table.as_deref(), row);
     }
 
-    GenericDoorModelStatus::TableUnavailable
+    PlaceableModelStatus::TableUnavailable
 }
 
-fn status_from_table(table: Option<&[Option<String>]>, row: usize) -> GenericDoorModelStatus {
+fn status_from_table(table: Option<&[Option<String>]>, row: usize) -> PlaceableModelStatus {
     let Some(table) = table else {
-        return GenericDoorModelStatus::TableUnavailable;
+        return PlaceableModelStatus::TableUnavailable;
     };
     match table.get(row).and_then(Option::as_deref) {
-        Some(model) if !model.trim().is_empty() => GenericDoorModelStatus::KnownModel,
-        _ => GenericDoorModelStatus::MissingOrEmpty,
+        Some(model) if !model.trim().is_empty() => PlaceableModelStatus::KnownModel,
+        _ => PlaceableModelStatus::MissingOrEmpty,
     }
 }
 
-fn load_genericdoors_model_names() -> Option<Vec<Option<String>>> {
-    if let Some(path) = explicit_genericdoors_2da_path() {
-        if let Some(parsed) = load_direct_genericdoors_2da(&path) {
+fn load_placeables_model_names() -> Option<Vec<Option<String>>> {
+    if let Some(path) = explicit_placeables_2da_path() {
+        if let Some(parsed) = load_direct_placeables_2da(&path) {
             return Some(parsed);
         }
     }
 
-    if let Some((path, parsed)) = load_genericdoors_from_haks() {
+    if let Some((path, parsed)) = load_placeables_from_haks() {
         tracing::info!(
             path = %path.display(),
             rows = parsed.len(),
-            "loaded active genericdoors.2da model names for door add validation"
+            "loaded active placeables.2da model names for placeable add validation"
         );
         return Some(parsed);
     }
 
-    if direct_base_genericdoors_2da_fallback_is_authoritative() {
-        for path in direct_genericdoors_2da_candidates() {
-            if let Some(parsed) = load_direct_genericdoors_2da(&path) {
+    if direct_base_placeables_2da_fallback_is_authoritative() {
+        for path in direct_placeables_2da_candidates() {
+            if let Some(parsed) = load_direct_placeables_2da(&path) {
                 tracing::info!(
                     path = %path.display(),
                     rows = parsed.len(),
-                    "loaded direct genericdoors.2da model names for door add validation"
+                    "loaded direct placeables.2da model names for placeable add validation"
                 );
                 return Some(parsed);
             }
         }
     } else {
         tracing::info!(
-            "genericdoors.2da direct base-game fallback withheld until Module_Info proves an empty HAK stack"
+            "placeables.2da direct base-game fallback withheld until Module_Info proves an empty HAK stack"
         );
     }
 
     tracing::warn!(
-        "genericdoors.2da not found in observed module HAK stack or direct base-game candidates; generic door rows without model proof cannot be validated"
+        "placeables.2da not found in observed module HAK stack or direct base-game candidates; placeable rows without model proof cannot be validated"
     );
     None
 }
 
-fn direct_base_genericdoors_2da_fallback_is_authoritative() -> bool {
+fn direct_base_placeables_2da_fallback_is_authoritative() -> bool {
     // Base-game 2DA files are authoritative only after the server-authored
     // Module_Info resource block has been observed and proved that no HAKs are
     // mounted. Before that point a capture/fixture may be from an HG-style
-    // module whose active HAK stack overrides `genericdoors.2da`; treating a
-    // base empty row as proof would wrongly suppress live door add records.
+    // module whose active HAK stack overrides `placeables.2da`; treating a base
+    // empty row as proof would wrongly suppress live placeable/sign add records.
     observed_hak_order_top_first().is_some_and(|order| order.is_empty())
 }
 
-fn explicit_genericdoors_2da_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("NWN_BRIDGE_GENERICDOORS_2DA") {
+fn explicit_placeables_2da_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("NWN_BRIDGE_PLACEABLES_2DA") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Some(path);
         }
         tracing::warn!(
             path = %path.display(),
-            "NWN_BRIDGE_GENERICDOORS_2DA was set but does not point to a readable file"
+            "NWN_BRIDGE_PLACEABLES_2DA was set but does not point to a readable file"
         );
     }
     None
 }
 
-fn direct_genericdoors_2da_candidates() -> Vec<PathBuf> {
+fn direct_placeables_2da_candidates() -> Vec<PathBuf> {
     [
-        PathBuf::from(GENERICDOORS_2DA_NAME),
-        PathBuf::from("assets").join(GENERICDOORS_2DA_NAME),
-        PathBuf::from("fixtures").join(GENERICDOORS_2DA_NAME),
+        PathBuf::from(PLACEABLES_2DA_NAME),
+        PathBuf::from("assets").join(PLACEABLES_2DA_NAME),
+        PathBuf::from("fixtures").join(PLACEABLES_2DA_NAME),
         PathBuf::from("NWN Diamond")
             .join("1.72 builder resources")
             .join("1.72 full 2dasource")
-            .join(GENERICDOORS_2DA_NAME),
+            .join(PLACEABLES_2DA_NAME),
         PathBuf::from(r"C:\NWN")
             .join("NWN Diamond")
             .join("1.72 builder resources")
             .join("1.72 full 2dasource")
-            .join(GENERICDOORS_2DA_NAME),
+            .join(PLACEABLES_2DA_NAME),
     ]
     .into_iter()
     .filter(|path| path.is_file())
     .collect()
 }
 
-fn load_direct_genericdoors_2da(path: &Path) -> Option<Vec<Option<String>>> {
+fn load_direct_placeables_2da(path: &Path) -> Option<Vec<Option<String>>> {
     match fs::read_to_string(path) {
-        Ok(text) => parse_genericdoors_model_names_2da(&text),
+        Ok(text) => parse_placeables_model_names_2da(&text),
         Err(error) => {
             tracing::warn!(
                 path = %path.display(),
                 %error,
-                "failed to read genericdoors.2da for door add validation"
+                "failed to read placeables.2da for placeable add validation"
             );
             None
         }
     }
 }
 
-fn load_genericdoors_from_haks() -> Option<(PathBuf, Vec<Option<String>>)> {
+fn load_placeables_from_haks() -> Option<(PathBuf, Vec<Option<String>>)> {
     let hak_dirs = hak_search_dirs();
     if hak_dirs.is_empty() {
         return None;
@@ -205,7 +202,7 @@ fn load_genericdoors_from_haks() -> Option<(PathBuf, Vec<Option<String>>)> {
             if !path.is_file() || !tried.insert(path_key(&path)) {
                 continue;
             }
-            if let Some(parsed) = read_genericdoors_model_names_from_hak(&path) {
+            if let Some(parsed) = read_placeables_model_names_from_hak(&path) {
                 return Some((path, parsed));
             }
         }
@@ -292,10 +289,10 @@ fn path_key(path: &Path) -> String {
     path.to_string_lossy().to_ascii_lowercase()
 }
 
-fn read_genericdoors_model_names_from_hak(path: &Path) -> Option<Vec<Option<String>>> {
-    let bytes = read_erf_resource(path, GENERICDOORS_RESREF, RESTYPE_2DA)?;
+fn read_placeables_model_names_from_hak(path: &Path) -> Option<Vec<Option<String>>> {
+    let bytes = read_erf_resource(path, PLACEABLES_RESREF, RESTYPE_2DA)?;
     let text = String::from_utf8_lossy(&bytes);
-    parse_genericdoors_model_names_2da(&text)
+    parse_placeables_model_names_2da(&text)
 }
 
 fn read_erf_resource(path: &Path, wanted_resref: &str, wanted_type: u16) -> Option<Vec<u8>> {
@@ -342,7 +339,7 @@ fn read_erf_resource(path: &Path, wanted_resref: &str, wanted_type: u16) -> Opti
                 tracing::warn!(
                     path = %path.display(),
                     resref = wanted_resref,
-                    "HAK contains duplicate resource entries; refusing ambiguous genericdoors.2da source"
+                    "HAK contains duplicate resource entries; refusing ambiguous placeables.2da source"
                 );
                 return None;
             }
@@ -358,7 +355,7 @@ fn read_erf_resource(path: &Path, wanted_resref: &str, wanted_type: u16) -> Opti
     file.seek(SeekFrom::Start(resource_entry_offset)).ok()?;
     let resource_offset = u64::from(read_file_u32(&mut file)?);
     let resource_size = read_file_u32(&mut file)?;
-    if resource_size > MAX_GENERICDOORS_2DA_BYTES {
+    if resource_size > MAX_PLACEABLES_2DA_BYTES {
         return None;
     }
     let resource_size_u64 = u64::from(resource_size);
@@ -383,7 +380,7 @@ fn read_file_u32(file: &mut fs::File) -> Option<u32> {
     Some(u32::from_le_bytes(bytes))
 }
 
-fn parse_genericdoors_model_names_2da(text: &str) -> Option<Vec<Option<String>>> {
+pub(crate) fn parse_placeables_model_names_2da(text: &str) -> Option<Vec<Option<String>>> {
     let mut lines = text
         .lines()
         .map(str::trim)
@@ -421,23 +418,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn genericdoors_parser_distinguishes_missing_model_rows() {
-        let table = parse_genericdoors_model_names_2da(
-            "2DA V2.0\nLabel StrRef ModelName BlockSight\n0 **** **** **** 0\n12 tndoor 111922 TN_GDOOR_02 1\n",
+    fn placeables_parser_distinguishes_missing_model_rows() {
+        let table = parse_placeables_model_names_2da(
+            "2DA V2.0\nLabel StrRef ModelName BlockSight\n0 **** **** **** 0\n12 tnplaceable 111922 TN_Gplaceable_02 1\n",
         )
-        .expect("genericdoors table should parse");
+        .expect("placeables table should parse");
 
         assert_eq!(
             status_from_table(Some(&table), 12),
-            GenericDoorModelStatus::KnownModel
+            PlaceableModelStatus::KnownModel
         );
         assert_eq!(
             status_from_table(Some(&table), 0),
-            GenericDoorModelStatus::MissingOrEmpty
+            PlaceableModelStatus::MissingOrEmpty
         );
         assert_eq!(
             status_from_table(Some(&table), 5349),
-            GenericDoorModelStatus::MissingOrEmpty
+            PlaceableModelStatus::MissingOrEmpty
         );
     }
 }

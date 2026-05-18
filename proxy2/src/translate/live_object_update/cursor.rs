@@ -73,7 +73,8 @@ pub(super) fn advance_legacy_add_record_bit_cursor_for_update_pass(
                 visual_offset,
                 record_end,
             ) {
-                visual_offset + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+                visual_offset
+                    + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
             } else {
                 visual_offset
             };
@@ -150,8 +151,7 @@ pub(super) fn advance_legacy_add_record_bit_cursor_for_update_pass(
                 if bits.len().saturating_sub(*bit_cursor) < LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
                     return false;
                 }
-                *bit_cursor =
-                    bit_cursor.saturating_add(LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS);
+                *bit_cursor = bit_cursor.saturating_add(LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS);
                 return true;
             }
             let Some(inline_end) = locstring::inline_cexo_string_end(bytes, name_offset) else {
@@ -264,8 +264,7 @@ fn legacy_placeable_add_tail_end_for_cursor(
         full_tail_end,
         record_end,
         allow_transform_suffix,
-    )
-        && full_tail_end <= bytes.len()
+    ) && full_tail_end <= bytes.len()
         && read_u16_le(bytes, tail_offset + 1).is_some()
         && read_u16_le(bytes, tail_offset + 3).is_some()
     {
@@ -277,8 +276,7 @@ fn legacy_placeable_add_tail_end_for_cursor(
         compact_tail_end,
         record_end,
         allow_transform_suffix,
-    )
-        && compact_tail_end <= bytes.len()
+    ) && compact_tail_end <= bytes.len()
         && read_u16_le(bytes, tail_offset + 1).is_some()
     {
         return Some(compact_tail_end);
@@ -330,8 +328,8 @@ fn advance_door_add_bit_cursor(
     let is_tlk_locstring = locstring::tlk_locstring_ref_end(bytes, name_offset)
         .map(|end| end + 2 == record_end)
         .unwrap_or(false);
-    let inline_cexo_string_end = locstring::inline_cexo_string_end(bytes, name_offset)
-        .filter(|end| end + 2 == record_end);
+    let inline_cexo_string_end =
+        locstring::inline_cexo_string_end(bytes, name_offset).filter(|end| end + 2 == record_end);
     let is_inline_cexo_string = inline_cexo_string_end.is_some();
     let is_non_empty_inline_cexo_string = inline_cexo_string_end
         .map(|end| end > name_offset + super::CNW_LENGTH_BYTES)

@@ -31,13 +31,11 @@ pub fn rewrite_simple_quickbar_payload_with_context_if_possible(
     let parsed = parse_cnw_quickbar_payload(payload)?;
     dump_quickbar_payload("simple_before", payload);
     let old_declared = parsed.declared;
-    let rewritten = match super::writer::build_ee_quickbar_payload_with_context(
-        &parsed,
-        materialization,
-    ) {
-        Some(rewritten) => rewritten,
-        None => return None,
-    };
+    let rewritten =
+        match super::writer::build_ee_quickbar_payload_with_context(&parsed, materialization) {
+            Some(rewritten) => rewritten,
+            None => return None,
+        };
     let summary = summarize_quickbar_rewrite(
         &parsed,
         old_payload_length,
@@ -180,15 +178,16 @@ pub(in crate::translate::quickbar) fn parse_cnw_quickbar_payload(
     if declared_usize < HIGH_LEVEL_HEADER_BYTES {
         return parse_direct_opcode_quickbar_stream(payload);
     }
-    parse_cnw_quickbar_payload_with_ee_declared(payload, high, declared, declared_usize)
-        .or_else(|| {
+    parse_cnw_quickbar_payload_with_ee_declared(payload, high, declared, declared_usize).or_else(
+        || {
             parse_cnw_quickbar_payload_with_legacy_short_declared(
                 payload,
                 high,
                 declared,
                 declared_usize,
             )
-        })
+        },
+    )
 }
 
 fn parse_cnw_quickbar_payload_with_ee_declared(

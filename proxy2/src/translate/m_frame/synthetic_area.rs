@@ -32,24 +32,63 @@ const AREA_LOADED_MINOR: u8 = 0x03;
 // The old in-process hook synthesized Area_AreaLoaded only after it could see
 // the EE Area_ClientArea dispatch return. The proxy cannot observe that
 // in-process return, so synthetic Area_AreaLoaded must be a true fallback.
-// Synthetic LoadBar is deliberately opt-in. EE/Diamond decompiles show LoadBar
-// as an exact stall-event UI family (`0x2C`) rather than an area-content proof,
-// and driver-only captures on 2026-05-13 showed a proxy-owned LoadBar_Start can
-// disconnect EE while Area_ClientArea is still dispatching. When a diagnostic
-// run explicitly enables it, keep the synthetic stall event open while EE
-// consumes the rewritten Area_ClientArea payload; immediate LoadBar_End can
-// race the client-side area load.
-const LOADBAR_DELAY: Duration = Duration::from_millis(6_500);
-// Driver-only evidence on 2026-05-12 showed that ACKing LoadBar_End is not a
-// safe release condition in either direction: EE can ACK a transport frame
-// before the area object registry is ready, but it can also never ACK the
-// proxy-owned synthetic LoadBar frames when the area stream is already being
-// gated. Give native Area_AreaLoaded a normal load window before using the
-// proxy-owned fallback, then release by the audited timeout rather than by a
-// synthetic ACK that may never arrive. Historical clean Docks loads were about
-// five seconds, so eight seconds keeps the fallback available without racing
-// the native client.
-const AREA_LOADED_FALLBACK_AFTER_LOADBAR_GRACE: Duration = Duration::from_millis(8_000);
+// Synthetic LoadBar is a stateful EE-facing UI compatibility event, not game
+// truth. EE decompiles show LoadBar as the server-owned stall-event UI family:
+// module load sends LoadBar_Start, then module-load completion sends
+// LoadBar_End followed by ServerStatus_Status. A legacy 1.69 server that is
+// already running a module may enter the first area without emitting that EE
+// module-load UI pair. Local Diamond bridge capture
+// `local-diamond-bridge-20260517-161322` confirmed that the verified
+// proxy-owned load-completion sequence lets EE leave `Loading Area...
+// Sunshine_Vill` after the rewritten Area_ClientArea.
+// LoadBar still must not become the authoritative area stream gate. Driver-only
+// evidence on 2026-05-12 showed that ACKing LoadBar_End alone is not a safe
+// release condition: EE can ACK a transport frame before the area object
+// registry is ready. The EE client decompile routes native `Area_AreaLoaded`
+// through the client gameplay sender only after the area-load reader returns, so
+// native completion remains the strongest proof. The proxy's fallback therefore
+// waits for both sides of the narrower transport proof before proxy-owning the
+// client event: EE must ACK the rewritten Area_ClientArea window, the audited
+// synthetic LoadBar completion timeout must pass, and then a native-completion
+// grace expires. LoadBar_End and ServerStatus_Status are UI compatibility
+// frames; they are not game-truth, and local Diamond driver-only capture
+// `local-diamond-bridge-20260518-043859` showed EE can remain at the area/load
+// ACK while never ACKing those synthetic completion frames. This keeps the
+// fallback late enough to avoid racing the area reader without making UI cleanup
+// packets the authoritative release gate. If the native packet never appears,
+// the proxy has no decompile-backed signal equivalent to EE's in-process
+// `CNWCArea::LoadArea` success return, so the fallback remains deliberately
+// conservative. Earlier driver-only captures proved that releasing synthetic
+// `Area_AreaLoaded` immediately after `LoadBar_End` ACK can leave the EE client
+// in a permanent black/fade state. A live HG Starcore5 Docks driver-only run on
+// 2026-05-18 showed the previous 14.5s completion stall plus 5s native grace held
+// exact-validated live-object/quickbar traffic for about 19.5s after the area
+// ACK. The decompile-owned invariant is ordering, not that long wall-clock wait:
+// the synthetic End/Status pair must follow the rewritten Area_ClientArea window
+// and have enough time for EE's screen-fade panel to exist before the proxy-owned
+// client fallback is emitted. Keep that as a named panel-arm delay, then give
+// native completion one short grace window. Server-authored gameplay packets are
+// held behind the same
+// native-or-fallback Area_AreaLoaded proof; only the rewritten Area_ClientArea
+// window and proxy-owned area-load UI/control packets are allowed through while
+// the client is still loading the area.
+const AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE: Duration = Duration::from_millis(5_000);
+// When all audited fallback preconditions are satisfied, the proxy is allowed
+// to proxy-own `Area_AreaLoaded`. Local Diamond driver-only capture
+// `local-diamond-bridge-20260518-174721` showed a narrower stateful path: the
+// EE client produced the native `Area_AreaLoaded` roughly 430ms after the proxy
+// opened the held post-area gameplay stream. That means the post-area packets
+// can be the final input needed for EE's native area-load sender to run.
+//
+// Keep synthetic ownership as the last resort. At the moment the old fallback
+// would have emitted a client packet, open the exact-validated hold gate once,
+// then give the EE client this short native-probe window. If native completion
+// appears, it cancels the pending fallback through the normal native-wins path.
+// If it does not, the proxy emits the same audited fallback packet a moment
+// later. This does not relax validation or release gameplay earlier than the
+// previous fallback time; it only lets the real client acknowledgement beat the
+// synthetic packet after the stream is already safe to release.
+const AREA_LOADED_NATIVE_PROBE_AFTER_GATE_OPEN_GRACE: Duration = Duration::from_millis(1_000);
 // When synthetic LoadBar is disabled for driver-only isolation, the proxy has a
 // narrower state proof: an exact Area_ClientArea rewrite was emitted and the EE
 // client ACKed the final rewritten area frame. That ACK is still transport
@@ -58,14 +97,33 @@ const AREA_LOADED_FALLBACK_AFTER_LOADBAR_GRACE: Duration = Duration::from_millis
 // the stronger semantic proof that the area reader returned and gameplay packets
 // can resume. Driver-only captures also showed that holding post-area packets
 // forever can deadlock native completion. Keep the gate stateful: an area ACK
-// starts a short native-completion grace window, native Area_AreaLoaded opens the
-// gate immediately, and the grace timeout releases as a fallback only if native
-// completion does not arrive.
-const AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE: Duration = Duration::from_millis(30_000);
-const SERVER_HOLD_GATE_AFTER_AREA_ACK_GRACE: Duration = Duration::from_millis(5_000);
+// records the ACK for diagnostics, native Area_AreaLoaded opens the gate
+// immediately, and the audited proxy-owned fallback opens it if native
+// completion does not arrive. A 2026-05-18 Starcore5 Docks driver-only run
+// showed that releasing live-object/quickbar packets on a short ACK grace before
+// LoadBar_End/Area_AreaLoaded can leave the EE world view black even though the
+// UI is alive.
+const AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE: Duration = Duration::from_millis(5_000);
+const SERVER_HOLD_GATE_ACK_DIAGNOSTIC_GRACE: Duration = Duration::from_millis(5_000);
 const AREA_LOADED_RETRANSMIT_DELAY: Duration = Duration::from_millis(1250);
 const LOADBAR_FRAME_COUNT: u16 = 2;
-const LOADBAR_STALL_EVENT_ID: u32 = 2;
+const LOADBAR_WITH_STATUS_FRAME_COUNT: u16 = LOADBAR_FRAME_COUNT + 1;
+const LOADBAR_COMPLETION_FALLBACK_DELAY: Duration = Duration::from_millis(2_500);
+// EE `CServerExoAppInternal::LoadModule` calls
+// `SendServerToPlayerLoadBar_StartStallEvent(1)` for the normal module-load
+// progress path and later sends `SendServerToPlayerLoadBar_EndStallEvent(1, 0)`
+// immediately before `ServerStatus_Status`. Area entry through the bridge is a
+// different UI state: the EE client is already sitting behind the load/screen
+// fade panel. EE `CNWCMessage::HandleServerToPlayerLoadBar` (`sub_1407A2D40`)
+// has an explicit stall id 2 branch that marks the active `CPanelScreenFade`
+// for cleanup on `LoadBar_End`, while stall id 1 only records module-load
+// status in the active app state and can leave the `LOAD_SCR` modal covering the
+// rendered area. The old in-process bridge used this same default area stall id
+// when no real server LoadBar was outstanding.
+const LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID: u32 = 2;
+const AREA_LOADBAR_END_REASON: &str = "Area_ClientArea synthetic LoadBar_End";
+const AREA_LOADBAR_STATUS_REASON: &str =
+    "Area_ClientArea synthetic ServerStatus_Status after LoadBar_End";
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingAreaLoaded {
@@ -73,7 +131,9 @@ pub(super) struct PendingAreaLoaded {
     pub(super) release_client_ack_sequence: u16,
     pub(super) release_at: Instant,
     pub(super) require_client_ack_before_release: bool,
+    pub(super) native_completion_grace_after_ack: Duration,
     pub(super) client_ack_observed_at: Option<Instant>,
+    pub(super) gate_opened_for_native_probe_at: Option<Instant>,
     pub(super) reason: AreaLoadedFallbackReason,
 }
 
@@ -101,13 +161,8 @@ pub(super) struct PendingVerifiedServerPacket {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingVerifiedServerPacketQueueResult {
-    Queued {
-        held_packets: usize,
-    },
-    CollapsedReliableReplay {
-        sequence: u16,
-        held_packets: usize,
-    },
+    Queued { held_packets: usize },
+    CollapsedReliableReplay { sequence: u16, held_packets: usize },
 }
 
 /// Queue a verified server packet behind the area-load gate without converting
@@ -165,6 +220,7 @@ pub(super) struct ServerHoldGate {
     pub(super) release_client_ack_sequence: u16,
     pub(super) reason: AreaLoadedFallbackReason,
     pub(super) armed_at: Instant,
+    pub(super) area_window_released_at: Option<Instant>,
     pub(super) area_ack_observed_at: Option<Instant>,
     pub(super) release_at: Option<Instant>,
 }
@@ -230,7 +286,7 @@ pub(super) fn fallback_reason_for_area_rewrite(
         Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords)
     } else if summary
         .rewrite_kinds
-        .contains(&area::AreaRewriteKind::ExactEeAreaNameModeBitForce)
+        .contains(&area::AreaRewriteKind::ExactEeAreaNameModeCExoStringBit)
     {
         Some(AreaLoadedFallbackReason::ExactEeAreaNameModeBitForce)
     } else {
@@ -255,6 +311,25 @@ pub(super) fn is_native_area_loaded(high: Option<HighLevel>) -> bool {
 
 pub(super) fn clear_pending_area_loaded(pending: &mut Option<PendingAreaLoaded>) {
     *pending = None;
+}
+
+pub(super) fn release_pending_loadbar_completion_after_native_area_loaded(
+    pending_packets: &mut [PendingServerPacket],
+) {
+    let now = Instant::now();
+    for pending in pending_packets {
+        if matches!(
+            pending.reason,
+            AREA_LOADBAR_END_REASON | AREA_LOADBAR_STATUS_REASON
+        ) && pending.due_at > now
+        {
+            pending.due_at = now;
+            tracing::info!(
+                reason = pending.reason,
+                "pending synthetic loadbar completion released by native Area_AreaLoaded"
+            );
+        }
+    }
 }
 
 pub(super) fn clear_in_flight_area_loaded(in_flight: &mut Option<InFlightAreaLoaded>) {
@@ -362,14 +437,15 @@ pub(super) fn arm_server_hold_gate_after_area_release(
         release_client_ack_sequence,
         reason,
         armed_at: Instant::now(),
+        area_window_released_at: None,
         area_ack_observed_at: None,
         release_at: None,
     });
     tracing::info!(
         release_client_ack_sequence,
         reason = reason.as_str(),
-        native_grace_ms = SERVER_HOLD_GATE_AFTER_AREA_ACK_GRACE.as_millis(),
-        "server-to-client post-area hold gate armed until native Area_AreaLoaded or ACK grace"
+        diagnostic_grace_ms = SERVER_HOLD_GATE_ACK_DIAGNOSTIC_GRACE.as_millis(),
+        "server-to-client post-area hold gate armed until native or proxy-owned Area_AreaLoaded proof"
     );
 }
 
@@ -384,20 +460,21 @@ pub(super) fn observe_server_hold_gate_client_ack(
         return;
     }
     let now = Instant::now();
-    let ack_satisfied = sequence_at_or_after(observed_client_ack, active.release_client_ack_sequence);
+    let ack_satisfied =
+        sequence_at_or_after(observed_client_ack, active.release_client_ack_sequence);
     if !ack_satisfied {
         return;
     }
     if active.area_ack_observed_at.is_none() {
         active.area_ack_observed_at = Some(now);
-        active.release_at = Some(now + SERVER_HOLD_GATE_AFTER_AREA_ACK_GRACE);
+        active.release_at = Some(now + SERVER_HOLD_GATE_ACK_DIAGNOSTIC_GRACE);
         tracing::info!(
             observed_client_ack,
             release_client_ack_sequence = active.release_client_ack_sequence,
-            native_grace_ms = SERVER_HOLD_GATE_AFTER_AREA_ACK_GRACE.as_millis(),
+            diagnostic_grace_ms = SERVER_HOLD_GATE_ACK_DIAGNOSTIC_GRACE.as_millis(),
             held_ms = now.saturating_duration_since(active.armed_at).as_millis(),
             reason = active.reason.as_str(),
-            "area-load ACK observed; holding verified post-area server packets for native Area_AreaLoaded grace"
+            "area-load ACK observed; holding post-area gameplay packets until native/proxy-owned Area_AreaLoaded proof"
         );
         return;
     }
@@ -407,16 +484,13 @@ pub(super) fn observe_server_hold_gate_client_ack(
     if now < release_at {
         return;
     }
+    active.release_at = None;
     tracing::info!(
         observed_client_ack,
         release_client_ack_sequence = active.release_client_ack_sequence,
         held_ms = now.saturating_duration_since(active.armed_at).as_millis(),
         reason = active.reason.as_str(),
-        "area-load ACK grace elapsed without native Area_AreaLoaded; verified post-area server packets may now flow"
-    );
-    clear_server_hold_gate(
-        gate,
-        "EE ACKed rewritten Area_ClientArea and native Area_AreaLoaded grace elapsed",
+        "area-load ACK diagnostic grace elapsed; post-area gameplay remains held until Area_AreaLoaded proof"
     );
 }
 
@@ -455,36 +529,69 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     pending_packets: &mut Vec<PendingServerPacket>,
     pending_area_loaded: &mut Option<PendingAreaLoaded>,
     server_sequence_shifts: &mut Vec<SequenceShift>,
-    original_after_sequence: u16,
+    original_first_sequence: u16,
+    original_last_sequence: u16,
     ack_sequence: u16,
     area_loaded_fallback_reason: Option<AreaLoadedFallbackReason>,
     synthesize_loadbar: bool,
 ) -> anyhow::Result<()> {
-    let shifted_after_sequence =
-        shift_sequence_for_peer(server_sequence_shifts, original_after_sequence);
+    let shifted_first_sequence =
+        shift_sequence_for_peer(server_sequence_shifts, original_first_sequence);
+    let shifted_last_sequence =
+        shift_sequence_for_peer(server_sequence_shifts, original_last_sequence);
     let now = Instant::now();
     let (
         release_client_ack_sequence,
         release_at,
         start_sequence,
         end_sequence,
+        status_sequence,
         shift_base,
         shift_delta,
+        future_shift_base,
+        future_shift_delta,
         end_delay_ms,
     ) = if synthesize_loadbar {
-        let start_sequence = shifted_after_sequence.wrapping_add(1);
-        let end_sequence = shifted_after_sequence.wrapping_add(2);
+        // EE's area-screen-fade stall id 2 path only latches if the active
+        // `CPanelScreenFade` already exists. The EE client creates that panel
+        // while handling the area transition, so the synthetic Start/End pair
+        // belongs after the complete Area_ClientArea reliable window, not
+        // before it. This mirrors the old in-process bridge/proxy evidence:
+        // queue the LoadBar_Start at `shifted_after + 1` and LoadBar_End at
+        // `shifted_after + 2`.
+        //
+        // original first..last -> Area_ClientArea, contiguous and not split
+        // original last+1      -> synthetic LoadBar_Start
+        // original last+2      -> synthetic LoadBar_End
+        // original last+3      -> synthetic ServerStatus_Status
+        //
+        // This is deliberately window-aware. It keeps synthetic UI packets out
+        // of the deflated Area_ClientArea stream while still giving EE's id-2
+        // screen-fade branch a live panel to complete.
+        let start_sequence = shifted_last_sequence.wrapping_add(1);
+        let end_sequence = shifted_last_sequence.wrapping_add(2);
+        let status_sequence = shifted_last_sequence.wrapping_add(3);
 
-        let start_payload = loadbar::start_payload(LOADBAR_STALL_EVENT_ID);
-        let end_payload = loadbar::end_success_payload(LOADBAR_STALL_EVENT_ID);
+        let start_payload = loadbar::start_payload(LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID);
+        let end_payload = loadbar::end_success_payload(LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID);
+        // EE `CServerExoAppInternal::MainLoop` sets server mode to 1 after
+        // `CNWSModule::LoadModuleFinish`, then sends `LoadBar_End` immediately
+        // followed by `CNWSMessage::SendServerToPlayerServerStatus_Status`.
+        // `SendServerToPlayerServerStatus_Status` maps mode 1 to high-level
+        // `0x01/0x01` with no CNW read buffer. This is a typed protocol-status
+        // transition, not the later mode-2 `0x01/0x03` module-resource packet.
+        let status_payload = server_status_status_payload();
         let start_packet =
             build_synthetic_gameplay_frame(start_sequence, ack_sequence, &start_payload)?;
         let end_packet = build_synthetic_gameplay_frame(end_sequence, ack_sequence, &end_payload)?;
+        let status_packet =
+            build_synthetic_gameplay_frame(status_sequence, ack_sequence, &status_payload)?;
 
-        let end_due_at = now + LOADBAR_DELAY;
+        let end_due_at = now + LOADBAR_COMPLETION_FALLBACK_DELAY;
+        let area_loaded_due_at = end_due_at + AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE;
         server_sequence_shifts.push(SequenceShift {
-            base: original_after_sequence.wrapping_add(1),
-            delta: LOADBAR_FRAME_COUNT,
+            base: original_last_sequence.wrapping_add(1),
+            delta: LOADBAR_WITH_STATUS_FRAME_COUNT,
         });
         trim_sequence_shifts(server_sequence_shifts);
         pending_packets.push(PendingServerPacket {
@@ -498,24 +605,37 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
             family: VerifiedFamily::LoadBar,
             packet: end_packet,
             due_at: end_due_at,
-            reason: "Area_ClientArea synthetic LoadBar_End",
+            reason: AREA_LOADBAR_END_REASON,
+            placement: PendingServerPacketPlacement::AfterCurrentEmit,
+        });
+        pending_packets.push(PendingServerPacket {
+            family: VerifiedFamily::ServerStatusStatus,
+            packet: status_packet,
+            due_at: end_due_at,
+            reason: AREA_LOADBAR_STATUS_REASON,
             placement: PendingServerPacketPlacement::AfterCurrentEmit,
         });
         (
-            end_sequence,
-            end_due_at + AREA_LOADED_FALLBACK_AFTER_LOADBAR_GRACE,
+            shifted_last_sequence,
+            area_loaded_due_at,
             Some(start_sequence),
             Some(end_sequence),
-            Some(original_after_sequence.wrapping_add(1)),
-            LOADBAR_FRAME_COUNT,
-            Some(LOADBAR_DELAY.as_millis()),
+            Some(status_sequence),
+            Some(original_last_sequence.wrapping_add(1)),
+            LOADBAR_WITH_STATUS_FRAME_COUNT,
+            Some(original_last_sequence.wrapping_add(1)),
+            LOADBAR_WITH_STATUS_FRAME_COUNT,
+            Some(LOADBAR_COMPLETION_FALLBACK_DELAY.as_millis()),
         )
     } else {
         (
-            shifted_after_sequence,
+            shifted_last_sequence,
             now + AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE,
             None,
             None,
+            None,
+            None,
+            0,
             None,
             0,
             None,
@@ -524,31 +644,43 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     if let Some(reason) = area_loaded_fallback_reason {
         arm_area_loaded_fallback(
             pending_area_loaded,
-            original_after_sequence,
+            original_last_sequence,
             release_client_ack_sequence,
             release_at,
-            !synthesize_loadbar,
+            true,
+            if synthesize_loadbar {
+                AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE
+            } else {
+                AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE
+            },
             reason,
         );
     } else {
         *pending_area_loaded = None;
         tracing::info!(
-            original_after_sequence,
+            original_first_sequence,
+            original_last_sequence,
             release_client_ack_sequence,
             "client synthetic Area_AreaLoaded fallback not armed: no named compatibility reason"
         );
     }
 
     tracing::info!(
-        original_after_sequence,
-        shifted_after_sequence,
+        original_first_sequence,
+        original_last_sequence,
+        shifted_first_sequence,
+        shifted_last_sequence,
         start_sequence,
         end_sequence,
+        status_sequence,
         ack_sequence,
         shift_base,
         shift_delta,
+        future_shift_base,
+        future_shift_delta,
         end_delay_ms,
-        fallback_after_loadbar_grace_ms = AREA_LOADED_FALLBACK_AFTER_LOADBAR_GRACE.as_millis(),
+        fallback_after_loadbar_ack_grace_ms =
+            AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE.as_millis(),
         fallback_after_area_ack_grace_ms = AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE.as_millis(),
         pending_server_packets = pending_packets.len(),
         shifts = server_sequence_shifts.len(),
@@ -560,6 +692,10 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     );
 
     Ok(())
+}
+
+fn server_status_status_payload() -> [u8; 3] {
+    [b'P', 0x01, 0x01]
 }
 
 pub(super) fn maybe_build_area_loaded_client_packet(
@@ -591,13 +727,17 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         && active.client_ack_observed_at.is_none()
     {
         active.client_ack_observed_at = Some(now);
-        active.release_at = now + AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE;
+        let ack_grace_release_at = now + active.native_completion_grace_after_ack;
+        if ack_grace_release_at > active.release_at {
+            active.release_at = ack_grace_release_at;
+        }
         tracing::info!(
             observed_client_ack,
             release_client_ack_sequence = active.release_client_ack_sequence,
-            native_grace_ms = AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE.as_millis(),
+            native_grace_ms = active.native_completion_grace_after_ack.as_millis(),
+            release_delay_ms = active.release_at.saturating_duration_since(now).as_millis(),
             reason = active.reason.as_str(),
-            "area-load release ACK observed; synthetic Area_AreaLoaded fallback is waiting for native EE completion grace"
+            "area-load release ACK observed; synthetic Area_AreaLoaded fallback is waiting for native EE completion or audited release time"
         );
         return Ok(None);
     }
@@ -606,10 +746,37 @@ pub(super) fn maybe_build_area_loaded_client_packet(
         return Ok(None);
     }
 
+    if active.require_client_ack_before_release
+        && client_ack_satisfied
+        && active.client_ack_observed_at.is_some()
+        && active.gate_opened_for_native_probe_at.is_none()
+        && server_hold_gate.is_some()
+    {
+        active.gate_opened_for_native_probe_at = Some(now);
+        active.release_at = now + AREA_LOADED_NATIVE_PROBE_AFTER_GATE_OPEN_GRACE;
+        let reason = active.reason;
+        clear_server_hold_gate(
+            server_hold_gate,
+            "synthetic Area_AreaLoaded fallback due; opening gate for native completion probe",
+        );
+        tracing::info!(
+            observed_client_ack,
+            release_client_ack_sequence = active.release_client_ack_sequence,
+            native_probe_ms = AREA_LOADED_NATIVE_PROBE_AFTER_GATE_OPEN_GRACE.as_millis(),
+            reason = reason.as_str(),
+            "synthetic Area_AreaLoaded fallback deferred after opening held post-area stream so native EE completion can win"
+        );
+        return Ok(None);
+    }
+
     let pending = active.clone();
 
     let release_trigger = if client_ack_satisfied {
-        "client ACKed area-load release sequence"
+        if pending.gate_opened_for_native_probe_at.is_some() {
+            "native completion probe elapsed after opening held post-area stream"
+        } else {
+            "client ACKed area-load release sequence"
+        }
     } else {
         tracing::warn!(
             observed_client_ack,
@@ -710,6 +877,7 @@ fn arm_area_loaded_fallback(
     release_client_ack_sequence: u16,
     release_at: Instant,
     require_client_ack_before_release: bool,
+    native_completion_grace_after_ack: Duration,
     reason: AreaLoadedFallbackReason,
 ) {
     *pending = Some(PendingAreaLoaded {
@@ -717,13 +885,16 @@ fn arm_area_loaded_fallback(
         release_client_ack_sequence,
         release_at,
         require_client_ack_before_release,
+        native_completion_grace_after_ack,
         client_ack_observed_at: None,
+        gate_opened_for_native_probe_at: None,
         reason,
     });
     tracing::info!(
         server_ack_sequence,
         release_client_ack_sequence,
         require_client_ack_before_release,
+        native_completion_grace_after_ack_ms = native_completion_grace_after_ack.as_millis(),
         delay_ms = release_at
             .saturating_duration_since(Instant::now())
             .as_millis(),
@@ -775,7 +946,9 @@ mod tests {
             release_client_ack_sequence: 31,
             release_at: Instant::now() - Duration::from_millis(1),
             require_client_ack_before_release: false,
+            native_completion_grace_after_ack: AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE,
             client_ack_observed_at: None,
+            gate_opened_for_native_probe_at: None,
             reason,
         }
     }
@@ -786,7 +959,9 @@ mod tests {
             release_client_ack_sequence: 31,
             release_at: Instant::now(),
             require_client_ack_before_release: true,
+            native_completion_grace_after_ack: AREA_LOADED_FALLBACK_AFTER_AREA_ACK_GRACE,
             client_ack_observed_at: None,
+            gate_opened_for_native_probe_at: None,
             reason,
         }
     }
@@ -800,11 +975,13 @@ mod tests {
             release_client_ack_sequence: 31,
             reason: AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
             armed_at: Instant::now(),
+            area_window_released_at: None,
             area_ack_observed_at: None,
             release_at: None,
         });
-        let mut pending =
-            Some(ack_gated_area_loaded(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair));
+        let mut pending = Some(ack_gated_area_loaded(
+            AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+        ));
 
         let early = maybe_build_area_loaded_client_packet(
             &mut pending,
@@ -832,14 +1009,39 @@ mod tests {
         )
         .expect("acked fallback release check");
         assert!(acked_but_waiting_for_native.is_none());
-        assert!(pending
-            .as_ref()
-            .and_then(|pending| pending.client_ack_observed_at)
-            .is_some());
+        assert!(
+            pending
+                .as_ref()
+                .and_then(|pending| pending.client_ack_observed_at)
+                .is_some()
+        );
         assert!(in_flight.is_none());
         assert!(hold_gate.is_some());
 
         pending.as_mut().expect("pending fallback").release_at =
+            Instant::now() - Duration::from_millis(1);
+        let gate_opened_for_native_probe = maybe_build_area_loaded_client_packet(
+            &mut pending,
+            &mut in_flight,
+            &mut hold_gate,
+            &mut latest_native_client_sequence,
+            &mut client_sequence_shifts,
+            31,
+            30,
+        )
+        .expect("native grace elapsed fallback release");
+        assert!(gate_opened_for_native_probe.is_none());
+        assert!(pending.is_some());
+        assert!(
+            pending
+                .as_ref()
+                .and_then(|pending| pending.gate_opened_for_native_probe_at)
+                .is_some()
+        );
+        assert!(in_flight.is_none());
+        assert!(hold_gate.is_none());
+
+        pending.as_mut().expect("pending native probe").release_at =
             Instant::now() - Duration::from_millis(1);
         let released = maybe_build_area_loaded_client_packet(
             &mut pending,
@@ -850,7 +1052,7 @@ mod tests {
             31,
             30,
         )
-        .expect("native grace elapsed fallback release")
+        .expect("post-gate native probe elapsed fallback release")
         .expect("synthetic Area_AreaLoaded packet");
         let view = MFrameView::parse(&released).expect("synthetic M parse");
         assert_eq!(view.sequence, 75);
@@ -872,6 +1074,7 @@ mod tests {
             &mut pending_area_loaded,
             &mut server_sequence_shifts,
             22,
+            22,
             74,
             Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords),
             false,
@@ -886,14 +1089,200 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_loadbar_uses_area_screen_fade_stall_id_and_status_status() {
+        let mut pending_packets = Vec::new();
+        let mut pending_area_loaded = None;
+        let mut server_sequence_shifts = Vec::new();
+        let queued_at = Instant::now();
+
+        queue_loadbar_and_area_loaded_fallback(
+            &mut pending_packets,
+            &mut pending_area_loaded,
+            &mut server_sequence_shifts,
+            22,
+            22,
+            74,
+            Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords),
+            true,
+        )
+        .expect("queue synthetic loadbar side effects");
+
+        assert_eq!(pending_packets.len(), 3);
+        assert_eq!(pending_packets[0].family, VerifiedFamily::LoadBar);
+        assert_eq!(pending_packets[1].family, VerifiedFamily::LoadBar);
+        assert_eq!(
+            pending_packets[2].family,
+            VerifiedFamily::ServerStatusStatus
+        );
+        assert_eq!(server_sequence_shifts.len(), 1);
+        assert_eq!(server_sequence_shifts[0].base, 23);
+        assert_eq!(
+            server_sequence_shifts[0].delta,
+            LOADBAR_WITH_STATUS_FRAME_COUNT
+        );
+        assert_eq!(
+            pending_packets[0].placement,
+            PendingServerPacketPlacement::AfterCurrentEmit
+        );
+        assert_eq!(
+            pending_packets[1].placement,
+            PendingServerPacketPlacement::AfterCurrentEmit
+        );
+        assert_eq!(
+            pending_packets[2].placement,
+            PendingServerPacketPlacement::AfterCurrentEmit
+        );
+
+        let start = MFrameView::parse(&pending_packets[0].packet).expect("start frame");
+        let end = MFrameView::parse(&pending_packets[1].packet).expect("end frame");
+        let status = MFrameView::parse(&pending_packets[2].packet).expect("status frame");
+        assert!(start.crc_valid);
+        assert!(end.crc_valid);
+        assert!(status.crc_valid);
+        assert_eq!(start.sequence, 23);
+        assert_eq!(end.sequence, 24);
+        assert_eq!(status.sequence, 25);
+        assert_eq!(status.ack_sequence, 74);
+        assert_eq!(
+            u32::from_le_bytes(
+                pending_packets[0].packet[19..23]
+                    .try_into()
+                    .expect("start stall id bytes")
+            ),
+            LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                pending_packets[1].packet[19..23]
+                    .try_into()
+                    .expect("end stall id bytes")
+            ),
+            LOADBAR_AREA_SCREEN_FADE_STALL_EVENT_ID
+        );
+        assert_eq!(
+            status.high.map(|high| (high.major, high.minor)),
+            Some((0x01, 0x01))
+        );
+
+        let pending = pending_area_loaded.expect("fallback should be armed");
+        assert_eq!(pending.release_client_ack_sequence, 22);
+        assert!(pending.require_client_ack_before_release);
+        assert!(
+            pending.release_at
+                >= queued_at
+                    + LOADBAR_COMPLETION_FALLBACK_DELAY
+                    + AREA_LOADED_FALLBACK_AFTER_LOADBAR_ACK_GRACE
+        );
+        assert!(
+            pending.release_at > pending_packets[1].due_at,
+            "synthetic Area_AreaLoaded must remain a late fallback, not race LoadBar_End"
+        );
+    }
+
+    #[test]
+    fn synthetic_loadbar_does_not_split_multiframe_area_window() {
+        let mut pending_packets = Vec::new();
+        let mut pending_area_loaded = None;
+        let mut server_sequence_shifts = vec![SequenceShift { base: 16, delta: 1 }];
+
+        queue_loadbar_and_area_loaded_fallback(
+            &mut pending_packets,
+            &mut pending_area_loaded,
+            &mut server_sequence_shifts,
+            22,
+            26,
+            74,
+            Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords),
+            true,
+        )
+        .expect("queue synthetic loadbar side effects");
+
+        let start = MFrameView::parse(&pending_packets[0].packet).expect("start frame");
+        let end = MFrameView::parse(&pending_packets[1].packet).expect("end frame");
+        let status = MFrameView::parse(&pending_packets[2].packet).expect("status frame");
+        let shifted_area_window = (22..=26)
+            .map(|sequence| shift_sequence_for_peer(&server_sequence_shifts, sequence))
+            .collect::<Vec<_>>();
+
+        assert_eq!(start.sequence, 28);
+        assert_eq!(shifted_area_window, vec![23, 24, 25, 26, 27]);
+        assert_eq!(end.sequence, 29);
+        assert_eq!(status.sequence, 30);
+        assert_eq!(
+            pending_area_loaded
+                .as_ref()
+                .map(|pending| pending.release_client_ack_sequence),
+            Some(27)
+        );
+    }
+
+    #[test]
+    fn synthetic_loadbar_area_loaded_fallback_does_not_require_loadbar_completion_ack() {
+        let mut pending_packets = Vec::new();
+        let mut pending_area_loaded = None;
+        let mut server_sequence_shifts = Vec::new();
+
+        queue_loadbar_and_area_loaded_fallback(
+            &mut pending_packets,
+            &mut pending_area_loaded,
+            &mut server_sequence_shifts,
+            22,
+            22,
+            74,
+            Some(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords),
+            true,
+        )
+        .expect("queue synthetic loadbar side effects");
+
+        let mut pending = pending_area_loaded;
+        let mut in_flight = None;
+        let mut hold_gate = None;
+        let mut latest_native_client_sequence = Some(73);
+        let mut client_sequence_shifts = Vec::new();
+
+        let acked_but_waiting_for_native = maybe_build_area_loaded_client_packet(
+            &mut pending,
+            &mut in_flight,
+            &mut hold_gate,
+            &mut latest_native_client_sequence,
+            &mut client_sequence_shifts,
+            22,
+            74,
+        )
+        .expect("area ack starts native grace");
+        assert!(acked_but_waiting_for_native.is_none());
+        assert!(pending.as_ref().unwrap().client_ack_observed_at.is_some());
+
+        pending.as_mut().unwrap().release_at = Instant::now() - Duration::from_millis(1);
+        let released = maybe_build_area_loaded_client_packet(
+            &mut pending,
+            &mut in_flight,
+            &mut hold_gate,
+            &mut latest_native_client_sequence,
+            &mut client_sequence_shifts,
+            22,
+            74,
+        )
+        .expect("fallback releases without waiting for LoadBar_End/Status ACK")
+        .expect("synthetic Area_AreaLoaded packet");
+
+        let view = MFrameView::parse(&released).expect("synthetic M parse");
+        assert_eq!(view.sequence, 74);
+        assert_eq!(view.ack_sequence, 74);
+        assert!(pending.is_none());
+        assert!(in_flight.is_some());
+    }
+
+    #[test]
     fn consecutive_synthetic_client_packets_do_not_skip_peer_sequence() {
         let mut latest_native_client_sequence = Some(73);
         let mut client_sequence_shifts = vec![SequenceShift { base: 73, delta: 1 }];
         let mut in_flight = None;
         let mut hold_gate = None;
 
-        let mut first_pending =
-            Some(due_area_loaded(AreaLoadedFallbackReason::ExactEePostStaticListZeroWords));
+        let mut first_pending = Some(due_area_loaded(
+            AreaLoadedFallbackReason::ExactEePostStaticListZeroWords,
+        ));
         let first = maybe_build_area_loaded_client_packet(
             &mut first_pending,
             &mut in_flight,
@@ -911,8 +1300,9 @@ mod tests {
         assert_eq!(latest_native_client_sequence, Some(73));
 
         in_flight = None;
-        let mut second_pending =
-            Some(due_area_loaded(AreaLoadedFallbackReason::LegacyHgMissingHeightRepair));
+        let mut second_pending = Some(due_area_loaded(
+            AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+        ));
         let second = maybe_build_area_loaded_client_packet(
             &mut second_pending,
             &mut in_flight,
@@ -987,11 +1377,12 @@ mod tests {
     }
 
     #[test]
-    fn server_hold_gate_opens_when_ee_acks_rewritten_area_window() {
+    fn server_hold_gate_records_ack_but_waits_for_area_loaded_proof() {
         let mut hold_gate = Some(ServerHoldGate {
             release_client_ack_sequence: 31,
             reason: AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
             armed_at: Instant::now(),
+            area_window_released_at: None,
             area_ack_observed_at: None,
             release_at: None,
         });
@@ -1001,11 +1392,20 @@ mod tests {
 
         observe_server_hold_gate_client_ack(&mut hold_gate, 31);
         assert!(hold_gate.is_some());
-        let active = hold_gate.as_mut().expect("hold gate should wait for native grace");
+        let active = hold_gate
+            .as_mut()
+            .expect("hold gate should wait for native/proxy-owned Area_AreaLoaded");
         assert!(active.area_ack_observed_at.is_some());
         active.release_at = Some(Instant::now() - Duration::from_millis(1));
         observe_server_hold_gate_client_ack(&mut hold_gate, 31);
-        assert!(hold_gate.is_none());
+        assert!(hold_gate.is_some());
+        assert!(
+            hold_gate
+                .as_ref()
+                .expect("hold gate remains armed")
+                .release_at
+                .is_none()
+        );
     }
 
     #[test]

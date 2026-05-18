@@ -184,30 +184,59 @@ pub(super) fn try_parse_inventory_2a00_shape(
     bytes: &[u8],
     record_offset: usize,
     record_end: usize,
-) -> Option<usize> {
+) -> Option<GenericInventoryCandidate> {
     let branch_cursor = record_offset.checked_add(7)?;
-    let try_parse_after_0200 = |cursor: usize| -> Option<usize> {
-        let feature25 = try_parse_feature25_at(bytes, cursor, record_end)?;
+
+    let try_parse_after_0200 = |candidate: GenericInventoryCandidate,
+                                cursor: usize|
+     -> Option<GenericInventoryCandidate> {
+        let feature25 = try_parse_inventory_2a00_feature25_at(bytes, cursor, record_end)?;
         if feature25.missing_second_count || feature25.block_end > record_end {
             return None;
         }
-        if feature25.block_end != record_end && record_end - feature25.block_end != 12 {
-            return None;
+        let feature25_bits = usize::try_from(feature25.second_count)
+            .ok()?
+            .saturating_mul(3);
+        let candidate = candidate.advanced(
+            feature25.block_end,
+            candidate.bits.saturating_add(feature25_bits),
+        );
+
+        // Diamond `sub_455940` and EE `sub_1407B4F70` both process mask
+        // `0x2A00` as `0x0200 | 0x2000 | 0x0800`. After the Feature-25
+        // `0x2000` object-list reader, `0x0800` consumes one BOOL. A false
+        // BOOL owns no read-buffer bytes; a true BOOL owns the following
+        // 12-byte appearance/status block. Proving the BOOL value here keeps
+        // this shape exact instead of merely counting enough fragment bits.
+        let branch_0800_bit = candidate.bits;
+        if feature25.block_end == record_end {
+            return Some(
+                candidate
+                    .require_fragment_bit(branch_0800_bit, false)?
+                    .advanced(record_end, candidate.bits.saturating_add(1)),
+            );
         }
-        Some(
-            2usize
-                .saturating_add(
-                    usize::try_from(feature25.second_count)
-                        .ok()?
-                        .saturating_mul(3),
-                )
-                .saturating_add(1),
-        )
+        if record_end - feature25.block_end == 12 {
+            return Some(
+                candidate
+                    .require_fragment_bit(branch_0800_bit, true)?
+                    .advanced(record_end, candidate.bits.saturating_add(1)),
+            );
+        }
+        None
     };
 
     if record_end - branch_cursor >= 4 && read_u32_le(bytes, branch_cursor)? == 0 {
-        if let Some(bits) = try_parse_after_0200(branch_cursor + 4) {
-            return Some(bits);
+        // For the `0x0200` branch, both clients read two BOOLs before the
+        // read-buffer branch body. The second BOOL selects the layout: false
+        // means the following DWORD-count branch, while true means the
+        // byte-mask-list branch. The first BOOL is semantic state and does not
+        // change the cursor shape, so this exact verifier only constrains the
+        // layout-selecting second bit.
+        let candidate =
+            GenericInventoryCandidate::new(branch_cursor + 4, 2).require_fragment_bit(1, false)?;
+        if let Some(candidate) = try_parse_after_0200(candidate, branch_cursor + 4) {
+            return Some(candidate);
         }
     }
 
@@ -218,11 +247,225 @@ pub(super) fn try_parse_inventory_2a00_shape(
             && masks_offset <= record_end
             && byte_mask_count <= record_end - masks_offset
         {
-            return try_parse_after_0200(masks_offset + byte_mask_count);
+            let candidate = GenericInventoryCandidate::new(masks_offset + byte_mask_count, 2)
+                .require_fragment_bit(1, true)?;
+            return try_parse_after_0200(candidate, masks_offset + byte_mask_count);
         }
     }
 
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Inventory2a00ZeroFeature25Prefix {
+    read_end: usize,
+    missing_second_count: bool,
+}
+
+pub(super) fn inventory_2a00_object_id_is_allowed(object_id: u32) -> bool {
+    // `I/0x2A00` is read by Diamond `sub_455940` and EE `sub_1407B4F70` as an
+    // OBJECTID owner plus the fixed 0x0200 -> 0x2000 -> 0x0800 mask order. The
+    // clients do not require the owner to look like a materialized server oid
+    // before advancing the read buffer; they resolve it for game-state updates
+    // separately. HG can therefore send negative session-local sentinels such
+    // as 0xFFFFFF8E in this family. Keep that allowance local to this exact
+    // mask so other inventory packets still need their own decompile proof.
+    matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
+        || looks_like_legacy_live_object_id_value(object_id)
+        || (object_id & 0xFFFF_FF00) == 0xFFFF_FF00
+}
+
+pub(super) fn try_parse_inventory_2a00_prefix_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    scan_end: usize,
+) -> Option<InventoryRecordPrefixClaim> {
+    let prefix = try_parse_inventory_2a00_zero_feature25_prefix(bytes, record_offset, scan_end)?;
+    Some(InventoryRecordPrefixClaim {
+        read_end: prefix.read_end,
+        fragment_bits: 3,
+        interleaved_fragment_tail_allowed: prefix.read_end < scan_end,
+    })
+}
+
+pub(super) fn insert_missing_inventory_2a00_feature25_second_count_zero_for_ee(
+    bytes: &mut Vec<u8>,
+    record_offset: usize,
+    record_end: &mut usize,
+) -> Option<usize> {
+    let prefix = try_parse_inventory_2a00_zero_feature25_prefix(bytes, record_offset, *record_end)?;
+    if !prefix.missing_second_count {
+        return None;
+    }
+
+    bytes.splice(prefix.read_end..prefix.read_end, [0, 0, 0, 0]);
+    *record_end = record_end.checked_add(4)?;
+    Some(4)
+}
+
+fn try_parse_inventory_2a00_zero_feature25_prefix(
+    bytes: &[u8],
+    record_offset: usize,
+    scan_end: usize,
+) -> Option<Inventory2a00ZeroFeature25Prefix> {
+    if record_offset > bytes.len()
+        || scan_end > bytes.len()
+        || scan_end <= record_offset
+        || scan_end - record_offset < 15
+        || bytes.get(record_offset).copied() != Some(b'I')
+        || read_u16_le(bytes, record_offset + 5)? != 0x2A00
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    if !inventory_2a00_object_id_is_allowed(object_id) {
+        return None;
+    }
+
+    let branch_cursor = record_offset.checked_add(7)?;
+    if read_u32_le(bytes, branch_cursor)? != 0 {
+        return None;
+    }
+    let feature25_cursor = branch_cursor.checked_add(4)?;
+    let first_count = read_u32_le(bytes, feature25_cursor)?;
+    if first_count > MAX_REASONABLE_FEATURE25_OBJECTS {
+        return None;
+    }
+    let first_objects = feature25_cursor.checked_add(4)?;
+    let first_end =
+        first_objects.checked_add(usize::try_from(first_count).ok()?.checked_mul(4)?)?;
+    if first_end > scan_end
+        || !looks_like_inventory_2a00_feature25_object_list(
+            bytes,
+            first_objects,
+            first_count,
+            first_end,
+        )
+    {
+        return None;
+    }
+
+    if first_end == scan_end || scan_end - first_end < 4 {
+        return Some(Inventory2a00ZeroFeature25Prefix {
+            read_end: first_end,
+            missing_second_count: true,
+        });
+    }
+
+    let second_count = read_u32_le(bytes, first_end)?;
+    if second_count > MAX_REASONABLE_FEATURE25_OBJECTS {
+        return Some(Inventory2a00ZeroFeature25Prefix {
+            read_end: first_end,
+            missing_second_count: true,
+        });
+    }
+    let second_objects = first_end.checked_add(4)?;
+    let second_end =
+        second_objects.checked_add(usize::try_from(second_count).ok()?.checked_mul(4)?)?;
+    if second_end > scan_end
+        || !looks_like_inventory_2a00_feature25_object_list(
+            bytes,
+            second_objects,
+            second_count,
+            second_end,
+        )
+    {
+        return Some(Inventory2a00ZeroFeature25Prefix {
+            read_end: first_end,
+            missing_second_count: true,
+        });
+    }
+
+    Some(Inventory2a00ZeroFeature25Prefix {
+        read_end: second_end,
+        missing_second_count: false,
+    })
+}
+
+fn try_parse_inventory_2a00_feature25_at(
+    bytes: &[u8],
+    cursor: usize,
+    record_end: usize,
+) -> Option<Feature25Shape> {
+    if cursor > bytes.len() || record_end > bytes.len() || cursor > record_end {
+        return None;
+    }
+    let first_count = read_u32_le(bytes, cursor)?;
+    if first_count > MAX_REASONABLE_FEATURE25_OBJECTS {
+        return None;
+    }
+    let first_objects = cursor.checked_add(4)?;
+    let first_end =
+        first_objects.checked_add(usize::try_from(first_count).ok()?.checked_mul(4)?)?;
+    if first_end > record_end
+        || !looks_like_inventory_2a00_feature25_object_list(
+            bytes,
+            first_objects,
+            first_count,
+            first_end,
+        )
+    {
+        return None;
+    }
+    if first_end == record_end {
+        return Some(Feature25Shape {
+            block_end: record_end,
+            missing_second_count: true,
+            ..Feature25Shape::default()
+        });
+    }
+    if record_end - first_end < 4 {
+        return None;
+    }
+    let second_count = read_u32_le(bytes, first_end)?;
+    if second_count > MAX_REASONABLE_FEATURE25_OBJECTS {
+        return None;
+    }
+    let second_objects = first_end.checked_add(4)?;
+    let second_end =
+        second_objects.checked_add(usize::try_from(second_count).ok()?.checked_mul(4)?)?;
+    if second_end > record_end
+        || !looks_like_inventory_2a00_feature25_object_list(
+            bytes,
+            second_objects,
+            second_count,
+            second_end,
+        )
+    {
+        return None;
+    }
+    Some(Feature25Shape {
+        second_count,
+        block_end: second_end,
+        missing_second_count: false,
+    })
+}
+
+fn looks_like_inventory_2a00_feature25_object_list(
+    bytes: &[u8],
+    offset: usize,
+    count: u32,
+    record_end: usize,
+) -> bool {
+    if count > MAX_REASONABLE_FEATURE25_OBJECTS
+        || offset > record_end
+        || record_end > bytes.len()
+        || usize::try_from(count)
+            .ok()
+            .is_none_or(|count| count > (record_end - offset) / 4)
+    {
+        return false;
+    }
+    for index in 0..usize::try_from(count).unwrap_or(usize::MAX) {
+        let Some(object_id) = read_u32_le(bytes, offset + index * 4) else {
+            return false;
+        };
+        if !inventory_2a00_object_id_is_allowed(object_id) {
+            return false;
+        }
+    }
+    true
 }
 
 fn try_parse_feature25_at(

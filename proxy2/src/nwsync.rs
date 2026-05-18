@@ -148,13 +148,26 @@ impl Runtime {
             parse_manifest_adverts(env_values.get(ENV_MANIFESTS), &root_hash, true)?;
         let module_manifests =
             parse_manifest_adverts(env_values.get(ENV_MODULE_MANIFESTS), &root_hash, false)?;
-        if !module_manifests.is_empty() && !config.nwsync_advertise_mode.advertises_bnxr() {
+        if !module_manifests.is_empty()
+            && !config.nwsync_advertise_mode.advertises_bnxr()
+            && !config.nwsync_allow_seeded_module_manifests_without_bnxr
+        {
             return Err(anyhow!(
                 "NWSync module-resource extra manifests require BNXR preflight advertisement; \
                  EE CNWCModule::LoadModuleResources calls AddManifest(extra), and the \
                  decompile-backed AddManifest path fails if the client has not already learned \
                  the manifest. Use --nwsync-advertise-mode both or remove HG_BRIDGE_NWSYNC_MODULE_MANIFESTS."
             ));
+        }
+        if !module_manifests.is_empty()
+            && !config.nwsync_advertise_mode.advertises_bnxr()
+            && config.nwsync_allow_seeded_module_manifests_without_bnxr
+        {
+            tracing::warn!(
+                manifest_count = module_manifests.len(),
+                "NWSync module-resource extra manifests allowed without BNXR only because \
+                 the harness declared a pre-seeded EE NWSync cache"
+            );
         }
         let advertisement = Advertisement::new(
             root_hash,

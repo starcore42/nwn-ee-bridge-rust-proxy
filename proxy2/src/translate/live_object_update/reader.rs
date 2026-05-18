@@ -5,13 +5,12 @@
 //! structs, then the writer/validator decides what to emit or claim.
 
 use super::{
-    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
-    EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
-    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
-    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
-    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
-    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
+    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
+    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
+    EE_UPDATE_SCALE_STATE_READ_BYTES, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
+    LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+    LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, MAX_LIVE_OBJECT_NAME_BYTES,
     PLACEABLE_OBJECT_TYPE, read_f32_le, read_u16_le, read_u32_le,
 };
@@ -270,7 +269,9 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
         if debug_live_claim {
             eprintln!(
                 "legacy inline door/placeable name reject offset={offset} record_end={record_end} read_cursor={read_cursor} inline_name_end={inline_name_end:?} bit_cursor={bit_cursor} mask=0x{mask:08X} tail={:?}",
-                bytes.get(read_cursor..record_end.min(read_cursor.saturating_add(32))).unwrap_or(&[])
+                bytes
+                    .get(read_cursor..record_end.min(read_cursor.saturating_add(32)))
+                    .unwrap_or(&[])
             );
         }
         return None;
@@ -501,7 +502,10 @@ fn legacy_packed_name_tail_ready(bytes: &[u8], offset: usize, record_end: usize)
     // fragment tail. The translator never emits this Diamond-only name branch
     // to EE; this check only proves the bounded payload we are about to drop
     // does not overlap the next live-object record.
-    let text_start = tail.iter().position(|byte| *byte != 0).unwrap_or(tail.len());
+    let text_start = tail
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(tail.len());
     if text_start == tail.len() {
         return true;
     }

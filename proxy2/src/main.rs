@@ -15,7 +15,7 @@ use config::Config;
 
 fn main() -> anyhow::Result<()> {
     let config = Config::parse();
-    let _log_guard = log::init(&config).context("initializing logging")?;
+    log::init(&config).context("initializing logging")?;
 
     if config.packet_dump {
         if let Some(log_path) = &config.log {

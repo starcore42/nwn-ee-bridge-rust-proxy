@@ -14,6 +14,13 @@
 //! `P 02 12`, little-endian declared offset `0x0B`, one little-endian DWORD,
 //! and the final compact empty-fragment byte `0x60`.
 //!
+//! `Login_CharacterQuery` is decompile-owned from
+//! `CNWSMessage::SendServerToPlayerLogin_CharacterQuery`: the writer creates a
+//! 0x80-byte CNW write message, writes one BYTE count, then for each entry an
+//! INT token plus BYTE flag, and finally one DWORD. The exact EE/1.69 high-level
+//! shape is therefore identity-translated only when that declared cursor is
+//! consumed exactly.
+//!
 //! These packets are pass-through only because this module verifies the exact
 //! reader/writer shape before the strict layer allows them.
 
@@ -21,12 +28,18 @@ use crate::{crc::read_le_u32, packet::m::HighLevel};
 
 const LOGIN_MAJOR: u8 = 0x02;
 const LOGIN_CONFIRM_MINOR: u8 = 0x05;
+const LOGIN_CHARACTER_QUERY_MINOR: u8 = 0x0A;
 const LOGIN_GET_WAYPOINT_MINOR: u8 = 0x0C;
 const LOGIN_NEED_CHARACTER_MINOR: u8 = 0x10;
 const LOGIN_FAIL_MINOR: u8 = 0x12;
 const EMPTY_HIGH_LEVEL_BYTES: usize = 3;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
+const LOGIN_CHARACTER_QUERY_COUNT_BYTES: usize = 1;
+const LOGIN_CHARACTER_QUERY_TOKEN_BYTES: usize = 4;
+const LOGIN_CHARACTER_QUERY_FLAG_BYTES: usize = 1;
+const LOGIN_CHARACTER_QUERY_FINAL_DWORD_BYTES: usize = 4;
+const LOGIN_CHARACTER_QUERY_WRITER_BYTES: usize = 0x80;
 const LOGIN_FAIL_DWORD_BYTES: usize = 4;
 const LOGIN_FAIL_DECLARED: usize =
     HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + LOGIN_FAIL_DWORD_BYTES;
@@ -49,11 +62,56 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LoginClaimSummary> {
         {
             Some(LoginClaimSummary { minor: high.minor })
         }
+        LOGIN_CHARACTER_QUERY_MINOR if character_query_shape_valid(payload) => {
+            Some(LoginClaimSummary { minor: high.minor })
+        }
         LOGIN_FAIL_MINOR if login_fail_shape_valid(payload) => {
             Some(LoginClaimSummary { minor: high.minor })
         }
         _ => None,
     }
+}
+
+pub fn character_query_shape_valid(payload: &[u8]) -> bool {
+    let Some(high) = HighLevel::parse(payload) else {
+        return false;
+    };
+    if high.major != LOGIN_MAJOR || high.minor != LOGIN_CHARACTER_QUERY_MINOR {
+        return false;
+    }
+
+    let Some(declared) =
+        read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(count) = payload
+        .get(HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES)
+        .copied()
+        .map(usize::from)
+    else {
+        return false;
+    };
+
+    let per_entry = LOGIN_CHARACTER_QUERY_TOKEN_BYTES + LOGIN_CHARACTER_QUERY_FLAG_BYTES;
+    let read_bytes = count
+        .checked_mul(per_entry)
+        .and_then(|entries| LOGIN_CHARACTER_QUERY_COUNT_BYTES.checked_add(entries))
+        .and_then(|value| value.checked_add(LOGIN_CHARACTER_QUERY_FINAL_DWORD_BYTES));
+    let Some(read_bytes) = read_bytes else {
+        return false;
+    };
+    if read_bytes > LOGIN_CHARACTER_QUERY_WRITER_BYTES {
+        return false;
+    }
+
+    let expected_declared = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)
+        .and_then(|value| value.checked_add(read_bytes));
+
+    expected_declared == Some(declared)
+        && payload.len() == declared + 1
+        && payload[declared] == FINAL_EMPTY_FRAGMENT_BYTE
 }
 
 pub fn login_fail_shape_valid(payload: &[u8]) -> bool {
@@ -115,6 +173,62 @@ mod tests {
             claim_payload_if_verified(&payload)
                 .is_some_and(|claim| { claim.minor == LOGIN_FAIL_MINOR })
         );
+    }
+
+    #[test]
+    fn claims_decompile_backed_character_query_shape() {
+        let mut payload = vec![
+            b'P',
+            LOGIN_MAJOR,
+            LOGIN_CHARACTER_QUERY_MINOR,
+            0,
+            0,
+            0,
+            0,
+            2,
+        ];
+        payload.extend_from_slice(&1234i32.to_le_bytes());
+        payload.push(1);
+        payload.extend_from_slice(&5678i32.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.push(FINAL_EMPTY_FRAGMENT_BYTE);
+
+        assert!(character_query_shape_valid(&payload));
+        assert!(
+            claim_payload_if_verified(&payload)
+                .is_some_and(|claim| { claim.minor == LOGIN_CHARACTER_QUERY_MINOR })
+        );
+    }
+
+    #[test]
+    fn rejects_character_query_with_unconsumed_cursor_or_bad_fragment() {
+        let mut bad_declared = vec![
+            b'P',
+            LOGIN_MAJOR,
+            LOGIN_CHARACTER_QUERY_MINOR,
+            0,
+            0,
+            0,
+            0,
+            1,
+        ];
+        bad_declared.extend_from_slice(&1234i32.to_le_bytes());
+        bad_declared.push(1);
+        bad_declared.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        let declared = (bad_declared.len() as u32) + 1;
+        bad_declared[3..7].copy_from_slice(&declared.to_le_bytes());
+        bad_declared.push(FINAL_EMPTY_FRAGMENT_BYTE);
+
+        let mut bad_fragment = bad_declared.clone();
+        let declared = (bad_fragment.len() - 1) as u32;
+        bad_fragment[3..7].copy_from_slice(&declared.to_le_bytes());
+        *bad_fragment.last_mut().unwrap() = 0x00;
+
+        assert!(!character_query_shape_valid(&bad_declared));
+        assert!(!character_query_shape_valid(&bad_fragment));
     }
 
     #[test]

@@ -99,7 +99,8 @@ mod tests {
 
     #[test]
     fn fixture_matches_exact_p_prefixed_zero_fill_shape() {
-        let bytes = include_bytes!("../../../fixtures/m_frame/server_zlib_zero_fill_charlist_tail.bin");
+        let bytes =
+            include_bytes!("../../../fixtures/m_frame/server_zlib_zero_fill_charlist_tail.bin");
         assert_eq!(bytes.len(), 517);
         assert!(is_p_prefixed_zero_fill_payload(bytes));
     }

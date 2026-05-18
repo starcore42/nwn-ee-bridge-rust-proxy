@@ -36,12 +36,12 @@
 //!   unique read-body/tail split; following live-object continuation bytes are
 //!   therefore rejected instead of being folded into PlayerList.
 //! - EE PlayerList object-id fields are read with `ReadOBJECTIDServer`, whose
-//!   decompile strips the EE server-object marker bit and preserves only the
-//!   `OBJECT_INVALID` wire value (`0x7f000000`) as invalid. Diamond writes raw
-//!   DWORD object ids in this family, so the legacy `0xffff_fffe` no-object
-//!   sentinel must be translated to EE's invalid wire value here. This repair
-//!   is intentionally scoped to PlayerList's decompile-confirmed object-id
-//!   fields; other packet families may use legacy sentinels internally.
+//!   decompile consumes a raw DWORD and clears only bit 31. Real Diamond/HG
+//!   session-local player ids such as `0xffff_fffe`/`0xffff_ff8e` therefore
+//!   remain meaningful as stripped ids `0x7fff_fffe`/`0x7fff_ff8e`. Only the
+//!   literal invalid OBJECTID wire value (`0x7f000000`) is invalid; high
+//!   session ids must not be collapsed to invalid or later live-object
+//!   creature add/update lifecycle ids stop matching.
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const PLAYER_LIST_MAJOR: u8 = 0x0A;
@@ -57,7 +57,12 @@ const EE_EMPTY_IDENTITY: [u8; 5] = [0, 0, 0, 0, 0];
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const NWN_OBJECT_INVALID: u32 = 0x7F00_0000;
 const EE_SERVER_OBJECT_ID_MARKER_BIT: u32 = 0x8000_0000;
-const DIAMOND_OBJECT_INVALID_SENTINEL: u32 = 0xFFFF_FFFE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerListObjectIds {
+    pub player_object_id: u32,
+    pub creature_object_id: Option<u32>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PlayerListRewriteSummary {
@@ -121,6 +126,7 @@ struct ParsedPlayerList {
     insert_offsets: Vec<usize>,
     locstring_repairs: Vec<LegacyLocStringLengthRepair>,
     object_id_repairs: Vec<(usize, u32)>,
+    object_ids: Vec<PlayerListObjectIds>,
     consumed_fragment_bits: usize,
     consumed_fragment_bytes: usize,
     final_fragment_bits: u8,
@@ -362,6 +368,38 @@ pub fn ee_player_list_payload_shape_valid(payload: &[u8]) -> bool {
         PlatformIdentityShape::EeRequired,
     )
     .is_some()
+}
+
+pub fn object_ids_from_verified_payload(payload: &[u8]) -> Option<Vec<PlayerListObjectIds>> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != PLAYER_LIST_MAJOR
+        || !matches!(
+            payload[2],
+            PLAYER_LIST_ALL_MINOR | PLAYER_LIST_ADD_MINOR | PLAYER_LIST_DELETE_MINOR
+        )
+        || payload.len() > MAX_REASONABLE_PAYLOAD
+    {
+        return None;
+    }
+
+    let layout = probe_current_layout_for(
+        payload,
+        false,
+        false,
+        false,
+        &[PlatformIdentityShape::EeRequired],
+    )?;
+    let cnw = &payload[HIGH_LEVEL_HEADER_BYTES..];
+    let fragments = &cnw[layout.read_size..layout.read_size + layout.fragment_size];
+    let parsed = parse_player_list_cnw(
+        cnw,
+        payload[2],
+        layout.read_size,
+        fragments,
+        PlatformIdentityShape::EeRequired,
+    )?;
+    Some(parsed.object_ids)
 }
 
 fn normalize_player_list_layout(payload: &mut Vec<u8>) -> Option<Layout> {
@@ -645,6 +683,7 @@ fn parse_player_list_cnw(
             insert_offsets: Vec::new(),
             locstring_repairs: Vec::new(),
             object_id_repairs: Vec::new(),
+            object_ids: Vec::new(),
             consumed_fragment_bits,
             consumed_fragment_bytes,
             final_fragment_bits,
@@ -663,6 +702,7 @@ fn parse_player_list_cnw(
     let mut insert_offsets = Vec::new();
     let mut locstring_repairs = Vec::new();
     let mut object_id_repairs = Vec::new();
+    let mut object_ids = Vec::new();
     for _ in 0..entry_count {
         let _player_id = reader.read_u32()?;
         let player_object_offset = reader.cursor;
@@ -693,9 +733,11 @@ fn parse_player_list_cnw(
             }
         }
 
+        let mut creature_object_id = None;
         if has_creature {
             let creature_object_offset = reader.cursor;
             let creature_object = reader.read_u32()?;
+            creature_object_id = Some(creature_object);
             record_player_list_object_id_rewrite(
                 creature_object,
                 creature_object_offset,
@@ -714,6 +756,10 @@ fn parse_player_list_cnw(
                 reader.read_resref16()?;
             }
         }
+        object_ids.push(PlayerListObjectIds {
+            player_object_id: player_object,
+            creature_object_id,
+        });
     }
 
     let consumed_fragment_bits = reader.fragment_cursor * 8 + usize::from(reader.fragment_bit);
@@ -730,6 +776,7 @@ fn parse_player_list_cnw(
         insert_offsets,
         locstring_repairs,
         object_id_repairs,
+        object_ids,
         consumed_fragment_bits,
         consumed_fragment_bytes,
         final_fragment_bits,
@@ -1074,9 +1121,6 @@ fn record_player_list_object_id_rewrite(
 }
 
 fn ee_player_list_object_id_wire_value(object_id: u32) -> u32 {
-    if object_id == DIAMOND_OBJECT_INVALID_SENTINEL {
-        return NWN_OBJECT_INVALID;
-    }
     if object_id == NWN_OBJECT_INVALID || (object_id & EE_SERVER_OBJECT_ID_MARKER_BIT) != 0 {
         object_id
     } else {
@@ -1285,30 +1329,54 @@ mod tests {
     }
 
     #[test]
-    fn legacy_all_rewrites_diamond_invalid_object_sentinels_to_ee_invalid_wire() {
+    fn legacy_all_preserves_high_session_object_ids() {
+        const DIAMOND_SESSION_OBJECT_ID: u32 = 0xFFFF_FFFE;
         let mut payload = build_legacy_player_list_all_fixture_with_object_ids(
-            DIAMOND_OBJECT_INVALID_SENTINEL,
-            DIAMOND_OBJECT_INVALID_SENTINEL,
-            DIAMOND_OBJECT_INVALID_SENTINEL,
-            DIAMOND_OBJECT_INVALID_SENTINEL,
+            DIAMOND_SESSION_OBJECT_ID,
+            DIAMOND_SESSION_OBJECT_ID,
+            DIAMOND_SESSION_OBJECT_ID,
+            DIAMOND_SESSION_OBJECT_ID,
         );
 
         let summary = rewrite_player_list_payload_if_possible(&mut payload)
-            .expect("legacy PlayerList_All object-id sentinels should normalize to EE");
+            .expect("legacy PlayerList_All high session ids should normalize to EE");
 
         assert_eq!(summary.minor, PLAYER_LIST_ALL_MINOR);
         assert_eq!(summary.entries, 2);
-        assert_eq!(summary.object_id_repairs, 4);
-        assert!(!payload
-            .windows(4)
-            .any(|window| window == DIAMOND_OBJECT_INVALID_SENTINEL.to_le_bytes()));
+        assert_eq!(summary.object_id_repairs, 0);
+        assert!(
+            payload
+                .windows(4)
+                .any(|window| window == DIAMOND_SESSION_OBJECT_ID.to_le_bytes())
+        );
         assert_eq!(
             payload
                 .windows(4)
                 .filter(|window| *window == NWN_OBJECT_INVALID.to_le_bytes())
                 .count(),
-            4
+            0
         );
+        assert!(ee_player_list_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn legacy_all_rewrites_compact_object_ids_to_ee_external_wire() {
+        let mut payload = build_legacy_player_list_all_fixture_with_object_ids(1, 2, 3, 4);
+
+        let summary = rewrite_player_list_payload_if_possible(&mut payload)
+            .expect("legacy PlayerList_All compact object ids should normalize to EE");
+
+        assert_eq!(summary.minor, PLAYER_LIST_ALL_MINOR);
+        assert_eq!(summary.entries, 2);
+        assert_eq!(summary.object_id_repairs, 4);
+        for object_id in [0x8000_0001u32, 0x8000_0002, 0x8000_0003, 0x8000_0004] {
+            assert!(
+                payload
+                    .windows(4)
+                    .any(|window| window == object_id.to_le_bytes()),
+                "rewritten PlayerList payload should contain {object_id:#010x}"
+            );
+        }
         assert!(ee_player_list_payload_shape_valid(&payload));
     }
 

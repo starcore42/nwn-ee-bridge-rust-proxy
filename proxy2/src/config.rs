@@ -5,15 +5,15 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum StrictProfile {
-    /// Development profile: exact validators and shallow validators are allowed,
-    /// with every shallow allowance logged so missing parsers stay visible.
+    /// Development profile. Packet families still require exact validators;
+    /// this profile only changes diagnostic tolerance outside strict shape
+    /// ownership.
     Developer,
-    /// Alpha profile: exact validators are required for critical gameplay
-    /// families; shallow validators remain allowed only for non-critical
-    /// control/status families while the bridge is still under construction.
+    /// Alpha profile. This is the default while the bridge is still under
+    /// construction, but high-level M payloads still require exact validators.
     Alpha,
-    /// Player-ready profile: exact validators only. Any shallow validator is a
-    /// quarantine decision even when its wrapper shape is otherwise plausible.
+    /// Player-ready profile: exact validators only, with no broad wrapper
+    /// allowance.
     Player,
 }
 
@@ -23,14 +23,6 @@ impl StrictProfile {
             StrictProfile::Developer => "developer",
             StrictProfile::Alpha => "alpha",
             StrictProfile::Player => "player",
-        }
-    }
-
-    pub fn allows_shallow_high_level_validator(self, critical: bool) -> bool {
-        match self {
-            StrictProfile::Developer => true,
-            StrictProfile::Alpha => !critical,
-            StrictProfile::Player => false,
         }
     }
 }
@@ -143,21 +135,36 @@ pub struct Config {
     #[arg(long, value_enum, default_value_t = NwsyncAdvertiseMode::Both)]
     pub nwsync_advertise_mode: NwsyncAdvertiseMode,
 
+    /// Harness-only escape hatch for seeded-cache tests.
+    ///
+    /// EE `CNWCModule::LoadModuleResources` may mount explicit non-root
+    /// manifests from the module-resource packet only when `CExoResMan`
+    /// already knows those manifests.  Normal player traffic must prove that
+    /// with BNXR preflight/download.  Driver harnesses can instead seed
+    /// `nwsyncmeta.sqlite3` from the same repository before launch; this flag
+    /// documents that precondition and permits `--nwsync-advertise-mode
+    /// module-only` with explicit module manifests.
+    #[arg(long)]
+    pub nwsync_allow_seeded_module_manifests_without_bnxr: bool,
+
     /// Explicit local bind address for the built-in NWSync HTTP server.
     #[arg(long)]
     pub nwsync_http_bind: Option<SocketAddr>,
 
-    /// Diagnostic/compatibility switch: synthesize proxy-owned LoadBar
-    /// Start/End frames after an audited `Area_ClientArea` rewrite.
+    /// Compatibility switch retained for explicitness: synthesize proxy-owned
+    /// LoadBar Start/End frames after an audited `Area_ClientArea` rewrite.
     ///
-    /// This is intentionally opt-in. EE/Diamond decompiles show LoadBar as a
-    /// server stall-event UI family (`0x2C`) with exact Start/Update/End
-    /// readers, not as authoritative area/object stream state. Driver-only HG
-    /// captures on 2026-05-13 showed the EE client disconnecting immediately
-    /// after dispatching a proxy-owned synthetic `LoadBar_Start` during
-    /// `Area_ClientArea` load. The gateway therefore defaults to preserving the
-    /// area ACK gate and delayed `Area_AreaLoaded` fallback without injecting
-    /// LoadBar unless a specific test asks for it.
+    /// EE decompiles show LoadBar as the server-owned stall-event UI family
+    /// (`0x2C`) used by module load (`LoadBar_Start` during
+    /// `CServerExoAppInternal::LoadModule`, then `LoadBar_End` before
+    /// `ServerStatus_Status`). Local Diamond bridge capture
+    /// `local-diamond-bridge-20260517-161322` confirmed that a verified
+    /// proxy-owned LoadBar pair lets EE leave the loading screen after the
+    /// rewritten `Area_ClientArea`, while the no-loadbar path stayed on
+    /// `Loading Area... Sunshine_Vill`.
+    ///
+    /// The flag is accepted for old scripts and diagnostics; LoadBar synthesis
+    /// is enabled by default unless `--no-synthetic-area-loadbar` is supplied.
     #[arg(long)]
     pub synthetic_area_loadbar: bool,
 
@@ -174,7 +181,7 @@ impl Config {
     }
 
     pub fn synthetic_area_loadbar_enabled(&self) -> bool {
-        self.synthetic_area_loadbar && !self.no_synthetic_area_loadbar
+        !self.no_synthetic_area_loadbar || self.synthetic_area_loadbar
     }
 }
 

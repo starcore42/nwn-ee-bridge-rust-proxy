@@ -147,8 +147,7 @@ fn parse_looping_visual_effect_update(
     }
 
     let cursor = offset + LEGACY_UPDATE_HEADER_BYTES + 2;
-    if let Some(shape) = parse_looping_visual_effect_entries(bytes, cursor, count, record_end, 0)
-    {
+    if let Some(shape) = parse_looping_visual_effect_entries(bytes, cursor, count, record_end, 0) {
         return Some(shape);
     }
 

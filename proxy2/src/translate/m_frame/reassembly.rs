@@ -309,9 +309,13 @@ fn claim_or_consume_interleaved_server_packet(
     view: &MFrameView,
     state: &mut SessionState,
 ) -> anyhow::Result<VerifiedPacket> {
-    if let Some(rewritten) =
-        server_dispatch::rewrite_direct_frame_if_needed(bytes, view, &state.module_resources)?
-    {
+    if let Some(rewritten) = server_dispatch::rewrite_direct_frame_if_needed(
+        bytes,
+        view,
+        &state.module_resources,
+        Some(&state.area_context.latest_area_placeables),
+        Some(&state.semantic.objects),
+    )? {
         tracing::info!(
             sequence = view.sequence,
             ack_sequence = view.ack_sequence,
@@ -822,14 +826,16 @@ mod tests {
         assert_eq!(view.declared_payload_length, quickbar.len());
         assert_eq!(view.flags & 0x05, 0);
         assert_eq!(view.flags & 0x0A, 0x0A);
-        assert_eq!(&outputs[0][LEGACY_GAMEPLAY_PAYLOAD_OFFSET..], quickbar.as_slice());
+        assert_eq!(
+            &outputs[0][LEGACY_GAMEPLAY_PAYLOAD_OFFSET..],
+            quickbar.as_slice()
+        );
     }
 
     #[test]
     fn stream_bit_prefers_persistent_raw_deflate_contract() {
         fn raw_sync_deflate(bytes: &[u8]) -> Vec<u8> {
-            let mut compressor =
-                flate2::Compress::new(flate2::Compression::default(), false);
+            let mut compressor = flate2::Compress::new(flate2::Compression::default(), false);
             let mut out = vec![0; bytes.len() + 64];
             compressor
                 .compress(bytes, &mut out, flate2::FlushCompress::Sync)

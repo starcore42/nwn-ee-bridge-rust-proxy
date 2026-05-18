@@ -7,13 +7,13 @@
 
 use crate::{
     packet::{Direction, m::HighLevel},
-    translate::{VerifiedFamily, VerifiedProof, gameplay_stream, live_object_update},
+    translate::{VerifiedFamily, VerifiedProof, gameplay_stream, live_object_update, player_list},
 };
 
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent, LiveObjectMention,
     LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
+    PlayerListEvent, ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -69,6 +69,9 @@ fn observe_family_payload(
         VerifiedFamily::ServerStatusModuleResources => {
             ProtocolEvent::ServerStatus(ServerStatusEvent::ModuleResources { observed })
         }
+        VerifiedFamily::ServerStatusStatus => {
+            ProtocolEvent::ServerStatus(ServerStatusEvent::ModuleRunning { observed })
+        }
         VerifiedFamily::AreaClientArea => ProtocolEvent::Area(AreaEvent::ClientArea {
             observed,
             area_object_id: current_area_object_id_from_payload(payload),
@@ -86,6 +89,20 @@ fn observe_family_payload(
                 observed,
                 mentions,
                 materialized_item_object_ids,
+            })
+        }
+        VerifiedFamily::PlayerList => {
+            let object_ids =
+                player_list::object_ids_from_verified_payload(payload).unwrap_or_else(|| {
+                    tracing::warn!(
+                        payload_len = payload.len(),
+                        "verified PlayerList payload did not expose object-id facts"
+                    );
+                    Vec::new()
+                });
+            ProtocolEvent::PlayerList(PlayerListEvent {
+                observed,
+                object_ids,
             })
         }
         VerifiedFamily::GuiQuickbar => {
@@ -148,6 +165,17 @@ fn apply_event(state: &mut SemanticSessionState, event: ProtocolEvent) {
             state
                 .objects
                 .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
+        }
+        ProtocolEvent::PlayerList(event) => {
+            state
+                .objects
+                .observe_player_list_object_ids(&event.object_ids);
+            if !event.object_ids.is_empty() {
+                tracing::debug!(
+                    entries = event.object_ids.len(),
+                    "semantic state observed verified PlayerList object ids"
+                );
+            }
         }
         ProtocolEvent::Quickbar(QuickbarEvent::Verified { observed }) => {
             state.ui.quickbar_packets = state.ui.quickbar_packets.saturating_add(1);
@@ -267,6 +295,50 @@ mod tests {
                 .iter()
                 .any(|object_id| state.objects.has_active_object_id(*object_id)),
             "exact GUI item materialization should become quickbar object proof"
+        );
+    }
+
+    #[test]
+    fn exact_session_creature_add_materializes_playerlist_session_id() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_diamond_seq15_coalesced_liveobject_20260516_unclaimed.bin"
+        )
+        .to_vec();
+
+        let _ = live_object_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ =
+            crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+                &mut payload,
+                None,
+            );
+        let _ = live_object_update::rewrite_update_records_payload_if_possible(&mut payload);
+        let _ =
+            live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+        let _ =
+            crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+                &mut payload,
+                None,
+            );
+        let _ = live_object_update::rewrite_update_records_payload_if_possible(&mut payload);
+        live_object_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
+            .expect("fixture should first canonicalize to EE external compact id");
+        live_object_update::canonicalize_player_session_creature_ids_payload_for_ee(
+            &mut payload,
+            |compact_id| (compact_id == 0xFE).then_some(0xFFFF_FFFE),
+        )
+        .expect("fixture should canonicalize to PlayerList-proven session id");
+
+        let mut state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &payload,
+        );
+
+        assert!(
+            state.objects.has_active_typed_object(0x05, 0xFFFF_FFFE),
+            "exact live-object add should materialize the PlayerList session creature id"
         );
     }
 }

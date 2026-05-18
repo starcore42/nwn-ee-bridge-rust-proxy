@@ -8,7 +8,10 @@
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
-    translate::{VerifiedFamily, client_high, gameplay_stream, semantic::SemanticSessionState},
+    translate::{
+        VerifiedFamily, client_high, client_server_admin, gameplay_stream,
+        semantic::SemanticSessionState,
+    },
 };
 
 use super::{parse_window, transport_identity};
@@ -34,6 +37,33 @@ pub(super) fn translate_client_frame(
     state: &mut SemanticSessionState,
 ) -> anyhow::Result<ClientFrameTranslation> {
     let Some(high) = view.high else {
+        let payload_end = LEGACY_GAMEPLAY_PAYLOAD_OFFSET
+            .checked_add(view.payload_length)
+            .ok_or_else(|| anyhow::anyhow!("client raw M payload length overflow"))?;
+        let payload = bytes
+            .get(LEGACY_GAMEPLAY_PAYLOAD_OFFSET..payload_end)
+            .ok_or_else(|| anyhow::anyhow!("client raw M payload outside frame"))?;
+
+        if let Some(summary) = client_server_admin::claim_payload_if_verified(payload) {
+            tracing::info!(
+                packet = summary.packet_name,
+                command = ?summary.command,
+                sequence = view.sequence,
+                ack_sequence = view.ack_sequence,
+                flags = view.flags,
+                packetized_sequence = view.packetized_sequence,
+                payload_len = view.payload_length,
+                trailing_payload_len = view.trailing_payload_length,
+                "client raw server-admin M payload semantically claimed for Diamond/1.69"
+            );
+            return Ok(ClientFrameTranslation {
+                family: VerifiedFamily::ClientServerAdmin,
+                packet: Some(bytes),
+                proxy_ack_client_sequence: None,
+                elide_client_sequence: false,
+            });
+        }
+
         if let Some(summary) = transport_identity::claim_client_frame_if_verified(view) {
             tracing::info!(
                 packet = summary.packet_name,
@@ -85,7 +115,12 @@ pub(super) fn translate_client_frame(
             trailing_payload_len = view.trailing_payload_length,
             "client high-level payload semantically claimed and consumed for Diamond/1.69"
         );
-        return consume_claimed_high_level_as_empty(bytes, view, summary.packet_name, summary.reason);
+        return consume_claimed_high_level_as_empty(
+            bytes,
+            view,
+            summary.packet_name,
+            summary.reason,
+        );
     }
 
     if let Some(summary) =
@@ -283,7 +318,8 @@ fn translate_mixed_client_high_level_units(
 
 fn device_advertise_property_unit_end(payload: &[u8]) -> Option<usize> {
     let high = HighLevel::parse(payload)?;
-    if high.major != DEVICE_ADVERTISE_PROPERTY_MAJOR || high.minor != DEVICE_ADVERTISE_PROPERTY_MINOR
+    if high.major != DEVICE_ADVERTISE_PROPERTY_MAJOR
+        || high.minor != DEVICE_ADVERTISE_PROPERTY_MINOR
     {
         return None;
     }
@@ -580,8 +616,8 @@ mod tests {
         let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
         let mut state = SemanticSessionState::default();
 
-        let translated =
-            translate_client_frame(packet, &view, &mut state).expect("mixed payload should translate");
+        let translated = translate_client_frame(packet, &view, &mut state)
+            .expect("mixed payload should translate");
 
         assert_eq!(translated.family, VerifiedFamily::ClientCharList);
         assert_eq!(translated.proxy_ack_client_sequence, None);
@@ -599,11 +635,8 @@ mod tests {
 
     #[test]
     fn device_advertise_property_becomes_empty_server_paced_carrier() {
-        let packet = build_client_m_frame(
-            0x002A,
-            0x0003,
-            &[0x70, 0x36, 0x01, 0x04, 0x00, 0x00, 0x00],
-        );
+        let packet =
+            build_client_m_frame(0x002A, 0x0003, &[0x70, 0x36, 0x01, 0x04, 0x00, 0x00, 0x00]);
         let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
 
         let translated =
@@ -612,7 +645,9 @@ mod tests {
         assert_eq!(translated.family, VerifiedFamily::ConsumedEmptyMFrame);
         assert_eq!(translated.proxy_ack_client_sequence, None);
         assert!(!translated.elide_client_sequence);
-        let out = translated.packet.expect("empty carrier should be forwarded");
+        let out = translated
+            .packet
+            .expect("empty carrier should be forwarded");
         let out_view = MFrameView::parse(&out).expect("empty carrier should parse");
         assert!(out_view.crc_valid);
         assert_eq!(out_view.sequence, 0x002A);

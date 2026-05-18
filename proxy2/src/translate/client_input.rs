@@ -16,6 +16,10 @@
 //!   `CNWSMessage::HandlePlayerToServerInputWalkToWaypoint`
 //!   (`nwn ee decompile.txt:1660119`) reads the same sequence and immediately
 //!   checks `MessageReadOverflow` and `MessageReadUnderflow`.
+//! - EE server reader case `0x02` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657130`, case block at `0x14045337F`) reads one
+//!   OBJECTID, checks overflow/underflow, then queues `AddAttackActions`.
 //! - EE client sender `sub_1407BF860` (`nwn ee decompile.txt:2941144`)
 //!   writes `Input_ChangeDoorState` as OBJECTID plus 16-bit WORD door state,
 //!   then sends family `0x06`, minor `0x03`.
@@ -28,6 +32,17 @@
 //!   `CNWSMessage::HandlePlayerToServerInputMessage`
 //!   (`nwn ee decompile.txt:1657730`, case block at `0x140453951`) reads
 //!   one OBJECTID and immediately checks overflow/underflow.
+//! - EE server reader case `0x06` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657210`, case block at `0x1404533E9`) reads two
+//!   WORDs, one OBJECTID, and then reads three FLOATs only when the OBJECTID is
+//!   Diamond's invalid/location sentinel `0x7F000000`, before checking
+//!   overflow/underflow and calling `CNWSCreature::UseFeat`.
+//! - EE server reader case `0x07` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657280`, case block at `0x1404534F7`) reads two
+//!   BYTEs, one OBJECTID, and three FLOATs before checking overflow/underflow
+//!   and calling `CNWSCreature::UseSkill`.
 //! - EE server reader case `0x09` in
 //!   `CNWSMessage::HandlePlayerToServerInputMessage`
 //!   (`nwn ee decompile.txt:1657870`, case block at `0x1404539E9`) reads
@@ -36,6 +51,12 @@
 //!   The legacy HG path expects EE's self target sentinel `0xFFFFFFFD` to be
 //!   translated to Diamond's invalid/self target sentinel `0x7F000000` only
 //!   for the optional target OBJECTID field.
+//! - EE server reader case `0x0A` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657514`, case block at `0x140453807`) reads one
+//!   BYTE mode, then reads one OBJECTID only when the mode byte is `5`
+//!   (counterspell target), then checks overflow/underflow before queuing the
+//!   counterspell action and toggling the mode.
 //! - EE server reader case `0x0B` in
 //!   `CNWSMessage::HandlePlayerToServerInputMessage`
 //!   (`nwn ee decompile.txt:1657740`, case block at `0x140453ACB`) reads
@@ -46,6 +67,31 @@
 //! - EE client sender `sub_1407C07C0` (`nwn ee decompile.txt:2942660`)
 //!   writes `Input_UseObject` as OBJECTID followed by two `WriteBOOL` calls
 //!   before sending family `0x06`, minor `0x0B`.
+//! - EE server reader case `0x0C` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657830`, case block at `0x140453C2C`) reads one
+//!   OBJECTID, checks overflow/underflow, then queues the unlock-object action
+//!   after resolving the target object.
+//! - EE server reader case `0x0D` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1658279`, case block at `0x140454244`) reads no
+//!   packet fields before checking creature state and calling
+//!   `CNWSCreature::Rest`.
+//! - EE server reader case `0x0E` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1657940`, case block at `0x140453D1E`) reads one
+//!   OBJECTID, checks overflow/underflow, then queues the lock-object action
+//!   after resolving the target object.
+//! - EE server reader case `0x10` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1658426`, case block at `0x1404543DE`) reads
+//!   BYTE, DWORD, BYTE, BYTE, BYTE before checking overflow/underflow and
+//!   calling `CNWSCreatureStats::SetMemorizedSpellSlot`.
+//! - EE server reader case `0x11` in
+//!   `CNWSMessage::HandlePlayerToServerInputMessage`
+//!   (`nwn ee decompile.txt:1658487`, case block at `0x1404544B6`) reads three
+//!   BYTE values before checking overflow/underflow and calling
+//!   `CNWSCreatureStats::ClearMemorizedSpellSlot`.
 //!
 //! The Diamond/1.69 text decompile available in this workspace is stripped for
 //! these handler names. The live HG 1.69 server accepts the same CNW layouts
@@ -71,10 +117,19 @@ use crate::{crc::read_le_u32, packet::m::HighLevel, translate::semantic::Semanti
 
 const INPUT_MAJOR: u8 = 0x06;
 const WALK_TO_WAYPOINT_MINOR: u8 = 0x01;
+const ATTACK_MINOR: u8 = 0x02;
 const CHANGE_DOOR_STATE_MINOR: u8 = 0x03;
 const EXAMINE_MINOR: u8 = 0x05;
+const USE_FEAT_MINOR: u8 = 0x06;
+const USE_SKILL_MINOR: u8 = 0x07;
 const USE_ITEM_MINOR: u8 = 0x09;
+const TOGGLE_MODE_MINOR: u8 = 0x0A;
 const USE_OBJECT_MINOR: u8 = 0x0B;
+const UNLOCK_OBJECT_MINOR: u8 = 0x0C;
+const REST_MINOR: u8 = 0x0D;
+const LOCK_OBJECT_MINOR: u8 = 0x0E;
+const MEMORIZE_SPELL_MINOR: u8 = 0x10;
+const UNMEMORIZE_SPELL_MINOR: u8 = 0x11;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const READ_CURSOR_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
@@ -90,19 +145,38 @@ const WALK_READ_BODY_BYTES: usize =
     OBJECT_ID_BYTES + (3 * FLOAT_BYTES) + BYTE_BYTES + BYTE_BYTES + OBJECT_ID_BYTES;
 const DOOR_READ_BODY_BYTES: usize = OBJECT_ID_BYTES + WORD_BYTES;
 const EXAMINE_READ_BODY_BYTES: usize = OBJECT_ID_BYTES;
+const OBJECT_ONLY_READ_BODY_BYTES: usize = OBJECT_ID_BYTES;
+const USE_FEAT_TARGET_READ_BODY_BYTES: usize = WORD_BYTES + WORD_BYTES + OBJECT_ID_BYTES;
+const USE_FEAT_LOCATION_READ_BODY_BYTES: usize =
+    USE_FEAT_TARGET_READ_BODY_BYTES + (3 * FLOAT_BYTES);
+const USE_SKILL_READ_BODY_BYTES: usize =
+    BYTE_BYTES + BYTE_BYTES + OBJECT_ID_BYTES + (3 * FLOAT_BYTES);
 const USE_ITEM_BASE_READ_BODY_BYTES: usize = OBJECT_ID_BYTES + BYTE_BYTES;
+const TOGGLE_MODE_BASE_READ_BODY_BYTES: usize = BYTE_BYTES;
 const USE_OBJECT_READ_BODY_BYTES: usize = OBJECT_ID_BYTES;
+const MEMORIZE_SPELL_READ_BODY_BYTES: usize = BYTE_BYTES + 4 + BYTE_BYTES + BYTE_BYTES + BYTE_BYTES;
+const UNMEMORIZE_SPELL_READ_BODY_BYTES: usize = BYTE_BYTES + BYTE_BYTES + BYTE_BYTES;
 const WALK_DECLARED_BYTES: usize = READ_CURSOR_START + WALK_READ_BODY_BYTES;
 const DOOR_DECLARED_BYTES: usize = READ_CURSOR_START + DOOR_READ_BODY_BYTES;
 const EXAMINE_DECLARED_BYTES: usize = READ_CURSOR_START + EXAMINE_READ_BODY_BYTES;
+const OBJECT_ONLY_DECLARED_BYTES: usize = READ_CURSOR_START + OBJECT_ONLY_READ_BODY_BYTES;
+const USE_FEAT_TARGET_DECLARED_BYTES: usize = READ_CURSOR_START + USE_FEAT_TARGET_READ_BODY_BYTES;
+const USE_FEAT_LOCATION_DECLARED_BYTES: usize =
+    READ_CURSOR_START + USE_FEAT_LOCATION_READ_BODY_BYTES;
+const USE_SKILL_DECLARED_BYTES: usize = READ_CURSOR_START + USE_SKILL_READ_BODY_BYTES;
 const USE_ITEM_MIN_DECLARED_BYTES: usize = READ_CURSOR_START + USE_ITEM_BASE_READ_BODY_BYTES;
+const TOGGLE_MODE_MIN_DECLARED_BYTES: usize = READ_CURSOR_START + TOGGLE_MODE_BASE_READ_BODY_BYTES;
 const USE_OBJECT_DECLARED_BYTES: usize = READ_CURSOR_START + USE_OBJECT_READ_BODY_BYTES;
+const EMPTY_INPUT_DECLARED_BYTES: usize = READ_CURSOR_START;
+const MEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + MEMORIZE_SPELL_READ_BODY_BYTES;
+const UNMEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + UNMEMORIZE_SPELL_READ_BODY_BYTES;
 const ONE_FRAGMENT_BYTE: usize = 1;
 const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
 const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
 const DOOR_OPEN_STATE: u16 = 0x0015;
 const RECENT_TRANSITION_DOOR_OPEN_WINDOW: Duration = Duration::from_secs(45);
 const DOOR_OBJECT_TYPE: u8 = 0x0A;
+const TOGGLE_MODE_COUNTERSPELL: u8 = 5;
 // EE's client writer and the driver-only transition-click capture both emit
 // client gameplay input frames with this high-level envelope byte.  The proxy
 // must preserve the same envelope when it replaces a proven
@@ -126,10 +200,19 @@ pub struct ClientInputClaimSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientInputKind {
     WalkToWaypoint,
+    Attack,
     ChangeDoorState,
     Examine,
+    UseFeat,
+    UseSkill,
     UseItem,
+    ToggleMode,
     UseObject,
+    UnlockObject,
+    Rest,
+    LockObject,
+    MemorizeSpell,
+    UnMemorizeSpell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,8 +235,29 @@ pub struct ChangeDoorState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attack {
+    pub target_object_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Examine {
     pub object_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UseFeat {
+    pub feat_id: u16,
+    pub subfeat_id: u16,
+    pub target_object_id: u32,
+    pub position: Option<(f32, f32, f32)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UseSkill {
+    pub skill_id: u8,
+    pub subskill_id: u8,
+    pub target_object_id: u32,
+    pub position: (f32, f32, f32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,10 +271,42 @@ pub struct UseItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToggleMode {
+    pub mode: u8,
+    pub counterspell_target: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UseObject {
     pub object_id: u32,
     pub mark_inventory_gui_state: bool,
     pub schedule_script_event: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnlockObject {
+    pub object_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockObject {
+    pub object_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemorizeSpell {
+    pub class_index: u8,
+    pub spell_id: u32,
+    pub spell_level: u8,
+    pub slot: u8,
+    pub domain: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnMemorizeSpell {
+    pub class_index: u8,
+    pub spell_level: u8,
+    pub slot: u8,
 }
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientInputClaimSummary> {
@@ -249,6 +385,18 @@ fn claim_payload_inner(
                 rewritten_transition_door_close: false,
             })
         }
+        ATTACK_MINOR => {
+            let attack = parse_attack(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_Attack",
+                kind: ClientInputKind::Attack,
+                declared: OBJECT_ONLY_DECLARED_BYTES,
+                fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
+                primary_object_id: attack.target_object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
         CHANGE_DOOR_STATE_MINOR => {
             let door = parse_change_door_state(payload)?;
             Some(ClientInputClaimSummary {
@@ -273,6 +421,30 @@ fn claim_payload_inner(
                 rewritten_transition_door_close: false,
             })
         }
+        USE_FEAT_MINOR => {
+            let use_feat = parse_use_feat(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_UseFeat",
+                kind: ClientInputKind::UseFeat,
+                declared: read_declared(payload)?,
+                fragment_bytes: ONE_FRAGMENT_BYTE,
+                primary_object_id: use_feat.target_object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        USE_SKILL_MINOR => {
+            let use_skill = parse_use_skill(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_UseSkill",
+                kind: ClientInputKind::UseSkill,
+                declared: USE_SKILL_DECLARED_BYTES,
+                fragment_bytes: payload.len() - USE_SKILL_DECLARED_BYTES,
+                primary_object_id: use_skill.target_object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
         USE_ITEM_MINOR => {
             let use_item = parse_use_item(payload)?;
             Some(ClientInputClaimSummary {
@@ -285,6 +457,18 @@ fn claim_payload_inner(
                 rewritten_transition_door_close: false,
             })
         }
+        TOGGLE_MODE_MINOR => {
+            let toggle = parse_toggle_mode(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_ToggleMode",
+                kind: ClientInputKind::ToggleMode,
+                declared: read_declared(payload)?,
+                fragment_bytes: ONE_FRAGMENT_BYTE,
+                primary_object_id: toggle.counterspell_target.unwrap_or(INVALID_OBJECT_ID),
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
         USE_OBJECT_MINOR => {
             let use_object = parse_use_object(payload)?;
             Some(ClientInputClaimSummary {
@@ -293,6 +477,66 @@ fn claim_payload_inner(
                 declared: USE_OBJECT_DECLARED_BYTES,
                 fragment_bytes: payload.len() - USE_OBJECT_DECLARED_BYTES,
                 primary_object_id: use_object.object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        UNLOCK_OBJECT_MINOR => {
+            let unlock = parse_unlock_object(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_UnlockObject",
+                kind: ClientInputKind::UnlockObject,
+                declared: OBJECT_ONLY_DECLARED_BYTES,
+                fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
+                primary_object_id: unlock.object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        REST_MINOR => {
+            parse_rest(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_Rest",
+                kind: ClientInputKind::Rest,
+                declared: EMPTY_INPUT_DECLARED_BYTES,
+                fragment_bytes: payload.len() - EMPTY_INPUT_DECLARED_BYTES,
+                primary_object_id: INVALID_OBJECT_ID,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        LOCK_OBJECT_MINOR => {
+            let lock = parse_lock_object(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_LockObject",
+                kind: ClientInputKind::LockObject,
+                declared: OBJECT_ONLY_DECLARED_BYTES,
+                fragment_bytes: payload.len() - OBJECT_ONLY_DECLARED_BYTES,
+                primary_object_id: lock.object_id,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        MEMORIZE_SPELL_MINOR => {
+            parse_memorize_spell(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_MemorizeSpell",
+                kind: ClientInputKind::MemorizeSpell,
+                declared: MEMORIZE_SPELL_DECLARED_BYTES,
+                fragment_bytes: payload.len() - MEMORIZE_SPELL_DECLARED_BYTES,
+                primary_object_id: INVALID_OBJECT_ID,
+                rewritten_self_object_id,
+                rewritten_transition_door_close: false,
+            })
+        }
+        UNMEMORIZE_SPELL_MINOR => {
+            parse_unmemorize_spell(payload)?;
+            Some(ClientInputClaimSummary {
+                packet_name: "Input_UnMemorizeSpell",
+                kind: ClientInputKind::UnMemorizeSpell,
+                declared: UNMEMORIZE_SPELL_DECLARED_BYTES,
+                fragment_bytes: payload.len() - UNMEMORIZE_SPELL_DECLARED_BYTES,
+                primary_object_id: INVALID_OBJECT_ID,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
             })
@@ -555,22 +799,90 @@ pub fn parse_change_door_state(payload: &[u8]) -> Option<ChangeDoorState> {
     Some(ChangeDoorState { door_id, state })
 }
 
+pub fn parse_attack(payload: &[u8]) -> Option<Attack> {
+    let target_object_id = parse_object_only_input(payload, ATTACK_MINOR)?;
+    Some(Attack { target_object_id })
+}
+
 pub fn parse_examine(payload: &[u8]) -> Option<Examine> {
+    let object_id = parse_object_only_input(payload, EXAMINE_MINOR)?;
+    Some(Examine { object_id })
+}
+
+pub fn parse_use_feat(payload: &[u8]) -> Option<UseFeat> {
     let high = HighLevel::parse(payload)?;
-    if high.major != INPUT_MAJOR || high.minor != EXAMINE_MINOR {
+    if high.major != INPUT_MAJOR || high.minor != USE_FEAT_MINOR {
         return None;
     }
-    require_declared_and_fragment_bits(payload, EXAMINE_DECLARED_BYTES, 0)?;
+    let declared = read_declared(payload)?;
+    if declared != USE_FEAT_TARGET_DECLARED_BYTES && declared != USE_FEAT_LOCATION_DECLARED_BYTES {
+        return None;
+    }
+    require_declared_and_fragment_bits_at(payload, declared, 0)?;
 
     let mut cursor = READ_CURSOR_START;
-    let object_id = read_u32_at(payload, cursor)?;
+    let feat_id = read_u16_at(payload, cursor)?;
+    cursor += WORD_BYTES;
+    let subfeat_id = read_u16_at(payload, cursor)?;
+    cursor += WORD_BYTES;
+    let target_object_id = read_u32_at(payload, cursor)?;
     cursor += OBJECT_ID_BYTES;
 
-    if cursor != EXAMINE_DECLARED_BYTES || object_id == INVALID_OBJECT_ID {
+    let position = if target_object_id == INVALID_OBJECT_ID {
+        let x = read_f32_at(payload, cursor)?;
+        cursor += FLOAT_BYTES;
+        let y = read_f32_at(payload, cursor)?;
+        cursor += FLOAT_BYTES;
+        let z = read_f32_at(payload, cursor)?;
+        cursor += FLOAT_BYTES;
+        Some((x, y, z))
+    } else {
+        None
+    };
+
+    if cursor != declared {
         return None;
     }
 
-    Some(Examine { object_id })
+    Some(UseFeat {
+        feat_id,
+        subfeat_id,
+        target_object_id,
+        position,
+    })
+}
+
+pub fn parse_use_skill(payload: &[u8]) -> Option<UseSkill> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != USE_SKILL_MINOR {
+        return None;
+    }
+    require_declared_and_fragment_bits(payload, USE_SKILL_DECLARED_BYTES, 0)?;
+
+    let mut cursor = READ_CURSOR_START;
+    let skill_id = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let subskill_id = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let target_object_id = read_u32_at(payload, cursor)?;
+    cursor += OBJECT_ID_BYTES;
+    let x = read_f32_at(payload, cursor)?;
+    cursor += FLOAT_BYTES;
+    let y = read_f32_at(payload, cursor)?;
+    cursor += FLOAT_BYTES;
+    let z = read_f32_at(payload, cursor)?;
+    cursor += FLOAT_BYTES;
+
+    if cursor != USE_SKILL_DECLARED_BYTES {
+        return None;
+    }
+
+    Some(UseSkill {
+        skill_id,
+        subskill_id,
+        target_object_id,
+        position: (x, y, z),
+    })
 }
 
 pub fn parse_use_item(payload: &[u8]) -> Option<UseItem> {
@@ -637,6 +949,39 @@ pub fn parse_use_item(payload: &[u8]) -> Option<UseItem> {
     })
 }
 
+pub fn parse_toggle_mode(payload: &[u8]) -> Option<ToggleMode> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != TOGGLE_MODE_MINOR {
+        return None;
+    }
+    let declared = read_declared(payload)?;
+    if declared < TOGGLE_MODE_MIN_DECLARED_BYTES {
+        return None;
+    }
+    require_declared_and_fragment_bits_at(payload, declared, 0)?;
+
+    let mut cursor = READ_CURSOR_START;
+    let mode = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+
+    let counterspell_target = if mode == TOGGLE_MODE_COUNTERSPELL {
+        let value = read_u32_at(payload, cursor)?;
+        cursor += OBJECT_ID_BYTES;
+        Some(value)
+    } else {
+        None
+    };
+
+    if cursor != declared {
+        return None;
+    }
+
+    Some(ToggleMode {
+        mode,
+        counterspell_target,
+    })
+}
+
 pub fn parse_use_object(payload: &[u8]) -> Option<UseObject> {
     let high = HighLevel::parse(payload)?;
     if high.major != INPUT_MAJOR || high.minor != USE_OBJECT_MINOR {
@@ -665,11 +1010,113 @@ pub fn parse_use_object(payload: &[u8]) -> Option<UseObject> {
     })
 }
 
+pub fn parse_unlock_object(payload: &[u8]) -> Option<UnlockObject> {
+    let object_id = parse_object_only_input(payload, UNLOCK_OBJECT_MINOR)?;
+    Some(UnlockObject { object_id })
+}
+
+pub fn parse_rest(payload: &[u8]) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != REST_MINOR {
+        return None;
+    }
+    require_declared_and_fragment_bits(payload, EMPTY_INPUT_DECLARED_BYTES, 0)
+}
+
+pub fn parse_lock_object(payload: &[u8]) -> Option<LockObject> {
+    let object_id = parse_object_only_input(payload, LOCK_OBJECT_MINOR)?;
+    Some(LockObject { object_id })
+}
+
+pub fn parse_memorize_spell(payload: &[u8]) -> Option<MemorizeSpell> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != MEMORIZE_SPELL_MINOR {
+        return None;
+    }
+    require_declared_and_fragment_bits(payload, MEMORIZE_SPELL_DECLARED_BYTES, 0)?;
+
+    let mut cursor = READ_CURSOR_START;
+    let class_index = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let spell_id = read_u32_at(payload, cursor)?;
+    cursor += 4;
+    let spell_level = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let slot = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let domain = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+
+    if cursor != MEMORIZE_SPELL_DECLARED_BYTES {
+        return None;
+    }
+
+    Some(MemorizeSpell {
+        class_index,
+        spell_id,
+        spell_level,
+        slot,
+        domain,
+    })
+}
+
+pub fn parse_unmemorize_spell(payload: &[u8]) -> Option<UnMemorizeSpell> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != UNMEMORIZE_SPELL_MINOR {
+        return None;
+    }
+    require_declared_and_fragment_bits(payload, UNMEMORIZE_SPELL_DECLARED_BYTES, 0)?;
+
+    let mut cursor = READ_CURSOR_START;
+    let class_index = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let spell_level = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+    let slot = *payload.get(cursor)?;
+    cursor += BYTE_BYTES;
+
+    if cursor != UNMEMORIZE_SPELL_DECLARED_BYTES {
+        return None;
+    }
+
+    Some(UnMemorizeSpell {
+        class_index,
+        spell_level,
+        slot,
+    })
+}
+
+fn parse_object_only_input(payload: &[u8], minor: u8) -> Option<u32> {
+    let high = HighLevel::parse(payload)?;
+    if high.major != INPUT_MAJOR || high.minor != minor {
+        return None;
+    }
+    require_declared_and_fragment_bits(payload, OBJECT_ONLY_DECLARED_BYTES, 0)?;
+
+    let mut cursor = READ_CURSOR_START;
+    let object_id = read_u32_at(payload, cursor)?;
+    cursor += OBJECT_ID_BYTES;
+
+    if cursor != OBJECT_ONLY_DECLARED_BYTES || object_id == INVALID_OBJECT_ID {
+        return None;
+    }
+
+    Some(object_id)
+}
+
 fn read_declared(payload: &[u8]) -> Option<usize> {
     usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()
 }
 
 fn require_declared_and_fragment_bits(
+    payload: &[u8],
+    expected_declared: usize,
+    data_bits: usize,
+) -> Option<()> {
+    require_declared_and_fragment_bits_at(payload, expected_declared, data_bits)
+}
+
+fn require_declared_and_fragment_bits_at(
     payload: &[u8],
     expected_declared: usize,
     data_bits: usize,
@@ -785,6 +1232,20 @@ mod tests {
     }
 
     #[test]
+    fn attack_object_only_shape_matches_decompile_cursor_shape() {
+        let payload = build_object_only_payload(ATTACK_MINOR, 0x8000_34D1);
+        let summary = claim_payload_if_verified(&payload).expect("attack packet should be claimed");
+        let parsed = parse_attack(&payload).expect("attack packet should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::Attack);
+        assert_eq!(summary.packet_name, "Input_Attack");
+        assert_eq!(summary.declared, OBJECT_ONLY_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(parsed.target_object_id, 0x8000_34D1);
+    }
+
+    #[test]
     fn examine_fixture_matches_decompile_cursor_shape() {
         let fixture = include_bytes!("../../fixtures/client_input/examine_item.bin");
         let summary =
@@ -797,6 +1258,49 @@ mod tests {
         assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
         assert!(!summary.rewritten_self_object_id);
         assert_eq!(parsed.object_id, 0x8001_6012);
+    }
+
+    #[test]
+    fn use_feat_shapes_match_decompile_cursor_shape() {
+        let target = build_use_feat_payload(0x0123, 0x0045, 0x8000_34D1, None);
+        let target_summary =
+            claim_payload_if_verified(&target).expect("targeted use-feat should be claimed");
+        let target_parsed = parse_use_feat(&target).expect("targeted use-feat should parse");
+        assert_eq!(target_summary.kind, ClientInputKind::UseFeat);
+        assert_eq!(target_summary.packet_name, "Input_UseFeat");
+        assert_eq!(target_summary.declared, USE_FEAT_TARGET_DECLARED_BYTES);
+        assert_eq!(target_summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(target_summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(target_parsed.feat_id, 0x0123);
+        assert_eq!(target_parsed.subfeat_id, 0x0045);
+        assert_eq!(target_parsed.position, None);
+
+        let location =
+            build_use_feat_payload(0x0123, 0x0045, INVALID_OBJECT_ID, Some((11.0, 12.0, 0.5)));
+        let location_summary =
+            claim_payload_if_verified(&location).expect("location use-feat should be claimed");
+        let location_parsed = parse_use_feat(&location).expect("location use-feat should parse");
+        assert_eq!(location_summary.declared, USE_FEAT_LOCATION_DECLARED_BYTES);
+        assert_eq!(location_summary.primary_object_id, INVALID_OBJECT_ID);
+        assert_eq!(location_parsed.position, Some((11.0, 12.0, 0.5)));
+    }
+
+    #[test]
+    fn use_skill_shape_matches_decompile_cursor_shape() {
+        let payload = build_use_skill_payload(2, 0x66, 0x8000_34D1, (11.0, 12.0, 0.5));
+        let summary =
+            claim_payload_if_verified(&payload).expect("use-skill packet should be claimed");
+        let parsed = parse_use_skill(&payload).expect("use-skill packet should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::UseSkill);
+        assert_eq!(summary.packet_name, "Input_UseSkill");
+        assert_eq!(summary.declared, USE_SKILL_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(parsed.skill_id, 2);
+        assert_eq!(parsed.subskill_id, 0x66);
+        assert_eq!(parsed.target_object_id, 0x8000_34D1);
+        assert_eq!(parsed.position, (11.0, 12.0, 0.5));
     }
 
     #[test]
@@ -826,6 +1330,35 @@ mod tests {
     }
 
     #[test]
+    fn toggle_mode_shapes_match_decompile_cursor_shape() {
+        let normal = build_toggle_mode_payload(1, None);
+        let normal_summary =
+            claim_payload_if_verified(&normal).expect("normal toggle should be claimed");
+        let normal_parsed = parse_toggle_mode(&normal).expect("normal toggle should parse");
+        assert_eq!(normal_summary.kind, ClientInputKind::ToggleMode);
+        assert_eq!(normal_summary.packet_name, "Input_ToggleMode");
+        assert_eq!(normal_summary.declared, TOGGLE_MODE_MIN_DECLARED_BYTES);
+        assert_eq!(normal_summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(normal_summary.primary_object_id, INVALID_OBJECT_ID);
+        assert_eq!(normal_parsed.mode, 1);
+        assert_eq!(normal_parsed.counterspell_target, None);
+
+        let counterspell = build_toggle_mode_payload(TOGGLE_MODE_COUNTERSPELL, Some(0x8000_34D1));
+        let counterspell_summary = claim_payload_if_verified(&counterspell)
+            .expect("counterspell toggle should be claimed");
+        let counterspell_parsed =
+            parse_toggle_mode(&counterspell).expect("counterspell toggle should parse");
+        assert_eq!(counterspell_summary.kind, ClientInputKind::ToggleMode);
+        assert_eq!(
+            counterspell_summary.declared,
+            TOGGLE_MODE_MIN_DECLARED_BYTES + OBJECT_ID_BYTES
+        );
+        assert_eq!(counterspell_summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(counterspell_parsed.mode, TOGGLE_MODE_COUNTERSPELL);
+        assert_eq!(counterspell_parsed.counterspell_target, Some(0x8000_34D1));
+    }
+
+    #[test]
     fn use_object_fixture_matches_decompile_cursor_shape() {
         let fixture = include_bytes!("../../fixtures/client_input/use_object_placeable.bin");
         let summary =
@@ -840,6 +1373,78 @@ mod tests {
         assert_eq!(parsed.object_id, 0x8000_34CB);
         assert!(parsed.mark_inventory_gui_state);
         assert!(!parsed.schedule_script_event);
+    }
+
+    #[test]
+    fn unlock_object_only_shape_matches_decompile_cursor_shape() {
+        let payload = build_object_only_payload(UNLOCK_OBJECT_MINOR, 0x8000_34D1);
+        let summary = claim_payload_if_verified(&payload).expect("unlock packet should be claimed");
+        let parsed = parse_unlock_object(&payload).expect("unlock packet should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::UnlockObject);
+        assert_eq!(summary.packet_name, "Input_UnlockObject");
+        assert_eq!(summary.declared, OBJECT_ONLY_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(parsed.object_id, 0x8000_34D1);
+    }
+
+    #[test]
+    fn rest_empty_shape_matches_decompile_cursor_shape() {
+        let payload = build_empty_input_payload(REST_MINOR);
+        let summary = claim_payload_if_verified(&payload).expect("rest packet should be claimed");
+        parse_rest(&payload).expect("rest packet should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::Rest);
+        assert_eq!(summary.packet_name, "Input_Rest");
+        assert_eq!(summary.declared, EMPTY_INPUT_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, INVALID_OBJECT_ID);
+    }
+
+    #[test]
+    fn lock_object_only_shape_matches_decompile_cursor_shape() {
+        let payload = build_object_only_payload(LOCK_OBJECT_MINOR, 0x8000_34D1);
+        let summary = claim_payload_if_verified(&payload).expect("lock packet should be claimed");
+        let parsed = parse_lock_object(&payload).expect("lock packet should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::LockObject);
+        assert_eq!(summary.packet_name, "Input_LockObject");
+        assert_eq!(summary.declared, OBJECT_ONLY_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_34D1);
+        assert_eq!(parsed.object_id, 0x8000_34D1);
+    }
+
+    #[test]
+    fn memorize_spell_shapes_match_decompile_cursor_shape() {
+        let memorize = build_memorize_spell_payload(1, 0x1234, 7, 2, 0);
+        let memorize_summary =
+            claim_payload_if_verified(&memorize).expect("memorize-spell packet should be claimed");
+        let memorize_parsed =
+            parse_memorize_spell(&memorize).expect("memorize-spell packet should parse");
+        assert_eq!(memorize_summary.kind, ClientInputKind::MemorizeSpell);
+        assert_eq!(memorize_summary.packet_name, "Input_MemorizeSpell");
+        assert_eq!(memorize_summary.declared, MEMORIZE_SPELL_DECLARED_BYTES);
+        assert_eq!(memorize_summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(memorize_parsed.class_index, 1);
+        assert_eq!(memorize_parsed.spell_id, 0x1234);
+        assert_eq!(memorize_parsed.spell_level, 7);
+        assert_eq!(memorize_parsed.slot, 2);
+        assert_eq!(memorize_parsed.domain, 0);
+
+        let unmemorize = build_unmemorize_spell_payload(1, 7, 2);
+        let unmemorize_summary = claim_payload_if_verified(&unmemorize)
+            .expect("unmemorize-spell packet should be claimed");
+        let unmemorize_parsed =
+            parse_unmemorize_spell(&unmemorize).expect("unmemorize-spell packet should parse");
+        assert_eq!(unmemorize_summary.kind, ClientInputKind::UnMemorizeSpell);
+        assert_eq!(unmemorize_summary.packet_name, "Input_UnMemorizeSpell");
+        assert_eq!(unmemorize_summary.declared, UNMEMORIZE_SPELL_DECLARED_BYTES);
+        assert_eq!(unmemorize_summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(unmemorize_parsed.class_index, 1);
+        assert_eq!(unmemorize_parsed.spell_level, 7);
+        assert_eq!(unmemorize_parsed.slot, 2);
     }
 
     #[test]
@@ -864,6 +1469,39 @@ mod tests {
             include_bytes!("../../fixtures/client_input/use_item_self_target.bin").to_vec();
         use_item[16] = 0xB0;
         assert!(claim_payload_if_verified(&use_item).is_none());
+
+        let mut use_feat_missing_location =
+            build_use_feat_payload(0x0123, 0x0045, INVALID_OBJECT_ID, None);
+        assert!(claim_payload_if_verified(&use_feat_missing_location).is_none());
+        use_feat_missing_location[15] = 0x80;
+        assert!(claim_payload_if_verified(&use_feat_missing_location).is_none());
+
+        let use_feat_unexpected_location =
+            build_use_feat_payload(0x0123, 0x0045, 0x8000_34D1, Some((1.0, 2.0, 3.0)));
+        assert!(claim_payload_if_verified(&use_feat_unexpected_location).is_none());
+
+        let mut toggle_extra = build_toggle_mode_payload(1, None);
+        toggle_extra.splice(8..8, 0x8000_34D1u32.to_le_bytes());
+        toggle_extra[3..7].copy_from_slice(&12u32.to_le_bytes());
+        assert!(claim_payload_if_verified(&toggle_extra).is_none());
+
+        let mut toggle_missing = build_toggle_mode_payload(TOGGLE_MODE_COUNTERSPELL, None);
+        assert!(claim_payload_if_verified(&toggle_missing).is_none());
+        toggle_missing[8] = 0x80;
+        assert!(claim_payload_if_verified(&toggle_missing).is_none());
+
+        let mut attack = build_object_only_payload(ATTACK_MINOR, INVALID_OBJECT_ID);
+        assert!(claim_payload_if_verified(&attack).is_none());
+        attack[11] = 0x80;
+        assert!(claim_payload_if_verified(&attack).is_none());
+
+        let mut rest = build_empty_input_payload(REST_MINOR);
+        rest.push(0);
+        assert!(claim_payload_if_verified(&rest).is_none());
+
+        let mut memorize = build_memorize_spell_payload(1, 0x1234, 7, 2, 0);
+        memorize[15] = 0x80;
+        assert!(claim_payload_if_verified(&memorize).is_none());
     }
 
     #[test]
@@ -997,6 +1635,108 @@ mod tests {
         payload.extend_from_slice(&(DOOR_DECLARED_BYTES as u32).to_le_bytes());
         payload.extend_from_slice(&door_id.to_le_bytes());
         payload.extend_from_slice(&state.to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_object_only_payload(minor: u8, object_id: u32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(OBJECT_ONLY_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, minor]);
+        payload.extend_from_slice(&(OBJECT_ONLY_DECLARED_BYTES as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_empty_input_payload(minor: u8) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(EMPTY_INPUT_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, minor]);
+        payload.extend_from_slice(&(EMPTY_INPUT_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_use_feat_payload(
+        feat_id: u16,
+        subfeat_id: u16,
+        target_object_id: u32,
+        position: Option<(f32, f32, f32)>,
+    ) -> Vec<u8> {
+        let declared = USE_FEAT_TARGET_DECLARED_BYTES + position.map_or(0, |_| 3 * FLOAT_BYTES);
+        let mut payload = Vec::with_capacity(declared + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, USE_FEAT_MINOR]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&feat_id.to_le_bytes());
+        payload.extend_from_slice(&subfeat_id.to_le_bytes());
+        payload.extend_from_slice(&target_object_id.to_le_bytes());
+        if let Some((x, y, z)) = position {
+            payload.extend_from_slice(&x.to_le_bytes());
+            payload.extend_from_slice(&y.to_le_bytes());
+            payload.extend_from_slice(&z.to_le_bytes());
+        }
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_use_skill_payload(
+        skill_id: u8,
+        subskill_id: u8,
+        target_object_id: u32,
+        position: (f32, f32, f32),
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(USE_SKILL_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, USE_SKILL_MINOR]);
+        payload.extend_from_slice(&(USE_SKILL_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(skill_id);
+        payload.push(subskill_id);
+        payload.extend_from_slice(&target_object_id.to_le_bytes());
+        payload.extend_from_slice(&position.0.to_le_bytes());
+        payload.extend_from_slice(&position.1.to_le_bytes());
+        payload.extend_from_slice(&position.2.to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_toggle_mode_payload(mode: u8, counterspell_target: Option<u32>) -> Vec<u8> {
+        let declared = TOGGLE_MODE_MIN_DECLARED_BYTES
+            + usize::from(counterspell_target.is_some()) * OBJECT_ID_BYTES;
+        let mut payload = Vec::with_capacity(declared + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, TOGGLE_MODE_MINOR]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(mode);
+        if let Some(target) = counterspell_target {
+            payload.extend_from_slice(&target.to_le_bytes());
+        }
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_memorize_spell_payload(
+        class_index: u8,
+        spell_id: u32,
+        spell_level: u8,
+        slot: u8,
+        domain: u8,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(MEMORIZE_SPELL_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, MEMORIZE_SPELL_MINOR]);
+        payload.extend_from_slice(&(MEMORIZE_SPELL_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(class_index);
+        payload.extend_from_slice(&spell_id.to_le_bytes());
+        payload.push(spell_level);
+        payload.push(slot);
+        payload.push(domain);
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_unmemorize_spell_payload(class_index: u8, spell_level: u8, slot: u8) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(UNMEMORIZE_SPELL_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+        payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, UNMEMORIZE_SPELL_MINOR]);
+        payload.extend_from_slice(&(UNMEMORIZE_SPELL_DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(class_index);
+        payload.push(spell_level);
+        payload.push(slot);
         payload.push(0x60);
         payload
     }

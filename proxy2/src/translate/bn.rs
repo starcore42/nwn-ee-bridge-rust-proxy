@@ -137,7 +137,17 @@ pub enum ClientTranslation {
         reason: &'static str,
     },
     Consumed,
-    ConsumedRetireSession { reason: &'static str },
+    ConsumedRetireSession {
+        reason: &'static str,
+    },
+}
+
+pub enum ServerTranslation {
+    Packet(Vec<u8>),
+    PacketRetireSession {
+        packet: Vec<u8>,
+        reason: &'static str,
+    },
 }
 
 pub fn translate_client_to_server(
@@ -195,11 +205,12 @@ pub fn translate_client_to_server(
         }
         BnTag::Bnes => {
             if bnes::claim_client_to_legacy_if_verified(bytes).is_some() {
-                let response = bnes::build_proxy_owned_bner_response(bnes::ProxyEnumerateResponse {
-                    server_port,
-                    section: 0,
-                    session_name: discovery_session_name,
-                })?;
+                let response =
+                    bnes::build_proxy_owned_bner_response(bnes::ProxyEnumerateResponse {
+                        server_port,
+                        section: 0,
+                        session_name: discovery_session_name,
+                    })?;
                 tracing::info!(
                     tag = "BNES",
                     len = bytes.len(),
@@ -219,13 +230,12 @@ pub fn translate_client_to_server(
         BnTag::Bnxi => {
             if let Some(build) = bnxi::claim_client_to_legacy_if_verified(bytes) {
                 state.remember_client_build(build);
-                let response = bnxr::build_proxy_owned_bnxr_response(
-                    bnxr::ProxyExtendedInfoResponse {
+                let response =
+                    bnxr::build_proxy_owned_bnxr_response(bnxr::ProxyExtendedInfoResponse {
                         server_port,
                         module_name: discovery_module_name,
                         advertisement: nwsync_advertisement,
-                    },
-                )?;
+                    })?;
                 if nwsync_advertisement.is_some() {
                     state.remember_nwsync_advertised_to_client();
                 }
@@ -253,7 +263,7 @@ pub fn translate_server_to_client(
     bytes: &[u8],
     state: &mut SessionState,
     nwsync_advertisement: Option<&Advertisement>,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<ServerTranslation> {
     let packet = BnPacket::parse(bytes);
     match packet.tag {
         BnTag::Unknown => {
@@ -274,7 +284,7 @@ pub fn translate_server_to_client(
                     len = rewritten.len(),
                     "BN packet semantically claimed as verified EE verifier result translation"
                 );
-                return Ok(rewritten);
+                return Ok(ServerTranslation::Packet(rewritten));
             }
         }
         BnTag::Bndr => {
@@ -286,7 +296,7 @@ pub fn translate_server_to_client(
             if let Some(advertisement) = nwsync_advertisement {
                 if let Some(rewritten) = bnxr::rewrite_server_to_ee(bytes, advertisement)? {
                     state.remember_nwsync_advertised_to_client();
-                    return Ok(rewritten);
+                    return Ok(ServerTranslation::Packet(rewritten));
                 }
             }
             if bnxr::claim_server_to_ee_if_verified(bytes).is_some() {
@@ -298,7 +308,15 @@ pub fn translate_server_to_client(
         }
         BnTag::Bndp => {
             if bndp::claim_server_to_ee_if_verified(bytes).is_some() {
-                return claimed_noop(bytes, "BNDP", "verified EE disconnect reason");
+                tracing::info!(
+                    tag = "BNDP",
+                    len = bytes.len(),
+                    "BN packet semantically claimed as verified EE disconnect reason; proxy session will retire after delivery"
+                );
+                return Ok(ServerTranslation::PacketRetireSession {
+                    packet: bytes.to_vec(),
+                    reason: "server-bndp-disconnect",
+                });
             }
         }
         BnTag::Bner => {
@@ -314,17 +332,21 @@ pub fn translate_server_to_client(
         _ => {}
     };
 
-    unclaimed_bn_server(packet.tag, "server-to-client", bytes.len())
+    unclaimed_bn_server(packet.tag, "server-to-client", bytes.len()).map(ServerTranslation::Packet)
 }
 
-fn claimed_noop(bytes: &[u8], tag: &'static str, reason: &'static str) -> anyhow::Result<Vec<u8>> {
+fn claimed_noop(
+    bytes: &[u8],
+    tag: &'static str,
+    reason: &'static str,
+) -> anyhow::Result<ServerTranslation> {
     tracing::info!(
         tag,
         reason,
         len = bytes.len(),
         "BN packet semantically claimed as verified no-op translation"
     );
-    Ok(bytes.to_vec())
+    Ok(ServerTranslation::Packet(bytes.to_vec()))
 }
 
 fn claimed_client_noop(
@@ -363,4 +385,33 @@ fn unclaimed_bn_server(tag: BnTag, direction: &'static str, len: usize) -> anyho
         "BN packet quarantined before emit: no semantic translator claimed this tag/direction"
     );
     anyhow::bail!("unclaimed BN packet {:?} in {} direction", tag, direction)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_bndp_is_verified_disconnect_event_not_plain_noop() {
+        // EE `HandleBNDPMessage` accepts this exact eight-byte reason-code
+        // form. Once the legacy server sends it, the proxy must deliver the
+        // verified disconnect to EE and then retire the session instead of
+        // continuing to translate reliable-window M acks for a dead session.
+        let packet = b"BNDP\xCE\x16\x00\x00";
+        let mut state = SessionState::default();
+
+        let translated = translate_server_to_client(packet, &mut state, None)
+            .expect("BNDP reason-code shape must be claimed");
+
+        match translated {
+            ServerTranslation::PacketRetireSession {
+                packet: out,
+                reason,
+            } => {
+                assert_eq!(out, packet);
+                assert_eq!(reason, "server-bndp-disconnect");
+            }
+            ServerTranslation::Packet(_) => panic!("server BNDP must retire the proxy session"),
+        }
+    }
 }

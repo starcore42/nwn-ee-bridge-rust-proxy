@@ -5,6 +5,11 @@
 //! captures; older local debugging used `HGBRIDGE_PROXY2_DUMP_MODULE_INFO_DIR`.
 //! Keep both names supported, but prefer the quarantine directory so harness
 //! runs and offline fixture promotion look in one predictable place.
+//!
+//! The root directory is reserved for packets that were actually quarantined or
+//! consumed by strict transport policy. Probe dumps, accepted fixture candidates,
+//! and rejected intermediate split attempts belong under `diagnostics/` so they
+//! do not masquerade as unhandled packet-family gaps.
 
 use std::{env, path::PathBuf, sync::OnceLock};
 
@@ -22,6 +27,12 @@ pub(crate) fn diagnostic_dump_dir() -> Option<PathBuf> {
         .or_else(|| env_value(LEGACY_DUMP_DIR_ENV))
         .map(PathBuf::from)
         .or_else(|| DEFAULT_DUMP_DIR.get().cloned())
+}
+
+pub(crate) fn probe_dump_dir() -> Option<PathBuf> {
+    let mut path = diagnostic_dump_dir()?;
+    path.push("diagnostics");
+    Some(path)
 }
 
 fn env_value(name: &str) -> Option<String> {

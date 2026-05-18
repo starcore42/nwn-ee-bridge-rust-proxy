@@ -290,8 +290,12 @@ pub(super) fn promote_appearance_following_creature_update_span_for_ee(
         return None;
     }
 
-    let (span_end, promoted_bits, following_end) =
-        find_appearance_following_creature_update_span(live_bytes, span_start, bit_cursor, fragment_bits)?;
+    let (span_end, promoted_bits, following_end) = find_appearance_following_creature_update_span(
+        live_bytes,
+        span_start,
+        bit_cursor,
+        fragment_bits,
+    )?;
     if span_end <= span_start
         || live_bytes.get(span_end).copied()? != b'U'
         || live_bytes.get(span_end + 1).copied()? != 0x05
@@ -336,9 +340,7 @@ fn find_appearance_following_creature_update_span(
         let promoted_bits =
             unpack_promoted_fragment_span_payload_bits(live_bytes.get(span_start..span_end)?)?;
         let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
-            live_bytes,
-            span_end,
-            search_end,
+            live_bytes, span_end, search_end,
         )
         .min(search_end);
         if following_end <= span_end {

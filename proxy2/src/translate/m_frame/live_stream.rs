@@ -434,18 +434,11 @@ fn flush_pending_live_object_stream_if_verified(
         return false;
     };
 
-    let mut claimed = false;
-    if live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+    let mut claimed = live_update::rewrite_payload_to_exact_ee_if_possible(
         &mut candidate,
         latest_area_placeables,
     )
-    .is_some()
-    {
-        claimed = true;
-    }
-    if live_update::rewrite_payload_if_needed(&mut candidate).is_some() {
-        claimed = true;
-    }
+    .is_some();
     if live_update::claim_payload_if_verified(&candidate).is_none() {
         if let Some(pending) = state.live_object.pending_stream.as_ref() {
             dump_pending_live_object_candidate(
@@ -455,6 +448,92 @@ fn flush_pending_live_object_stream_if_verified(
                 "pending-live-object-unclaimed",
             );
         }
+        return false;
+    }
+    if let Some(summary) = live_update::canonicalize_player_session_creature_ids_payload_for_ee(
+        &mut candidate,
+        |compact_id| {
+            state
+                .semantic
+                .objects
+                .session_creature_id_for_compact(compact_id)
+        },
+    ) {
+        claimed = true;
+        tracing::info!(
+            compact_add_ids_observed = summary.compact_add_ids_observed,
+            add_ids_rewritten = summary.add_ids_rewritten,
+            reference_ids_rewritten = summary.reference_ids_rewritten,
+            "server live-object stream canonicalized PlayerList-proven session creature ids for EE"
+        );
+    }
+    if let Some(summary) =
+        live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate)
+    {
+        claimed = true;
+        tracing::info!(
+            compact_add_ids_observed = summary.compact_add_ids_observed,
+            add_ids_rewritten = summary.add_ids_rewritten,
+            reference_ids_rewritten = summary.reference_ids_rewritten,
+            "server live-object stream canonicalized compact Diamond external object ids for EE"
+        );
+    }
+    if live_update::claim_payload_if_verified_with_lifecycle(
+        &candidate,
+        |object_type, object_id| {
+            state
+                .semantic
+                .objects
+                .has_active_live_object_for_record(object_type, object_id)
+        },
+    )
+    .is_none()
+    {
+        if let Some(summary) = live_update::remove_unmaterialized_update_records_payload_if_possible(
+            &mut candidate,
+            |object_type, object_id| {
+                state
+                    .semantic
+                    .objects
+                    .has_active_live_object_for_record(object_type, object_id)
+            },
+        ) {
+            claimed = true;
+            tracing::warn!(
+                old_declared = summary.old_declared,
+                new_declared = summary.new_declared,
+                removed_update_records = summary.removed_update_records,
+                diamond_missing_object_update_records =
+                    summary.diamond_missing_object_update_records,
+                ee_sentinel_inventory_owner_records = summary.ee_sentinel_inventory_owner_records,
+                removed_bytes = summary.removed_bytes,
+                removed_fragment_bits = summary.removed_fragment_bits,
+                "server live-object stream removed Diamond no-op missing-object updates after exact lifecycle proof"
+            );
+        }
+    }
+    if live_update::claim_payload_if_verified_with_lifecycle(
+        &candidate,
+        |object_type, object_id| {
+            state
+                .semantic
+                .objects
+                .has_active_live_object_for_record(object_type, object_id)
+        },
+    )
+    .is_none()
+    {
+        if let Some(pending) = state.live_object.pending_stream.as_ref() {
+            dump_pending_live_object_candidate(
+                &candidate,
+                pending.first_sequence,
+                pending.chunks,
+                "pending-live-object-lifecycle-unverified",
+            );
+        }
+        tracing::warn!(
+            "server live-object stream candidate rejected: exact record shape passed but EE lifecycle proof failed"
+        );
         return false;
     }
 
@@ -535,7 +614,15 @@ fn dump_pending_live_object_candidate(
     chunks: u32,
     reason: &str,
 ) {
-    let Some(dir) = crate::translate::diagnostics::diagnostic_dump_dir() else {
+    let dir = if reason == "pending-live-object-claimed" {
+        // Claimed streams are fixture candidates, not unhandled packets.  Keep
+        // them under diagnostics/ so the quarantine root remains a clean signal
+        // for packet families the strict bridge actually refused to emit.
+        crate::translate::diagnostics::probe_dump_dir()
+    } else {
+        crate::translate::diagnostics::diagnostic_dump_dir()
+    };
+    let Some(dir) = dir else {
         return;
     };
     let mut path = dir;

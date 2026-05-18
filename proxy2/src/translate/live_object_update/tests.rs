@@ -16,6 +16,43 @@ fn ee_scalar_orientation_fragment_bits_from_legacy_facing(facing: u16) -> [bool;
     ]
 }
 
+fn live_object_read_window(payload: &[u8]) -> &[u8] {
+    let declared = usize::try_from(
+        super::read_u32_le(payload, super::HIGH_LEVEL_HEADER_BYTES)
+            .expect("fixture should have a declared CNW read length"),
+    )
+    .expect("declared CNW read length should fit usize");
+    &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared]
+}
+
+fn assert_no_full_creature_appearance_has_longer_legacy_shape(payload: &[u8]) {
+    let live = live_object_read_window(payload);
+    for offset in live.windows(2).enumerate().filter_map(|(offset, pair)| {
+        (pair == [b'P', super::CREATURE_OBJECT_TYPE]).then_some(offset)
+    }) {
+        let Some(ee_end) =
+            super::appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
+                live,
+                offset,
+                live.len(),
+            )
+        else {
+            continue;
+        };
+        let Some(legacy_end) = super::appearance::try_get_legacy_creature_appearance_record_end(
+            live,
+            offset,
+            live.len(),
+        ) else {
+            continue;
+        };
+        assert!(
+            legacy_end <= ee_end,
+            "translated P/5 at offset {offset} still has a longer Diamond full-appearance shape than its EE byte shape: ee_end={ee_end} legacy_end={legacy_end}"
+        );
+    }
+}
+
 #[test]
 fn legacy_facing_zero_preserves_shared_diamond_ee_packet_basis() {
     assert_eq!(
@@ -408,6 +445,42 @@ fn appearance_update_slot0_visible_equipment_claims_exactly() {
 }
 
 #[test]
+fn starcore_town_greeter_trader_stream_rewrites_to_exact_ee_live_object() {
+    // HG Docks capture: the stream contains a creature add followed by a full
+    // `P/5` creature appearance for Town Greeter and adjacent inventory/GUI
+    // live-object records. Diamond writes this as a coherent live-object burst;
+    // EE must only receive it after the add/update/appearance translators have
+    // proven exact record boundaries and fragment-bit ownership.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/starcore_npc_town_greeter_trader_stream_claimed_but_ee_rejects.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Diamond burst must not be claimed as already-EE-shaped"
+    );
+
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("Town Greeter live-object burst should rewrite to exact EE shape");
+    assert!(claim.add_records >= 1);
+    assert!(claim.creature_appearance_records >= 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
+#[test]
 fn unsupported_all_fields_appearance_does_not_fall_through_to_noop_claim() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/player_appearance_slot0_visible_equipment.bin"
@@ -488,14 +561,15 @@ fn creature_status_visibility_update_does_not_swallow_following_inventory_record
 
     let mut rewritten_live = live.to_vec();
     let mut rewritten_record_end = inventory_offset;
-    let status_rewrite = super::creature::insert_creature_update_status_effect_identity_maps_for_ee(
-        &mut rewritten_live,
-        update_offset,
-        &mut rewritten_record_end,
-        &fragment_bits,
-        super::CNW_FRAGMENT_HEADER_BITS,
-    )
-    .expect("legacy c408 status rows should receive EE identity transform maps");
+    let status_rewrite =
+        super::creature::insert_creature_update_status_effect_identity_maps_for_ee(
+            &mut rewritten_live,
+            update_offset,
+            &mut rewritten_record_end,
+            &fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("legacy c408 status rows should receive EE identity transform maps");
     assert_eq!(status_rewrite.entries, 3);
     assert_eq!(status_rewrite.bytes_inserted, 24);
     let mut translated_bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
@@ -528,14 +602,15 @@ fn creature_status_visibility_update_does_not_swallow_following_inventory_record
     );
     let mut bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
     let mut rewritten_record_end = inventory_offset;
-    let status_rewrite = super::creature::insert_creature_update_status_effect_identity_maps_for_ee(
-        &mut rewritten_live,
-        update_offset,
-        &mut rewritten_record_end,
-        &fragment_bits,
-        bit_cursor,
-    )
-    .expect("repaired c408 rows should receive EE identity transform maps");
+    let status_rewrite =
+        super::creature::insert_creature_update_status_effect_identity_maps_for_ee(
+            &mut rewritten_live,
+            update_offset,
+            &mut rewritten_record_end,
+            &fragment_bits,
+            bit_cursor,
+        )
+        .expect("repaired c408 rows should receive EE identity transform maps");
     assert_eq!(status_rewrite.entries, 3);
     assert_eq!(status_rewrite.bytes_inserted, 24);
     assert!(
@@ -605,6 +680,44 @@ fn inventory_0400_delta_requires_exact_fragment_cursor_consumption() {
 }
 
 #[test]
+fn inventory_0401_delta_accepts_true_state_bool_before_equipment_delta() {
+    // Live HG sequence 38 begins with this player-owned inventory state record
+    // before the Town Greeter/Northern Trader creature records:
+    //
+    //   I ECFFFFFF 0104 9500 D4D9E005 EB0A0000 02 1E6B 01 6B
+    //
+    // EE `sub_1407B4F70` and Diamond `sub_455940` both consume the 0x0001
+    // branch as SHORT, DWORD, INT, BOOL.  That BOOL does not select an extra
+    // read-buffer branch; the reader continues into the 0x0400 equipment delta.
+    let live = [
+        b'I', 0xEC, 0xFF, 0xFF, 0xFF, // player inventory owner id
+        0x01, 0x04, // mask 0x0401: 0x0001 state + 0x0400 equipment delta
+        0x95, 0x00, // 0x0001 state SHORT
+        0xD4, 0xD9, 0xE0, 0x05, // 0x0001 state DWORD
+        0xEB, 0x0A, 0x00, 0x00, // 0x0001 state INT
+        0x02, 0x1E, 0x6B, // 0x0400 clear-count and clear slots
+        0x01, 0x6B, // 0x0400 set-count and set slot
+    ];
+
+    let mut payload = vec![b'P', 0x05, 0x01];
+    payload.extend_from_slice(&((7 + live.len()) as u32).to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![
+            false, false, false, // CNW fragment header bits
+            true,  // 0x0001 state BOOL: valid true branch, no extra bytes
+            true,  // 0x0400 set-slot BOOL
+        ],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("0x0401 inventory delta should accept true state BOOL");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 2);
+}
+
+#[test]
 fn inventory_2700_zero_count_branch_requires_matching_fragment_bool() {
     let live = [
         b'I', 0xB0, 0xFF, 0xFF, 0xFF, // inventory/GUI owner id
@@ -654,6 +767,44 @@ fn inventory_2700_zero_count_branch_requires_matching_fragment_bool() {
 }
 
 #[test]
+fn local_diamond_inventory_0200_counted_cells_require_exact_branch_bits() {
+    // Local Diamond door/placeable click capture from 2026-05-18:
+    //
+    //   I FFFEFFFF 0002 03000000 0202 0302 0402 | 07
+    //
+    // Diamond `sub_455940` and EE `sub_1407B4F70` both read mask 0x0200 as
+    // two CNW BOOLs followed by a branch.  For this capture the branch bits
+    // are false/false, so the read-buffer body is DWORD count plus count
+    // two-byte cells, and the fragment stream owns one BOOL per cell.
+    let payload = local_diamond_inventory_0200_payload(&[(2, 2), (3, 2), (4, 2)]);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("local Diamond I/0x0200 counted-cell inventory should claim exactly");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 5);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+
+    let fragment_offset = u32::from_le_bytes(payload[3..7].try_into().unwrap()) as usize;
+    let mut wrong_branch = payload.clone();
+    wrong_branch[fragment_offset] |= 0x08;
+    assert!(
+        super::claim_payload_if_verified(&wrong_branch).is_none(),
+        "0x0200 counted-cell branch must require the decompiled second BOOL=false path"
+    );
+}
+
+#[test]
+fn local_diamond_inventory_0200_counted_cells_second_capture_claims_exactly() {
+    let payload = local_diamond_inventory_0200_payload(&[(1, 2), (1, 3), (1, 4)]);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("second local Diamond I/0x0200 counted-cell inventory should claim exactly");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 5);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
+#[test]
 fn inventory_2000_zero_count_trailing_pair_keeps_following_live_boundary() {
     let live = [
         b'I', 0xAD, 0xFF, 0xFF, 0xFF, // inventory owner object id
@@ -680,6 +831,32 @@ fn inventory_2000_zero_count_trailing_pair_keeps_following_live_boundary() {
         23,
         "validated inventory 0x2000 tail must not swallow the following U/5 record"
     );
+}
+
+fn local_diamond_inventory_0200_payload(cells: &[(u8, u8)]) -> Vec<u8> {
+    let mut live = vec![
+        b'I', 0xFE, 0xFF, 0xFF, 0xFF, // sentinel/self inventory owner id
+        0x00, 0x02, // mask 0x0200
+    ];
+    live.extend_from_slice(&(cells.len() as u32).to_le_bytes());
+    for (x, y) in cells {
+        live.push(*x);
+        live.push(*y);
+    }
+
+    let mut payload = vec![b'P', 0x05, 0x01];
+    payload.extend_from_slice(&((7 + live.len()) as u32).to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![
+            false, false, false, // CNW fragment header bits
+            false, // 0x0200 first branch BOOL: counted cells carry per-cell BOOLs
+            false, // 0x0200 second branch BOOL: false selects DWORD-count body
+            true, true, true, // one semantic cell BOOL for each counted cell
+        ],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+    payload
 }
 
 #[test]
@@ -1000,6 +1177,32 @@ fn trigger_add_mentions_expose_verified_geometry_bounds() {
 }
 
 #[test]
+fn hg_seq41_creature_captain_mixed_add_update_rewrites_and_claims_exactly() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_seq41_creature_captain_mixed_add_update.bin"
+    )
+    .to_vec();
+
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("HG Captain mixed creature appearance/update stream should claim exactly");
+    assert!(claim.creature_appearance_records >= 1);
+    assert!(claim.creature_update_records >= 1);
+}
+
+#[test]
 fn captured_hg_self_c408_inventory_stream_is_claimed_after_boundary_floor() {
     let mut payload =
         include_bytes!("../../../fixtures/live_object/hg_self_c408_inventory_unclaimed.bin")
@@ -1045,6 +1248,127 @@ fn local_diamond_bw167demo_u5_4408_inventory_stream_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn hg_starc5_seq37_creature_effect_delta_stream_rewrites_to_exact_shape() {
+    // Live HG Starcore5 driver-only capture from 2026-05-18. The stream starts
+    // with a standalone creature `U/5 0x00000008` looping visual-effect delta,
+    // then continues with creature appearance/add/update records in the same
+    // `GameObjUpdate_LiveObject` payload. EE's current reader consumes an
+    // ObjectVisualTransformData map after each status-effect entry, so this
+    // fixture must be owned by the focused effects/creature path and then
+    // exact-claimed. It must not fall back to raw zlib or generic passthrough.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_live_seq37_creature_effect_delta_20260518.bin"
+    )
+    .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("captured seq37 creature status-effect stream should rewrite");
+    assert!(
+        rewrite.bytes_inserted >= 32,
+        "four status-effect entries should receive EE identity transform maps: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten seq37 creature status-effect stream should validate exactly");
+    assert!(claim.update_records >= 1);
+    assert!(claim.creature_appearance_records >= 1 || claim.creature_update_records >= 1);
+}
+
+#[test]
+fn hg_starc5_seq37_otis_appearance_stream_rewrites_without_legacy_false_positive() {
+    // Live HG Starcore5 driver-only capture from 2026-05-18 after the
+    // decompile-backed full-appearance guard was added. This stream carries an
+    // NPC full `P/5` appearance for "Otis"; the legacy body/equipment shape
+    // must be widened into EE's 0x2001/0x23 dialect, not accepted as a shorter
+    // already-EE record.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_live_seq37_otis_appearance_20260518.bin"
+    )
+    .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("captured seq37 Otis appearance stream should rewrite");
+    assert!(
+        rewrite.bytes_inserted > 0 || rewrite.bits_inserted > 0,
+        "Otis full appearance should require an explicit typed EE rewrite: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten seq37 Otis appearance stream should validate exactly");
+    assert!(claim.creature_appearance_records >= 1);
+    assert_no_full_creature_appearance_has_longer_legacy_shape(&payload);
+}
+
+#[test]
+fn hg_starc5_seq36_town_npc_appearance_stream_rewrites_to_exact_shape() {
+    // Live HG Starcore5 driver-only capture from 2026-05-18. This post-area
+    // burst adds and updates several creature NPCs; the first unclaimed family
+    // is a `P/5` creature appearance for "Town Greeter", followed by another
+    // appearance/update pair for "Northern Trader". The appearance parser must
+    // own the embedded visible-equipment subobjects and exact fragment cursor,
+    // instead of letting the generic live-object scanner split on interior
+    // `D`/`U`-looking bytes.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_live_seq36_town_greeter_trader_appearance_20260518.bin"
+    )
+    .to_vec();
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("captured seq36 town NPC appearance stream should rewrite");
+    assert!(
+        rewrite.bytes_inserted > 0
+            || rewrite.bits_inserted > 0
+            || rewrite.update_records_rewritten > 0,
+        "seq36 stream should make typed appearance/update progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten seq36 town NPC appearance stream should validate exactly");
+    assert!(claim.creature_appearance_records >= 2);
+    assert!(claim.creature_update_records >= 1);
+    assert_no_full_creature_appearance_has_longer_legacy_shape(&payload);
+}
+
+#[test]
+fn raw_legacy_prefixed_town_trader_appearance_is_not_claimed_as_ee_shape() {
+    // Live HG Starcore5 driver-only capture from 2026-05-18. The Northern
+    // Trader `P/5` full appearance has a Diamond body-table prefix whose second
+    // byte is `0x13`. EE's widened reader can otherwise mistake that byte for
+    // an already-EE full-body selector and stop before the counted visible
+    // equipment list. Diamond's full appearance reader proves the longer
+    // semantic record, so the strict EE byte-shape probe must reject the short
+    // shifted candidate and force the typed LegacyDiamond -> EE rewrite.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_live_seq36_town_greeter_trader_appearance_20260518.bin"
+    );
+    let live = live_object_read_window(payload);
+    let trader_offset = live
+        .windows(2)
+        .enumerate()
+        .filter_map(|(offset, pair)| {
+            (pair == [b'P', super::CREATURE_OBJECT_TYPE]).then_some(offset)
+        })
+        .last()
+        .expect("fixture should contain the Northern Trader P/5 appearance");
+    let legacy_end = super::appearance::try_get_legacy_creature_appearance_record_end(
+        live,
+        trader_offset,
+        live.len(),
+    )
+    .expect("Diamond reader should prove the full trader appearance");
+    let ee_end = super::appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
+        live,
+        trader_offset,
+        live.len(),
+    );
+
+    assert!(
+        ee_end.is_none_or(|ee_end| ee_end >= legacy_end),
+        "short shifted EE byte-shape candidate must not hide longer Diamond P/5 appearance: ee_end={ee_end:?} legacy_end={legacy_end}"
+    );
+}
+
+#[test]
 fn hg_starc5_self_d5ff_gui_rows_seq49_rewrites_and_claims_exactly() {
     // Starcore5 driver-only 2026-05-13 capture, quarantined as
     // `GameObjUpdate_LiveObject` seq49. The stream begins with a self `U/5`
@@ -1071,6 +1395,23 @@ fn hg_starc5_self_d5ff_gui_rows_seq49_rewrites_and_claims_exactly() {
 
     let _claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten self D5FF + GUI-row stream should be exactly claimable");
+}
+
+#[test]
+fn hg_starc5_area_entry_d5ff_creature_inventory_candidate_claims_exactly() {
+    // Starcore5 driver-only 2026-05-17 area-entry capture, quarantined after
+    // the live-object rewrite inserted EE creature-add visual-transform bytes
+    // but before the exact validator could claim the self creature inventory
+    // `I/0xD5FF` record. This fixture keeps the fix packet-family owned:
+    // Diamond `sub_455940` and EE `sub_1407B4F70` both drive the inventory
+    // mask branches, so the record must be parsed as typed inventory rather
+    // than relaxed as raw zlib or a generic live-object blob.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_area_entry_d5ff_creature_inventory_20260517_rejected.bin"
+    );
+
+    let _claim = super::claim_payload_if_verified(payload)
+        .expect("area-entry D5FF creature inventory stream should claim exactly");
 }
 
 #[test]
@@ -1205,6 +1546,114 @@ fn hg_inventory_2e00_followed_by_gq_rows_claims_exactly() {
 }
 
 #[test]
+fn hg_inventory_2e00_gui_hand_trap_sentinel_claims_exactly() {
+    let mut payload =
+        include_bytes!("../../fixtures/live_object/hg_inventory_2e00_gq_rows_u_updates.bin")
+            .to_vec();
+    let inventory_offset = 7usize;
+    assert_eq!(payload[inventory_offset], b'I');
+    payload[inventory_offset + 1..inventory_offset + 5]
+        .copy_from_slice(&0xFFFF_FFECu32.to_le_bytes());
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("HG I/0x2E00 inventory with 0xFFFFFFEC GUI sentinel should be exactly claimed");
+
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 22);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.records_examined, 6);
+}
+
+#[test]
+fn hg_inventory_2e00_gui_hand_trap_false_0800_tail_claims_exactly() {
+    let mut payload =
+        include_bytes!("../../fixtures/live_object/hg_inventory_2e00_gq_rows_u_updates.bin")
+            .to_vec();
+    let inventory_offset = 7usize;
+    assert_eq!(payload[inventory_offset], b'I');
+    payload[inventory_offset + 1..inventory_offset + 5]
+        .copy_from_slice(&0xFFFF_FFECu32.to_le_bytes());
+
+    let declared = usize::try_from(super::read_u32_le(&payload, 3).unwrap()).unwrap();
+    let mut fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .unwrap();
+    let branch_0800_bit = super::CNW_FRAGMENT_HEADER_BITS + 1 + 2 + (6 * 3);
+    fragment_bits[branch_0800_bit] = false;
+    let repacked = super::bits::pack_msb_valid_bits(fragment_bits, super::CNW_FRAGMENT_HEADER_BITS);
+    payload.truncate(declared);
+    payload.extend_from_slice(&repacked);
+
+    let claim = super::claim_payload_if_verified(&payload).expect(
+        "HG I/0x2E00 0xFFFFFFEC inventory with false 0x0800 interleaved tail should claim exactly",
+    );
+
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 22);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.records_examined, 6);
+}
+
+#[test]
+fn hg_inventory_2e00_gui_hand_trap_interleaved_tail_promotes_before_gq() {
+    // Live HG 2026-05-17 exposed this precise area-entry sibling:
+    //
+    //   I FFFFFFEC mask=0x2E00
+    //     0x0400 clear/set one slot
+    //     0x0200 false second branch + DWORD zero
+    //     0x2000 second object-list count five
+    //     0x0800 false
+    //     twelve bytes of adjacent CNW fragment storage
+    //   G Q ...
+    //
+    // Diamond `sub_455940` and EE `sub_1407B4F70` both read the 0x0800
+    // fixed 12-byte branch only when its BOOL is true. Therefore the false
+    // branch owns no read bytes; the twelve bytes immediately before `GQ`
+    // must be promoted to the fragment bitstream before strict validation.
+    let mut live = Vec::new();
+    live.extend_from_slice(&[
+        b'I', 0xEC, 0xFF, 0xFF, 0xFF, 0x00, 0x2E, 0x01, 0x6B, 0x01, 0x6B, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0xEC, 0xFF, 0xFF, 0xFF, 0xF4, 0x71, 0x01,
+        0x80, 0xE7, 0x71, 0x01, 0x80, 0xE2, 0x71, 0x01, 0x80, 0xFB, 0x71, 0x01, 0x80,
+    ]);
+    live.extend_from_slice(&[
+        0x0E, 0x16, 0x14, 0x12, 0x40, 0x0E, 0x1E, 0x26, 0x24, 0x22, 0x50, 0x1E,
+    ]);
+    live.extend_from_slice(&[b'G', b'Q', 0x00]);
+
+    let declared = super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + live.len();
+    let mut payload = vec![
+        b'P',
+        super::GAME_OBJECT_UPDATE_MAJOR,
+        super::LIVE_OBJECT_MINOR,
+    ];
+    payload.extend_from_slice(&(declared as u32).to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![false; super::CNW_FRAGMENT_HEADER_BITS],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw interleaved fragment storage must not claim before promotion"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("inventory-owned interleaved fragment storage should be promoted");
+    assert_eq!(rewrite.records_examined, 2);
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(rewrite.interleaved_fragment_bytes_promoted, 12);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("promoted hand-trap inventory plus GQ stream should claim exactly");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 19);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.records_examined, 2);
+}
+
+#[test]
 fn hg_inventory_2e01_followed_by_gq_rows_splits_on_decompiled_cursor() {
     let payload = include_bytes!(
         "../../fixtures/live_object/hg_starc5_seq42_mixed_door_placeable_unclaimed_len519.bin"
@@ -1266,6 +1715,62 @@ fn hg_inventory_2e01_followed_by_gq_rows_splits_on_decompiled_cursor() {
     assert_eq!(claim.inventory_records, 1);
     assert_eq!(claim.inventory_fragment_bits, 13);
     assert_eq!(claim.live_gui_read_buffer_records, 1);
+}
+
+#[test]
+fn hg_docks_inventory_2e01_missing_feature25_second_count_rewrites_before_claim() {
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_docks_seq36_inventory_2e01_missing_feature25_second_count_len454.bin"
+    );
+    assert!(
+        super::claim_payload_if_verified(payload).is_none(),
+        "raw legacy I/0x2E01 missing Feature-25 second_count must not claim as EE-shaped"
+    );
+
+    let declared = usize::try_from(super::read_u32_le(payload, 3).unwrap()).unwrap();
+    let live = &payload[7..declared];
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .unwrap();
+
+    let inventory_end = super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        live,
+        0,
+        live.len(),
+    );
+    assert_eq!(
+        inventory_end, 66,
+        "raw HG I/0x2E01 quickbar-link record should split before the following GQ rows"
+    );
+
+    let mut bit_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    let inventory_claim = super::inventory::advance_verified_inventory_record(
+        live,
+        0,
+        inventory_end,
+        &fragment_bits,
+        &mut bit_cursor,
+    )
+    .expect("captured I/0x2E01 quickbar-link inventory record should claim exactly");
+    assert_eq!(inventory_claim.fragment_bits, 20);
+    assert_eq!(bit_cursor, super::CNW_FRAGMENT_HEADER_BITS + 20);
+
+    let mut rewritten = payload.to_vec();
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut rewritten)
+        .expect("captured Docks live-object stream should rewrite before strict claim");
+    assert!(
+        rewrite.bytes_inserted >= 8,
+        "the following legacy A/5 creature add should receive EE visual-transform storage"
+    );
+
+    let claim = super::claim_payload_if_verified(&rewritten)
+        .expect("rewritten Docks live-object stream should claim with exact family validators");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 20);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.creature_appearance_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
 }
 
 #[test]
@@ -1550,5 +2055,355 @@ fn local_diamond_seq15_coalesced_liveobject_burst_rewrites_and_claims_exactly() 
 
     assert!(claim.add_records >= 1);
     assert!(claim.creature_appearance_records >= 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
+#[test]
+fn local_diamond_seq15_compact_creature_ids_canonicalize_to_ee_external_namespace() {
+    // EE creature add (`sub_14077F870`) calls
+    // `CGameObjectArray::AddExternalObject(&id, creature, ...)`, which stores
+    // the object in the external high-bit namespace. EE creature appearance
+    // (`sub_14077FE10`) then resolves the appearance `OBJECTID` through that
+    // object array before consuming the body. The local Diamond seq15 capture
+    // used compact creature id `0x000000FE` for both `A/5` and later `P/5`
+    // records; leaving that compact id in the EE-facing stream reproduces the
+    // client log warning `HandleServerToPlayerCreatureUpdate_Appearance:
+    // EXOWARNING: pCreature`.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq15_coalesced_liveobject_20260516_unclaimed.bin"
+    )
+    .to_vec();
+
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+
+    let before = super::claim_payload_if_verified(&payload)
+        .expect("rewritten seq15 creature burst should be exact before id canonicalization");
+    assert!(before.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x0000_00FE
+    }));
+    assert!(before.mentions.iter().any(|mention| {
+        mention.opcode == b'P'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x0000_00FE
+    }));
+
+    let summary = super::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
+        .expect("compact creature add/appearance ids should canonicalize for EE");
+    assert_eq!(summary.compact_add_ids_observed, 1);
+    assert_eq!(summary.add_ids_rewritten, 1);
+    assert!(
+        summary.reference_ids_rewritten >= 1,
+        "at least the P/5 appearance reference must be rewritten"
+    );
+
+    let after = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
+        .expect("canonicalized seq15 creature burst should remain exact and lifecycle-safe");
+    assert!(after.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x8000_00FE
+    }));
+    assert!(after.mentions.iter().any(|mention| {
+        mention.opcode == b'P'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x8000_00FE
+    }));
+    assert!(!after.mentions.iter().any(|mention| {
+        matches!(mention.opcode, b'A' | b'P' | b'U' | b'D')
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x0000_00FE
+    }));
+}
+
+#[test]
+fn local_diamond_seq15_creature_ids_can_use_playerlist_proven_session_alias() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq15_coalesced_liveobject_20260516_unclaimed.bin"
+    )
+    .to_vec();
+
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+
+    super::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
+        .expect("generic compact canonicalization documents the pre-session state");
+
+    let summary = super::canonicalize_player_session_creature_ids_payload_for_ee(
+        &mut payload,
+        |compact_id| (compact_id == 0xFE).then_some(0xFFFF_FFFE),
+    )
+    .expect("PlayerList-proven compact creature alias should rewrite the add/appearance pair");
+    assert_eq!(summary.compact_add_ids_observed, 1);
+    assert_eq!(summary.add_ids_rewritten, 1);
+    assert!(
+        summary.reference_ids_rewritten >= 1,
+        "at least the P/5 appearance reference must be rewritten to the session id"
+    );
+
+    let after = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
+        .expect("session-canonicalized seq15 creature burst should remain exact");
+    assert!(after.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0xFFFF_FFFE
+    }));
+    assert!(after.mentions.iter().any(|mention| {
+        mention.opcode == b'P'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0xFFFF_FFFE
+    }));
+    assert!(!after.mentions.iter().any(|mention| {
+        matches!(mention.opcode, b'A' | b'P' | b'U' | b'D')
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == 0x8000_00FE
+    }));
+}
+
+#[test]
+fn local_diamond_seq17_inventory_2a00_requires_exact_branch_bits() {
+    // Local Diamond bridge capture from 2026-05-17 after the preceding
+    // Diamond-only missing-object `U/5` update was removed. The remaining
+    // `I/0x2A00` record is not raw passthrough: Diamond `sub_455940` and EE
+    // `sub_1407B4F70` both read it as `0x0200 | 0x2000 | 0x0800`, with BOOL
+    // branch bits choosing the read-buffer layout. The exact claim must
+    // therefore prove those branch bits before the following `GQ` record can
+    // be treated as the next live-object submessage.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq17_inventory_2a00_20260517_rewritten.bin"
+    );
+
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("local Diamond seq17 I/0x2A00 + GQ stream should claim exactly");
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+
+    let fragment_offset = u32::from_le_bytes(payload[3..7].try_into().unwrap()) as usize;
+    assert!(fragment_offset + 1 < payload.len());
+
+    let mut wrong_0200_branch = payload.to_vec();
+    wrong_0200_branch[fragment_offset] &= !0x08;
+    assert!(
+        super::claim_payload_if_verified(&wrong_0200_branch).is_none(),
+        "0x0200 byte-mask shape must require its second BOOL branch bit"
+    );
+
+    let mut wrong_0800_branch = payload.to_vec();
+    wrong_0800_branch[fragment_offset + 1] &= !0x80;
+    assert!(
+        super::claim_payload_if_verified(&wrong_0800_branch).is_none(),
+        "0x0800 12-byte tail shape must require its present BOOL branch bit"
+    );
+}
+
+#[test]
+fn local_diamond_seq17_sentinel_inventory_owner_is_removed_with_missing_update() {
+    // Same local Diamond 2026-05-17 direct M payload before lifecycle cleanup.
+    // EE's inventory reader checks the resolved object pointer before consuming
+    // the `0x2000` Feature-25 body, so the sentinel-owner `I/0x2A00` record
+    // must be removed together with the preceding missing-object `U/5` record.
+    // Leaving it in place reproduces EE's `Unknown Update sub-message` because
+    // the reader bails before the following `GQ` bytes are consumed.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq17_liveobject_sentinel_inventory_20260517.bin"
+    )
+    .to_vec();
+
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let rewrite =
+        super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
+            .expect("sentinel U/I records should be removed after exact lifecycle proof");
+    assert_eq!(rewrite.removed_update_records, 2);
+
+    let claim = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
+        .expect("remaining GQ live-object record should claim after sentinel removals");
+    assert_eq!(claim.inventory_records, 0);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
+#[test]
+fn local_diamond_seq12_door_placeable_stream_claims_with_materialized_adds() {
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260517_rewritten.bin"
+    );
+
+    let claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+        .expect("local Diamond seq12 door/placeable stream should claim after exact rewrite");
+
+    assert_eq!(claim.add_records, 5);
+    assert_eq!(claim.update_records, 5);
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::DOOR_OBJECT_TYPE
+            && mention.object_id == 3
+    }));
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
+            && mention.object_id == 0x8000_0006
+    }));
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
+            && mention.object_id == 0x8000_000E
+            && mention.requires_materialized_object
+    }));
+}
+
+#[test]
+fn local_diamond_seq12_compact_door_ids_canonicalize_to_ee_external_namespace() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260517_rewritten.bin"
+    )
+    .to_vec();
+
+    let summary = super::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
+        .expect("seq12 compact Diamond door ids should canonicalize for EE");
+
+    assert_eq!(summary.compact_add_ids_observed, 3);
+    assert_eq!(summary.add_ids_rewritten, 3);
+    assert_eq!(summary.reference_ids_rewritten, 3);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("canonicalized payload remains exact EE live-object shape");
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'A' && mention.object_type == 0x0A && mention.object_id == 0x8000_0003
+    }));
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == 0x0A
+            && mention.object_id == 0x8000_0003
+            && mention.requires_materialized_object
+    }));
+    assert!(
+        super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_some(),
+        "canonicalized add/update ids must lifecycle-proof within the same payload"
+    );
+}
+
+#[test]
+fn local_diamond_seq12_rebuilt_high_bit_door_placeable_stream_claims_exactly() {
+    // Local Diamond bridge capture from 2026-05-18, dumped after the
+    // live-object high-level fragment stream was rebuilt and canonicalized for
+    // EE.  It is deliberately separate from the compact-id 2026-05-17 fixture:
+    // this pins the emitted EE-facing external-object namespace shape.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260518_claimed.bin"
+    );
+
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("rebuilt local Diamond seq12 stream should claim as exact EE live-object shape");
+    assert_eq!(claim.add_records, 5);
+    assert_eq!(claim.update_records, 5);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::DOOR_OBJECT_TYPE
+            && mention.object_id == 0x8000_0003
+    }));
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'A'
+            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
+            && mention.object_id == 0x8000_0006
+    }));
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
+            && mention.object_id == 0x8000_000E
+            && mention.requires_materialized_object
+    }));
+
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+        .expect("add/update pairs in the same rebuilt stream should lifecycle-proof internally");
+    assert_eq!(lifecycle_claim.add_records, 5);
+    assert_eq!(lifecycle_claim.update_records, 5);
+}
+
+#[test]
+fn hg_live_empty_live_object_shell_claims_as_exact_noop() {
+    // Live Higher Ground driver-only capture from 2026-05-17.  This is a
+    // GameObjUpdate_LiveObject high-level packet whose declared length ends at
+    // the CNW header and whose fragment stream contains only the three
+    // final-bit header bits (`0x60` => valid bit count 3).  The EE client
+    // decompile path (`MessageMoreDataToRead` before submessage dispatch)
+    // treats this as no live-object work to read, so the strict translator
+    // claims it as a typed semantic no-op instead of quarantining it as an
+    // unverified lifecycle packet.
+    let payload =
+        include_bytes!("../../../fixtures/live_object/hg_live_empty_live_object_noop_20260517.bin");
+
+    let claim =
+        super::claim_payload_if_verified(payload).expect("empty live-object shell should claim");
+    assert_eq!(claim.declared, 7);
+    assert_eq!(claim.live_bytes_length, 0);
+    assert_eq!(claim.fragment_bytes, 1);
+    assert_eq!(claim.records_examined, 0);
+    assert!(claim.mentions.is_empty());
+
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+        .expect("empty no-op shell should not require object lifecycle state");
+    assert_eq!(lifecycle_claim.records_examined, 0);
+    assert!(lifecycle_claim.mentions.is_empty());
+}
+
+#[test]
+fn hg_starc5_seq34_current_player_inventory_gq_stream_claims_exactly() {
+    // Live HG Starcore5 2026-05-18 seq34: current-player inventory owner
+    // 0xFFFFFFFE with mask 0x2E00, followed by a GQ row stream and P/U creature
+    // records. Diamond's inventory traversal uses this current-player sentinel;
+    // the proxy must classify it through the exact inventory/GQ parser instead
+    // of waiting on retries or treating the zlib window as raw traffic.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_starc5_live_seq34_current_player_inventory_gq_20260518.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Diamond seq34 stream must not be claimed before typed rewrites"
+    );
+
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("HG seq34 current-player I/0x2E00 + GQ stream should rewrite to exact EE shape");
+
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.inventory_fragment_bits, 19);
+    assert!(claim.live_gui_read_buffer_records >= 1);
     assert_eq!(claim.live_bytes_length + 7, claim.declared);
 }

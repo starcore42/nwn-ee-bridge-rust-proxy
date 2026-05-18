@@ -63,9 +63,7 @@ fn diagnostic_blank_server_quickbar_spells() -> bool {
     std::env::var("NWN_BRIDGE_DIAGNOSTIC_BLANK_SERVER_QUICKBAR_SPELLS")
         .map(|value| {
             let value = value.trim();
-            value == "1"
-                || value.eq_ignore_ascii_case("true")
-                || value.eq_ignore_ascii_case("yes")
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
         })
         .unwrap_or(false)
 }

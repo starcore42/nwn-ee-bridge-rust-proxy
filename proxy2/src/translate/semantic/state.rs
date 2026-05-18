@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 
-use crate::translate::VerifiedFamily;
+use crate::translate::{VerifiedFamily, player_list::PlayerListObjectIds};
 
 use super::event::{
     LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, ProtocolEvent,
@@ -82,6 +82,7 @@ pub(crate) struct ClientInputState {
 pub(crate) struct ObjectRegistry {
     pub(crate) live_object_packets: u64,
     pub(crate) known: BTreeMap<u32, KnownObjectState>,
+    session_creature_ids_by_compact: BTreeMap<u32, u32>,
     materialized_item_object_ids: BTreeSet<u32>,
 }
 
@@ -91,6 +92,7 @@ impl ObjectRegistry {
             tracing::debug!(
                 known_objects = self.known.len(),
                 materialized_item_objects = self.materialized_item_object_ids.len(),
+                session_creature_aliases = self.session_creature_ids_by_compact.len(),
                 "semantic object registry reset for new Area_ClientArea"
             );
         }
@@ -98,9 +100,50 @@ impl ObjectRegistry {
         self.materialized_item_object_ids.clear();
     }
 
+    pub(crate) fn observe_player_list_object_ids(&mut self, object_ids: &[PlayerListObjectIds]) {
+        for entry in object_ids {
+            let Some(creature_object_id) = entry.creature_object_id else {
+                continue;
+            };
+            let Some(compact_id) = compact_session_alias_from_player_list(creature_object_id)
+            else {
+                continue;
+            };
+            if let Some(previous) = self
+                .session_creature_ids_by_compact
+                .insert(compact_id, creature_object_id)
+                .filter(|previous| *previous != creature_object_id)
+            {
+                tracing::warn!(
+                    compact_id,
+                    previous_session_id = previous,
+                    new_session_id = creature_object_id,
+                    player_object_id = entry.player_object_id,
+                    "verified PlayerList remapped a compact creature session alias"
+                );
+            } else {
+                tracing::debug!(
+                    compact_id,
+                    session_creature_id = creature_object_id,
+                    player_object_id = entry.player_object_id,
+                    "verified PlayerList established compact creature session alias"
+                );
+            }
+        }
+    }
+
     pub(crate) fn observe_mentions(&mut self, mentions: &[LiveObjectMention]) {
         self.live_object_packets = self.live_object_packets.saturating_add(1);
         for mention in mentions {
+            let inventory_owner_without_type = mention.opcode == b'I' && mention.object_type == 0;
+            if (mention.object_id & 0xFFFF_FF00) == 0xFFFF_FF00 {
+                tracing::debug!(
+                    opcode = %char::from(mention.opcode),
+                    object_type = mention.object_type,
+                    object_id = mention.object_id,
+                    "semantic object registry observing session-local live-object mention"
+                );
+            }
             let entry = self
                 .known
                 .entry(mention.object_id)
@@ -110,15 +153,44 @@ impl ObjectRegistry {
                     ..KnownObjectState::default()
                 });
             if entry.mentions != 0 && entry.object_type != mention.object_type {
-                tracing::warn!(
-                    object_id = mention.object_id,
-                    old_object_type = entry.object_type,
-                    new_object_type = mention.object_type,
-                    opcode = %char::from(mention.opcode),
-                    "live-object registry observed object type change"
-                );
+                if inventory_owner_without_type {
+                    // Live-object inventory `I` records carry an owner
+                    // OBJECTID plus an inventory mask; the exact inventory
+                    // parser reports object_type 0 because the packet does
+                    // not carry an independent creature/placeable/etc. type
+                    // field there.  Treat that as a typed owner reference,
+                    // not as proof that an existing creature became object
+                    // type zero.
+                    tracing::debug!(
+                        object_id = mention.object_id,
+                        known_object_type = entry.object_type,
+                        opcode = %char::from(mention.opcode),
+                        "live-object registry kept known owner type for inventory record"
+                    );
+                } else if entry.object_type == 0 {
+                    // A prior inventory-only owner mention created an
+                    // unknown-type placeholder. The first typed add/update is
+                    // the stronger wire-derived fact, so promote without an
+                    // object-type-change warning.
+                    tracing::debug!(
+                        object_id = mention.object_id,
+                        new_object_type = mention.object_type,
+                        opcode = %char::from(mention.opcode),
+                        "live-object registry promoted inventory-only owner to typed object"
+                    );
+                } else {
+                    tracing::warn!(
+                        object_id = mention.object_id,
+                        old_object_type = entry.object_type,
+                        new_object_type = mention.object_type,
+                        opcode = %char::from(mention.opcode),
+                        "live-object registry observed object type change"
+                    );
+                }
             }
-            entry.object_type = mention.object_type;
+            if !inventory_owner_without_type || entry.object_type == 0 {
+                entry.object_type = mention.object_type;
+            }
             entry.last_opcode = mention.opcode;
             if let Some(name) = mention.name.as_ref().filter(|name| !name.is_empty()) {
                 entry.latest_name = Some(name.clone());
@@ -216,10 +288,49 @@ impl ObjectRegistry {
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
         self.materialized_item_object_ids.contains(&object_id)
             || self
-            .known
-            .get(&object_id)
-            .map(|object| object.active)
-            .unwrap_or(false)
+                .known
+                .get(&object_id)
+                .map(|object| object.active)
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn has_active_typed_object(&self, object_type: u8, object_id: u32) -> bool {
+        self.materialized_item_object_ids.contains(&object_id)
+            || self
+                .get(object_type, object_id)
+                .map(|object| object.active)
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn has_active_live_object_for_record(
+        &self,
+        object_type: u8,
+        object_id: u32,
+    ) -> bool {
+        // Inventory owner records carry an OBJECTID but no independent live
+        // object-type marker in the packet body. The exact inventory parser
+        // reports object_type 0 for that owner field, so lifecycle proof must
+        // use the already-materialized object id without inventing a type.
+        let active = if object_type == 0 {
+            self.has_active_object_id(object_id)
+        } else {
+            self.has_active_typed_object(object_type, object_id)
+        };
+        if (object_id & 0xFFFF_FF00) == 0xFFFF_FF00 {
+            tracing::debug!(
+                object_type,
+                object_id,
+                active,
+                "semantic object registry session-local lifecycle lookup"
+            );
+        }
+        active
+    }
+
+    pub(crate) fn session_creature_id_for_compact(&self, compact_id: u32) -> Option<u32> {
+        self.session_creature_ids_by_compact
+            .get(&compact_id)
+            .copied()
     }
 
     pub(crate) fn nearby_transition_anchor_for_door(
@@ -268,6 +379,17 @@ impl ObjectRegistry {
             })
             .min_by(|left, right| left.distance.total_cmp(&right.distance))
     }
+}
+
+fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
+    if object_id == 0 || object_id == 0x7F00_0000 || object_id == u32::MAX {
+        return None;
+    }
+    if (object_id & 0xFFFF_FF00) != 0xFFFF_FF00 {
+        return None;
+    }
+    let compact_id = object_id & 0xFF;
+    (compact_id != 0).then_some(compact_id)
 }
 
 #[derive(Debug, Default)]
@@ -355,7 +477,7 @@ pub(crate) struct SyntheticState {
 mod tests {
     use super::{
         LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition,
-        ObjectRegistry,
+        ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -426,6 +548,114 @@ mod tests {
         registry.reset_for_area();
 
         assert!(!registry.has_active_object_id(item_object_id));
+    }
+
+    #[test]
+    fn verified_player_list_creature_id_establishes_session_alias() {
+        let mut registry = ObjectRegistry::default();
+        let session_creature_id = 0xFFFF_FFFE;
+
+        registry.observe_player_list_object_ids(&[PlayerListObjectIds {
+            player_object_id: session_creature_id,
+            creature_object_id: Some(session_creature_id),
+        }]);
+
+        assert_eq!(
+            registry.session_creature_id_for_compact(0xFE),
+            Some(session_creature_id)
+        );
+
+        registry.reset_for_area();
+        assert_eq!(
+            registry.session_creature_id_for_compact(0xFE),
+            Some(session_creature_id),
+            "PlayerList session aliases survive area registry resets"
+        );
+    }
+
+    #[test]
+    fn inventory_owner_lifecycle_uses_active_object_id_without_type() {
+        let mut registry = ObjectRegistry::default();
+        let creature_id = 0xFFFF_FFFE;
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x05,
+            object_id: creature_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+        }]);
+
+        assert!(registry.has_active_live_object_for_record(0, creature_id));
+        assert!(registry.has_active_live_object_for_record(0x05, creature_id));
+    }
+
+    #[test]
+    fn inventory_owner_mention_does_not_retype_known_creature() {
+        let mut registry = ObjectRegistry::default();
+        let creature_id = 0xFFFF_FFFE;
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x05,
+            object_id: creature_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+        }]);
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'I',
+            object_type: 0,
+            object_id: creature_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+        }]);
+
+        let object = registry
+            .known
+            .get(&creature_id)
+            .expect("known creature should remain registered after inventory owner mention");
+        assert_eq!(
+            object.object_type, 0x05,
+            "inventory owner records carry no independent object type and must not retype the creature"
+        );
+        assert_eq!(object.last_opcode, b'I');
+        assert_eq!(object.update_mentions, 1);
+    }
+
+    #[test]
+    fn later_typed_live_object_promotes_inventory_only_owner_placeholder() {
+        let mut registry = ObjectRegistry::default();
+        let object_id = 0x8000_1234;
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'I',
+            object_type: 0,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+        }]);
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+        }]);
+
+        let object = registry
+            .known
+            .get(&object_id)
+            .expect("typed add should promote the inventory-only placeholder");
+        assert_eq!(object.object_type, 0x09);
+        assert!(object.active);
+        assert_eq!(object.add_mentions, 1);
     }
 
     #[test]

@@ -4,14 +4,14 @@
 //! records and it does not mutate read bytes or fragment bits.
 
 use super::{
-    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
-    EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
-    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
-    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES,
-    LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
-    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
-    creature, gui, inventory, item, locstring, read_u16_le, read_u32_le, trigger,
+    DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
+    EE_UPDATE_SCALE_STATE_READ_BYTES, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
+    LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
+    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
+    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
+    TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item, locstring, read_u16_le,
+    read_u32_le, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -73,17 +73,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
 
     if bytes.get(offset).copied() == Some(b'U') && bytes.get(offset + 1).copied() == Some(0x05) {
         if let Some(record_end) =
-            creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end)
-        {
-            return record_end;
-        }
-        if let Some(record_end) =
-            creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end)
-        {
-            return record_end;
-        }
-        if let Some(record_end) =
-            creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end)
+            try_get_ee_creature_update_record_end_for_transport(bytes, offset, scan_end)
         {
             return record_end;
         }
@@ -265,6 +255,23 @@ pub(super) fn try_get_ee_door_placeable_add_record_end_for_transport(
     scan_end: usize,
 ) -> Option<usize> {
     try_get_ee_door_placeable_add_record_end(bytes, offset, scan_end)
+}
+
+pub(super) fn try_get_ee_creature_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // Transport/salvage boundary ownership is intentionally narrower than the
+    // final creature-update semantic validator. Without the CNW fragment cursor
+    // and bit stream, masks such as `0x3967` cannot be proven from bytes alone:
+    // Diamond and EE consume optional identity/action branches under fragment
+    // BOOL control before returning to the live-object dispatcher. Only the
+    // compact numeric update families with decompile-owned byte lengths may
+    // claim a boundary here.
+    creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end)
+        .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
+        .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
 }
 
 fn try_get_ee_placeable_add_record_end(
@@ -533,7 +540,8 @@ fn try_get_legacy_door_placeable_inline_name_update_record_end(
             }
             continue;
         }
-        if name_end == scan_end || looks_like_legacy_live_object_sub_message_boundary(bytes, name_end)
+        if name_end == scan_end
+            || looks_like_legacy_live_object_sub_message_boundary(bytes, name_end)
         {
             if debug_live_claim {
                 eprintln!(

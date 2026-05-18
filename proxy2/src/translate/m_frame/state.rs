@@ -11,7 +11,7 @@ use crate::translate::{ContinuationOwner, VerifiedProof, area, module_resources,
 use super::{
     client_ack, deferred_module_resources, live_stream, quickbar_stream,
     reassembly::{CompletedDeflatedStreamWindow, ServerDeflatedReassembly},
-    sequence::{SequenceElision, SequenceShift},
+    sequence::{CoalescedSplitSequenceShift, SequenceElision, SequenceShift},
     synthetic_area,
 };
 
@@ -62,6 +62,7 @@ pub(super) struct SequenceState {
     pub(super) client_sequence_shifts: Vec<SequenceShift>,
     pub(super) client_sequence_elisions: Vec<SequenceElision>,
     pub(super) server_sequence_shifts: Vec<SequenceShift>,
+    pub(super) coalesced_split_sequence_shifts: Vec<CoalescedSplitSequenceShift>,
     pub(super) pending_client_to_server_packets: Vec<Vec<u8>>,
 }
 

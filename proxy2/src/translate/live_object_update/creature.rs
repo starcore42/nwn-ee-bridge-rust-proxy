@@ -251,6 +251,17 @@ pub(super) fn advance_verified_legacy_creature_update_record_for_span_owner(
         bit_cursor,
     );
     if !advanced {
+        let mut trial = bytes.to_vec();
+        if let Some(identity_rewrite) = rewrite_3967_bare_second_identity_string_for_ee(
+            &mut trial,
+            offset,
+            record_end,
+            fragment_bits,
+            original_bit_cursor,
+        ) {
+            *bit_cursor = identity_rewrite.advanced_bit_cursor;
+            return true;
+        }
         *bit_cursor = original_bit_cursor;
     }
     advanced
@@ -430,8 +441,12 @@ pub(super) fn try_get_ee_creature_update_c40f_record_end(
 
     let lower_prefix = offset.checked_add(10)?.checked_add(6)?;
     let action_branch_bytes = 6usize;
-    let scalar_status_start = lower_prefix.checked_add(1)?.checked_add(action_branch_bytes)?;
-    let vector_status_start = lower_prefix.checked_add(6)?.checked_add(action_branch_bytes)?;
+    let scalar_status_start = lower_prefix
+        .checked_add(1)?
+        .checked_add(action_branch_bytes)?;
+    let vector_status_start = lower_prefix
+        .checked_add(6)?
+        .checked_add(action_branch_bytes)?;
 
     let mut accepted = None;
     for status_start in [scalar_status_start, vector_status_start] {
@@ -470,8 +485,12 @@ pub(super) fn try_get_ee_creature_update_c44f_record_end(
 
     let lower_prefix = offset.checked_add(10)?.checked_add(6)?;
     let action_branch_bytes = 6usize;
-    let scalar_status_start = lower_prefix.checked_add(1)?.checked_add(action_branch_bytes)?;
-    let vector_status_start = lower_prefix.checked_add(6)?.checked_add(action_branch_bytes)?;
+    let scalar_status_start = lower_prefix
+        .checked_add(1)?
+        .checked_add(action_branch_bytes)?;
+    let vector_status_start = lower_prefix
+        .checked_add(6)?
+        .checked_add(action_branch_bytes)?;
 
     let mut accepted = None;
     for status_start in [scalar_status_start, vector_status_start] {
@@ -579,8 +598,7 @@ pub(super) fn insert_creature_update_status_effect_identity_maps_for_ee(
         if debug_creature_update_cursor_trace_enabled(raw_mask) {
             eprintln!(
                 "live-object creature status-effect identity-map rewrite state: raw_mask=0x{raw_mask:08X} status_start={} bit_cursor={} count={count}",
-                state.read_cursor,
-                state.bit_cursor
+                state.read_cursor, state.bit_cursor
             );
         }
         if count == 0 || count > 256 {
@@ -673,12 +691,7 @@ pub(super) fn insert_creature_update_status_effect_identity_maps_for_ee(
             }
             return None;
         }
-        accepted = Some((
-            candidate,
-            candidate_record_end,
-            count,
-            bytes_inserted,
-        ));
+        accepted = Some((candidate, candidate_record_end, count, bytes_inserted));
     }
 
     let (candidate, candidate_record_end, entries, bytes_inserted) = accepted?;
@@ -1107,8 +1120,7 @@ fn advance_verified_creature_update_3967_action0_ee_record(
 
     let mut accepted: Option<LegacyCreatureUpdateCursor<'_>> = None;
     for candidate in candidate_cursors {
-        let Some(candidate) =
-            simulate_creature_update_3967_action0_ee_tail_cursor(candidate)
+        let Some(candidate) = simulate_creature_update_3967_action0_ee_tail_cursor(candidate)
         else {
             continue;
         };
@@ -1142,7 +1154,10 @@ fn simulate_creature_update_3967_action0_ee_tail_cursor(
     mut cursor: LegacyCreatureUpdateCursor<'_>,
 ) -> Option<LegacyCreatureUpdateCursor<'_>> {
     let cursor = simulate_creature_update_3967_action0_pre_identity_ee_cursor(cursor)?;
-    try_simulate_ee_creature_update_identity_optional_suffix(LEGACY_CREATURE_UPDATE_3967_MASK, cursor)
+    try_simulate_ee_creature_update_identity_optional_suffix(
+        LEGACY_CREATURE_UPDATE_3967_MASK,
+        cursor,
+    )
 }
 
 fn simulate_creature_update_3967_action0_pre_identity_ee_cursor(
@@ -1298,6 +1313,11 @@ pub(super) struct Creature3967Action0BridgeFollowupRewrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Creature3967ActionFfffBridgeFollowupRewrite {
+    pub bytes_removed: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Creature3967Action0EeBuild1fBoolRewrite {
     pub bits_inserted: usize,
 }
@@ -1305,6 +1325,183 @@ pub(super) struct Creature3967Action0EeBuild1fBoolRewrite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Creature3967OmittedActionCodeRewrite {
     pub bytes_inserted: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Creature3967BareSecondIdentityStringRewrite {
+    pub identity_offset: usize,
+    pub text_len: usize,
+    pub advanced_bit_cursor: usize,
+}
+
+pub(super) fn rewrite_3967_bare_second_identity_string_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<Creature3967BareSecondIdentityStringRewrite> {
+    let (candidate, rewrite) = build_3967_bare_second_identity_string_candidate(
+        bytes.as_slice(),
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    *bytes = candidate;
+    Some(rewrite)
+}
+
+fn build_3967_bare_second_identity_string_candidate(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(Vec<u8>, Creature3967BareSecondIdentityStringRewrite)> {
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+    {
+        return None;
+    }
+
+    let mut cursor = LegacyCreatureUpdateCursor {
+        bytes,
+        record_end,
+        read_cursor: offset + 10,
+        bit_cursor,
+        fragment_bits,
+    };
+    cursor.read_unsigned_bits(16)?;
+    cursor.read_unsigned_bits(16)?;
+    cursor.read_unsigned_bits(18)?;
+
+    let candidates = build_legacy_creature_orientation_branch_candidate_states(
+        LEGACY_CREATURE_UPDATE_3967_MASK,
+        cursor,
+    )?;
+    let mut accepted: Option<(Vec<u8>, Creature3967BareSecondIdentityStringRewrite)> = None;
+    for candidate in candidates {
+        let Some(identity_start) =
+            simulate_legacy_creature_update_3967_pre_identity_cursor(candidate)
+        else {
+            continue;
+        };
+        let identity_offset = identity_start.read_cursor;
+        let Some(candidate) = build_3967_bare_second_identity_string_candidate_at_offset(
+            bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+            identity_offset,
+        ) else {
+            continue;
+        };
+        if accepted
+            .as_ref()
+            .is_some_and(|accepted| accepted.1 != candidate.1 || accepted.0 != candidate.0)
+        {
+            return None;
+        }
+        accepted = Some(candidate);
+    }
+
+    accepted
+}
+
+fn build_3967_bare_second_identity_string_candidate_at_offset(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    identity_offset: usize,
+) -> Option<(Vec<u8>, Creature3967BareSecondIdentityStringRewrite)> {
+    // EE `sub_140781E80` and Diamond `sub_44ADD0` both read mask `0x1000` as:
+    //
+    //   WORD, CExoString, CExoString, BYTE, WORD, WORD, BOOL, BOOL, BYTE rows...
+    //
+    // HG Starcore5 captures can encode the second CExoString as bare printable
+    // bytes followed by the four zero bytes that would have been the missing
+    // CExoString length field. Rewrite only this decompiled identity cursor,
+    // then require the focused creature-update validator to consume the exact
+    // record. This keeps the translator semantic rather than a scan-and-trim
+    // fallback.
+    if identity_offset + 6 >= record_end
+        || read_u16_le(bytes, identity_offset).is_none()
+        || read_u32_le(bytes, identity_offset + 2) != Some(0)
+    {
+        return None;
+    }
+
+    let text_start = identity_offset.checked_add(6)?;
+    let text_limit = record_end.min(text_start.checked_add(32)?);
+    let mut accepted: Option<(Vec<u8>, Creature3967BareSecondIdentityStringRewrite)> = None;
+    for text_end in text_start.checked_add(1)?..=text_limit {
+        if !bytes
+            .get(text_end.checked_sub(1)?)
+            .copied()
+            .is_some_and(is_legacy_bare_identity_string_byte)
+        {
+            break;
+        }
+        let Some(padding_end) = text_end.checked_add(4) else {
+            continue;
+        };
+        if padding_end > record_end
+            || bytes
+                .get(text_end..padding_end)
+                .is_none_or(|padding| padding.iter().any(|byte| *byte != 0))
+        {
+            continue;
+        }
+        let text_len = text_end.checked_sub(text_start)?;
+        if text_len == 0 || text_len > 32 {
+            continue;
+        }
+        let mut candidate = bytes.to_vec();
+        let text = candidate.get(text_start..text_end)?.to_vec();
+        let encoded_len = u32::try_from(text_len).ok()?.to_le_bytes();
+        candidate
+            .get_mut(text_start..text_start.checked_add(4)?)?
+            .copy_from_slice(&encoded_len);
+        candidate
+            .get_mut(text_start.checked_add(4)?..text_start.checked_add(4 + text_len)?)?
+            .copy_from_slice(text.as_slice());
+
+        let mut exact_cursor = bit_cursor;
+        if !advance_verified_noop_creature_update_record_exact_cursor(
+            candidate.as_slice(),
+            offset,
+            record_end,
+            fragment_bits,
+            &mut exact_cursor,
+        ) {
+            continue;
+        }
+        let rewrite = Creature3967BareSecondIdentityStringRewrite {
+            identity_offset,
+            text_len,
+            advanced_bit_cursor: exact_cursor,
+        };
+        if accepted
+            .as_ref()
+            .is_some_and(|accepted| accepted.1 != rewrite || accepted.0 != candidate)
+        {
+            return None;
+        }
+        accepted = Some((candidate, rewrite));
+    }
+
+    accepted
+}
+
+fn is_legacy_bare_identity_string_byte(byte: u8) -> bool {
+    (0x20..=0x7E).contains(&byte)
 }
 
 pub(super) fn insert_3967_hg_action_ffff_omitted_code_for_ee(
@@ -1339,6 +1536,53 @@ pub(super) fn insert_3967_hg_action_ffff_omitted_code_for_ee(
     *bytes = trial_bytes;
     *record_end = trial_record_end;
     Some(Creature3967OmittedActionCodeRewrite { bytes_inserted: 2 })
+}
+
+pub(super) fn remove_3967_action_ffff_legacy_bridge_followup_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<Creature3967ActionFfffBridgeFollowupRewrite> {
+    let Some(removal_start) = find_legacy_3967_action_ffff_bridge_followup_removal(
+        bytes.as_slice(),
+        offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+    ) else {
+        if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+            eprintln!(
+                "live-object creature update 0x3967 actionffff bridge followup not found: offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+            );
+        }
+        return None;
+    };
+    let removal_end = removal_start.checked_add(2)?;
+
+    let mut trial_bytes = bytes.clone();
+    trial_bytes.drain(removal_start..removal_end);
+    let trial_record_end = record_end.checked_sub(2)?;
+    let mut trial_bit_cursor = bit_cursor;
+    if !advance_verified_creature_update_3967_action_ffff_ee_record(
+        &trial_bytes,
+        offset,
+        trial_record_end,
+        fragment_bits,
+        &mut trial_bit_cursor,
+    ) {
+        return None;
+    }
+
+    *bytes = trial_bytes;
+    *record_end = trial_record_end;
+    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+        eprintln!(
+            "live-object creature update 0x3967 actionffff bridge followup removed: offset={offset} removal_start={removal_start} new_record_end={record_end}"
+        );
+    }
+    Some(Creature3967ActionFfffBridgeFollowupRewrite { bytes_removed: 2 })
 }
 
 pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
@@ -1868,6 +2112,57 @@ fn find_legacy_3967_action0_bridge_followup_removal(
 
         accepted = Some(accepted.map_or(removal_start, |existing| existing.min(removal_start)));
     }
+    accepted
+}
+
+fn find_legacy_3967_action_ffff_bridge_followup_removal(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+    {
+        return None;
+    }
+
+    // Diamond/HG can carry a legacy zero WORD after the non-special 0xFFFF
+    // action branch. EE `sub_140781E80` reads the action-code WORD and the
+    // following action-state BYTE for mask 0x0004, then continues directly
+    // into the mask 0x0040 fields; it does not consume this bridge WORD. The
+    // candidate locator below is deliberately only a locator: the transform is
+    // claimed only when removing one exact zero WORD yields a unique record that
+    // the decompile-owned EE 0x3967/action-FFFF validator consumes exactly.
+    let mut accepted: Option<usize> = None;
+    for removal_start in offset + 10..record_end.saturating_sub(1) {
+        if bytes.get(removal_start..removal_start + 2) != Some(&[0, 0][..]) {
+            continue;
+        }
+
+        let mut trial_bytes = bytes.to_vec();
+        trial_bytes.drain(removal_start..removal_start + 2);
+        let trial_record_end = record_end.checked_sub(2)?;
+        let mut trial_bit_cursor = bit_cursor;
+        if !advance_verified_creature_update_3967_action_ffff_ee_record(
+            &trial_bytes,
+            offset,
+            trial_record_end,
+            fragment_bits,
+            &mut trial_bit_cursor,
+        ) {
+            continue;
+        }
+
+        if accepted.replace(removal_start).is_some() {
+            return None;
+        }
+    }
+
     accepted
 }
 
@@ -2781,7 +3076,9 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
             cursor.record_end,
         ) {
             if cursor
-                .advance_read(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
+                .advance_read(
+                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
+                )
                 .is_none()
             {
                 return false;
@@ -2801,7 +3098,9 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
         }
         if cursor.advance_read(3).is_none()
             || cursor
-                .advance_read(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
+                .advance_read(
+                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
+                )
                 .is_none()
         {
             return false;

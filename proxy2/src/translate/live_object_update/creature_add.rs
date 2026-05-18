@@ -47,17 +47,19 @@ pub(super) fn insert_ee_visual_transform_for_legacy_creature_add(
                 visual_offset,
                 bytes.len(),
             )?;
-        *record_end = visual_offset.checked_add(
-            super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
-        )?;
+        *record_end = visual_offset
+            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
         return Some(CreatureAddVisualTransformRewrite {
             bytes_inserted: super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
             bytes_removed,
         });
     }
 
-    let bytes_inserted =
-        super::visual_transform::insert_ee_object_visual_transform_identity(bytes, visual_offset, record_end)?;
+    let bytes_inserted = super::visual_transform::insert_ee_object_visual_transform_identity(
+        bytes,
+        visual_offset,
+        record_end,
+    )?;
 
     Some(CreatureAddVisualTransformRewrite {
         bytes_inserted,

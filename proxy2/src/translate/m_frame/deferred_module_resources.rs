@@ -183,6 +183,18 @@ pub(super) fn queue_after_module_info_if_ready(
             return Ok(());
         }
 
+        if !runtime.observed_declaration_requires_resource_status() {
+            state.synthetic_without_status_emitted = true;
+            tracing::info!(
+                original_first_sequence,
+                original_after_sequence,
+                ack_sequence,
+                profile = %runtime.profile_name(),
+                "synthetic ServerStatus_ModuleResources skipped: no verified Module_Info resource declaration is available yet"
+            );
+            return Ok(());
+        }
+
         let Some((payload, summary)) =
             module_resources::build_server_status_module_resources_payload(runtime, "")
         else {
@@ -244,7 +256,8 @@ fn queue_verified_module_resources_packet(
     captured: Option<&DeferredStatusPayload>,
     reason: &'static str,
 ) -> anyhow::Result<()> {
-    let synthetic_sequence = shift_sequence_for_peer(server_sequence_shifts, original_first_sequence);
+    let synthetic_sequence =
+        shift_sequence_for_peer(server_sequence_shifts, original_first_sequence);
     let packet =
         synthetic_area::build_synthetic_gameplay_frame(synthetic_sequence, ack_sequence, &payload)?;
 
@@ -310,11 +323,29 @@ pub(super) struct LegacyStatusShape {
 
 impl LegacyStatusShape {
     pub(super) fn parse(payload: &[u8]) -> Option<Self> {
-        if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        if payload.len() < HIGH_LEVEL_HEADER_BYTES
             || !matches!(payload[0], b'P' | 0x70)
             || payload[1] != SERVER_STATUS_MAJOR
             || payload[2] != MODULE_RUNNING_MINOR
         {
+            return None;
+        }
+
+        if payload.len() == HIGH_LEVEL_HEADER_BYTES {
+            // Diamond can send a bare `P 01/03` module-running status marker
+            // before Module_Info has supplied the HAK/TLK declaration. EE's
+            // reader for the same minor consumes a leading status `CExoString`
+            // and then `CNWCModule::LoadModuleResources`, so capture the bare
+            // marker as an empty legacy status shell and wait for Module_Info
+            // rather than forwarding or inventing resources early.
+            return Some(Self {
+                declared: HIGH_LEVEL_HEADER_BYTES,
+                status_string_len: 0,
+                fragment_tail_len: 0,
+            });
+        }
+
+        if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
             return None;
         }
 
@@ -473,6 +504,17 @@ mod tests {
     }
 
     #[test]
+    fn validates_captured_bare_diamond_status_marker_shape() {
+        let payload = [b'P', 0x01, 0x03];
+        let shape =
+            LegacyStatusShape::parse(&payload).expect("bare module-running marker should parse");
+
+        assert_eq!(shape.declared, 3);
+        assert_eq!(shape.status_string_len, 0);
+        assert_eq!(shape.fragment_tail_len, 0);
+    }
+
+    #[test]
     fn queues_verified_module_resources_after_module_info() {
         let runtime = module_resources::ModuleResourceRuntime::default();
         assert!(runtime.observe_legacy_module_info_resources(
@@ -538,6 +580,54 @@ mod tests {
     }
 
     #[test]
+    fn queues_verified_module_resources_after_bare_status_marker() {
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+        let mut state = DeferredModuleResourcesState {
+            pending_status: Some(DeferredStatusPayload {
+                payload: vec![b'P', 0x01, 0x03],
+                sequence: 0,
+                ack_sequence: 0,
+                declared: 3,
+                status_string_len: 0,
+                fragment_tail_len: 0,
+            }),
+            synthetic_without_status_emitted: false,
+            hold_gate: None,
+            held_server_to_client_packets: Vec::new(),
+        };
+        let mut pending_packets = Vec::new();
+        let mut shifts = Vec::new();
+
+        queue_after_module_info_if_ready(
+            &mut state,
+            &mut pending_packets,
+            &mut shifts,
+            13,
+            20,
+            7,
+            &runtime,
+        )
+        .expect("bare deferred resource packet should queue");
+
+        assert!(state.pending_status.is_none());
+        assert_eq!(pending_packets.len(), 1);
+        assert_eq!(
+            pending_packets[0].family,
+            VerifiedFamily::ServerStatusModuleResources
+        );
+        let view = MFrameView::parse(&pending_packets[0].packet)
+            .expect("synthetic module resources M frame should parse");
+        assert!(view.crc_valid);
+        assert_eq!(view.sequence, 13);
+        assert_eq!(view.ack_sequence, 7);
+        assert_eq!(view.high.map(|high| (high.major, high.minor)), Some((1, 3)));
+    }
+
+    #[test]
     fn queues_synthetic_module_resources_when_no_legacy_status_was_captured() {
         let runtime = module_resources::ModuleResourceRuntime::default();
         assert!(runtime.observe_legacy_module_info_resources(
@@ -591,5 +681,46 @@ mod tests {
         )
         .expect("duplicate synthetic resource packet should be ignored");
         assert_eq!(pending_packets.len(), 1);
+    }
+
+    #[test]
+    fn queues_synthetic_module_resources_for_empty_no_status_declaration() {
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(&[], None));
+        let mut state = DeferredModuleResourcesState::default();
+        let mut pending_packets = Vec::new();
+        let mut shifts = Vec::new();
+
+        queue_after_module_info_if_ready(
+            &mut state,
+            &mut pending_packets,
+            &mut shifts,
+            5,
+            12,
+            4,
+            &runtime,
+        )
+        .expect("empty no-status declaration should still emit EE resource transition");
+
+        assert!(state.synthetic_without_status_emitted);
+        assert_eq!(pending_packets.len(), 1);
+        assert_eq!(
+            pending_packets[0].family,
+            VerifiedFamily::ServerStatusModuleResources
+        );
+        assert_eq!(
+            pending_packets[0].placement,
+            PendingServerPacketPlacement::BeforeCurrentEmit
+        );
+        assert_eq!(shifts.len(), 1);
+        assert_eq!(shifts[0].base, 5);
+        assert_eq!(shifts[0].delta, 1);
+        assert_eq!(
+            state
+                .hold_gate
+                .as_ref()
+                .map(|gate| gate.release_client_ack_sequence),
+            Some(13)
+        );
     }
 }

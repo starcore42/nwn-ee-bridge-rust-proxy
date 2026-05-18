@@ -51,21 +51,24 @@ pub(super) struct CreatureTailRepairResult {
     pub bit_cursor: usize,
     pub old_bits_len: usize,
     pub new_bits_len: usize,
+    pub bytes_inserted: usize,
+    pub bytes_removed: usize,
+    pub bits_inserted: usize,
 }
 
 pub(super) fn try_repair_for_creature_update(
     pending: &PendingCreatureAppearanceTailRepair,
-    live_bytes: &[u8],
+    live_bytes: &mut Vec<u8>,
     offset: usize,
-    record_end: usize,
+    record_end: &mut usize,
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<CreatureTailRepairResult> {
     if pending.rewritten_tail_start > fragment_bits.len() || bit_cursor > fragment_bits.len() {
         return None;
     }
-    if live_object_record_object_id(live_bytes, offset, record_end) != Some(pending.object_id) {
-        trace_tail_repair_reject(pending, offset, record_end, bit_cursor);
+    if live_object_record_object_id(live_bytes, offset, *record_end) != Some(pending.object_id) {
+        trace_tail_repair_reject(pending, offset, *record_end, bit_cursor);
         return None;
     }
 
@@ -81,11 +84,19 @@ pub(super) fn try_repair_for_creature_update(
         candidate_bits.extend_from_slice(&fragment_bits[..pending.rewritten_tail_start]);
         candidate_bits.extend_from_slice(&pending.original_bits[candidate_tail_start..]);
 
+        trace_tail_repair_candidate(
+            pending,
+            offset,
+            *record_end,
+            candidate_tail_start,
+            bit_cursor,
+            candidate_bits.len(),
+        );
         let mut trial_cursor = bit_cursor;
         if creature::advance_verified_noop_creature_update_record(
             live_bytes,
             offset,
-            record_end,
+            *record_end,
             &candidate_bits,
             &mut trial_cursor,
         ) {
@@ -95,23 +106,98 @@ pub(super) fn try_repair_for_creature_update(
             trace_tail_repair_accept(
                 pending,
                 offset,
-                record_end,
+                *record_end,
                 candidate_tail_start,
                 bit_cursor,
                 trial_cursor,
                 old_bits_len,
                 new_bits_len,
+                0,
+                0,
+                0,
             );
             return Some(CreatureTailRepairResult {
                 bit_cursor: trial_cursor,
                 old_bits_len,
                 new_bits_len,
+                bytes_inserted: 0,
+                bytes_removed: 0,
+                bits_inserted: 0,
             });
+        }
+
+        let mut trial_bytes = live_bytes.clone();
+        let mut trial_bits = candidate_bits.clone();
+        let mut trial_record_end = *record_end;
+        if let Some(action0_rewrite) = creature::remove_3967_action0_legacy_bridge_followup_for_ee(
+            &mut trial_bytes,
+            offset,
+            &mut trial_record_end,
+            &mut trial_bits,
+            bit_cursor,
+        ) {
+            let mut trial_cursor = bit_cursor;
+            if creature::advance_verified_noop_creature_update_record(
+                &trial_bytes,
+                offset,
+                trial_record_end,
+                &trial_bits,
+                &mut trial_cursor,
+            ) {
+                let old_bits_len = fragment_bits.len();
+                let new_bits_len = trial_bits.len();
+                *live_bytes = trial_bytes;
+                *record_end = trial_record_end;
+                *fragment_bits = trial_bits;
+                trace_tail_repair_accept(
+                    pending,
+                    offset,
+                    *record_end,
+                    candidate_tail_start,
+                    bit_cursor,
+                    trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    action0_rewrite.bytes_inserted,
+                    action0_rewrite.bytes_removed,
+                    action0_rewrite.bits_inserted,
+                );
+                return Some(CreatureTailRepairResult {
+                    bit_cursor: trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    bytes_inserted: action0_rewrite.bytes_inserted,
+                    bytes_removed: action0_rewrite.bytes_removed,
+                    bits_inserted: action0_rewrite.bits_inserted,
+                });
+            }
         }
     }
 
-    trace_tail_repair_reject(pending, offset, record_end, bit_cursor);
+    trace_tail_repair_reject(pending, offset, *record_end, bit_cursor);
     None
+}
+
+fn trace_tail_repair_candidate(
+    pending: &PendingCreatureAppearanceTailRepair,
+    offset: usize,
+    record_end: usize,
+    candidate_tail_start: usize,
+    bit_cursor: usize,
+    candidate_bits_len: usize,
+) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+    eprintln!(
+        "live-object creature-P tail repair candidate: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} candidate_tail={} rewritten_tail={} inserted_bits={} bit_cursor={bit_cursor} candidate_bits_len={candidate_bits_len}",
+        pending.appearance_offset,
+        pending.object_id,
+        pending.original_tail_start,
+        candidate_tail_start,
+        pending.rewritten_tail_start,
+        pending.inserted_bits,
+    );
 }
 
 fn candidate_tail_starts(pending: &PendingCreatureAppearanceTailRepair) -> Vec<usize> {
@@ -178,12 +264,15 @@ fn trace_tail_repair_accept(
     repaired_cursor: usize,
     old_bits_len: usize,
     new_bits_len: usize,
+    bytes_inserted: usize,
+    bytes_removed: usize,
+    bits_inserted: usize,
 ) {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
         return;
     }
     eprintln!(
-        "live-object creature-P tail repaired: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} accepted_tail={} rewritten_tail={} inserted_bits={} bit_cursor={bit_cursor}->{repaired_cursor} bits_len={old_bits_len}->{new_bits_len}",
+        "live-object creature-P tail repaired: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} accepted_tail={} rewritten_tail={} inserted_bits={} bit_cursor={bit_cursor}->{repaired_cursor} bits_len={old_bits_len}->{new_bits_len} action0_bytes_inserted={bytes_inserted} action0_bytes_removed={bytes_removed} action0_bits_inserted={bits_inserted}",
         pending.appearance_offset,
         pending.object_id,
         pending.original_tail_start,

@@ -28,6 +28,25 @@ impl QuickbarTransportSplit {
             || self.general_slots != 0
             || self.item_candidate_slots != 0
     }
+
+    fn classified_slots(&self) -> u32 {
+        self.translated_item_slots
+            .saturating_add(self.spell_slots)
+            .saturating_add(self.general_slots)
+            .saturating_add(self.item_candidate_slots)
+            .saturating_add(self.unsupported_slots)
+    }
+
+    fn has_decompile_owned_item_or_spell(&self) -> bool {
+        self.translated_item_slots != 0 || self.spell_slots != 0
+    }
+
+    fn has_discardable_decompile_owned_trailing_read_bytes(&self) -> bool {
+        self.trailing_read_bytes <= MAX_DECOMPILE_OWNED_QUICKBAR_FRAGMENT_TAIL_SCAN_BYTES
+            && self.has_decompile_owned_item_or_spell()
+            && self.unsupported_slots == 0
+            && self.classified_slots() == LEGACY_QUICKBAR_BUTTON_COUNT as u32
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,8 +66,11 @@ pub(super) enum QuickbarSplitPolicy {
     /// writer emits empty EE slots for unowned `ItemCandidate`/`Unsupported`
     /// source spans. This is still strict translation: no raw candidate bytes
     /// are forwarded, and blanking can only claim the packet after at least one
-    /// decompile-owned item/spell slot proves the cursor phase and the read
-    /// buffer has no trailing bytes.
+    /// decompile-owned item/spell slot proves the cursor phase. Most captures
+    /// must consume the read buffer exactly. A narrow local-Diamond shape may
+    /// carry a zero CNW declared offset and a small source-only read suffix;
+    /// that suffix is discarded only after the reader has classified all 36
+    /// slots and the EE writer/validator own the emitted quickbar shape.
     DecompileOwnedBoundary,
 }
 
@@ -159,9 +181,23 @@ pub(super) fn choose_quickbar_split(
                     // one decompile-owned item or spell slot. This prevents a
                     // whole quickbar from collapsing into 36 blank EE slots.
                     Some("boundary-no-item-or-spell")
-                } else if trailing_read_bytes != 0 {
+                } else if trailing_read_bytes != 0
+                    && !split.has_discardable_decompile_owned_trailing_read_bytes()
+                {
                     Some("boundary-trailing-read-bytes")
                 } else {
+                    if trailing_read_bytes != 0 {
+                        tracing::info!(
+                            read_body_len,
+                            fragment_tail_len,
+                            translated_item_slots,
+                            spell_slots,
+                            general_slots,
+                            item_candidate_slots,
+                            trailing_read_bytes,
+                            "server GuiQuickbar_SetAllButtons accepted decompile-owned zero-declared split with discardable source read suffix"
+                        );
+                    }
                     None
                 }
             }
@@ -176,6 +212,36 @@ pub(super) fn choose_quickbar_split(
 
         if final_cursor > read_buffer.len() {
             continue;
+        }
+
+        if matches!(policy, QuickbarSplitPolicy::DecompileOwnedBoundary)
+            && prefixed_fragment_bytes.len() == CNW_LENGTH_BYTES
+            && split.fragment_tail_len == 0
+            && split.unsupported_slots == 0
+            && split.classified_slots() == LEGACY_QUICKBAR_BUTTON_COUNT as u32
+            && split.has_decompile_owned_item_or_spell()
+            && (split.trailing_read_bytes == 0
+                || split.has_discardable_decompile_owned_trailing_read_bytes())
+        {
+            // Local Diamond zero-declared SetAllButtons puts the four source
+            // bytes after `P 1E 01` in the prefixed fragment position, then
+            // follows with the 36-slot read body. Once the decompile-owned
+            // reader has classified all slots from that exact tail-0 phase,
+            // continuing to slide bytes from the read body into the fragment
+            // tail only fabricates alternative candidate scores. Return the
+            // typed boundary immediately: no raw bytes are forwarded, and the
+            // EE writer/validator still own the emitted quickbar shape.
+            tracing::info!(
+                read_body_len = split.read_body_len,
+                fragment_tail_len = split.fragment_tail_len,
+                translated_item_slots = split.translated_item_slots,
+                spell_slots = split.spell_slots,
+                general_slots = split.general_slots,
+                item_candidate_slots = split.item_candidate_slots,
+                trailing_read_bytes = split.trailing_read_bytes,
+                "server GuiQuickbar_SetAllButtons accepted zero-declared decompile-owned split without tail sweep"
+            );
+            return Some(split);
         }
 
         if score > best_score {

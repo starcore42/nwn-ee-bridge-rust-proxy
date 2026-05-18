@@ -10,7 +10,7 @@ use crate::{
     packet::m::{HighLevel, MFrameView},
     translate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, area, char_list, chat, client_side_message,
-        cnw_message, custom_token, game_obj_update, gameplay_stream, inventory, journal,
+        cnw_message, custom_token, dialog, game_obj_update, gameplay_stream, inventory, journal,
         live_object, loadbar, login, module, module_resources, module_time, party,
         play_module_character_list, player_list, quickbar, semantic,
     },
@@ -156,6 +156,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "Chat",
         verified_family: Some(VerifiedFamily::Chat),
         translate: translate_chat,
+    },
+    ServerToClientTranslator {
+        family_name: "Dialog",
+        verified_family: Some(VerifiedFamily::Dialog),
+        translate: translate_dialog,
     },
     ServerToClientTranslator {
         family_name: "Inventory",
@@ -413,11 +418,29 @@ fn rewrite_single_inflated_payload_for_ee(
         rewrite.note_rewrite(family_name, family);
     }
 
+    if is_live_object_high_level_payload(payload) {
+        return rewrite_live_object_high_level_payload_for_ee(
+            payload,
+            latest_area_placeables,
+            scope,
+            module_resource_runtime,
+            object_registry,
+            rewrite,
+        );
+    }
+
+    dump_live_object_probe_if_enabled(payload, "server-dispatch-original-probe");
+
     for translator in SERVER_TO_CLIENT_TRANSLATORS {
         let outcome = if translator.family_name == "GuiQuickbar" {
             translate_quickbar_with_registry(payload, object_registry)
         } else {
-            (translator.translate)(payload, latest_area_placeables, scope, module_resource_runtime)
+            (translator.translate)(
+                payload,
+                latest_area_placeables,
+                scope,
+                module_resource_runtime,
+            )
         };
         match outcome {
             ServerTranslatorOutcome::None => {}
@@ -431,9 +454,15 @@ fn rewrite_single_inflated_payload_for_ee(
                     rewrite.quarantine_reason = Some("claimed-semantic-missing-verified-family");
                     break;
                 };
-                rewrite.note_rewrite(translator.family_name, family);
-                if let Some(area_rewrite) = claim.area_rewrite {
-                    rewrite.area_rewrite = Some(area_rewrite);
+                if !finalize_server_translator_claim(
+                    payload,
+                    &mut rewrite,
+                    translator.family_name,
+                    family,
+                    claim,
+                    object_registry,
+                ) {
+                    break;
                 }
                 // A semantic claim is exclusive ownership of this high-level
                 // payload. Continue past transport-only repair so normalized
@@ -456,6 +485,199 @@ fn rewrite_single_inflated_payload_for_ee(
     }
 
     rewrite
+}
+
+fn is_live_object_high_level_payload(payload: &[u8]) -> bool {
+    matches!(
+        (
+            payload.get(0).copied(),
+            payload.get(1).copied(),
+            payload.get(2).copied()
+        ),
+        (Some(b'P'), Some(0x05), Some(0x01))
+    )
+}
+
+fn rewrite_live_object_high_level_payload_for_ee(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    scope: SemanticScope,
+    module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
+    object_registry: Option<&semantic::ObjectRegistry>,
+    mut rewrite: InflatedPayloadRewrite,
+) -> InflatedPayloadRewrite {
+    dump_live_object_probe_if_enabled(payload, "server-dispatch-live-object-family");
+
+    // Live-object is intentionally a family-level strict decision point.  The
+    // EE client reaches this reader through `P/05/01`, then consumes a declared
+    // read window plus compact CNW fragment bits.  Once that family is known,
+    // trying unrelated translators cannot make the packet safer; it only
+    // repeats expensive boundary probes and risks turning "unsupported record"
+    // into a CPU/log storm.  Each candidate below is still a focused semantic
+    // translator, and a miss quarantines the exact payload for decompile work.
+    let mut attempts = [
+        "GameObjUpdate_LiveObjectPrefixedFragments",
+        "GameObjUpdate_LiveObjectExactRecords",
+        "GameObjUpdate_LiveObjectCombinedRecords",
+        "GameObjUpdate_LiveObjectDeclaredLengthRepair",
+    ]
+    .into_iter();
+
+    while let Some(family_name) = attempts.next() {
+        let outcome = match family_name {
+            "GameObjUpdate_LiveObjectPrefixedFragments" => {
+                translate_live_object_prefixed_fragments(
+                    payload,
+                    latest_area_placeables,
+                    scope,
+                    module_resource_runtime,
+                )
+            }
+            "GameObjUpdate_LiveObjectExactRecords" => translate_live_object_exact_records(
+                payload,
+                latest_area_placeables,
+                scope,
+                module_resource_runtime,
+            ),
+            "GameObjUpdate_LiveObjectCombinedRecords" => translate_live_object_records_if_verified(
+                payload,
+                latest_area_placeables,
+                "live-object-combined-records",
+            ),
+            "GameObjUpdate_LiveObjectDeclaredLengthRepair" => {
+                translate_live_object_declared_length_repair(
+                    payload,
+                    latest_area_placeables,
+                    scope,
+                    module_resource_runtime,
+                )
+            }
+            _ => ServerTranslatorOutcome::None,
+        };
+        match outcome {
+            ServerTranslatorOutcome::None | ServerTranslatorOutcome::TransportOnly => {}
+            ServerTranslatorOutcome::Claim(claim) => {
+                if !finalize_server_translator_claim(
+                    payload,
+                    &mut rewrite,
+                    family_name,
+                    VerifiedFamily::GameObjUpdateLiveObject,
+                    claim,
+                    object_registry,
+                ) {
+                    return rewrite;
+                }
+                return rewrite;
+            }
+        }
+    }
+
+    rewrite.quarantine_reason = Some("live-object-unclaimed-strict-family");
+    let dump_path =
+        dump_unrewritten_semantic_payload(payload, "live-object-unclaimed-strict-family");
+    tracing::warn!(
+        payload_length = payload.len(),
+        dump_path = dump_path.as_deref().unwrap_or(""),
+        "server live-object payload quarantined: no focused live-object translator produced an exact EE reader shape"
+    );
+    rewrite
+}
+
+fn finalize_server_translator_claim(
+    payload: &mut Vec<u8>,
+    rewrite: &mut InflatedPayloadRewrite,
+    family_name: &'static str,
+    family: VerifiedFamily,
+    claim: ServerTranslatorClaim,
+    object_registry: Option<&semantic::ObjectRegistry>,
+) -> bool {
+    if family == VerifiedFamily::GameObjUpdateLiveObject {
+        if let Some(registry) = object_registry {
+            if let Some(summary) =
+                live_update::canonicalize_player_session_creature_ids_payload_for_ee(
+                    payload,
+                    |compact_id| registry.session_creature_id_for_compact(compact_id),
+                )
+            {
+                tracing::info!(
+                    family = family_name,
+                    compact_add_ids_observed = summary.compact_add_ids_observed,
+                    add_ids_rewritten = summary.add_ids_rewritten,
+                    reference_ids_rewritten = summary.reference_ids_rewritten,
+                    "server live-object payload canonicalized PlayerList-proven session creature ids for EE"
+                );
+            }
+        }
+    }
+
+    if family == VerifiedFamily::GameObjUpdateLiveObject
+        && live_update::claim_payload_if_verified_with_lifecycle(
+            payload,
+            |object_type, object_id| {
+                object_registry
+                    .map(|registry| {
+                        registry.has_active_live_object_for_record(object_type, object_id)
+                    })
+                    .unwrap_or(false)
+            },
+        )
+        .is_none()
+    {
+        if let Some(summary) = live_update::remove_unmaterialized_update_records_payload_if_possible(
+            payload,
+            |object_type, object_id| {
+                object_registry
+                    .map(|registry| {
+                        registry.has_active_live_object_for_record(object_type, object_id)
+                    })
+                    .unwrap_or(false)
+            },
+        ) {
+            tracing::warn!(
+                family = family_name,
+                old_declared = summary.old_declared,
+                new_declared = summary.new_declared,
+                removed_update_records = summary.removed_update_records,
+                diamond_missing_object_update_records =
+                    summary.diamond_missing_object_update_records,
+                ee_sentinel_inventory_owner_records = summary.ee_sentinel_inventory_owner_records,
+                removed_bytes = summary.removed_bytes,
+                removed_fragment_bits = summary.removed_fragment_bits,
+                "server live-object payload removed Diamond no-op missing-object updates after exact lifecycle proof"
+            );
+        }
+    }
+
+    if family == VerifiedFamily::GameObjUpdateLiveObject
+        && live_update::claim_payload_if_verified_with_lifecycle(
+            payload,
+            |object_type, object_id| {
+                object_registry
+                    .map(|registry| {
+                        registry.has_active_live_object_for_record(object_type, object_id)
+                    })
+                    .unwrap_or(false)
+            },
+        )
+        .is_none()
+    {
+        rewrite.quarantine_reason = Some("live-object-lifecycle-unverified");
+        let dump_path =
+            dump_unrewritten_semantic_payload(payload, "live-object-lifecycle-unverified");
+        tracing::warn!(
+            family = family_name,
+            payload_length = payload.len(),
+            dump_path = dump_path.as_deref().unwrap_or(""),
+            "server live-object payload quarantined: exact record shape passed but EE lifecycle proof failed"
+        );
+        return false;
+    }
+
+    rewrite.note_rewrite(family_name, family);
+    if let Some(area_rewrite) = claim.area_rewrite {
+        rewrite.area_rewrite = Some(area_rewrite);
+    }
+    true
 }
 
 fn claimed() -> ServerTranslatorOutcome {
@@ -573,6 +795,19 @@ fn translate_chat(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if chat::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_dialog(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if dialog::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -868,6 +1103,25 @@ fn translate_live_object_exact_records(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    let mut candidate = payload.clone();
+    if let Some(summary) =
+        live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate)
+    {
+        if live_update::claim_payload_if_verified(&candidate).is_some() {
+            tracing::info!(
+                compact_add_ids_observed = summary.compact_add_ids_observed,
+                add_ids_rewritten = summary.add_ids_rewritten,
+                reference_ids_rewritten = summary.reference_ids_rewritten,
+                "server live-object exact payload canonicalized Diamond compact external object ids for EE"
+            );
+            dump_accepted_live_object_payload_if_enabled(
+                &candidate,
+                "accepted-live-object-exact-records-canonicalized-object-ids",
+            );
+            *payload = candidate;
+            return claimed();
+        }
+    }
     if live_update::claim_payload_if_verified(payload).is_some() {
         dump_accepted_live_object_payload_if_enabled(payload, "accepted-live-object-exact-records");
         claimed()
@@ -881,6 +1135,37 @@ fn translate_live_object_records_if_verified(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
     source: &'static str,
 ) -> ServerTranslatorOutcome {
+    dump_live_object_probe_if_enabled(payload, source);
+
+    let mut candidate = payload.clone();
+    if let Some(summary) =
+        live_update::rewrite_payload_to_exact_ee_if_possible(&mut candidate, latest_area_placeables)
+    {
+        let external_object_id_summary =
+            live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
+        if live_update::claim_payload_if_verified(&candidate).is_some() {
+            tracing::info!(
+                source,
+                update_passes_changed = summary.update_passes_changed,
+                add_passes_changed = summary.add_passes_changed,
+                add_name_bit_passes_changed = summary.add_name_bit_passes_changed,
+                "server live-object payload reached exact EE shape through bounded typed orchestrator"
+            );
+            if let Some(summary) = external_object_id_summary {
+                tracing::info!(
+                    source,
+                    compact_add_ids_observed = summary.compact_add_ids_observed,
+                    add_ids_rewritten = summary.add_ids_rewritten,
+                    reference_ids_rewritten = summary.reference_ids_rewritten,
+                    "server live-object payload canonicalized Diamond compact external object ids for EE"
+                );
+            }
+            dump_accepted_live_object_payload_if_enabled(&candidate, source);
+            *payload = candidate;
+            return claimed();
+        }
+    }
+
     let mut candidate = payload.clone();
     let update_pre_summary = live_update::rewrite_payload_if_needed(&mut candidate);
     let add_summary = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
@@ -896,17 +1181,21 @@ fn translate_live_object_records_if_verified(
             latest_area_placeables,
         );
     let update_after_add_name_summary = live_update::rewrite_payload_if_needed(&mut candidate);
-    let add_after_update_summary = live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut candidate,
-        latest_area_placeables,
-    );
+    let add_after_update_summary =
+        live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut candidate,
+            latest_area_placeables,
+        );
     let update_after_final_add_summary = live_update::rewrite_payload_if_needed(&mut candidate);
     let add_after_final_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_second_final_add_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let update_after_second_final_add_summary =
+        live_update::rewrite_payload_if_needed(&mut candidate);
+    let external_object_id_summary =
+        live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
 
     if add_summary.is_none()
         && update_pre_summary.is_none()
@@ -918,11 +1207,24 @@ fn translate_live_object_records_if_verified(
         && update_after_final_add_summary.is_none()
         && add_after_final_update_summary.is_none()
         && update_after_second_final_add_summary.is_none()
+        && external_object_id_summary.is_none()
     {
+        crate::translate::live_object_update::dump_live_object_fixture_candidate(
+            &candidate, source,
+        );
         return ServerTranslatorOutcome::None;
     }
 
     if live_update::claim_payload_if_verified(&candidate).is_some() {
+        if let Some(summary) = external_object_id_summary {
+            tracing::info!(
+                source,
+                compact_add_ids_observed = summary.compact_add_ids_observed,
+                add_ids_rewritten = summary.add_ids_rewritten,
+                reference_ids_rewritten = summary.reference_ids_rewritten,
+                "server live-object payload canonicalized Diamond compact external object ids for EE"
+            );
+        }
         dump_accepted_live_object_payload_if_enabled(&candidate, source);
         *payload = candidate;
         claimed()
@@ -931,23 +1233,22 @@ fn translate_live_object_records_if_verified(
             &candidate,
             "live-object-semantic-candidate-rejected-exact-validator",
         );
-        let (add_records_examined, maps_inserted, add_bytes_inserted, add_bytes_removed) =
-            [
-                add_summary.as_ref(),
-                add_after_add_name_summary.as_ref(),
-                add_after_update_summary.as_ref(),
-                add_after_final_update_summary.as_ref(),
-            ]
-                .into_iter()
-                .flatten()
-                .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
-                    (
-                        acc.0.saturating_add(summary.records_examined),
-                        acc.1.saturating_add(summary.maps_inserted),
-                        acc.2.saturating_add(summary.bytes_inserted),
-                        acc.3.saturating_add(summary.bytes_removed),
-                    )
-                });
+        let (add_records_examined, maps_inserted, add_bytes_inserted, add_bytes_removed) = [
+            add_summary.as_ref(),
+            add_after_add_name_summary.as_ref(),
+            add_after_update_summary.as_ref(),
+            add_after_final_update_summary.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
+            (
+                acc.0.saturating_add(summary.records_examined),
+                acc.1.saturating_add(summary.maps_inserted),
+                acc.2.saturating_add(summary.bytes_inserted),
+                acc.3.saturating_add(summary.bytes_removed),
+            )
+        });
         let (
             update_records_examined,
             update_records_rewritten,
@@ -1009,6 +1310,23 @@ fn dump_accepted_live_object_payload_if_enabled(payload: &[u8], source: &str) {
         return;
     }
     crate::translate::live_object_update::dump_live_object_fixture_candidate(payload, source);
+}
+
+fn dump_live_object_probe_if_enabled(payload: &[u8], source: &str) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DUMP_LIVE_OBJECT_PROBES").is_none() {
+        return;
+    }
+    if payload.len() > 2048
+        || payload.get(0).copied() != Some(b'P')
+        || payload.get(1).copied() != Some(0x05)
+        || payload.get(2).copied() != Some(0x01)
+    {
+        return;
+    }
+    crate::translate::live_object_update::dump_live_object_fixture_candidate(
+        payload,
+        &format!("{source}-original-probe"),
+    );
 }
 
 fn translate_live_object_update_records(
@@ -1113,6 +1431,9 @@ fn mark_untranslated_semantic_quarantine(
     scope: SemanticScope,
     rewrite: &mut InflatedPayloadRewrite,
 ) {
+    if rewrite.quarantine_reason.is_some() {
+        return;
+    }
     let Some(high) = HighLevel::parse(payload) else {
         return;
     };
@@ -1230,6 +1551,8 @@ pub(super) fn rewrite_direct_frame_if_needed(
     bytes: &[u8],
     view: &MFrameView,
     module_resource_runtime: &module_resources::ModuleResourceRuntime,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    object_registry: Option<&semantic::ObjectRegistry>,
 ) -> anyhow::Result<Option<VerifiedPacket>> {
     if let Some(rewritten) = rewrite_server_status_module_resources_frame_if_needed(
         bytes,
@@ -1258,9 +1581,14 @@ pub(super) fn rewrite_direct_frame_if_needed(
     // must prove add-record visual transforms, update masks, fragment bits, and
     // the final exact validator before this M frame is emitted.
     if let Some(high) = view.high {
-        if let Some(verified) =
-            rewrite_direct_semantic_frame_if_claimed(bytes, view, high, module_resource_runtime)?
-        {
+        if let Some(verified) = rewrite_direct_semantic_frame_if_claimed(
+            bytes,
+            view,
+            high,
+            module_resource_runtime,
+            latest_area_placeables,
+            object_registry,
+        )? {
             return Ok(Some(verified));
         }
         let reason = untranslated_semantic_quarantine_reason(high);
@@ -1279,6 +1607,8 @@ fn rewrite_direct_semantic_frame_if_claimed(
     view: &MFrameView,
     high: HighLevel,
     module_resource_runtime: &module_resources::ModuleResourceRuntime,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+    object_registry: Option<&semantic::ObjectRegistry>,
 ) -> anyhow::Result<Option<VerifiedPacket>> {
     let Some(payload) = parse_window::primary_payload(bytes, view) else {
         return Ok(None);
@@ -1286,10 +1616,10 @@ fn rewrite_direct_semantic_frame_if_claimed(
     let mut rewritten_payload = payload.to_vec();
     let semantic_rewrite_summary = rewrite_inflated_payload_for_ee(
         &mut rewritten_payload,
-        None,
+        latest_area_placeables,
         SemanticScope::CoalescedSpan,
         Some(module_resource_runtime),
-        None,
+        object_registry,
         None,
     );
     if semantic_rewrite_summary.should_quarantine() || !semantic_rewrite_summary.any_rewrite() {
@@ -1320,7 +1650,7 @@ fn rewrite_direct_semantic_frame_if_claimed(
 }
 
 #[cfg(test)]
-mod tests {
+mod live_object_dispatch_tests {
     use super::*;
 
     #[test]
@@ -1499,4 +1829,180 @@ fn rewrite_server_status_module_resources_frame_if_needed(
         "server ServerStatus_ModuleRunning module resources rewritten for EE"
     );
     Ok(Some(rewritten))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dispatch_live_object_fixture(payload: &mut Vec<u8>) -> InflatedPayloadRewrite {
+        rewrite_single_inflated_payload_for_ee(
+            payload,
+            None,
+            SemanticScope::DeflatedReassembly,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn dispatcher_claims_hg_seq41_captain_mixed_live_object_without_raw_passthrough() {
+        // HG driver-only mixed creature stream: inventory/update/add/appearance/
+        // `U/5 0x3967` are only safe once the live-object family owns the whole
+        // byte cursor and fragment cursor. This pins the server-dispatch
+        // registry path so a broad exact/raw live-object classifier cannot
+        // bypass the typed add/update translators.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_seq41_creature_captain_mixed_add_update.bin"
+        )
+        .to_vec();
+
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn dispatcher_claims_town_greeter_trader_mixed_live_object_without_raw_passthrough() {
+        // HG Docks NPC burst with adjacent inventory/GUI records and creature
+        // `P/5` appearances. The dispatcher must reach the same exact semantic
+        // ownership as the live-object module-level fixture instead of treating
+        // the deflated payload as an opaque zlib/raw blob.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/starcore_npc_town_greeter_trader_stream_claimed_but_ee_rejects.bin"
+        )
+        .to_vec();
+
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn dispatcher_claims_hg_seq36_declared_repair_without_retry_storm() {
+        // Live HG Starcore5 Docks seq36 carries a stale CNW declared value
+        // inside a legal live-object burst. The dispatcher may repair the
+        // transport split only after the typed live-object translator and exact
+        // EE validator own the resulting shape; this regression keeps that path
+        // bounded so the M-frame layer does not spend seconds retrying raw
+        // candidate splits under the reliable-window gate.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_starc5_docks_seq36_town_greeter_northern_trader_slow_20260518.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "dispatcher live-object seq36 declared repair must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn dispatcher_claims_hg_seq37_declared_repair_without_retry_storm() {
+        // Live HG Starcore5 Docks seq37 proved the same stale-declared repair
+        // pressure with a longer creature update burst. Keep the dispatcher
+        // accountable for routing this to the semantic live-object family
+        // quickly, with no fallback passthrough and no broad zlib/raw claim.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_starc5_docks_seq37_creature_update_slow_20260518.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "dispatcher live-object seq37 declared repair must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn dispatcher_claims_hg_seq38_creature_update_through_bounded_orchestrator() {
+        // HG Docks `Otis` burst reproduced the live runtime stall at
+        // first_sequence=38: exact-claim probes rejected several intermediate
+        // boundaries while the bounded typed live-object orchestrator could
+        // already prove the Diamond shape and emit exact EE records. Keep this
+        // pinned at the dispatcher layer so the deflated path cannot regress
+        // into a retry/log storm before the verified translator owns it.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_starc5_docks_seq38_creature_update_unacked_20260518.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "dispatcher live-object seq38 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn dispatcher_claims_hg_seq40_otis_elrawiel_mixed_live_object_through_bounded_orchestrator() {
+        // HG Docks mixed `Otis`/`Elrawiel` stream: the payload combines fixed
+        // `A/5` add records with following `P/5` creature appearance/name
+        // records. Decompile-backed ownership lives in the focused live-object
+        // passes; the dispatcher must only route and accept the family after
+        // those typed passes produce an exact EE reader shape.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_seq40_creature_otis_mixed_add_update.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "dispatcher live-object seq40 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned HG seq40 payload must be exact EE live-object shape");
+        assert!(claim.add_records > 0);
+        assert!(claim.creature_appearance_records > 0);
+        assert!(claim.creature_update_records > 0);
+    }
 }

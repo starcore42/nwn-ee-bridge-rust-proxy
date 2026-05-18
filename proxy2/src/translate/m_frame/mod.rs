@@ -23,8 +23,8 @@ use crate::{
     translate::{ContinuationOwner, Emit, VerifiedFamily, VerifiedProof, area},
 };
 
-mod client_filters;
 mod client_ack;
+mod client_filters;
 mod coalesced;
 mod deferred_module_resources;
 mod deflate;
@@ -58,6 +58,14 @@ const CNW_LENGTH_BYTES: usize = 4;
 pub use state::SessionState;
 
 pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Vec<u8>> {
+    if let Err(err) =
+        maybe_queue_area_loaded_fallback_from_timer(state, "session pending client drain")
+    {
+        tracing::warn!(
+            error = %err,
+            "failed to evaluate synthetic Area_AreaLoaded fallback during pending client drain"
+        );
+    }
     std::mem::take(&mut state.sequence.pending_client_to_server_packets)
 }
 
@@ -162,6 +170,9 @@ pub fn translate_client_to_server(bytes: &[u8], state: &mut SessionState) -> any
                 view.ack_sequence,
             ));
     if native_area_loaded {
+        synthetic_area::release_pending_loadbar_completion_after_native_area_loaded(
+            &mut state.synthetic_area.pending_server_to_client_packets,
+        );
         synthetic_area::clear_pending_area_loaded(&mut state.synthetic_area.pending_area_loaded);
         synthetic_area::clear_in_flight_area_loaded(
             &mut state.synthetic_area.in_flight_area_loaded,
@@ -408,9 +419,13 @@ pub fn translate_server_to_client(bytes: &[u8], state: &mut SessionState) -> any
         reassembly::continue_server_deflated_reassembly(&inbound, &view, state)?
     } else if reassembly::should_start_server_deflated_reassembly(&view) {
         reassembly::start_server_deflated_reassembly(&inbound, &view, state)?
-    } else if let Some(verified) =
-        server_dispatch::rewrite_direct_frame_if_needed(&inbound, &view, &state.module_resources)?
-    {
+    } else if let Some(verified) = server_dispatch::rewrite_direct_frame_if_needed(
+        &inbound,
+        &view,
+        &state.module_resources,
+        Some(&state.area_context.latest_area_placeables),
+        Some(&state.semantic.objects),
+    )? {
         login_waypoint::maybe_queue_empty_waypoint_response(state, &inbound, &view)?;
         observe_verified_server_m_packet(state, &verified.proof, &verified.packet);
         Emit::VerifiedProofPackets {
@@ -655,45 +670,53 @@ fn queue_area_client_area_side_effects(
     reassembly: &ServerDeflatedReassembly,
     summary: &area::AreaRewriteSummary,
 ) -> anyhow::Result<()> {
-    let Some(last_frame) = reassembly.frames.last() else {
+    let (Some(first_frame), Some(last_frame)) =
+        (reassembly.frames.first(), reassembly.frames.last())
+    else {
         return Ok(());
     };
 
-    queue_area_client_area_side_effects_after_sequence(
+    queue_area_client_area_side_effects_for_window(
         state,
+        first_frame.sequence,
         last_frame.sequence,
         last_frame.ack_sequence,
         summary,
     )
 }
 
-fn queue_area_client_area_side_effects_after_sequence(
+fn queue_area_client_area_side_effects_for_window(
     state: &mut SessionState,
-    original_after_sequence: u16,
+    original_first_sequence: u16,
+    original_last_sequence: u16,
     ack_sequence: u16,
     summary: &area::AreaRewriteSummary,
 ) -> anyhow::Result<()> {
     let fallback_reason = synthetic_area::fallback_reason_for_area_rewrite(summary);
-    let area_release_client_ack_sequence =
-        shift_sequence_for_peer(&state.sequence.server_sequence_shifts, original_after_sequence);
     synthetic_area::queue_loadbar_and_area_loaded_fallback(
         &mut state.synthetic_area.pending_server_to_client_packets,
         &mut state.synthetic_area.pending_area_loaded,
         &mut state.sequence.server_sequence_shifts,
-        original_after_sequence,
+        original_first_sequence,
+        original_last_sequence,
         ack_sequence,
         fallback_reason,
         state.synthetic_area.synthesize_loadbar,
     )?;
+    let area_release_client_ack_sequence = shift_sequence_for_peer(
+        &state.sequence.server_sequence_shifts,
+        original_last_sequence,
+    );
 
-    // The post-Area_ClientArea server stream can immediately contain the
-    // live-object adds/updates EE needs before it sends native Area_AreaLoaded.
-    // Driver-only Starcore5 Docks captures showed that holding these verified
-    // packets until native Area_AreaLoaded deadlocks the load, while releasing
-    // them before the rewritten Area_ClientArea window is ACKed can race the
-    // reader. The stable boundary is therefore the reliable ACK for the final
-    // rewritten Area_ClientArea frame; synthetic Area_AreaLoaded remains a
-    // later fallback, not the server-packet release trigger.
+    // The post-Area_ClientArea stream is server-authored gameplay state, but the
+    // EE client decompile routes native Area_AreaLoaded only after the area
+    // reader returns. The proxy cannot see that in-process return, so it keeps a
+    // narrow transport split: release the rewritten Area_ClientArea window and
+    // proxy-owned area-load UI/control packets, then hold live-object/quickbar
+    // gameplay until native Area_AreaLoaded or the audited fallback proves the
+    // same semantic boundary. A 2026-05-18 Starcore5 Docks run showed that
+    // releasing post-area gameplay on ACK grace alone can leave the world view
+    // black while the UI and reliable stream continue.
     synthetic_area::arm_server_hold_gate_after_area_release(
         &mut state.synthetic_area.server_hold_gate,
         area_release_client_ack_sequence,
@@ -1050,14 +1073,14 @@ mod tests {
     #[test]
     fn proxy_owned_client_ack_coalesces_and_releases_from_session_drain() {
         let mut state = SessionState::default();
-    state.sequence.latest_server_sequence_to_client = Some(7);
-    queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 40).expect("queue ACK");
-    queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 42).expect("coalesce ACK");
+        state.sequence.latest_server_sequence_to_client = Some(7);
+        queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 40).expect("queue ACK");
+        queue_proxy_owned_ack_for_consumed_client_frame(&mut state, 42).expect("coalesce ACK");
 
-    let emit = take_pending_server_to_client_packets(&mut state);
-    let Emit::MixedVerifiedProofPacketsPreShifted(packets) = emit else {
-        panic!("expected immediate pending ACK release, got {emit:?}");
-    };
+        let emit = take_pending_server_to_client_packets(&mut state);
+        let Emit::MixedVerifiedProofPacketsPreShifted(packets) = emit else {
+            panic!("expected immediate pending ACK release, got {emit:?}");
+        };
 
         assert_eq!(packets.len(), 1);
         assert_eq!(
@@ -1269,7 +1292,7 @@ fn hold_server_emit_until_area_load_ack(
     emit: Emit,
 ) -> anyhow::Result<Emit> {
     if state.synthetic_area.server_hold_gate.is_some()
-        && maybe_queue_area_loaded_fallback_from_server_tick(state)?
+        && maybe_queue_area_loaded_fallback_from_timer(state, "server-to-client emit finalizer")?
     {
         return Ok(release_held_area_packets_into_emit(
             state,
@@ -1363,8 +1386,9 @@ fn hold_server_emit_until_area_load_ack(
     }
 }
 
-fn maybe_queue_area_loaded_fallback_from_server_tick(
+fn maybe_queue_area_loaded_fallback_from_timer(
     state: &mut SessionState,
+    trigger: &'static str,
 ) -> anyhow::Result<bool> {
     if state.synthetic_area.pending_area_loaded.is_none() {
         return Ok(false);
@@ -1396,6 +1420,7 @@ fn maybe_queue_area_loaded_fallback_from_server_tick(
         origin_ack_sequence,
         pending_client_packets = state.sequence.pending_client_to_server_packets.len(),
         held_server_packets = state.synthetic_area.held_server_to_client_packets.len(),
+        trigger,
         "client synthetic Area_AreaLoaded queued from server-side fallback timer"
     );
     Ok(true)
@@ -1509,7 +1534,7 @@ fn hold_or_release_server_packets(
 ) -> Vec<(VerifiedProof, Vec<u8>)> {
     let mut released = Vec::new();
     for packet in packets {
-        if let Some(release_mode) = area_load_gate_packet_release_mode(state, &packet) {
+        if let Some(release_mode) = area_load_gate_packet_release_mode(state, &proof, &packet) {
             let release_client_ack_sequence = state
                 .synthetic_area
                 .server_hold_gate
@@ -1532,10 +1557,11 @@ fn hold_or_release_server_packets(
 }
 
 fn area_load_gate_packet_release_mode(
-    state: &SessionState,
+    state: &mut SessionState,
+    proof: &VerifiedProof,
     packet: &[u8],
 ) -> Option<&'static str> {
-    let Some(gate) = state.synthetic_area.server_hold_gate.as_ref() else {
+    let Some(gate) = state.synthetic_area.server_hold_gate.as_mut() else {
         return None;
     };
     let Some(view) = MFrameView::parse(packet) else {
@@ -1545,13 +1571,67 @@ fn area_load_gate_packet_release_mode(
         return None;
     }
 
+    if gate.area_window_released_at.is_some() {
+        if area_load_gate_proof_can_release(proof) {
+            return Some(
+                "Area_ClientArea or proxy-owned area-load UI/control packet follows isolated Area_ClientArea window",
+            );
+        }
+        return None;
+    }
+
+    if !area_load_gate_proof_can_release(proof) {
+        return None;
+    }
+
     if !sequence_at_or_after(
         view.sequence,
         gate.release_client_ack_sequence.wrapping_add(1),
     ) {
+        if area_load_gate_proof_contains_area(proof) {
+            gate.area_window_released_at = Some(Instant::now());
+        }
         Some("packet sequence belongs to the rewritten Area_ClientArea window")
     } else {
         None
+    }
+}
+
+fn area_load_gate_proof_can_release(proof: &VerifiedProof) -> bool {
+    match proof {
+        VerifiedProof::Family(family) => area_load_gate_family_can_release(*family),
+        VerifiedProof::GameplayStream(families) => {
+            !families.is_empty()
+                && families
+                    .iter()
+                    .copied()
+                    .all(area_load_gate_family_can_release)
+        }
+        VerifiedProof::CoalescedWindow(records) => {
+            !records.is_empty() && records.iter().all(area_load_gate_proof_can_release)
+        }
+    }
+}
+
+fn area_load_gate_family_can_release(family: VerifiedFamily) -> bool {
+    matches!(
+        family,
+        VerifiedFamily::AreaClientArea
+            | VerifiedFamily::LoadBar
+            | VerifiedFamily::ServerStatusStatus
+            | VerifiedFamily::ConsumedEmptyMFrame
+    )
+}
+
+fn area_load_gate_proof_contains_area(proof: &VerifiedProof) -> bool {
+    match proof {
+        VerifiedProof::Family(family) => *family == VerifiedFamily::AreaClientArea,
+        VerifiedProof::GameplayStream(families) => {
+            families.contains(&VerifiedFamily::AreaClientArea)
+        }
+        VerifiedProof::CoalescedWindow(records) => {
+            records.iter().any(area_load_gate_proof_contains_area)
+        }
     }
 }
 
@@ -1877,6 +1957,8 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
     )?;
 
     let old_inflated_length = bytes.len();
+    let original_inflated_for_diagnostics = bytes.clone();
+    dump_live_object_input_if_enabled(&original_inflated_for_diagnostics, &reassembly);
     log_inflated_high_level_summary(&bytes, &reassembly);
     if let Some(emit) = zlib_zero_fill::maybe_claim_server_zlib_zero_fill_window(
         state,
@@ -2066,6 +2148,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
 
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
+    dump_accepted_live_object_rewrite_if_enabled(
+        &original_inflated_for_diagnostics,
+        &bytes,
+        &reassembly,
+        &verified_proof,
+    );
     crate::translate::semantic::observe_verified_payload(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
@@ -2425,6 +2513,131 @@ fn dump_invalid_inflated_payload(
         first_sequence = reassembly.first_sequence,
         reason,
         "dumped invalid inflated payload for offline fixture analysis"
+    );
+}
+
+fn dump_accepted_live_object_rewrite_if_enabled(
+    original_inflated: &[u8],
+    rewritten_inflated: &[u8],
+    reassembly: &ServerDeflatedReassembly,
+    proof: &VerifiedProof,
+) {
+    if proof.primary_family() != Some(VerifiedFamily::GameObjUpdateLiveObject) {
+        return;
+    }
+    let Ok(enabled) = std::env::var("NWN_BRIDGE_DUMP_ACCEPTED_LIVE_OBJECT") else {
+        return;
+    };
+    if enabled.trim() != "1" {
+        return;
+    }
+    let Some(mut dir) = crate::translate::diagnostics::probe_dump_dir() else {
+        return;
+    };
+    dir.push("accepted-live-object");
+    if let Err(error) = fs::create_dir_all(&dir) {
+        tracing::warn!(
+            path = %dir.display(),
+            %error,
+            "failed to create accepted live-object diagnostic dump directory"
+        );
+        return;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let stem = format!(
+        "seq{}-frames{}-old{}-new{}-{}",
+        reassembly.first_sequence,
+        reassembly.frames.len(),
+        original_inflated.len(),
+        rewritten_inflated.len(),
+        nanos
+    );
+    let original_path = dir.join(format!("{stem}-legacy.bin"));
+    let rewritten_path = dir.join(format!("{stem}-ee.bin"));
+    if let Err(error) = fs::write(&original_path, original_inflated) {
+        tracing::warn!(
+            path = %original_path.display(),
+            %error,
+            "failed to dump accepted live-object original inflated payload"
+        );
+        return;
+    }
+    if let Err(error) = fs::write(&rewritten_path, rewritten_inflated) {
+        tracing::warn!(
+            path = %rewritten_path.display(),
+            %error,
+            "failed to dump accepted live-object rewritten inflated payload"
+        );
+        return;
+    }
+    tracing::info!(
+        original_path = %original_path.display(),
+        rewritten_path = %rewritten_path.display(),
+        first_sequence = reassembly.first_sequence,
+        frames = reassembly.frames.len(),
+        old_len = original_inflated.len(),
+        new_len = rewritten_inflated.len(),
+        "dumped accepted live-object rewrite for fixture analysis"
+    );
+}
+
+fn dump_live_object_input_if_enabled(inflated: &[u8], reassembly: &ServerDeflatedReassembly) {
+    if !matches!(
+        (
+            inflated.get(0).copied(),
+            inflated.get(1).copied(),
+            inflated.get(2).copied()
+        ),
+        (Some(b'P'), Some(0x05), Some(0x01))
+    ) {
+        return;
+    }
+    let Ok(enabled) = std::env::var("NWN_BRIDGE_DUMP_ACCEPTED_LIVE_OBJECT") else {
+        return;
+    };
+    if enabled.trim() != "1" {
+        return;
+    }
+    let Some(mut dir) = crate::translate::diagnostics::probe_dump_dir() else {
+        return;
+    };
+    dir.push("live-object-input");
+    if let Err(error) = fs::create_dir_all(&dir) {
+        tracing::warn!(
+            path = %dir.display(),
+            %error,
+            "failed to create live-object input diagnostic dump directory"
+        );
+        return;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!(
+        "seq{}-frames{}-len{}-{}.bin",
+        reassembly.first_sequence,
+        reassembly.frames.len(),
+        inflated.len(),
+        nanos
+    ));
+    if let Err(error) = fs::write(&path, inflated) {
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "failed to dump live-object input payload"
+        );
+        return;
+    }
+    tracing::info!(
+        path = %path.display(),
+        first_sequence = reassembly.first_sequence,
+        frames = reassembly.frames.len(),
+        len = inflated.len(),
+        "dumped live-object input for fixture analysis"
     );
 }
 

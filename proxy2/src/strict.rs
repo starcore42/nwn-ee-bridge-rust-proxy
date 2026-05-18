@@ -15,9 +15,10 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat,
-        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar, gameplay_stream,
-        journal, live_object_update, login, play_module_character_list, player_list, quickbar,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat, client_gui_event,
+        client_gui_inventory, client_input, client_login, client_quickbar, client_server_admin,
+        dialog, gameplay_stream, inventory, journal, live_object_update, login, module,
+        play_module_character_list, player_list, quickbar,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -256,6 +257,51 @@ pub fn decide_verified_translated(
                 );
             }
 
+            if family == VerifiedFamily::ClientServerAdmin {
+                if !matches!(direction, Direction::ClientToServer) {
+                    return StrictDecision::quarantine(
+                        "M/verified-raw-client",
+                        family.as_str(),
+                        "client-server-admin-wrong-direction",
+                    );
+                }
+                if view.trailing_payload_length != 0 {
+                    return StrictDecision::quarantine(
+                        "M/verified-raw-client",
+                        family.as_str(),
+                        "client-server-admin-trailing-spans-unsupported",
+                    );
+                }
+                if view.high.is_some() || view.payload_length == 0 {
+                    return StrictDecision::quarantine(
+                        "M/verified-raw-client",
+                        family.as_str(),
+                        "client-server-admin-invalid-frame-kind",
+                    );
+                }
+                let payload_start = LEGACY_GAMEPLAY_PAYLOAD_OFFSET;
+                let payload_end = payload_start + view.payload_length;
+                let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
+                    return StrictDecision::quarantine(
+                        "M/verified-raw-client",
+                        family.as_str(),
+                        "client-server-admin-payload-overflow",
+                    );
+                };
+                if client_server_admin::raw_payload_shape_valid(payload) {
+                    return StrictDecision::allow(
+                        "M/verified-raw-client",
+                        family.as_str(),
+                        "verified-client-server-admin-raw-shape",
+                    );
+                }
+                return StrictDecision::quarantine(
+                    "M/verified-raw-client",
+                    family.as_str(),
+                    "client-server-admin-invalid-shape",
+                );
+            }
+
             if verified_family_allows_deflated_continuation(family)
                 && matches!(
                     direction,
@@ -379,10 +425,7 @@ pub fn decide_verified_translated(
     }
 }
 
-fn server_zlib_stream_empty_progress_valid(
-    direction: Direction,
-    family: VerifiedFamily,
-) -> bool {
+fn server_zlib_stream_empty_progress_valid(direction: Direction, family: VerifiedFamily) -> bool {
     if !matches!(
         direction,
         Direction::ServerToClient | Direction::ServerToClientSynthetic
@@ -728,12 +771,9 @@ fn coalesced_record_proof_valid(
     match proof {
         VerifiedProof::Family(VerifiedFamily::ConsumedEmptyMFrame) => payload.is_empty(),
         VerifiedProof::Family(
-            family
-            @ (VerifiedFamily::ServerZlibStreamContinuation { .. }
+            family @ (VerifiedFamily::ServerZlibStreamContinuation { .. }
             | VerifiedFamily::ServerZlibZeroFillWindow { .. }),
-        ) => {
-            payload.is_empty() && server_zlib_stream_empty_progress_valid(direction, *family)
-        }
+        ) => payload.is_empty() && server_zlib_stream_empty_progress_valid(direction, *family),
         VerifiedProof::Family(family) => coalesced_family_payload_valid(*family, payload, deflated),
         VerifiedProof::GameplayStream(families) => {
             coalesced_gameplay_stream_payload_valid(families, payload, deflated)
@@ -1300,11 +1340,17 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x02
                 && client_quickbar::set_button_payload_shape_valid(payload)
         }
+        VerifiedFamily::ClientServerAdmin => false,
         VerifiedFamily::ClientServerStatus => {
             high.major == 0x01 && high.minor == 0x00 && empty_high_level_shape_valid(payload)
         }
         VerifiedFamily::ClientSideMessage => {
             high.major == 0x12 && high.minor == 0x0B && client_side_feedback_shape_valid(payload)
+        }
+        VerifiedFamily::Dialog => {
+            high.major == 0x14
+                && matches!(high.minor, 0x01 | 0x02)
+                && dialog::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::GameObjUpdateObjectControl => {
             high.major == 0x05
@@ -1318,11 +1364,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x1E && high.minor == 0x01 && quickbar_shape_valid(payload)
         }
         VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
-        VerifiedFamily::Inventory => {
-            high.major == 0x0C
-                && matches!(high.minor, 0x01 | 0x02 | 0x03)
-                && bare_or_cnw_wrapped_payload_shape_valid(payload)
-        }
+        VerifiedFamily::Inventory => inventory::claim_payload_if_verified(payload).is_some(),
         VerifiedFamily::Journal => {
             high.major == 0x1C && high.minor == 0x0C && journal_shape_valid(payload)
         }
@@ -1365,6 +1407,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                     _ => false,
                 }
         }
+        VerifiedFamily::ServerStatusStatus => {
+            high.major == 0x01 && high.minor == 0x01 && empty_high_level_shape_valid(payload)
+        }
         VerifiedFamily::ServerStatusModuleResources => {
             high.major == 0x01
                 && high.minor == 0x03
@@ -1386,6 +1431,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::Chat
             | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientSideMessage
+            | VerifiedFamily::Dialog
             | VerifiedFamily::GameObjUpdateObjectControl
             | VerifiedFamily::GameObjUpdateLiveObject
             | VerifiedFamily::GuiQuickbar
@@ -1481,22 +1527,9 @@ enum HighPayloadValidation {
     /// A validator that owns the packet family and consumes the declared shape
     /// narrowly enough for strict player-mode delivery.
     Exact(bool),
-    /// A named family validator that still admits a broad CNW wrapper shape.
-    /// This is intentionally alpha-only so "known opcode" cannot silently mean
-    /// "safe forever."
-    Shallow { valid: bool, critical: bool },
     /// A known or unknown opcode with no family validator. These packets must
     /// be quarantined until the decompiles/captures justify a translator.
     Missing,
-}
-
-impl HighPayloadValidation {
-    fn shallow_noncritical(valid: bool) -> Self {
-        Self::Shallow {
-            valid,
-            critical: false,
-        }
-    }
 }
 
 fn exact_high_payload_shape_valid(payload: &[u8]) -> bool {
@@ -1514,35 +1547,12 @@ fn known_high_payload_shape_valid(payload: &[u8], profile: StrictProfile) -> boo
     };
     match high_payload_validation(payload, high) {
         HighPayloadValidation::Exact(valid) => valid,
-        HighPayloadValidation::Shallow { valid, critical } => {
-            if valid {
-                if profile.allows_shallow_high_level_validator(critical) {
-                    tracing::warn!(
-                        major = high.major,
-                        minor = high.minor,
-                        name = high.name(),
-                        strict_profile = profile.as_str(),
-                        critical,
-                        "strict M high-level validator is shallow and profile-gated"
-                    );
-                } else {
-                    tracing::warn!(
-                        major = high.major,
-                        minor = high.minor,
-                        name = high.name(),
-                        strict_profile = profile.as_str(),
-                        critical,
-                        "strict M high-level shallow validator rejected by profile"
-                    );
-                }
-            }
-            valid && profile.allows_shallow_high_level_validator(critical)
-        }
         HighPayloadValidation::Missing => {
             tracing::warn!(
                 major = high.major,
                 minor = high.minor,
                 name = high.name(),
+                strict_profile = profile.as_str(),
                 "strict M high-level validator missing for known opcode"
             );
             false
@@ -1553,10 +1563,11 @@ fn known_high_payload_shape_valid(payload: &[u8], profile: StrictProfile) -> boo
 fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValidation {
     match (high.major, high.minor) {
         (0x01, 0x00) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x01, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x01, 0x03) => {
             HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload))
         }
-        (0x02, 0x05 | 0x0C | 0x10 | 0x12) => {
+        (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => {
             HighPayloadValidation::Exact(login::claim_payload_if_verified(payload).is_some())
         }
         (0x02, 0x0D) => {
@@ -1568,13 +1579,18 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x03, 0x01) => HighPayloadValidation::Exact(module_info_shape_valid(payload)),
         (0x03, 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x03, 0x03) => HighPayloadValidation::Exact(module_time_shape_valid(payload)),
+        (0x03, 0x0E) => HighPayloadValidation::Exact(module::module_end_game_shape_valid(payload)),
         (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
         (0x04, 0x03) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
         (0x05, 0x02) => {
             HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload))
         }
-        (0x06, 0x01 | 0x03 | 0x0B) => {
+        (
+            0x06,
+            0x01 | 0x02 | 0x03 | 0x05 | 0x06 | 0x07 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E
+            | 0x10 | 0x11,
+        ) => {
             HighPayloadValidation::Exact(client_input::claim_payload_if_verified(payload).is_some())
         }
         (0x09, 0x04 | 0x05 | 0x0B | 0x0C) => {
@@ -1586,6 +1602,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0D, 0x01 | 0x02) => HighPayloadValidation::Exact(
             client_gui_inventory::claim_payload_if_verified(payload).is_some(),
         ),
+        (0x0C, 0x01 | 0x02) => {
+            HighPayloadValidation::Exact(inventory::claim_payload_if_verified(payload).is_some())
+        }
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
@@ -1596,7 +1615,12 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(char_list_request_update_char_shape_valid(payload))
         }
         (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
-        (0x1C, 0x0C) => HighPayloadValidation::Exact(journal_shape_valid(payload)),
+        (0x14, 0x01 | 0x02) => {
+            HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
+        }
+        (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0C) => {
+            HighPayloadValidation::Exact(journal::claim_payload_if_verified(payload).is_some())
+        }
         (0x1E, 0x01) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
         (0x1E, 0x02) => {
             HighPayloadValidation::Exact(client_quickbar::set_button_payload_shape_valid(payload))
@@ -1607,9 +1631,6 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         ),
         (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
         (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
-        (0x02, 0x0A) | (0x03, 0x0E) | (0x0C, 0x01) => HighPayloadValidation::shallow_noncritical(
-            bare_or_cnw_wrapped_payload_shape_valid(payload),
-        ),
         (0x2C, 0x01..=0x03) => HighPayloadValidation::Exact(loadbar_shape_valid(payload)),
         _ => HighPayloadValidation::Missing,
     }
@@ -2564,9 +2585,9 @@ fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
         }
         (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnds) => {
             StrictDecision::quarantine(
-            "BN",
-            packet.tag.name(),
-            "legacy-server-BNDS-has-no-EE-client-translator",
+                "BN",
+                packet.tag.name(),
+                "legacy-server-BNDS-has-no-EE-client-translator",
             )
         }
         (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bndr) => {
@@ -2581,12 +2602,14 @@ fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
         (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bner) => {
             validate_bner(packet)
         }
-        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnlr) => require_len(
-            packet,
-            11,
-            "known-ee-server-latency-response",
-            "decompile HandleBNLRMessage",
-        ),
+        (Direction::ServerToClient | Direction::ServerToClientSynthetic, BnTag::Bnlr) => {
+            require_len(
+                packet,
+                11,
+                "known-ee-server-latency-response",
+                "decompile HandleBNLRMessage",
+            )
+        }
         (_, BnTag::Bnk0 | BnTag::Bnk1 | BnTag::Bnk2 | BnTag::Bnk3 | BnTag::Bnk4) => {
             StrictDecision::quarantine(
                 "BN/EE-crypto",
@@ -3098,19 +3121,7 @@ mod bn_synthetic_direction_tests {
         let mut packet = Vec::from(&b"BNXR"[..]);
         packet.extend_from_slice(&5133u16.to_le_bytes());
         packet.extend_from_slice(&[
-            0xFD,
-            0x00,
-            0x01,
-            0x28,
-            0x00,
-            0x10,
-            0x00,
-            0x01,
-            0x00,
-            0x00,
-            0x00,
-            0x01,
-            0x03,
+            0xFD, 0x00, 0x01, 0x28, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x03,
         ]);
         packet.push(module.len() as u8);
         packet.extend_from_slice(module);
