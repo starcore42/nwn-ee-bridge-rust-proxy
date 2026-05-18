@@ -2098,8 +2098,14 @@ mod tests {
         }
     }
 
-    fn current_hg_town_npc_fixtures() -> [(&'static str, &'static [u8]); 2] {
+    fn current_hg_town_npc_fixtures() -> [(&'static str, &'static [u8]); 3] {
         [
+            (
+                "2026-05-19-live-hg-seq38-town-greeter-northern-trader",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
+                ),
+            ),
             (
                 "2026-05-19-live-hg-seq40-town-greeter-northern-trader",
                 include_bytes!(

@@ -22,6 +22,7 @@ use crate::{
 const MAX_DATAGRAM: usize = 65_535;
 const LOOP_SLEEP: Duration = Duration::from_millis(1);
 const EE_CRYPTO_RESPONSE_DEFER: Duration = Duration::from_millis(100);
+const MAX_SERVER_DATAGRAMS_PER_TICK_PER_SESSION: usize = 16;
 
 #[derive(Debug)]
 struct Session {
@@ -231,9 +232,14 @@ fn drain_server_sockets(
         let Some(session) = sessions.get_mut(&client) else {
             continue;
         };
+        let mut processed_server_datagrams = 0usize;
         loop {
+            if processed_server_datagrams >= MAX_SERVER_DATAGRAMS_PER_TICK_PER_SESSION {
+                break;
+            }
             match session.upstream.recv_from(recv_buf) {
                 Ok((len, server)) => {
+                    processed_server_datagrams = processed_server_datagrams.saturating_add(1);
                     let bytes = &recv_buf[..len];
                     session.last_seen = Instant::now();
                     let emit = session

@@ -188,14 +188,16 @@ pub(super) fn rewrite_update_record_for_ee(
         // all-bits masks are intentionally accepted at coarse boundary scan
         // time and normalized only after a bounded record parser owns them.
         if raw_mask != LEGACY_UPDATE_STATE_MASK {
-            tracing::trace!(
-                object_type,
-                object_id = format_args!("0x{object_id:08X}"),
-                raw_mask = format_args!("0x{raw_mask:08X}"),
-                record_offset,
-                record_end = *record_end,
-                "server->client live-object update record rejected: empty record has non-state mask bits"
-            );
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                tracing::trace!(
+                    object_type,
+                    object_id = format_args!("0x{object_id:08X}"),
+                    raw_mask = format_args!("0x{raw_mask:08X}"),
+                    record_offset,
+                    record_end = *record_end,
+                    "server->client live-object update record rejected: empty record has non-state mask bits"
+                );
+            }
             return None;
         }
         translated_mask = LEGACY_UPDATE_STATE_MASK;

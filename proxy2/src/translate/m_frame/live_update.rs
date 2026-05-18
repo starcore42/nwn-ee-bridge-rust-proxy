@@ -512,6 +512,51 @@ mod tests {
     }
 
     #[test]
+    fn hg_live_town_greeter_northern_trader_bursts_rewrite_bounded_and_exact() {
+        for payload in [
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_seq39_town_greeter_northern_trader_20260519.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_seq40_town_greeter_northern_trader_20260519.bin"
+            )
+            .as_slice(),
+        ] {
+            let mut payload = payload.to_vec();
+            assert!(
+                claim_payload_if_verified(&payload).is_none(),
+                "raw HG Town Greeter/Northern Trader burst documents the pre-rewrite Diamond live-object shape"
+            );
+
+            let started = std::time::Instant::now();
+            let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None).expect(
+                "bounded typed live-object passes should rewrite the current HG greeter/trader burst",
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "current HG greeter/trader rewrite must stay bounded enough for the reliable window"
+            );
+
+            assert!(summary.changed());
+            let claim = claim_payload_if_verified(&payload)
+                .expect("rewritten current HG greeter/trader burst must be exact EE shape");
+            assert!(
+                claim.creature_appearance_records >= 2,
+                "fixture should retain both NPC creature appearance records"
+            );
+            assert!(
+                claim.creature_update_records >= 1,
+                "fixture should retain the following typed creature update record"
+            );
+        }
+    }
+
+    #[test]
     fn hg_starc5_seq38_creature_update_rewrite_is_bounded_and_exact() {
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/hg_starc5_docks_seq38_creature_update_unacked_20260518.bin"

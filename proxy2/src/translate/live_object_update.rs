@@ -1990,6 +1990,9 @@ fn trace_claim_reject(
     record_end: usize,
     bit_cursor: usize,
 ) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
     let preview_end = record_end
         .min(live_bytes.len())
         .min(offset.saturating_add(96));
@@ -2006,15 +2009,13 @@ fn trace_claim_reject(
         preview = ?preview,
         "live-object exact claim rejected"
     );
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
-        eprintln!(
-            "live-object exact claim rejected: reason={reason} offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X} preview={:02X?} following={:02X?}",
-            live_bytes.get(offset).copied().unwrap_or_default(),
-            live_bytes.get(offset + 1).copied().unwrap_or_default(),
-            preview,
-            following
-        );
-    }
+    eprintln!(
+        "live-object exact claim rejected: reason={reason} offset={offset} record_end={record_end} bit_cursor={bit_cursor} opcode=0x{:02X} marker=0x{:02X} preview={:02X?} following={:02X?}",
+        live_bytes.get(offset).copied().unwrap_or_default(),
+        live_bytes.get(offset + 1).copied().unwrap_or_default(),
+        preview,
+        following
+    );
 }
 
 pub fn rewrite_update_records_payload_if_possible(

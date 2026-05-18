@@ -224,22 +224,11 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     }
 
     if starts_with_live_object_high_level(bytes) {
-        let area_context = state.area_context.latest_area_placeables.clone();
-        if let Some(summary) =
-            repair_live_object_declared_length_if_verified(bytes, Some(&area_context))
-        {
-            tracing::info!(
-                old_declared = summary.old_declared,
-                repaired_declared = summary.new_declared,
-                old_payload_length = summary.old_payload_length,
-                read_bytes = summary.read_bytes_length,
-                fragment_bytes = summary.fragment_bytes_length,
-                prefix = %hex_prefix(bytes, 32),
-                "server live-object declared length repaired by exact semantic proof"
-            );
-            return Ok(None);
-        }
-
+        // Complete high-level live-object packets belong to server_dispatch's
+        // focused semantic translators. This stream layer only buffers actual
+        // continuations/fragments; running declared-length repair here forces
+        // every valid P/05/01 packet through speculative split searches before
+        // the bounded typed dispatcher can own it.
         if looks_like_clean_legacy_live_object_fragment(bytes) {
             append_pending_live_object_clean_fragment(state, reassembly.first_sequence, bytes);
             let area_context = state.area_context.latest_area_placeables.clone();
@@ -287,53 +276,6 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     }
 
     Ok(None)
-}
-
-fn repair_live_object_declared_length_if_verified(
-    bytes: &mut Vec<u8>,
-    latest_area_placeables: Option<&area::AreaPlaceableContext>,
-) -> Option<live_object::LiveObjectDeclaredLengthRepairCandidate> {
-    for repair in live_object::declared_length_repair_candidates(bytes) {
-        if repair.old_declared == repair.new_declared {
-            // This helper is only allowed to own a decompile-backed declared
-            // length repair.  A no-op declared candidate must not become a
-            // generic live-object rewrite escape hatch; valid high-level
-            // `GameObjUpdate_LiveObject` packets still have to be claimed by the
-            // focused add/update/exact translators in server_dispatch.
-            continue;
-        }
-        let ambiguous_live_tail =
-            live_object::declared_length_repair_tail_contains_live_object_read_boundary(
-                bytes, &repair,
-            );
-        let mut candidate = bytes.clone();
-        candidate
-            .get_mut(3..7)?
-            .copy_from_slice(&repair.new_declared.to_le_bytes());
-        let mut translated = false;
-        if live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some()
-        {
-            translated = true;
-        }
-        if live_update::rewrite_payload_if_needed(&mut candidate).is_some() {
-            translated = true;
-        }
-        if !translated && live_update::claim_payload_if_verified(&candidate).is_none() {
-            continue;
-        }
-        if ambiguous_live_tail && !translated {
-            continue;
-        }
-        if live_update::claim_payload_if_verified(&candidate).is_some() {
-            *bytes = candidate;
-            return Some(repair);
-        }
-    }
-    None
 }
 
 fn starts_with_live_object_high_level(bytes: &[u8]) -> bool {
@@ -654,4 +596,44 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
             state.deflate.server_zlib_stream_epoch.saturating_add(1);
     }
     state.deflate.server_zlib_stream_owner = Some(owner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_hg_town_npc_live_object_is_left_for_dispatcher() {
+        let mut state = SessionState::default();
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 579,
+            expected_frames: 1,
+            first_sequence: 38,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+        };
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
+        )
+        .to_vec();
+        let original = payload.clone();
+
+        let emit = maybe_buffer_or_flush_server_live_object_stream(
+            &mut state,
+            &reassembly,
+            0,
+            true,
+            &mut payload,
+        )
+        .expect("stream inspection should not fail for complete high-level payload");
+
+        assert!(
+            emit.is_none(),
+            "complete P/05/01 payloads should continue to server_dispatch"
+        );
+        assert_eq!(payload, original);
+        assert!(state.live_object.pending_stream.is_none());
+    }
 }
