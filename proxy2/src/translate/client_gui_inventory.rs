@@ -17,10 +17,13 @@
 //!   `0x7F000000` before the 1.69 server returns the GUI inventory stream.
 //!
 //! The BOOL lives in the single CNW fragment byte after the declared read
-//! buffer. This translator validates each exact packetized shape, rewrites only
-//! the EE self sentinel for `Status`, and otherwise leaves validated bytes
-//! untouched. `SelectPanel` is an identity translation, but still must be
-//! claimed here before the router may emit it.
+//! buffer. EE `CNWMessage::GetWriteMessage` stores the final fragment cursor in
+//! the high three bits and may preserve low residual bits below that cursor, so
+//! this translator validates the exact cursor plus owned data bit rather than
+//! treating the entire trailing byte as meaningful. It rewrites only the EE self
+//! sentinel for `Status`, and otherwise leaves validated bytes untouched.
+//! `SelectPanel` is an identity translation, but still must be claimed here
+//! before the router may emit it.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -37,8 +40,9 @@ const SELECT_PANEL_FRAGMENT_BYTES: usize = 1;
 const SELECT_PANEL_OFFSET: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const EE_SELF_OBJECT_ID: u32 = 0xFFFF_FFFD;
 const DIAMOND_CURRENT_PLAYER_OBJECT_ID: u32 = 0x7F00_0000;
-const SINGLE_BOOL_FALSE_FRAGMENT_BYTE: u8 = 0x80;
-const SINGLE_BOOL_TRUE_FRAGMENT_BYTE: u8 = 0x90;
+const FRAGMENT_CURSOR_MASK: u8 = 0xE0;
+const SINGLE_BOOL_FINAL_CURSOR: u8 = 0x80;
+const SINGLE_BOOL_DATA_BIT: u8 = 0x10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientGuiInventoryKind {
@@ -167,11 +171,10 @@ fn select_panel_payload_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn decode_single_bool_fragment(byte: u8) -> Option<bool> {
-    match byte {
-        SINGLE_BOOL_FALSE_FRAGMENT_BYTE => Some(false),
-        SINGLE_BOOL_TRUE_FRAGMENT_BYTE => Some(true),
-        _ => None,
+    if byte & FRAGMENT_CURSOR_MASK != SINGLE_BOOL_FINAL_CURSOR {
+        return None;
     }
+    Some(byte & SINGLE_BOOL_DATA_BIT != 0)
 }
 
 #[cfg(test)]
@@ -212,6 +215,23 @@ mod tests {
     }
 
     #[test]
+    fn claims_inventory_status_with_residual_fragment_bits_below_final_cursor() {
+        let mut payload = [
+            0x70, 0x0D, 0x01, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x98,
+        ];
+
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("single-BOOL cursor with residual low bits should be claimed");
+
+        assert_eq!(summary.object_id, Some(DIAMOND_CURRENT_PLAYER_OBJECT_ID));
+        assert!(!summary.rewritten_self_object_id);
+        assert_eq!(
+            payload[11], 0x98,
+            "residual bits below the final cursor are not proxy-owned"
+        );
+    }
+
+    #[test]
     fn rejects_inventory_status_with_wrong_declared_length() {
         let mut payload = [
             0x70, 0x0D, 0x01, 0x0A, 0x00, 0x00, 0x00, 0xFD, 0xFF, 0xFF, 0xFF, 0x90,
@@ -238,5 +258,16 @@ mod tests {
         let payload = [0x70, 0x0D, 0x02, 0x08, 0x00, 0x00, 0x00, 0x03, 0xA0];
 
         assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn claims_select_panel_with_residual_fragment_bits_below_final_cursor() {
+        let payload = [0x70, 0x0D, 0x02, 0x08, 0x00, 0x00, 0x00, 0x03, 0x98];
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("single-BOOL cursor with residual low bits should be claimed");
+
+        assert_eq!(summary.panel, Some(3));
+        assert_eq!(summary.player_inventory_gui, Some(true));
     }
 }
