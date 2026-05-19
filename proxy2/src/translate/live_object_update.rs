@@ -16,7 +16,10 @@
 //!   the same masks and cursor discipline; this Rust port keeps the transform
 //!   focused here instead of folding it into `m_frame`.
 
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::{Mutex, OnceLock},
+};
 
 mod add;
 mod add_guard;
@@ -80,6 +83,85 @@ const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
 const MAX_REASONABLE_LIVE_PAYLOAD_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LiveObjectFixtureDumpKey {
+    reason: String,
+    signature: Vec<u8>,
+}
+
+static LIVE_OBJECT_FIXTURE_DUMP_KEYS: OnceLock<Mutex<HashSet<LiveObjectFixtureDumpKey>>> =
+    OnceLock::new();
+
+fn live_object_fixture_dump_signature(payload: &[u8], sanitized_reason: &str) -> Vec<u8> {
+    let mut signature = payload.to_vec();
+    if sanitized_reason.starts_with("live-object-declared-length-repair-len")
+        && signature.len() >= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        && signature.first().copied() == Some(HIGH_LEVEL_ENVELOPE)
+        && signature.get(1).copied() == Some(GAME_OBJECT_UPDATE_MAJOR)
+        && signature.get(2).copied() == Some(LIVE_OBJECT_MINOR)
+    {
+        signature[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES].fill(0);
+    }
+    signature
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn declared_length_repair_dump_signature_ignores_only_declared_slot() {
+        let mut first = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        first.extend_from_slice(&0x0000_00e8u32.to_le_bytes());
+        first.extend_from_slice(&[0x49, 0xfe, 0x01, 0x02]);
+
+        let mut second = first.clone();
+        second[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+            .copy_from_slice(&0x0000_00e3u32.to_le_bytes());
+
+        assert_eq!(
+            live_object_fixture_dump_signature(&first, "live-object-declared-length-repair-len233"),
+            live_object_fixture_dump_signature(
+                &second,
+                "live-object-declared-length-repair-len233"
+            )
+        );
+
+        second[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES] ^= 0x01;
+        assert_ne!(
+            live_object_fixture_dump_signature(&first, "live-object-declared-length-repair-len233"),
+            live_object_fixture_dump_signature(
+                &second,
+                "live-object-declared-length-repair-len233"
+            )
+        );
+    }
+
+    #[test]
+    fn non_declared_repair_dump_signature_keeps_declared_slot() {
+        let mut first = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        first.extend_from_slice(&0x0000_00e8u32.to_le_bytes());
+        first.extend_from_slice(&[0x49, 0xfe, 0x01, 0x02]);
+
+        let mut second = first.clone();
+        second[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+            .copy_from_slice(&0x0000_00e3u32.to_le_bytes());
+
+        assert_ne!(
+            live_object_fixture_dump_signature(&first, "live-object-combined-records-len233"),
+            live_object_fixture_dump_signature(&second, "live-object-combined-records-len233")
+        );
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateRewriteSummary {
@@ -3494,6 +3576,33 @@ pub fn dump_live_object_fixture_candidate(payload: &[u8], reason: &str) {
             }
         })
         .collect();
+    let key = LiveObjectFixtureDumpKey {
+        reason: sanitized_reason.clone(),
+        signature: live_object_fixture_dump_signature(payload, &sanitized_reason),
+    };
+    let keys = LIVE_OBJECT_FIXTURE_DUMP_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
+    match keys.lock() {
+        Ok(mut keys) => {
+            if !keys.insert(key) {
+                tracing::debug!(
+                    reason = sanitized_reason,
+                    payload_length = payload.len(),
+                    "duplicate live-object fixture candidate dump suppressed"
+                );
+                return;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                reason = sanitized_reason,
+                payload_length = payload.len(),
+                "live-object fixture candidate dump dedupe state poisoned; skipping diagnostic dump"
+            );
+            return;
+        }
+    }
+
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
