@@ -29,7 +29,12 @@
 //! - The custom TLK is preserved only in the rewrite summary. EE consumes that
 //!   value later from `CNWCModule::LoadModuleResources`, not from `Module_Info`.
 
-use std::sync::{OnceLock, RwLock};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::{OnceLock, RwLock},
+};
 
 const MAX_MODULE_INFO_STRING: usize = 4096;
 const MAX_LEGACY_NWM_RESOURCE_STRING: usize = 32;
@@ -45,6 +50,7 @@ const RESREF_BYTES: usize = 16;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const MAX_COMPACT_DECLARED_ZERO_BYTES: usize = 512;
+const MAX_COMPACT_DECLARED_ZERO_RESOURCE_BYTES: usize = 2048;
 const MAX_COMPACT_DECLARED_ZERO_AREA_COUNT: u32 = 64;
 const COMPACT_DECLARED_ZERO_FRAGMENT_BYTES: usize = 1;
 const MODULE_MAJOR: u8 = 0x03;
@@ -52,6 +58,17 @@ const MODULE_END_GAME_MINOR: u8 = 0x0E;
 const MODULE_END_GAME_MAX_TEXT_BYTES: usize = 4096;
 const MODULE_END_GAME_SHA1_HEX_BYTES: usize = 40;
 const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
+const MAX_MODULE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_OBSERVED_MODULE_SCAN_FILES: usize = 512;
+const RESTYPE_IFO: u16 = 2014;
+const GFF_TYPE_CEXO_STRING: u32 = 10;
+const GFF_TYPE_RESREF: u32 = 11;
+const GFF_TYPE_CEXO_LOCSTRING: u32 = 12;
+const GFF_TYPE_LIST: u32 = 15;
+const MAX_ERF_KEY_COUNT: u32 = 65_536;
+const MAX_GFF_FIELD_COUNT: u32 = 65_536;
+const MAX_GFF_STRUCT_COUNT: u32 = 65_536;
+const CRESREF_TEXT_BYTES: usize = 16;
 
 static OBSERVED_MODULE_CONTEXT: OnceLock<RwLock<Option<ObservedModuleContext>>> = OnceLock::new();
 
@@ -292,6 +309,8 @@ struct CompactLegacyModuleInfo {
     areas: Vec<CompactLegacyArea>,
     official_campaign: u8,
     fragment_tail: Vec<u8>,
+    custom_tlk: Option<String>,
+    hak_order_top_first: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,12 +326,65 @@ struct PrintableRun {
     value: String,
 }
 
+#[derive(Debug, Clone)]
+struct CompactDeclaredZeroResourceBlock {
+    module_byte_offset: usize,
+    module_byte: u8,
+    custom_tlk_hint: Option<String>,
+    hak_count_offset: usize,
+    hak_slots: Vec<[u8; RESREF_BYTES]>,
+    area_count_offset: usize,
+    areas: Vec<CompactLegacyArea>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleFileDeclaration {
+    module_file_stem: String,
+    module_name: Option<String>,
+    custom_tlk: Option<String>,
+    hak_order_top_first: Vec<String>,
+    area_order: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ErfResourceEntry {
+    restype: u16,
+    offset: usize,
+    size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GffLayout {
+    struct_offset: usize,
+    struct_count: usize,
+    field_offset: usize,
+    field_count: usize,
+    label_offset: usize,
+    label_count: usize,
+    field_data_offset: usize,
+    field_indices_offset: usize,
+    field_indices_count: usize,
+    list_indices_offset: usize,
+    list_indices_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GffField {
+    field_type: u32,
+    label: String,
+    data: u32,
+}
+
 fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
     payload: &mut Vec<u8>,
 ) -> Option<RewriteSummary> {
     let compact = parse_compact_legacy_no_resource_module_info(payload)?;
     let old_declared = compact.old_declared;
     let old_payload_length = payload.len();
+
+    let hak_count = u8::try_from(compact.hak_order_top_first.len()).ok()?;
+    let custom_tlk = compact.custom_tlk.clone();
+    let hak_order_top_first = compact.hak_order_top_first.clone();
 
     let mut rewritten = Vec::with_capacity(payload.len().saturating_add(64));
     rewritten.extend_from_slice(&[payload[0], 0x03, 0x01, 0, 0, 0, 0]);
@@ -346,10 +418,10 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
 
     Some(RewriteSummary {
         offset: 0,
-        hak_count: 0,
-        hak_order_top_first: Vec::new(),
+        hak_count,
+        hak_order_top_first,
         module_resref: Some(compact.module_resref),
-        custom_tlk: None,
+        custom_tlk,
         custom_tlk_converted_to_resref: false,
         removed_hak_bytes: 0,
         legacy_tail_removed: old_declared.saturating_sub(new_declared) as usize,
@@ -479,13 +551,15 @@ fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<Compac
         areas,
         official_campaign,
         fragment_tail,
+        custom_tlk: None,
+        hak_order_top_first: Vec::new(),
     })
 }
 
 fn parse_compact_legacy_declared_zero_module_info(
     payload: &[u8],
 ) -> Option<CompactLegacyModuleInfo> {
-    if payload.len() < 48 || payload.len() > MAX_COMPACT_DECLARED_ZERO_BYTES {
+    if payload.len() < 48 || payload.len() > MAX_COMPACT_DECLARED_ZERO_RESOURCE_BYTES {
         return None;
     }
 
@@ -502,6 +576,18 @@ fn parse_compact_legacy_declared_zero_module_info(
         .checked_sub(COMPACT_DECLARED_ZERO_FRAGMENT_BYTES)?;
     let fragment_tail = payload.get(fragment_start..)?.to_vec();
     if !compact_fragment_tail_has_module_info_bits(&fragment_tail) {
+        return None;
+    }
+
+    if let Some(compact) = parse_compact_declared_zero_legacy_resource_module_info(
+        payload,
+        fragment_start,
+        fragment_tail.clone(),
+    ) {
+        return Some(compact);
+    }
+
+    if payload.len() > MAX_COMPACT_DECLARED_ZERO_BYTES {
         return None;
     }
 
@@ -526,7 +612,741 @@ fn parse_compact_legacy_declared_zero_module_info(
         areas,
         official_campaign: 0,
         fragment_tail,
+        custom_tlk: None,
+        hak_order_top_first: Vec::new(),
     })
+}
+
+fn parse_compact_declared_zero_legacy_resource_module_info(
+    payload: &[u8],
+    fragment_start: usize,
+    fragment_tail: Vec<u8>,
+) -> Option<CompactLegacyModuleInfo> {
+    let search_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let identity_runs = compact_printable_runs(payload, search_start, fragment_start, 3);
+    let mut accepted = None;
+
+    for block in compact_declared_zero_resource_blocks(payload, search_start, fragment_start) {
+        let Some(declaration) = module_file_declaration_for_compact_block(&block, &identity_runs)
+        else {
+            continue;
+        };
+        if accepted.is_some() {
+            tracing::debug!(
+                hak_count = block.hak_slots.len(),
+                area_count = block.areas.len(),
+                "compact declared-zero Module_Info resource block matched multiple local module files"
+            );
+            return None;
+        }
+        accepted = Some((block, declaration));
+    }
+
+    if accepted.is_none() {
+        tracing::debug!(
+            payload_length = payload.len(),
+            block_count = compact_declared_zero_resource_blocks(payload, search_start, fragment_start).len(),
+            identity_runs = ?identity_runs
+                .iter()
+                .map(|run| run.value.as_str())
+                .collect::<Vec<_>>(),
+            "compact declared-zero Module_Info resource block did not match local module IFO"
+        );
+    }
+
+    let (block, declaration) = accepted?;
+    let module_resref = declaration.module_file_stem.clone();
+    if module_resref.is_empty()
+        || module_resref.len() > RESREF_BYTES
+        || !module_resref.bytes().all(is_resref_char)
+    {
+        return None;
+    }
+    let localized_name = declaration
+        .module_name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            compact_declared_zero_module_name(payload, search_start, block.module_byte_offset)
+        })
+        .unwrap_or_else(|| module_resref.clone());
+
+    tracing::info!(
+        module_resref = module_resref.as_str(),
+        module_name = localized_name.as_str(),
+        custom_tlk = declaration.custom_tlk.as_deref().unwrap_or(""),
+        hak_count = declaration.hak_order_top_first.len(),
+        area_count = block.areas.len(),
+        hak_count_offset = block.hak_count_offset,
+        area_count_offset = block.area_count_offset,
+        "server Module_Info compact declared-zero legacy resource block resolved from local module IFO"
+    );
+
+    Some(CompactLegacyModuleInfo {
+        old_declared: 0,
+        module_name: None,
+        localized_name,
+        module_byte: block.module_byte,
+        module_resref,
+        areas: block.areas,
+        official_campaign: 0,
+        fragment_tail,
+        custom_tlk: declaration.custom_tlk,
+        hak_order_top_first: declaration.hak_order_top_first,
+    })
+}
+
+fn compact_declared_zero_resource_blocks(
+    payload: &[u8],
+    search_start: usize,
+    fragment_start: usize,
+) -> Vec<CompactDeclaredZeroResourceBlock> {
+    let mut blocks = Vec::new();
+    if search_start >= fragment_start || fragment_start > payload.len() {
+        return blocks;
+    }
+
+    for module_byte_offset in search_start..fragment_start {
+        let module_byte = payload[module_byte_offset];
+        let mut cursor = module_byte_offset.saturating_add(1);
+        let Some(custom_tlk_hint) =
+            read_raw_string_bounded_value(payload, &mut cursor, fragment_start)
+        else {
+            continue;
+        };
+        if read_raw_string_bounded(payload, &mut cursor, fragment_start).is_none() {
+            continue;
+        }
+        if cursor >= fragment_start {
+            continue;
+        }
+
+        let hak_count_offset = cursor;
+        let hak_count = usize::from(payload[hak_count_offset]);
+        if hak_count == 0 || hak_count > MAX_LEGACY_HAK_COUNT {
+            continue;
+        }
+        let hak_start = hak_count_offset.saturating_add(1);
+        let Some(hak_bytes) = hak_count.checked_mul(RESREF_BYTES) else {
+            continue;
+        };
+        let Some(module_resref_start) = hak_start.checked_add(hak_bytes) else {
+            continue;
+        };
+        let Some(area_count_offset) = module_resref_start.checked_add(RESREF_BYTES) else {
+            continue;
+        };
+        if area_count_offset + CNW_LENGTH_BYTES > fragment_start {
+            continue;
+        }
+        let Some(area_count) = read_le_u32(payload, area_count_offset) else {
+            continue;
+        };
+        if area_count == 0 || area_count > MAX_COMPACT_DECLARED_ZERO_AREA_COUNT {
+            continue;
+        }
+        let table_start = area_count_offset + CNW_LENGTH_BYTES;
+        let Some(areas) = compact_declared_zero_areas_at(
+            payload,
+            table_start,
+            fragment_start,
+            area_count as usize,
+        ) else {
+            continue;
+        };
+
+        let mut hak_slots = Vec::with_capacity(hak_count);
+        let mut slots_valid = true;
+        for index in 0..hak_count {
+            let slot_start = hak_start + index * RESREF_BYTES;
+            let Some(slot) = payload.get(slot_start..slot_start + RESREF_BYTES) else {
+                slots_valid = false;
+                break;
+            };
+            if !compact_resref_slot_has_decompile_shape(slot, false) {
+                slots_valid = false;
+                break;
+            }
+            let mut bytes = [0_u8; RESREF_BYTES];
+            bytes.copy_from_slice(slot);
+            hak_slots.push(bytes);
+        }
+        if !slots_valid {
+            continue;
+        }
+        if !payload
+            .get(module_resref_start..module_resref_start + RESREF_BYTES)
+            .is_some_and(|slot| compact_resref_slot_has_decompile_shape(slot, true))
+        {
+            continue;
+        }
+
+        blocks.push(CompactDeclaredZeroResourceBlock {
+            module_byte_offset,
+            module_byte,
+            custom_tlk_hint,
+            hak_count_offset,
+            hak_slots,
+            area_count_offset,
+            areas,
+        });
+    }
+
+    blocks
+}
+
+fn compact_resref_slot_has_decompile_shape(slot: &[u8], allow_empty: bool) -> bool {
+    if slot.len() != RESREF_BYTES {
+        return false;
+    }
+    let mut has_text = false;
+    for byte in slot.iter().copied() {
+        if byte == 0 {
+            continue;
+        }
+        if !is_resref_char(byte) {
+            return false;
+        }
+        has_text = true;
+    }
+    allow_empty || has_text
+}
+
+fn module_file_declaration_for_compact_block(
+    block: &CompactDeclaredZeroResourceBlock,
+    identity_runs: &[PrintableRun],
+) -> Option<ModuleFileDeclaration> {
+    let mut accepted: Option<ModuleFileDeclaration> = None;
+    let mut seen = HashSet::new();
+    for path in compact_module_file_candidates(identity_runs) {
+        if !seen.insert(path_key(&path)) || !path.is_file() {
+            continue;
+        }
+        let Some(declaration) = read_module_file_declaration(&path) else {
+            continue;
+        };
+        if !module_declaration_matches_compact_block(&declaration, block, identity_runs) {
+            continue;
+        }
+        if let Some(existing) = accepted.as_ref() {
+            if existing == &declaration {
+                continue;
+            }
+            tracing::debug!(
+                existing = ?existing,
+                conflicting = ?declaration,
+                conflicting_path = %path.display(),
+                "compact declared-zero Module_Info matched distinct local module IFO declarations"
+            );
+            return None;
+        }
+        accepted = Some(declaration);
+    }
+    accepted
+}
+
+fn module_declaration_matches_compact_block(
+    declaration: &ModuleFileDeclaration,
+    block: &CompactDeclaredZeroResourceBlock,
+    identity_runs: &[PrintableRun],
+) -> bool {
+    if declaration.hak_order_top_first.len() != block.hak_slots.len()
+        || declaration.area_order.len() != block.areas.len()
+    {
+        return false;
+    }
+    for (slot, hak) in block
+        .hak_slots
+        .iter()
+        .zip(declaration.hak_order_top_first.iter())
+    {
+        if !compact_resref_slot_matches_exact(slot, hak) {
+            return false;
+        }
+    }
+    if let Some(hint) = block.custom_tlk_hint.as_deref() {
+        let hint = hint.trim_matches('\0');
+        let exact = declaration.custom_tlk.as_deref().unwrap_or("");
+        if !hint.is_empty() && !compact_text_hint_matches_exact(hint, exact) {
+            return false;
+        }
+    }
+    module_identity_runs_match_declaration(identity_runs, declaration)
+}
+
+fn compact_resref_slot_matches_exact(slot: &[u8; RESREF_BYTES], exact: &str) -> bool {
+    if exact.is_empty()
+        || exact.len() > RESREF_BYTES
+        || !exact.bytes().all(is_resref_char)
+        || !compact_resref_slot_has_decompile_shape(slot, false)
+    {
+        return false;
+    }
+    let exact_bytes = exact.as_bytes();
+    for (offset, byte) in slot.iter().copied().enumerate() {
+        if byte == 0 {
+            continue;
+        }
+        if exact_bytes.get(offset).copied() != Some(byte) {
+            return false;
+        }
+    }
+    true
+}
+
+fn compact_text_hint_matches_exact(hint: &str, exact: &str) -> bool {
+    if exact.is_empty() || exact.len() > RESREF_BYTES || !exact.bytes().all(is_resref_char) {
+        return false;
+    }
+    let exact_bytes = exact.as_bytes();
+    for (offset, byte) in hint.bytes().enumerate() {
+        if byte == 0 {
+            continue;
+        }
+        if !is_resref_char(byte) || exact_bytes.get(offset).copied() != Some(byte) {
+            return false;
+        }
+    }
+    true
+}
+
+fn module_identity_runs_match_declaration(
+    identity_runs: &[PrintableRun],
+    declaration: &ModuleFileDeclaration,
+) -> bool {
+    let mut exacts = vec![declaration.module_file_stem.as_str()];
+    if let Some(module_name) = declaration.module_name.as_deref() {
+        exacts.push(module_name);
+    }
+
+    let version_runs = identity_runs
+        .iter()
+        .map(|run| normalized_resource_text(&run.value))
+        .filter(|run| run.starts_with("cepv") && run.len() >= 5)
+        .collect::<Vec<_>>();
+    if !version_runs.is_empty() {
+        return version_runs.iter().any(|run| {
+            normalized_resource_text(&declaration.module_file_stem)
+                .starts_with(run.trim_end_matches('_'))
+        });
+    }
+
+    identity_runs.iter().any(|run| {
+        let observed = normalized_resource_text(&run.value);
+        observed.len() >= 4
+            && exacts.iter().any(|exact| {
+                let exact = normalized_resource_text(exact);
+                exact.starts_with(&observed) || exact.contains(&observed)
+            })
+    })
+}
+
+fn compact_module_file_candidates(identity_runs: &[PrintableRun]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("NWN_BRIDGE_MODULE_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    let names = identity_runs
+        .iter()
+        .map(|run| run.value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut dirs = Vec::new();
+    if let Ok(value) = std::env::var("NWN_BRIDGE_MODULE_DIRS") {
+        dirs.extend(split_env_list(&value).map(PathBuf::from));
+    }
+    dirs.extend([
+        PathBuf::from(r"C:\NWN\NWN Diamond\modules"),
+        PathBuf::from(r"C:\NWN\NWN Diamond\nwm"),
+        PathBuf::from("NWN Diamond").join("modules"),
+        PathBuf::from("NWN Diamond").join("nwm"),
+    ]);
+
+    for dir in &dirs {
+        for name in &names {
+            candidates.push(dir.join(format!("{name}.mod")));
+            candidates.push(dir.join(format!("{name}.nwm")));
+            candidates.push(dir.join(name));
+        }
+    }
+
+    for dir in &dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        let mut scanned = 0usize;
+        for entry in entries.flatten() {
+            if scanned >= MAX_OBSERVED_MODULE_SCAN_FILES {
+                break;
+            }
+            scanned = scanned.saturating_add(1);
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if extension.eq_ignore_ascii_case("mod") || extension.eq_ignore_ascii_case("nwm") {
+                candidates.push(path);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn read_module_file_declaration(path: &Path) -> Option<ModuleFileDeclaration> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_MODULE_FILE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let resources = read_erf_resource_entries(&bytes)?;
+    let ifo = resources
+        .iter()
+        .find(|entry| entry.restype == RESTYPE_IFO)?;
+    let ifo_bytes = bytes.get(ifo.offset..ifo.offset.checked_add(ifo.size)?)?;
+    let (module_name, custom_tlk, hak_order_top_first, area_order) =
+        parse_ifo_module_declaration(ifo_bytes)?;
+    let module_file_stem = path.file_stem()?.to_str()?.to_owned();
+    Some(ModuleFileDeclaration {
+        module_file_stem,
+        module_name,
+        custom_tlk,
+        hak_order_top_first,
+        area_order,
+    })
+}
+
+fn read_erf_resource_entries(bytes: &[u8]) -> Option<Vec<ErfResourceEntry>> {
+    if bytes.len() < 32 {
+        return None;
+    }
+    let magic = bytes.get(0..4)?;
+    if !matches!(magic, b"MOD " | b"NWM " | b"ERF " | b"HAK ") || bytes.get(4..8)? != b"V1.0" {
+        return None;
+    }
+
+    let entry_count = read_le_u32(bytes, 16)?;
+    let key_list_offset = usize::try_from(read_le_u32(bytes, 24)?).ok()?;
+    let resource_list_offset = usize::try_from(read_le_u32(bytes, 28)?).ok()?;
+    if entry_count > MAX_ERF_KEY_COUNT
+        || key_list_offset >= bytes.len()
+        || resource_list_offset >= bytes.len()
+    {
+        return None;
+    }
+
+    let mut entries = Vec::with_capacity(usize::try_from(entry_count).ok()?);
+    for index in 0..usize::try_from(entry_count).ok()? {
+        let key_offset = key_list_offset.checked_add(index.checked_mul(24)?)?;
+        let key = bytes.get(key_offset..key_offset.checked_add(24)?)?;
+        let _resref = fixed_resref_bytes_to_string(key.get(0..RESREF_BYTES)?)?;
+        let resource_id = usize::try_from(read_le_u32(key, 16)?).ok()?;
+        let restype = u16::from_le_bytes([*key.get(20)?, *key.get(21)?]);
+        let resource_entry_offset =
+            resource_list_offset.checked_add(resource_id.checked_mul(8)?)?;
+        let offset = usize::try_from(read_le_u32(bytes, resource_entry_offset)?).ok()?;
+        let size = usize::try_from(read_le_u32(bytes, resource_entry_offset + 4)?).ok()?;
+        if offset.checked_add(size)? > bytes.len() {
+            return None;
+        }
+        entries.push(ErfResourceEntry {
+            restype,
+            offset,
+            size,
+        });
+    }
+
+    Some(entries)
+}
+
+fn parse_ifo_module_declaration(
+    bytes: &[u8],
+) -> Option<(Option<String>, Option<String>, Vec<String>, Vec<String>)> {
+    let fields = gff_root_fields(bytes)?;
+    let module_name = fields
+        .iter()
+        .find(|field| field.label == "Mod_Name")
+        .and_then(|field| gff_locstring_value(bytes, field));
+    let custom_tlk = fields
+        .iter()
+        .find(|field| field.label == "Mod_CustomTlk")
+        .and_then(|field| gff_string_value(bytes, field))
+        .filter(|value| !value.trim().is_empty());
+    let hak_list = fields
+        .iter()
+        .find(|field| field.label == "Mod_HakList" && field.field_type == GFF_TYPE_LIST)
+        .and_then(|field| gff_list_structs(bytes, field.data))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|struct_index| {
+            gff_struct_fields(bytes, struct_index).and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|field| field.label == "Mod_Hak")
+                    .and_then(|field| {
+                        gff_string_value(bytes, field).or_else(|| gff_resref_value(bytes, field))
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
+    let area_order = fields
+        .iter()
+        .find(|field| field.label == "Mod_Area_list" && field.field_type == GFF_TYPE_LIST)
+        .and_then(|field| gff_list_structs(bytes, field.data))?
+        .into_iter()
+        .filter_map(|struct_index| {
+            gff_struct_fields(bytes, struct_index).and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|field| field.label == "Area_Name")
+                    .and_then(|field| gff_resref_value(bytes, field))
+            })
+        })
+        .collect::<Vec<_>>();
+    Some((module_name, custom_tlk, hak_list, area_order))
+}
+
+fn gff_root_fields(bytes: &[u8]) -> Option<Vec<GffField>> {
+    gff_struct_fields(bytes, 0)
+}
+
+fn gff_struct_fields(bytes: &[u8], struct_index: u32) -> Option<Vec<GffField>> {
+    let layout = gff_layout(bytes)?;
+    gff_struct_fields_with_layout(bytes, &layout, struct_index)
+}
+
+fn gff_struct_fields_with_layout(
+    bytes: &[u8],
+    layout: &GffLayout,
+    struct_index: u32,
+) -> Option<Vec<GffField>> {
+    let struct_index = usize::try_from(struct_index).ok()?;
+    if struct_index >= layout.struct_count {
+        return None;
+    }
+    let struct_offset = layout
+        .struct_offset
+        .checked_add(struct_index.checked_mul(12)?)?;
+    let data = read_le_u32(bytes, struct_offset + 4)?;
+    let field_count = read_le_u32(bytes, struct_offset + 8)?;
+    if field_count > MAX_GFF_FIELD_COUNT {
+        return None;
+    }
+    let indices = if field_count == 1 {
+        vec![data]
+    } else {
+        let start = usize::try_from(data).ok()?;
+        let count = usize::try_from(field_count).ok()?;
+        if start.checked_add(count.checked_mul(4)?)? > layout.field_indices_count {
+            return None;
+        }
+        (0..count)
+            .map(|index| read_le_u32(bytes, layout.field_indices_offset + start + index * 4))
+            .collect::<Option<Vec<_>>>()?
+    };
+
+    indices
+        .into_iter()
+        .map(|field_index| gff_field(bytes, layout, field_index))
+        .collect()
+}
+
+fn gff_field(bytes: &[u8], layout: &GffLayout, field_index: u32) -> Option<GffField> {
+    let field_index = usize::try_from(field_index).ok()?;
+    if field_index >= layout.field_count {
+        return None;
+    }
+    let offset = layout
+        .field_offset
+        .checked_add(field_index.checked_mul(12)?)?;
+    let field_type = read_le_u32(bytes, offset)?;
+    let label_index = usize::try_from(read_le_u32(bytes, offset + 4)?).ok()?;
+    let data = read_le_u32(bytes, offset + 8)?;
+    if label_index >= layout.label_count {
+        return None;
+    }
+    let label_offset = layout
+        .label_offset
+        .checked_add(label_index.checked_mul(RESREF_BYTES)?)?;
+    let label =
+        fixed_resref_bytes_to_string(bytes.get(label_offset..label_offset + RESREF_BYTES)?)?;
+    Some(GffField {
+        field_type,
+        label,
+        data,
+    })
+}
+
+fn gff_layout(bytes: &[u8]) -> Option<GffLayout> {
+    if bytes.len() < 56 || bytes.get(4..8)? != b"V3.2" {
+        return None;
+    }
+    let magic = bytes.get(0..4)?;
+    if !matches!(magic, b"IFO " | b"ARE " | b"GIT " | b"GFF ") {
+        return None;
+    }
+    let struct_offset = usize::try_from(read_le_u32(bytes, 8)?).ok()?;
+    let struct_count = usize::try_from(read_le_u32(bytes, 12)?).ok()?;
+    let field_offset = usize::try_from(read_le_u32(bytes, 16)?).ok()?;
+    let field_count = usize::try_from(read_le_u32(bytes, 20)?).ok()?;
+    let label_offset = usize::try_from(read_le_u32(bytes, 24)?).ok()?;
+    let label_count = usize::try_from(read_le_u32(bytes, 28)?).ok()?;
+    let field_data_offset = usize::try_from(read_le_u32(bytes, 32)?).ok()?;
+    let _field_data_count = usize::try_from(read_le_u32(bytes, 36)?).ok()?;
+    let field_indices_offset = usize::try_from(read_le_u32(bytes, 40)?).ok()?;
+    let field_indices_count = usize::try_from(read_le_u32(bytes, 44)?).ok()?;
+    let list_indices_offset = usize::try_from(read_le_u32(bytes, 48)?).ok()?;
+    let list_indices_count = usize::try_from(read_le_u32(bytes, 52)?).ok()?;
+    if struct_count > MAX_GFF_STRUCT_COUNT as usize
+        || field_count > MAX_GFF_FIELD_COUNT as usize
+        || struct_offset >= bytes.len()
+        || field_offset >= bytes.len()
+        || label_offset >= bytes.len()
+        || field_data_offset >= bytes.len()
+        || field_indices_offset > bytes.len()
+        || list_indices_offset > bytes.len()
+    {
+        return None;
+    }
+    Some(GffLayout {
+        struct_offset,
+        struct_count,
+        field_offset,
+        field_count,
+        label_offset,
+        label_count,
+        field_data_offset,
+        field_indices_offset,
+        field_indices_count,
+        list_indices_offset,
+        list_indices_count,
+    })
+}
+
+fn gff_list_structs(bytes: &[u8], data: u32) -> Option<Vec<u32>> {
+    let layout = gff_layout(bytes)?;
+    let start = usize::try_from(data).ok()?;
+    let count_offset = layout.list_indices_offset.checked_add(start)?;
+    let count = usize::try_from(read_le_u32(bytes, count_offset)?).ok()?;
+    let entries_offset = count_offset.checked_add(4)?;
+    let end = entries_offset.checked_add(count.checked_mul(4)?)?;
+    if end
+        > layout
+            .list_indices_offset
+            .checked_add(layout.list_indices_count)?
+        || end > bytes.len()
+    {
+        return None;
+    }
+    (0..count)
+        .map(|index| read_le_u32(bytes, entries_offset + index * 4))
+        .collect()
+}
+
+fn gff_string_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_CEXO_STRING {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let len = usize::try_from(read_le_u32(bytes, offset)?).ok()?;
+    let start = offset.checked_add(4)?;
+    let end = start.checked_add(len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string())
+}
+
+fn gff_resref_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_RESREF {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let len = usize::from(*bytes.get(offset)?);
+    if len > CRESREF_TEXT_BYTES {
+        return None;
+    }
+    let start = offset.checked_add(1)?;
+    let end = start.checked_add(len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string())
+}
+
+fn gff_locstring_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_CEXO_LOCSTRING {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let _total_size = read_le_u32(bytes, offset)?;
+    let _string_ref = read_le_u32(bytes, offset + 4)?;
+    let count = usize::try_from(read_le_u32(bytes, offset + 8)?).ok()?;
+    let mut cursor = offset.checked_add(12)?;
+    let mut first = None;
+    for _ in 0..count {
+        let _language = read_le_u32(bytes, cursor)?;
+        let len = usize::try_from(read_le_u32(bytes, cursor + 4)?).ok()?;
+        let start = cursor.checked_add(8)?;
+        let end = start.checked_add(len)?;
+        if end > bytes.len() {
+            return None;
+        }
+        if first.is_none() {
+            first = Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string());
+        }
+        cursor = end;
+    }
+    first
+}
+
+fn fixed_resref_bytes_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.len() != RESREF_BYTES {
+        return None;
+    }
+    let length = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(RESREF_BYTES);
+    if !bytes[..length].iter().copied().all(is_resref_char) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes[..length]).to_string())
+}
+
+fn split_env_list(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split([';', ','])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+}
+
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn normalized_resource_text(value: &str) -> String {
+    value
+        .bytes()
+        .filter(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect()
 }
 
 fn compact_declared_zero_area_table(
@@ -1558,6 +2378,38 @@ mod tests {
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.module_resref.as_deref(), Some("Dark_R"));
         assert_eq!(summary.resource_name_count, 3);
+        assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn rewrites_declared_zero_cepv23_resource_block_to_exact_ee_shape() {
+        let mut payload = include_bytes!(
+            "../../fixtures/module_info/local_cepv23_declared_zero_hak_module_info_20260520.bin"
+        )
+        .to_vec();
+
+        let summary = rewrite_module_info_payload(&mut payload)
+            .expect("declared-zero compact CEPv23 Module_Info should be rewritten");
+
+        assert!(summary.compact_legacy_no_resource);
+        assert_eq!(summary.old_declared, 0);
+        assert_eq!(summary.hak_count, 18);
+        assert_eq!(summary.custom_tlk.as_deref(), Some("cep22_v1"));
+        assert_eq!(summary.module_resref.as_deref(), Some("cepv23_starter"));
+        assert_eq!(
+            summary.hak_order_top_first.first().map(String::as_str),
+            Some("cep2_top_v22")
+        );
+        assert_eq!(
+            summary.hak_order_top_first.get(2).map(String::as_str),
+            Some("cep2_add_phenos5")
+        );
+        assert_eq!(
+            summary.hak_order_top_first.last().map(String::as_str),
+            Some("cep2_crp_s")
+        );
+        assert_eq!(summary.resource_name_count, 7);
         assert!(crate::strict::module_info_shape_valid(&payload));
     }
 

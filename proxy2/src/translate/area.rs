@@ -391,12 +391,18 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     let area_resref_was_plausible = area_resref_plausible(&area_resref);
     let mut working_payload = payload.clone();
+    let fragmented_cexo_resource_repair_required = compact_cexo_area_needs_module_resource_repair(
+        &working_payload,
+        fragment_offset,
+        &static_layout,
+        area_resref_was_plausible,
+    );
     let module_resource_area_repair = repair_compact_area_from_module_resource(
         &mut working_payload,
         fragment_offset,
         legacy_area_object_id,
         &static_layout,
-        !area_resref_was_plausible,
+        !area_resref_was_plausible || fragmented_cexo_resource_repair_required,
     );
     if let Some(resource_info) = module_resource_area_repair.as_ref() {
         area_resref = resource_info.resref.clone();
@@ -1336,6 +1342,41 @@ fn repair_compact_area_from_module_resource(
     );
 
     Some(info)
+}
+
+fn compact_cexo_area_needs_module_resource_repair(
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    area_resref_was_plausible: bool,
+) -> bool {
+    if !area_resref_was_plausible
+        || layout.dialect != AreaStaticDialect::Legacy169
+        || layout.area_name_encoding != AreaNameEncoding::CExoString
+    {
+        return false;
+    }
+
+    let Some(name_len) = usize::try_from(layout.area_name_length).ok() else {
+        return false;
+    };
+    if name_len == 0 || diamond_cexo_string_area_name_fragments(payload, fragment_offset).is_none()
+    {
+        return false;
+    }
+
+    let Some(packet_width) = read_area_u32(payload, fragment_offset, layout.width_read_offset)
+    else {
+        return false;
+    };
+    let Some(packet_height) = read_area_u32(payload, fragment_offset, layout.height_read_offset)
+    else {
+        return false;
+    };
+
+    packet_width == 0
+        || packet_height == 0
+        || !scan_area_tile_stream(payload, fragment_offset).valid
 }
 
 fn module_resource_tile_scan_matches(
@@ -4668,6 +4709,9 @@ mod tests {
     const LOCAL_CEPV22_WELCOME_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_cepv22_welcome_client_area_compact.bin");
     #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CEPV23_WELCOME_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_cepv23_area_client_area_area_20260520.bin");
+    #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CONTEST_CHAMPIONS_ITEMS_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_contest_champions_items_area_compact.bin");
 
@@ -5433,6 +5477,114 @@ mod tests {
             .expect("fragmented local CEP area rewrite");
         let proof = ee_area_client_area_exact_read_proof(&payload)
             .expect("rewritten CEP area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, compact_info.resref);
+        assert_eq!(summary.tileset_resref, compact_info.tileset);
+        assert_eq!(summary.width, compact_info.width);
+        assert_eq!(summary.packet_height, compact_info.height);
+        assert_eq!(
+            summary.tile_count,
+            compact_info.width.saturating_mul(compact_info.height)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondFragmentedCExoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_cepv23_fragmented_cexo_area_repairs_plausible_resref_source() {
+        let _context_guard = module_context_test_guard();
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "cep_starter_module".to_string(),
+                module_resref: "cepv23_starter".to_string(),
+                areas: vec![
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Welcom o CEPv2.3".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "CEP 2.3 Tester".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "TNO cast exterior".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Horse Farm H e B ique".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0225,
+                        name: "* * _Crafter".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0228,
+                        name: "Beach".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_023B,
+                        name: "_Enc ter Area".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let mut payload = LOCAL_CEPV23_WELCOME_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let source_layout =
+            area_static_layout(&payload, fragment_offset).expect("fragmented CExo static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::CExoString
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("area")
+        );
+        assert_eq!(
+            diamond_cexo_string_area_name_fragments(&payload, fragment_offset)
+                .expect("fragmented CExoString area-name fragments"),
+            vec!["Welcom".to_string(), "o CEPv2.3".to_string()]
+        );
+        assert!(compact_cexo_area_needs_module_resource_repair(
+            &payload,
+            fragment_offset,
+            &source_layout,
+            true
+        ));
+        assert!(!scan_area_tile_stream(&payload, fragment_offset).valid);
+
+        let compact_info =
+            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
+                .expect("observed module context maps fragmented CExo area to local ARE resource");
+        assert_eq!(compact_info.resref, "area");
+        assert_eq!(
+            usize::try_from(source_layout.area_name_length).ok(),
+            Some(compact_info.name.len())
+        );
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("fragmented local CEPv23 area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten CEPv23 area should match EE LoadArea cursor proof");
 
         assert_eq!(summary.area_resref, compact_info.resref);
         assert_eq!(summary.tileset_resref, compact_info.tileset);

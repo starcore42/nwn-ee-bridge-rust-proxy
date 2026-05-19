@@ -1968,6 +1968,33 @@ mod tests {
         )
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_cepv23_declared_zero_module_info() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/module_info/local_cepv23_declared_zero_hak_module_info_20260520.bin"
+        )
+        .to_vec();
+        let runtime = module_resources::ModuleResourceRuntime::default();
+
+        let rewrite = rewrite_single_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            Some(&runtime),
+            None,
+            None,
+        );
+
+        assert!(
+            !rewrite.should_quarantine(),
+            "dispatcher must not quarantine exact CEPv23 compact Module_Info"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(rewrite.verified_family(), VerifiedFamily::ModuleInfo);
+        assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
     #[test]
     fn dispatcher_claims_hg_seq41_captain_mixed_live_object_without_raw_passthrough() {
         // HG driver-only mixed creature stream: inventory/update/add/appearance/
