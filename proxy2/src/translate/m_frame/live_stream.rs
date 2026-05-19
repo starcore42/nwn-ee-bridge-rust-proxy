@@ -441,7 +441,7 @@ fn flush_pending_live_object_stream_if_verified(
             },
         ) {
             claimed = true;
-            tracing::warn!(
+            tracing::info!(
                 old_declared = summary.old_declared,
                 new_declared = summary.new_declared,
                 removed_update_records = summary.removed_update_records,

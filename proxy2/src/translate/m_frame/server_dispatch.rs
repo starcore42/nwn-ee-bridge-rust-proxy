@@ -633,7 +633,7 @@ fn finalize_server_translator_claim(
                     .unwrap_or(false)
             },
         ) {
-            tracing::warn!(
+            tracing::info!(
                 family = family_name,
                 old_declared = summary.old_declared,
                 new_declared = summary.new_declared,

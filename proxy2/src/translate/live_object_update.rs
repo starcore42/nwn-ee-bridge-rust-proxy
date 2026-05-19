@@ -1575,7 +1575,7 @@ where
     if let Some(violation) = first_lifecycle_violation(&claim, |object_type, object_id| {
         is_already_materialized(object_type, object_id)
     }) {
-        tracing::warn!(
+        tracing::info!(
             opcode = %char::from(violation.opcode),
             object_type = violation.object_type,
             object_id = violation.object_id,
@@ -1758,7 +1758,7 @@ where
         summary.removed_fragment_bits = summary
             .removed_fragment_bits
             .saturating_add(u32::try_from(removed_bits).unwrap_or(u32::MAX));
-        tracing::warn!(
+        tracing::info!(
             rewrite_kind = removal.kind.as_str(),
             opcode = %char::from(mention.opcode),
             object_type = mention.object_type,
