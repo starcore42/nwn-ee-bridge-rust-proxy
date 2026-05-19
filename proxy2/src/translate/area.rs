@@ -95,6 +95,7 @@ const MAX_REASONABLE_AREA_TILE_COUNT: u32 = 65_536;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const AREA_PRESENT_USER_BOOL_COUNT: usize = 1;
 const LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS: usize = 14;
+const MAX_DECLARED_ZERO_AREA_FRAGMENT_BYTES: usize = 16;
 const EE_AREA_BUILD36_3_TILESET_OPTIONS_BOOL_BIT_INDEX: usize =
     LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
 const EE_AREA_BUILD36_5_TILE_LOOP_BOOL_BIT_INDEX: usize =
@@ -147,6 +148,7 @@ pub enum AreaRewriteKind {
     LegacyDiamondLongFixedAreaName,
     LegacyDiamondFixedAreaName,
     LegacyDiamondShortFixedAreaName,
+    LegacyDiamondDeclaredZeroReadWindow,
     LegacyDiamondCompactAreaName,
     LegacyDiamondFragmentedCExoAreaName,
     LegacyDiamondModuleResourceAreaRepair,
@@ -320,6 +322,17 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         return None;
     }
 
+    let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    if declared == 0 {
+        if let Some(summary) = rewrite_declared_zero_area_client_area_payload(payload) {
+            return Some(summary);
+        }
+    }
+
+    rewrite_declared_area_client_area_payload(payload)
+}
+
+fn rewrite_declared_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared < (HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES) as u32 {
         tracing::warn!(
@@ -709,6 +722,66 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         placeable_static_count,
         placeable_context,
     })
+}
+
+fn rewrite_declared_zero_area_client_area_payload(
+    payload: &mut Vec<u8>,
+) -> Option<AreaRewriteSummary> {
+    if payload.len() <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    let max_fragment_bytes =
+        MAX_DECLARED_ZERO_AREA_FRAGMENT_BYTES.min(payload.len() - HIGH_LEVEL_HEADER_BYTES);
+    for fragment_size in 1..=max_fragment_bytes {
+        let fragment_offset = payload.len().checked_sub(fragment_size)?;
+        if fragment_offset < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
+            continue;
+        }
+        let fragment = payload.get(fragment_offset..)?;
+        if cnw_fragment_consumable_bits(fragment) != Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS) {
+            continue;
+        }
+
+        let mut staged = payload.clone();
+        write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
+        let Some(mut summary) = rewrite_declared_area_client_area_payload(&mut staged) else {
+            continue;
+        };
+        summary.old_declared = 0;
+        summary
+            .rewrite_kinds
+            .push(AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow);
+        candidates.push((fragment_offset, staged, summary));
+    }
+
+    if candidates.len() != 1 {
+        tracing::warn!(
+            candidates = candidates.len(),
+            payload_len = payload.len(),
+            "Area_ClientArea rewrite skipped: declared-zero read window did not resolve uniquely"
+        );
+        return None;
+    }
+
+    let (inferred_declared, staged, summary) = candidates.remove(0);
+    tracing::info!(
+        rewrite_kind = ?AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow,
+        inferred_declared,
+        new_declared = summary.new_declared,
+        old_fragment_offset = summary.old_fragment_offset,
+        new_fragment_offset = summary.new_fragment_offset,
+        area_resref = summary.area_resref.as_str(),
+        tileset_resref = summary.tileset_resref.as_str(),
+        width = summary.width,
+        packet_height = summary.packet_height,
+        inferred_height = summary.inferred_height,
+        tile_count = summary.tile_count,
+        "Area_ClientArea declared-zero read window repaired from exact validated legacy fragment tail"
+    );
+    *payload = staged;
+    Some(summary)
 }
 
 pub fn ee_area_client_area_payload_shape_valid(payload: &[u8]) -> bool {
@@ -1989,6 +2062,36 @@ fn compact_fragments_match_allowing_singletons(target: &str, fragments: &[String
         matched = matched.saturating_add(fragment.len());
     }
     matched >= 4.min(target.len())
+}
+
+fn area_resource_matches_single_area_fragments(
+    info: &ModuleAreaResourceInfo,
+    fragments: &[String],
+) -> bool {
+    compact_fragments_match_single_area(&info.name, fragments)
+        || compact_fragments_match_single_area(&info.resref, fragments)
+}
+
+fn compact_fragments_match_single_area(target: &str, fragments: &[String]) -> bool {
+    let target = normalized_resource_text(target);
+    if target.is_empty() || fragments.is_empty() {
+        return false;
+    }
+
+    let mut cursor = 0usize;
+    let mut matched = 0usize;
+    for fragment in fragments {
+        let fragment = normalized_resource_text(fragment);
+        if fragment.is_empty() {
+            continue;
+        }
+        let Some(found) = target[cursor..].find(&fragment) else {
+            return false;
+        };
+        cursor = cursor.saturating_add(found).saturating_add(fragment.len());
+        matched = matched.saturating_add(fragment.len());
+    }
+    matched != 0
 }
 
 fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStreamScan {
@@ -3326,7 +3429,6 @@ fn module_area_resource_info_for_compact_packet(
                 .collect::<Vec<_>>(),
             "Area_ClientArea compact resource repair skipped: area object id was not present in observed Module_Info context"
         );
-        return None;
     }
     let compact_fragments = diamond_compact_area_name_fragments(payload, fragment_offset)
         .or_else(|| diamond_long_fixed_area_name_fragments(payload, fragment_offset))
@@ -3358,6 +3460,28 @@ fn module_area_resource_info_for_compact_packet(
             table_area_order = ?table.area_order,
             "Area_ClientArea compact resource repair skipped: local module table did not match observed Module_Info context"
         );
+        return None;
+    }
+
+    if area_indices.is_empty() {
+        if context.areas.len() == 1 && table.areas.len() == 1 {
+            let info = table.areas.first()?.clone();
+            let observed_area = context.areas.first()?;
+            let observed_fragments = compact_observed_text_fragments(&observed_area.name);
+            if module_table_identity_matches_observed_context(&table, &context)
+                && area_resource_matches_single_area_fragments(&info, &observed_fragments)
+                && area_resource_matches_single_area_fragments(&info, &compact_fragments)
+            {
+                tracing::info!(
+                    legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                    observed_area_object_id = format_args!("0x{:08X}", observed_area.object_id),
+                    area_resref = info.resref.as_str(),
+                    area_name = info.name.as_str(),
+                    "Area_ClientArea compact resource repair resolved single-area Module_Info object-id alias"
+                );
+                return Some(info);
+            }
+        }
         return None;
     }
 
@@ -3627,7 +3751,9 @@ fn observed_module_file_path(
         let area_matches = module_table_area_matches_observed_context(&table, context);
         let identity_matches = module_table_identity_matches_observed_context(&table, context)
             || module_file_path_matches_observed_context(&candidate, context);
-        if identity_matches && area_matches {
+        let single_area_identity_matches =
+            identity_matches && module_table_single_area_matches_observed_context(&table, context);
+        if identity_matches && (area_matches || single_area_identity_matches) {
             return Some(candidate);
         }
         if area_matches {
@@ -3638,6 +3764,23 @@ fn observed_module_file_path(
         }
     }
     if fallback_count == 1 { fallback } else { None }
+}
+
+fn module_table_single_area_matches_observed_context(
+    table: &ModuleAreaResourceTable,
+    context: &crate::translate::module::ObservedModuleContext,
+) -> bool {
+    if context.areas.len() != 1 || table.areas.len() != 1 {
+        return false;
+    }
+    let Some(observed_area) = context.areas.first() else {
+        return false;
+    };
+    let observed_fragments = compact_observed_text_fragments(&observed_area.name);
+    table
+        .areas
+        .first()
+        .is_some_and(|info| area_resource_matches_single_area_fragments(info, &observed_fragments))
 }
 
 fn observed_module_file_candidates(
@@ -4430,7 +4573,7 @@ fn diamond_fixed_area_name_fragments(
     let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
     let end = payload_offset.checked_add(DIAMOND_LEGACY_AREA_NAME_BYTES)?;
     let bytes = payload.get(payload_offset..end)?;
-    compact_fragmented_ascii_runs_allowing_singletons(bytes)
+    compact_printable_ascii_runs_allowing_singletons(bytes)
 }
 
 fn diamond_long_fixed_area_name_fragments(
@@ -4441,7 +4584,7 @@ fn diamond_long_fixed_area_name_fragments(
     let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
     let end = payload_offset.checked_add(DIAMOND_LONG_AREA_NAME_BYTES)?;
     let bytes = payload.get(payload_offset..end)?;
-    compact_fragmented_ascii_runs_allowing_singletons(bytes)
+    compact_printable_ascii_runs_allowing_singletons(bytes)
 }
 
 fn diamond_short_fixed_area_name_fragments(
@@ -4452,7 +4595,7 @@ fn diamond_short_fixed_area_name_fragments(
     let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
     let end = payload_offset.checked_add(DIAMOND_SHORT_AREA_NAME_BYTES)?;
     let bytes = payload.get(payload_offset..end)?;
-    compact_fragmented_ascii_runs_allowing_singletons(bytes)
+    compact_printable_ascii_runs_allowing_singletons(bytes)
 }
 
 fn compact_fragmented_ascii_runs(bytes: &[u8]) -> Option<Vec<String>> {
@@ -4711,6 +4854,9 @@ mod tests {
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CEPV23_WELCOME_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_cepv23_area_client_area_area_20260520.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CEPV23_SKIES_DECLARED_ZERO: &[u8] =
+        include_bytes!("../../fixtures/area/local_cepv23_skies_area_declared_zero_20260520.bin");
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CONTEST_CHAMPIONS_ITEMS_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_contest_champions_items_area_compact.bin");
@@ -5598,6 +5744,84 @@ mod tests {
             summary
                 .rewrite_kinds
                 .contains(&AreaRewriteKind::LegacyDiamondFragmentedCExoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_cepv23_skies_declared_zero_area_repairs_from_resource_tail() {
+        let _context_guard = module_context_test_guard();
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "Skyboxes".to_string(),
+                module_resref: "cepv23_skies".to_string(),
+                areas: vec![crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0001,
+                    name: "A".to_string(),
+                }],
+            },
+        );
+
+        let mut payload = LOCAL_CEPV23_SKIES_DECLARED_ZERO.to_vec();
+        assert_eq!(read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES), Some(0));
+        let mut staged = payload.clone();
+        let inferred_declared = staged.len() - 2;
+        write_u32_le(
+            &mut staged,
+            HIGH_LEVEL_HEADER_BYTES,
+            inferred_declared as u32,
+        )
+        .expect("stage declared-zero read window");
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&staged).expect("staged read window");
+        let source_layout =
+            area_static_layout(&staged, fragment_offset).expect("staged static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondFixed16
+        );
+        assert_eq!(
+            read_u32_le(&staged, LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET),
+            Some(0x8000_0000)
+        );
+        assert_eq!(
+            diamond_short_fixed_area_name_fragments(&staged, fragment_offset)
+                .expect("short fixed area-name fragments"),
+            vec![" A".to_string()]
+        );
+        let compact_info =
+            module_area_resource_info_for_compact_packet(&staged, fragment_offset, 0x8000_0000)
+                .expect("single-area Module_Info alias maps to local ARE resource");
+        assert_eq!(compact_info.resref, "startarea");
+        assert_eq!(compact_info.name, "! Start Area");
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("declared-zero CEPv23 skies area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten skies area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.old_declared, 0);
+        assert_eq!(summary.area_resref, "startarea");
+        assert_eq!(summary.tileset_resref, "tdc01");
+        assert_eq!(summary.width, 3);
+        assert_eq!(summary.packet_height, 3);
+        assert_eq!(summary.tile_count, 9);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondShortFixedAreaName)
         );
         assert!(
             summary

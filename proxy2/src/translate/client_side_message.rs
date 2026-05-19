@@ -66,6 +66,9 @@ pub fn claim_or_rewrite_payload_if_verified(
     if rewrite_legacy_bulk_feedback_stale_declared_continued_text(payload).is_some() {
         return claim_feedback(payload);
     }
+    if rewrite_legacy_bulk_feedback_declared_zero_fragmented_text(payload).is_some() {
+        return claim_feedback(payload);
+    }
     rewrite_legacy_bulk_feedback_string(payload)
 }
 
@@ -385,6 +388,65 @@ fn rewrite_legacy_bulk_feedback_fragmented_text_window(payload: &mut Vec<u8>) ->
     rewritten.extend_from_slice(&BULK_FEEDBACK_STRING_ID.to_le_bytes());
     rewritten.extend_from_slice(&text_len_u32.to_le_bytes());
     rewritten.extend_from_slice(&text);
+
+    *payload = rewritten;
+    Some(())
+}
+
+/// Local Diamond can emit feedback id 0x00CC with the CNW declared field left
+/// at zero, then a zero legacy string marker, fragmented text bytes, and one
+/// compact CNW fragment byte. EE's case-11/id-0x00CC reader still wants the
+/// exact WORD id + DWORD CExoString shape, so repair only this bounded body and
+/// keep the final fragment byte outside the declared read window.
+fn rewrite_legacy_bulk_feedback_declared_zero_fragmented_text(payload: &mut Vec<u8>) -> Option<()> {
+    let high = HighLevel::parse(payload)?;
+    if (high.major, high.minor) != (CLIENT_SIDE_MAJOR, FEEDBACK_MINOR) {
+        return None;
+    }
+    if read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)? != 0 {
+        return None;
+    }
+    if read_u16_le(payload, READ_START)? != BULK_FEEDBACK_STRING_ID {
+        return None;
+    }
+    if read_le_u32(payload, READ_START + FEEDBACK_ID_BYTES)? != 0 {
+        return None;
+    }
+
+    let text_start = READ_START
+        .checked_add(FEEDBACK_ID_BYTES)?
+        .checked_add(CNW_LENGTH_BYTES)?;
+    let text_end = payload.len().checked_sub(1)?;
+    if text_end <= text_start {
+        return None;
+    }
+    let final_fragment = *payload.last()?;
+    if (final_fragment & 0xE0) == 0 {
+        return None;
+    }
+
+    let text = extract_legacy_feedback_text(&payload[text_start..text_end])?;
+    if !(16..=MAX_FEEDBACK_TEXT_BYTES).contains(&text.len())
+        || !feedback_text_window_plausible(&text)
+    {
+        return None;
+    }
+
+    let declared = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(FEEDBACK_ID_BYTES)?
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(text.len())?;
+    let declared_u32 = u32::try_from(declared).ok()?;
+    let text_len_u32 = u32::try_from(text.len()).ok()?;
+
+    let mut rewritten = Vec::with_capacity(declared + 1);
+    rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
+    rewritten.extend_from_slice(&declared_u32.to_le_bytes());
+    rewritten.extend_from_slice(&BULK_FEEDBACK_STRING_ID.to_le_bytes());
+    rewritten.extend_from_slice(&text_len_u32.to_le_bytes());
+    rewritten.extend_from_slice(&text);
+    rewritten.push(final_fragment);
 
     *payload = rewritten;
     Some(())
@@ -729,6 +791,48 @@ mod tests {
             read_u16_le(&payload, READ_START),
             Some(BULK_FEEDBACK_STRING_ID)
         );
+        assert_eq!(payload.last(), legacy.last());
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_cepv23_skies_declared_zero_feedback_rewrites_to_exact_ee_text_shape() {
+        let legacy = include_bytes!(
+            "../../fixtures/client_side_message/local_cepv23_skies_feedback_declared_zero_20260520.bin"
+        );
+        assert_eq!(&legacy[..3], &[b'P', CLIENT_SIDE_MAJOR, FEEDBACK_MINOR]);
+        assert_eq!(read_le_u32(legacy, HIGH_LEVEL_HEADER_BYTES), Some(0));
+        assert_eq!(
+            read_u16_le(legacy, READ_START),
+            Some(BULK_FEEDBACK_STRING_ID)
+        );
+        assert_eq!(read_le_u32(legacy, READ_START + FEEDBACK_ID_BYTES), Some(0));
+        assert!(claim_payload_if_verified(legacy).is_none());
+
+        let mut payload = legacy.to_vec();
+        let summary = claim_or_rewrite_payload_if_verified(&mut payload)
+            .expect("declared-zero fragmented feedback should rewrite exactly");
+
+        let declared =
+            usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap()).unwrap();
+        let text_len =
+            usize::try_from(read_le_u32(&payload, READ_START + FEEDBACK_ID_BYTES).unwrap())
+                .unwrap();
+        let text_start = READ_START + FEEDBACK_ID_BYTES + CNW_LENGTH_BYTES;
+        let text = &payload[text_start..declared];
+
+        assert_eq!(summary.feedback_id, BULK_FEEDBACK_STRING_ID);
+        assert_eq!(summary.declared, declared);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(declared, payload.len() - summary.fragment_bytes);
+        assert_eq!(text_len, text.len());
+        assert!(text.windows(b"sky_list".len()).any(|w| w == b"sky_list"));
+        assert!(
+            text.windows(b"specified hour.".len())
+                .any(|w| w == b"specified hour.")
+        );
+        assert!(!text.contains(&0));
         assert_eq!(payload.last(), legacy.last());
         assert!(claim_payload_if_verified(&payload).is_some());
     }
