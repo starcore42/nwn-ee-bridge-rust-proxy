@@ -1317,9 +1317,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x0D && client_gui_inventory::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientInput => {
-            high.major == 0x06
-                && matches!(high.minor, 0x01 | 0x03 | 0x05 | 0x09 | 0x0B)
-                && client_input::claim_payload_if_verified(payload).is_some()
+            high.major == 0x06 && client_input::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientLogin => {
             high.major == 0x02
@@ -2915,6 +2913,117 @@ mod tests {
             VerifiedFamily::Login,
             &login_confirm,
         ));
+    }
+
+    #[test]
+    fn verified_client_input_accepts_exact_parser_owned_minors() {
+        let payloads = vec![
+            ("attack", build_client_input_object_only(0x02)),
+            ("targeted use-feat", build_client_input_use_feat_target()),
+            ("location use-feat", build_client_input_use_feat_location()),
+            ("use-skill", build_client_input_use_skill()),
+            ("toggle-mode", build_client_input_toggle_mode(None)),
+            (
+                "counterspell toggle-mode",
+                build_client_input_toggle_mode(Some(0x8000_34D2)),
+            ),
+            ("unlock-object", build_client_input_object_only(0x0C)),
+            ("rest", build_client_input_empty(0x0D)),
+            ("lock-object", build_client_input_object_only(0x0E)),
+            ("memorize-spell", build_client_input_memorize_spell()),
+            ("unmemorize-spell", build_client_input_unmemorize_spell()),
+        ];
+
+        for (name, payload) in payloads {
+            assert!(
+                verified_family_inflated_payload_valid(VerifiedFamily::ClientInput, &payload),
+                "{name} should be accepted through exact client-input parser ownership"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_client_input_rejects_unclaimed_minors() {
+        for minor in [0x04, 0x08, 0x0F, 0x12] {
+            let payload = build_client_input_empty(minor);
+            assert!(
+                !verified_family_inflated_payload_valid(VerifiedFamily::ClientInput, &payload),
+                "client input minor {minor:#04x} should not be admitted without an exact parser claim"
+            );
+        }
+    }
+
+    fn build_client_input_payload(minor: u8, body: &[u8]) -> Vec<u8> {
+        const CLIENT_INPUT_HEADER_BYTES: usize = 7;
+
+        let declared = CLIENT_INPUT_HEADER_BYTES + body.len();
+        let mut payload = Vec::with_capacity(declared + 1);
+        payload.extend_from_slice(&[0x70, 0x06, minor]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(body);
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_client_input_object_only(minor: u8) -> Vec<u8> {
+        build_client_input_payload(minor, &0x8000_34D1u32.to_le_bytes())
+    }
+
+    fn build_client_input_empty(minor: u8) -> Vec<u8> {
+        build_client_input_payload(minor, &[])
+    }
+
+    fn build_client_input_use_feat_target() -> Vec<u8> {
+        let mut body = Vec::with_capacity(8);
+        body.extend_from_slice(&0x0123u16.to_le_bytes());
+        body.extend_from_slice(&0x0045u16.to_le_bytes());
+        body.extend_from_slice(&0x8000_34D1u32.to_le_bytes());
+        build_client_input_payload(0x06, &body)
+    }
+
+    fn build_client_input_use_feat_location() -> Vec<u8> {
+        let mut body = Vec::with_capacity(20);
+        body.extend_from_slice(&0x0123u16.to_le_bytes());
+        body.extend_from_slice(&0x0045u16.to_le_bytes());
+        body.extend_from_slice(&0x7F00_0000u32.to_le_bytes());
+        body.extend_from_slice(&11.0f32.to_le_bytes());
+        body.extend_from_slice(&12.0f32.to_le_bytes());
+        body.extend_from_slice(&0.5f32.to_le_bytes());
+        build_client_input_payload(0x06, &body)
+    }
+
+    fn build_client_input_use_skill() -> Vec<u8> {
+        let mut body = Vec::with_capacity(18);
+        body.push(3);
+        body.push(0);
+        body.extend_from_slice(&0x8000_34D1u32.to_le_bytes());
+        body.extend_from_slice(&1.0f32.to_le_bytes());
+        body.extend_from_slice(&2.0f32.to_le_bytes());
+        body.extend_from_slice(&0.0f32.to_le_bytes());
+        build_client_input_payload(0x07, &body)
+    }
+
+    fn build_client_input_toggle_mode(counterspell_target: Option<u32>) -> Vec<u8> {
+        let mut body = Vec::with_capacity(1 + counterspell_target.map_or(0, |_| 4));
+        body.push(if counterspell_target.is_some() { 5 } else { 1 });
+        if let Some(target) = counterspell_target {
+            body.extend_from_slice(&target.to_le_bytes());
+        }
+        build_client_input_payload(0x0A, &body)
+    }
+
+    fn build_client_input_memorize_spell() -> Vec<u8> {
+        let mut body = Vec::with_capacity(8);
+        body.push(0);
+        body.extend_from_slice(&0x0000_1234u32.to_le_bytes());
+        body.push(2);
+        body.push(1);
+        body.push(0);
+        build_client_input_payload(0x10, &body)
+    }
+
+    fn build_client_input_unmemorize_spell() -> Vec<u8> {
+        build_client_input_payload(0x11, &[0, 2, 1])
     }
 
     #[test]
