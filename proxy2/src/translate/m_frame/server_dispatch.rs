@@ -1063,14 +1063,16 @@ fn translate_live_object_declared_length_repair(
             ServerTranslatorOutcome::Claim(_)
         );
         let exact_claim = live_update::claim_payload_if_verified(&candidate).is_some();
-        if ambiguous_live_tail && !claimed_by_rewrite {
+        if ambiguous_live_tail {
             tracing::debug!(
                 old_declared = repair.old_declared,
                 repaired_declared = repair.new_declared,
                 old_payload_length = repair.old_payload_length,
                 read_bytes = repair.read_bytes_length,
                 fragment_bytes = repair.fragment_bytes_length,
-                "live-object declared-length repair rejected exact-only claim: proposed fragment tail still contains plausible live-object read boundaries"
+                claimed_by_rewrite,
+                exact_claim,
+                "live-object declared-length repair rejected: proposed fragment tail still contains plausible live-object read boundaries"
             );
             continue;
         }
@@ -1709,6 +1711,31 @@ mod live_object_dispatch_tests {
         assert_eq!(claim.declared, emitted_declared);
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn declared_length_repair_rejects_cepv22_short_prefix_with_live_tail() {
+        // Local CEP v2.2 startup capture from 2026-05-20. The declared window
+        // ends inside the first creature add, and later `P/U` live-object
+        // records are still present in the suffix. Declared-length repair must
+        // not accept a short semantically rewritten prefix that strands those
+        // records as CNW fragment storage.
+        let original = include_bytes!(
+            "../../../fixtures/live_object/local_cepv22_seq14_creature_burst_declared32_20260520.bin"
+        )
+        .to_vec();
+        let mut payload = original.clone();
+
+        let outcome = translate_live_object_declared_length_repair(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            None,
+        );
+
+        assert!(matches!(outcome, ServerTranslatorOutcome::None));
+        assert_eq!(payload, original);
     }
 
     #[test]

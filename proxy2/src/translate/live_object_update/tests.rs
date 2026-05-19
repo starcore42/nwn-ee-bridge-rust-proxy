@@ -2353,6 +2353,112 @@ fn local_diamond_seq17_sentinel_inventory_owner_is_removed_with_missing_update()
     assert_eq!(claim.live_bytes_length + 7, claim.declared);
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_cepv22_missing_creature_appearance_is_lifecycle_safe() {
+    // Local CEP v2.2 startup capture from 2026-05-20. The packet is already an
+    // exact EE `P 05 01` read-window, but the `P/5` creature-appearance record
+    // references Tavern Patron id `0x80000074` before this proxy has observed an
+    // `A/5` for that id. EE `sub_14077FE10` logs a missing pCreature, then keeps
+    // reading the appearance/name/equipment body with writes guarded by the
+    // resolved pointer, so this exact record must remain cursor-safe instead of
+    // being removed or quarantined as a generic missing-object `U`.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_cepv22_seq13_creature_appearance_missing_add_20260520.bin"
+    );
+
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("CEP v2.2 creature appearance packet should be exact EE shape");
+    let tavern_patron_appearance = claim
+        .mentions
+        .iter()
+        .find(|mention| {
+            mention.opcode == b'P'
+                && mention.object_type == super::CREATURE_OBJECT_TYPE
+                && mention.object_id == 0x8000_0074
+        })
+        .expect("fixture should contain the missing-add Tavern Patron appearance");
+    assert!(!tavern_patron_appearance.requires_materialized_object);
+
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+        .expect("exact P/5 appearance records are cursor-safe without prior materialization");
+    assert!(lifecycle_claim.creature_appearance_records >= 1);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_cepv22_seq11_zero_declared_stream_rewrites_and_claims_exactly() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_cepv22_seq11_liveobject_zero_declared_stream_20260520.bin"
+    )
+    .to_vec();
+
+    crate::translate::live_object::normalize_prefixed_fragments_payload_if_needed(&mut payload)
+        .expect("zero-declared CEP live-object stream should normalize");
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
+        &mut payload,
+        None,
+    );
+    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
+    let exact_claim = super::claim_payload_if_verified(&payload)
+        .expect("zero-declared CEP live-object stream should claim exactly");
+    assert!(exact_claim.add_records >= 1);
+    assert!(exact_claim.creature_appearance_records >= 1);
+    assert!(exact_claim.creature_update_records >= 1);
+
+    assert!(
+        super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
+        "the CEP stream contains an exact but unmaterialized Diamond no-op U/5 record"
+    );
+    let lifecycle_rewrite =
+        super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
+            .expect("exact missing-object U/5 should be removable after boundary proof");
+    assert_eq!(lifecycle_rewrite.removed_update_records, 1);
+    assert_eq!(lifecycle_rewrite.diamond_missing_object_update_records, 1);
+
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
+        .expect("zero-declared CEP stream should be lifecycle-safe after cleanup");
+    assert!(lifecycle_claim.add_records >= 1);
+    assert!(lifecycle_claim.creature_appearance_records >= 1);
+    assert!(lifecycle_claim.creature_update_records >= 1);
+    let accepted = include_bytes!(
+        "../../../fixtures/live_object/local_cepv22_seq11_liveobject_claimed_20260520.bin"
+    );
+    let accepted_claim = super::claim_payload_if_verified_with_lifecycle(accepted, |_, _| false)
+        .expect("accepted CEP stream fixture should remain lifecycle-safe");
+    assert_eq!(accepted_claim.add_records, lifecycle_claim.add_records);
+    assert_eq!(
+        accepted_claim.creature_appearance_records,
+        lifecycle_claim.creature_appearance_records
+    );
+    assert_eq!(
+        accepted_claim.creature_update_records,
+        lifecycle_claim.creature_update_records
+    );
+    assert_eq!(
+        &payload[..lifecycle_claim.declared],
+        &accepted[..accepted_claim.declared],
+        "CEP seq11 cleanup should keep the same exact EE live-object read window emitted by the harness"
+    );
+}
+
 #[test]
 fn local_diamond_seq12_door_placeable_stream_claims_with_materialized_adds() {
     let payload = include_bytes!(

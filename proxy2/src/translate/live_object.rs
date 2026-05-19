@@ -62,6 +62,8 @@ const LEGACY_UPDATE_SCALE_STATE_MASK: u32 = 0x0000_0004;
 const LEGACY_UPDATE_STATE_MASK: u32 = 0x0000_0010;
 const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
+const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
+const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 256;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
 const LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 5;
@@ -424,6 +426,10 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     while offset < end {
         if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
+            return false;
+        }
+        let min_record_len = minimum_legacy_live_object_record_length_at(bytes, offset);
+        if end.saturating_sub(offset) < min_record_len {
             return false;
         }
         let record_end =
@@ -1161,16 +1167,60 @@ fn live_object_read_prefix_walks_to(bytes: &[u8], start: usize, end: usize) -> b
         if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
             return false;
         }
-        let record_end =
+        let mut record_end =
             find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
         if record_end <= offset || record_end > end {
             return false;
+        }
+        if bytes.get(offset).copied() == Some(HIGH_LEVEL_ENVELOPE)
+            && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+            && record_end < end
+            && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+        {
+            if let Some(span_end) =
+                appearance_following_creature_update_fragment_span_end_for_transport(
+                    bytes, record_end, end,
+                )
+            {
+                record_end = span_end;
+            }
         }
         records = records.saturating_add(1);
         offset = record_end;
     }
 
     records != 0 && offset == end
+}
+
+fn appearance_following_creature_update_fragment_span_end_for_transport(
+    bytes: &[u8],
+    span_start: usize,
+    end: usize,
+) -> Option<usize> {
+    if span_start >= end
+        || span_start >= bytes.len()
+        || looks_like_legacy_live_object_sub_message_boundary(bytes, span_start)
+    {
+        return None;
+    }
+
+    let scan_end = span_start
+        .checked_add(MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES)?
+        .min(end)
+        .min(bytes.len());
+    for span_end in span_start.checked_add(1)?..scan_end.saturating_sub(1) {
+        if bytes.get(span_end).copied() != Some(b'U')
+            || bytes.get(span_end + 1).copied() != Some(CREATURE_OBJECT_TYPE)
+            || read_u32_le(bytes, span_end + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+            || !looks_like_legacy_live_object_sub_message_boundary(bytes, span_end)
+        {
+            continue;
+        }
+        if decode_cnw_msb_valid_bits(bytes.get(span_start..span_end)?).is_some() {
+            return Some(span_end);
+        }
+    }
+    None
 }
 
 fn looks_like_salvageable_legacy_live_object_record_at(

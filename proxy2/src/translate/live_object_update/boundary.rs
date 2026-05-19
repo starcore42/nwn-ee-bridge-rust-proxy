@@ -120,9 +120,22 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     if bytes.get(offset).copied() == Some(b'P') && bytes.get(offset + 1).copied() == Some(0x05) {
-        if let Some(record_end) =
-            appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end)
-        {
+        let legacy_end =
+            appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end);
+        let ee_byte_shape_end = appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
+            bytes, offset, scan_end,
+        );
+        if let Some(ee_end) = ee_byte_shape_end {
+            if legacy_end
+                .map(|legacy_end| ee_end > legacy_end)
+                .unwrap_or(false)
+                && (ee_end >= scan_end
+                    || looks_like_legacy_live_object_sub_message_boundary(bytes, ee_end))
+            {
+                return ee_end;
+            }
+        }
+        if let Some(record_end) = legacy_end {
             return record_end;
         }
     }

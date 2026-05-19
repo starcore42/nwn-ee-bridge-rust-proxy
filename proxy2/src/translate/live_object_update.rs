@@ -1512,6 +1512,14 @@ fn verified_record_mention(
         inventory_record_requires_materialized_owner_for_ee(
             live_bytes, offset, record_end, object_id,
         )
+    } else if opcode == b'P' && object_type == CREATURE_OBJECT_TYPE {
+        // EE `P/5` routes through `sub_1407B25C0` -> `sub_14077FE10`.
+        // That reader resolves the creature, logs `pCreature` if it is absent,
+        // but still consumes the appearance body with all writes guarded by the
+        // resolved pointer. This differs from generic `U` records, whose EE
+        // object lookup can abort before consuming the mask body. Treat exact
+        // appearance records as cursor-safe without requiring a prior add.
+        false
     } else {
         update_requires_materialized_object(object_type)
     };
@@ -2584,16 +2592,27 @@ pub fn rewrite_update_records_payload_if_possible(
         if opcode == b'P' && object_type == 0x05 {
             if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
                 eprintln!(
-                    "live-object creature-P rewrite state: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} already_ee={creature_appearance_already_ee_shaped} verified_ee={creature_appearance_verified_ee_shaped}"
+                    "live-object creature-P rewrite state: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} already_ee={creature_appearance_already_ee_shaped} verified_ee={creature_appearance_verified_ee_shaped} legacy_end={creature_appearance_legacy_end:?}"
                 );
             }
             let original_fragment_bits_for_tail_repair = fragment_bits.clone();
             let mut appearance_bits_inserted_for_tail_repair = 0usize;
             let mut appearance_tail_fragment_bits_adjusted = false;
             let mut appearance_rewrite_changed_stream = false;
+            let legacy_appearance_rewrite_candidate = bit_cursor_reliable
+                && !creature_appearance_verified_ee_shaped
+                && creature_appearance_legacy_end
+                    .map(|legacy_end| legacy_end <= record_end)
+                    .unwrap_or(false);
             let may_attempt_appearance_rewrite = (bit_cursor_reliable
-                && !creature_appearance_already_ee_shaped)
-                || (!bit_cursor_reliable && creature_appearance_already_ee_shaped);
+                && (!creature_appearance_already_ee_shaped || legacy_appearance_rewrite_candidate))
+                || (!bit_cursor_reliable && creature_appearance_already_ee_shaped)
+                // The outer creature body can already be EE build-0x23 shaped
+                // while nested visible-equipment item subobjects still need
+                // the same transactional EE active-property inserts.
+                || (bit_cursor_reliable
+                    && creature_appearance_already_ee_shaped
+                    && !creature_appearance_verified_ee_shaped);
             if may_attempt_appearance_rewrite {
                 if let Some(appearance_rewrite) =
                     appearance::insert_ee_creature_appearance_extras_for_ee(
