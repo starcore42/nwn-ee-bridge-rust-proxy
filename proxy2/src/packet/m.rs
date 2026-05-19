@@ -342,8 +342,8 @@ impl HighLevel {
             // Dialog family is byte-identical for the currently-owned local
             // Diamond shapes only after `translate::dialog` proves the exact
             // decompiled cursor model.  Major 0x14 is routed to Diamond's
-            // dialog handler; minor 1 is the dialog entry text and minor 2 is
-            // the reply-list payload observed during door/placeable use.
+            // dialog handler; `translate::dialog` owns each minor's exact CNW
+            // cursor shape before strict mode treats the name as safe.
             (0x14, 0x01) => "Dialog_Entry",
             (0x14, 0x02) => "Dialog_Replies",
             (0x14, 0x03) => "Dialog_Reply",

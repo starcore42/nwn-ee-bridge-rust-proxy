@@ -807,7 +807,7 @@ fn translate_dialog(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if dialog::claim_payload_if_verified(payload).is_some() {
+    if dialog::claim_server_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

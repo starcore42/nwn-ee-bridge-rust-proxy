@@ -1348,9 +1348,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x12 && high.minor == 0x0B && client_side_feedback_shape_valid(payload)
         }
         VerifiedFamily::Dialog => {
-            high.major == 0x14
-                && matches!(high.minor, 0x01 | 0x02)
-                && dialog::claim_payload_if_verified(payload).is_some()
+            high.major == 0x14 && dialog::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::GameObjUpdateObjectControl => {
             high.major == 0x05
@@ -1615,7 +1613,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(char_list_request_update_char_shape_valid(payload))
         }
         (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
-        (0x14, 0x01 | 0x02) => {
+        (0x14, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
         }
         (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0C) => {

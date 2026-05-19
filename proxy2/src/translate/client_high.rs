@@ -10,8 +10,8 @@ use crate::{
     packet::{hex_prefix, m::HighLevel},
     translate::{
         VerifiedFamily, client_area, client_char_list, client_gui_event, client_gui_inventory,
-        client_input, client_login, client_module, client_quickbar, client_server_status, party,
-        play_module_character_list, semantic::SemanticSessionState,
+        client_input, client_login, client_module, client_quickbar, client_server_status, dialog,
+        party, play_module_character_list, semantic::SemanticSessionState,
     },
 };
 
@@ -125,6 +125,20 @@ pub fn claim_or_rewrite_payload_if_verified(
             family_name: "ClientInput",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientInput,
+        });
+    }
+    if let Some(summary) = dialog::claim_client_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = high.name(),
+            kind = ?summary.kind,
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client Dialog payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "Dialog",
+            packet_name: high.name(),
+            verified_family: VerifiedFamily::Dialog,
         });
     }
     if let Some(summary) = client_quickbar::claim_payload_if_verified(payload) {
