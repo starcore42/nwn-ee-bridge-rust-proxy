@@ -10,6 +10,8 @@ const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
+const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
+const VFX_DUR_LOWLIGHTVISION_ROW: u16 = 0x00F3;
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES: [u8; 2] = [0, 0];
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_OFFSET: usize = 26;
 const LEGACY_CREATURE_APPEARANCE_NAME_ONLY_MASK: u16 = 0x0400;
@@ -137,6 +139,12 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     };
     if !looks_like_legacy_creature_object_id(object_id) {
         return false;
+    }
+
+    if raw_mask == LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK {
+        return advance_verified_legacy_feature0e_false_effect_only_update_record(
+            bytes, offset, record_end,
+        );
     }
 
     if raw_mask == 0x0000_C408 {
@@ -3106,6 +3114,55 @@ fn simulate_legacy_creature_update_status_effect_helper(
     }
 
     cursor == record_end
+}
+
+fn advance_verified_legacy_feature0e_false_effect_only_update_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> bool {
+    // EE `sub_1407B1F00` first reads the compact status/effect row count and
+    // one opcode/WORD row per entry. The negotiated legacy feature-0x0E path
+    // used by this bridge does not read an ObjectVisualTransformData map here.
+    // The local Dark Ranger row is resource-backed by visualeffects.2da as
+    // `VFX_DUR_LOWLIGHTVISION` (row 0x00F3), a duration effect with no target
+    // payload; accepting only this no-target row avoids promoting bytes that a
+    // future object-target visualeffects row would actually own.
+    let Some(mut cursor) = offset.checked_add(10) else {
+        return false;
+    };
+    let Some(count) = read_u16_le(bytes, cursor) else {
+        return false;
+    };
+    if count == 0 || count > 256 {
+        return false;
+    }
+    cursor += 2;
+
+    for _ in 0..usize::from(count) {
+        if record_end.saturating_sub(cursor) < 3 {
+            return false;
+        }
+        let Some(change_opcode) = bytes.get(cursor).copied() else {
+            return false;
+        };
+        if !matches!(change_opcode, b'A' | b'D') {
+            return false;
+        }
+        let Some(row) = read_u16_le(bytes, cursor + 1) else {
+            return false;
+        };
+        if !legacy_feature0e_false_effect_row_has_no_target_payload(row) {
+            return false;
+        }
+        cursor += 3;
+    }
+
+    cursor == record_end
+}
+
+fn legacy_feature0e_false_effect_row_has_no_target_payload(row: u16) -> bool {
+    matches!(row, VFX_DUR_LOWLIGHTVISION_ROW)
 }
 
 fn simulate_ee_creature_update_status_effect_helper_cursor(

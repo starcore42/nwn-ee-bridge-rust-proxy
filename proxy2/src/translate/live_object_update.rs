@@ -1441,6 +1441,9 @@ pub(crate) fn advance_verified_creature_update_fragment_cursor_for_ee(
     ) {
         return true;
     }
+    if effects::is_verified_ee_looping_visual_effect_update_record(live_bytes, offset, record_end) {
+        return true;
+    }
 
     creature::advance_verified_noop_creature_update_record(
         live_bytes,
@@ -2174,6 +2177,7 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut offset = 0usize;
     let mut last_verified_record_end = 0usize;
     let mut last_verified_creature_4408_record_end = None;
+    let mut last_verified_creature_effect_only_record_end = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
     while offset + 2 <= live_bytes.len() {
         let proven_gui_record_end =
@@ -2214,6 +2218,27 @@ pub fn rewrite_update_records_payload_if_possible(
             changed = true;
             last_verified_creature_4408_record_end = None;
             continue;
+        }
+        if bit_cursor_reliable && last_verified_creature_effect_only_record_end == Some(offset) {
+            if let Some(selector_repair) =
+                inventory::repair_current_player_2a00_selector_bits_after_compact_effect_for_ee(
+                    &live_bytes,
+                    offset,
+                    boundary::find_next_legacy_live_object_sub_message_boundary_after(
+                        &live_bytes,
+                        offset,
+                        live_bytes.len(),
+                    )
+                    .min(live_bytes.len()),
+                    &mut fragment_bits,
+                    bit_cursor,
+                )
+            {
+                let _bits_materialized = selector_repair.bits_materialized;
+                changed = true;
+                last_verified_creature_effect_only_record_end = None;
+                continue;
+            }
         }
         if proven_gui_record_end.is_none()
             && !legacy_gui_rewrite_boundary
@@ -3072,10 +3097,14 @@ pub fn rewrite_update_records_payload_if_possible(
                     summary.bits_inserted = summary
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
-                    last_verified_creature_4408_record_end = None;
+                    last_verified_creature_4408_record_end =
+                        (promoted_creature_mask == Some(0x0000_4408)).then_some(record_end);
+                    last_verified_creature_effect_only_record_end =
+                        (promoted_creature_mask == Some(0x0000_0008)).then_some(record_end);
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3105,10 +3134,14 @@ pub fn rewrite_update_records_payload_if_possible(
                     summary.bits_inserted = summary
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
-                    last_verified_creature_4408_record_end = None;
+                    last_verified_creature_4408_record_end =
+                        (promoted_creature_mask == Some(0x0000_4408)).then_some(record_end);
+                    last_verified_creature_effect_only_record_end =
+                        (promoted_creature_mask == Some(0x0000_0008)).then_some(record_end);
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3124,9 +3157,11 @@ pub fn rewrite_update_records_payload_if_possible(
                     pending_creature_p_tail_repair = None;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
-                    last_verified_creature_4408_record_end = (read_u32_le(&live_bytes, offset + 6)
-                        == Some(0x0000_4408))
-                    .then_some(record_end);
+                    let verified_creature_mask = read_u32_le(&live_bytes, offset + 6);
+                    last_verified_creature_4408_record_end =
+                        (verified_creature_mask == Some(0x0000_4408)).then_some(record_end);
+                    last_verified_creature_effect_only_record_end =
+                        (verified_creature_mask == Some(0x0000_0008)).then_some(record_end);
                 } else if let Some(pending) = pending_creature_p_tail_repair.as_ref() {
                     if let Some(repair) = tail_repair::try_repair_for_creature_update(
                         pending,
@@ -3163,6 +3198,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         bit_cursor = repair.bit_cursor;
                         pending_creature_p_tail_repair = None;
                         last_verified_creature_4408_record_end = None;
+                        last_verified_creature_effect_only_record_end = None;
                     } else {
                         trace_update_rewrite_cursor_unreliable(
                             "creature-update-cursor-advance-failed",
@@ -3353,6 +3389,8 @@ pub fn rewrite_update_records_payload_if_possible(
                 }
             }
             last_verified_record_end = record_end;
+            last_verified_creature_4408_record_end = None;
+            last_verified_creature_effect_only_record_end = None;
             offset = record_end.max(offset + 1);
             continue;
         }

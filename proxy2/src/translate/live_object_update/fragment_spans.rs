@@ -40,6 +40,7 @@ const MAX_APPEARANCE_FOLLOWING_ITEM_FRAGMENT_SPAN_BYTES: usize = 128;
 const MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES: usize = 2;
 const MAX_TRAILING_FRAGMENT_PREFIX_BYTES: usize = MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES;
 const MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES: usize = 96;
+const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
@@ -610,7 +611,8 @@ fn find_creature_update_3967_interleaved_fragment_span(
     let raw_mask = read_u32_le(live_bytes, offset + 6)?;
     if !matches!(
         raw_mask,
-        LEGACY_CREATURE_UPDATE_3967_MASK
+        LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK
+            | LEGACY_CREATURE_UPDATE_3967_MASK
             | LEGACY_CREATURE_UPDATE_C40F_MASK
             | LEGACY_CREATURE_UPDATE_C44F_MASK
     ) {
@@ -624,10 +626,13 @@ fn find_creature_update_3967_interleaved_fragment_span(
     // Starcore5 Sooty Crow transition families: Diamond writes lower movement /
     // action fields, optional low `0x0040` creature-state fields, then the
     // C408-style self/status suffix. Diamond `0x4463B0..0x44649B` proves the
-    // low `0x0040` branch is `WORD, BYTE, WORD, BYTE, BOOL[, OBJECTID]`; the
-    // bytes after the exact creature cursor are therefore not invented creature
-    // fields. They must prove themselves as adjacent CNW fragment storage before
-    // we promote them ahead of the following inventory record.
+    // low `0x0040` branch is `WORD, BYTE, WORD, BYTE, BOOL[, OBJECTID]`.
+    //
+    // Local Dark Ranger adds a narrower `0x0008` effect-only family: row
+    // `0x00F3` is a no-target LowLightVision visualeffects.2da row, and the
+    // feature-0x0E-false reader ends before the adjacent CNW storage span.
+    // In all families, bytes after the exact creature cursor are promoted only
+    // after the shortened record validates from the current fragment cursor.
     let min_read_end = offset.checked_add(10)?;
     let scan_start = old_record_end
         .saturating_sub(MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES)

@@ -1318,6 +1318,44 @@ fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn local_dark_ranger_u5_effect_inventory_gui_stream_rewrites_to_exact_shape() {
+    // Local Dark Ranger harness capture from 2026-05-19 after Module_Info and
+    // Area_ClientArea were repaired. The live stream starts with a compact
+    // `U/5 0x00000008` LowLightVision effect row, then carries current-player
+    // inventory/GUI rows and the innkeeper creature add/update records. The
+    // bytes between the effect row and `I` boundary must be owned by the same
+    // decompile-backed CNW fragment-storage proof used by the exact final
+    // validator, not forwarded as live-object read bytes.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_dark_ranger_seq13_live_object_u5_inventory_20260519_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Dark Ranger 0x0008 + inventory stream is still legacy-shaped"
+    );
+
+    crate::translate::live_object::normalize_prefixed_fragments_payload_if_needed(&mut payload)
+        .expect("Dark Ranger raw prefixed-fragment envelope should normalize");
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("Dark Ranger 0x0008 + inventory stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1
+            || rewrite.bytes_inserted > 0
+            || rewrite.interleaved_fragment_spans_promoted > 0,
+        "Dark Ranger 0x0008 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten Dark Ranger stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
+    assert!(claim.add_records >= 1);
+}
+
+#[test]
 fn hg_starc5_seq37_creature_effect_delta_stream_rewrites_to_exact_shape() {
     // Live HG Starcore5 driver-only capture from 2026-05-18. The stream starts
     // with a standalone creature `U/5 0x00000008` looping visual-effect delta,

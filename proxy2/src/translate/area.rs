@@ -397,8 +397,9 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         || repair_missing_area_width(&mut working_payload, fragment_offset, &mut tile_scan);
     let height_repaired = square_dimensions_repaired
         || repair_missing_area_height(&mut working_payload, fragment_offset, &mut tile_scan);
-    let diamond_fixed_name_rewritten =
-        static_layout.area_name_encoding == AreaNameEncoding::DiamondFixed20;
+    let diamond_fixed_name_rewritten = static_layout.area_name_encoding
+        == AreaNameEncoding::DiamondFixed20
+        && module_resource_area_repair.is_none();
     if diamond_fixed_name_rewritten {
         if !rewrite_diamond_fixed_area_name_to_ee_cexo_string(
             &mut working_payload,
@@ -1066,8 +1067,23 @@ struct ModuleAreaResourceInfo {
     width: u32,
     height: u32,
     tileset: String,
+    tiles: Vec<ModuleAreaTile>,
     map_notes: Vec<ModuleAreaMapNote>,
     sounds: Vec<ModuleAreaSound>,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleAreaTile {
+    tile_id: u32,
+    orientation: u32,
+    height_raw: u32,
+    main_light1: u8,
+    main_light2: u8,
+    source_light1: u8,
+    source_light2: u8,
+    anim_loop1: u8,
+    anim_loop2: u8,
+    anim_loop3: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -1093,18 +1109,18 @@ fn repair_compact_area_from_module_resource(
     legacy_area_object_id: u32,
     layout: &AreaStaticLayout,
 ) -> Option<ModuleAreaResourceInfo> {
-    if layout.dialect != AreaStaticDialect::Legacy169
-        || layout.area_name_encoding != AreaNameEncoding::DiamondCompactFragmented
-    {
+    if layout.dialect != AreaStaticDialect::Legacy169 {
+        return None;
+    }
+    if !matches!(
+        layout.area_name_encoding,
+        AreaNameEncoding::DiamondCompactFragmented | AreaNameEncoding::DiamondFixed20
+    ) {
         return None;
     }
 
     let packet_width = read_area_u32(payload, fragment_offset, layout.width_read_offset)?;
     let packet_height = read_area_u32(payload, fragment_offset, layout.height_read_offset)?;
-    if packet_width != 0 || packet_height != 0 {
-        return None;
-    }
-
     let info = module_area_resource_info_for_compact_packet(
         payload,
         fragment_offset,
@@ -1121,13 +1137,26 @@ fn repair_compact_area_from_module_resource(
     {
         return None;
     }
+    if (packet_width != 0 && packet_width != info.width)
+        || (packet_height != 0 && packet_height != info.height)
+    {
+        return None;
+    }
 
     write_fixed_resref_payload(
         payload,
         LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
         &info.resref,
     )?;
-    write_compact_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
+    match layout.area_name_encoding {
+        AreaNameEncoding::DiamondCompactFragmented => {
+            write_compact_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
+        }
+        AreaNameEncoding::DiamondFixed20 => {
+            write_fixed_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
+        }
+        _ => return None,
+    }
     write_area_u32(
         payload,
         fragment_offset,
@@ -1147,11 +1176,17 @@ fn repair_compact_area_from_module_resource(
         &info.tileset,
     )?;
 
-    let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
-    if !repaired_scan.valid
-        || repaired_scan.width != info.width
-        || repaired_scan.packet_height != info.height
-    {
+    let mut repaired_scan = scan_area_tile_stream(payload, fragment_offset);
+    if !module_resource_tile_scan_matches(&repaired_scan, &info) {
+        write_module_resource_tiles(
+            payload,
+            fragment_offset,
+            layout.first_tile_read_offset,
+            &info,
+        )?;
+        repaired_scan = scan_area_tile_stream(payload, fragment_offset);
+    }
+    if !module_resource_tile_scan_matches(&repaired_scan, &info) {
         return None;
     }
 
@@ -1166,6 +1201,84 @@ fn repair_compact_area_from_module_resource(
     );
 
     Some(info)
+}
+
+fn module_resource_tile_scan_matches(
+    scan: &AreaTileStreamScan,
+    info: &ModuleAreaResourceInfo,
+) -> bool {
+    scan.valid
+        && scan.width == info.width
+        && scan.packet_height == info.height
+        && scan.tile_count == info.width.saturating_mul(info.height)
+}
+
+fn write_module_resource_tiles(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    first_tile_read_offset: usize,
+    info: &ModuleAreaResourceInfo,
+) -> Option<()> {
+    if info.tiles.is_empty()
+        || info.tiles.len() != usize::try_from(info.width.checked_mul(info.height)?).ok()?
+    {
+        return None;
+    }
+    let mut tile_bytes = Vec::new();
+    for tile in &info.tiles {
+        write_module_resource_tile_record(&mut tile_bytes, tile)?;
+    }
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(first_tile_read_offset)?;
+    let end = payload_offset.checked_add(tile_bytes.len())?;
+    if end > fragment_offset || end > payload.len() {
+        return None;
+    }
+    payload
+        .get_mut(payload_offset..end)?
+        .copy_from_slice(&tile_bytes);
+    Some(())
+}
+
+fn write_module_resource_tile_record(out: &mut Vec<u8>, tile: &ModuleAreaTile) -> Option<()> {
+    if tile.tile_id > 65_535 || tile.orientation > 3 {
+        return None;
+    }
+    let signed_height = tile.height_raw as i32 as i64;
+    if !(-256..=1024).contains(&signed_height) {
+        return None;
+    }
+
+    let mut flags = 0x000C | 0x0020 | 0x0040 | 0x0080;
+    if tile.main_light1 != 0 {
+        flags |= 0x0001;
+    }
+    if tile.main_light2 != 0 {
+        flags |= 0x0002;
+    }
+    if (flags & 0xFF00) != 0 {
+        return None;
+    }
+
+    out.extend_from_slice(&tile.tile_id.to_le_bytes());
+    out.extend_from_slice(&tile.orientation.to_le_bytes());
+    out.extend_from_slice(&tile.height_raw.to_le_bytes());
+    out.extend_from_slice(&(flags as u16).to_le_bytes());
+    if (flags & 0x0001) != 0 {
+        out.push(tile.main_light1);
+    }
+    if (flags & 0x0002) != 0 {
+        out.push(tile.main_light2);
+    }
+    out.push(module_area_source_light_wire_value(tile.source_light1));
+    out.push(module_area_source_light_wire_value(tile.source_light2));
+    out.push(tile.anim_loop1);
+    out.push(tile.anim_loop2);
+    out.push(tile.anim_loop3);
+    Some(())
+}
+
+fn module_area_source_light_wire_value(value: u8) -> u8 {
+    value.saturating_sub(u8::from(value != 0))
 }
 
 fn write_compact_area_name_as_cexo_string(
@@ -1192,6 +1305,37 @@ fn write_compact_area_name_as_cexo_string(
         .copy_from_slice(&(DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
     payload[payload_offset + 4..end].fill(0);
     payload[payload_offset + 4..payload_offset + 4 + name_bytes.len()].copy_from_slice(name_bytes);
+    Some(())
+}
+
+fn write_fixed_area_name_as_cexo_string(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    name: &str,
+) -> Option<()> {
+    let name_bytes = name.as_bytes();
+    if name_bytes.is_empty()
+        || name_bytes.len() > DIAMOND_FIXED_AREA_NAME_TEXT_BYTES
+        || !name_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+    {
+        return None;
+    }
+
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let text_start = payload_offset.checked_add(EE_CEXO_STRING_LENGTH_BYTES)?;
+    let text_end = text_start.checked_add(DIAMOND_FIXED_AREA_NAME_TEXT_BYTES)?;
+    if text_end > fragment_offset || text_end > payload.len() {
+        return None;
+    }
+    payload
+        .get_mut(payload_offset..text_start)?
+        .copy_from_slice(&(DIAMOND_FIXED_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
+    payload.get_mut(text_start..text_end)?.fill(0);
+    payload
+        .get_mut(text_start..text_start.checked_add(name_bytes.len())?)?
+        .copy_from_slice(name_bytes);
     Some(())
 }
 
@@ -2909,7 +3053,8 @@ fn module_area_resource_info_for_compact_packet(
         .iter()
         .position(|area| area.object_id == legacy_area_object_id)?;
     let observed_area_name = context.areas.get(area_index)?.name.as_str();
-    let compact_fragments = diamond_compact_area_name_fragments(payload, fragment_offset)?;
+    let compact_fragments = diamond_compact_area_name_fragments(payload, fragment_offset)
+        .or_else(|| diamond_fixed_area_name_fragments(payload, fragment_offset))?;
     let module_path = observed_module_file_path(&context)?;
     let table = read_module_area_resource_table(&module_path)?;
     if !module_table_matches_observed_context(&table, &context) {
@@ -2950,19 +3095,17 @@ fn area_resource_matches_observed_compact_name(
     let name = normalized_resource_text(&info.name);
     let resref = normalized_resource_text(&info.resref);
     let observed = normalized_resource_text(observed_area_name);
-    if !observed.is_empty() && (observed == name || observed == resref) {
-        return true;
-    }
-
     let observed_fragments = compact_observed_text_fragments(observed_area_name);
-    if compact_fragments_match(&name, &observed_fragments)
+    let observed_matches = (!observed.is_empty() && (observed == name || observed == resref))
+        || compact_fragments_match(&name, &observed_fragments)
         || compact_fragments_match(&resref, &observed_fragments)
-    {
-        return true;
-    }
-
-    compact_fragments_match(&name, compact_fragments)
+        || compact_fragments_match_allowing_singletons(&name, &observed_fragments)
+        || compact_fragments_match_allowing_singletons(&resref, &observed_fragments);
+    let packet_matches = compact_fragments_match(&name, compact_fragments)
         || compact_fragments_match(&resref, compact_fragments)
+        || compact_fragments_match_allowing_singletons(&name, compact_fragments)
+        || compact_fragments_match_allowing_singletons(&resref, compact_fragments);
+    observed_matches && packet_matches
 }
 
 fn module_table_area_order_matches_observed_context(
@@ -3275,15 +3418,59 @@ fn parse_are_resource_info(bytes: &[u8], fallback_resref: &str) -> Option<Module
         .iter()
         .find(|field| field.label == "Tileset")
         .and_then(|field| gff_resref_value(bytes, field))?;
+    let tiles = parse_are_tiles(bytes, &fields, width, height)?;
     Some(ModuleAreaResourceInfo {
         resref,
         name,
         width,
         height,
         tileset,
+        tiles,
         map_notes: Vec::new(),
         sounds: Vec::new(),
     })
+}
+
+fn parse_are_tiles(
+    bytes: &[u8],
+    root_fields: &[GffField],
+    width: u32,
+    height: u32,
+) -> Option<Vec<ModuleAreaTile>> {
+    let Some(tile_list) = gff_field_by_label(root_fields, "Tile_List") else {
+        return Some(Vec::new());
+    };
+    if tile_list.field_type != GFF_TYPE_LIST {
+        return None;
+    }
+    let expected_count = usize::try_from(width.checked_mul(height)?).ok()?;
+    if expected_count == 0 || expected_count > MAX_REASONABLE_AREA_TILE_COUNT as usize {
+        return None;
+    }
+    let tile_structs = gff_list_structs(bytes, tile_list.data)?;
+    if tile_structs.len() != expected_count {
+        return None;
+    }
+
+    tile_structs
+        .into_iter()
+        .map(|struct_index| {
+            let fields = gff_struct_fields(bytes, struct_index)?;
+            let tile = ModuleAreaTile {
+                tile_id: required_gff_u32(&fields, "Tile_ID")?,
+                orientation: required_gff_u32(&fields, "Tile_Orientation")?,
+                height_raw: required_gff_raw_i32_bits(&fields, "Tile_Height")?,
+                main_light1: optional_gff_byte(&fields, "Tile_MainLight1"),
+                main_light2: optional_gff_byte(&fields, "Tile_MainLight2"),
+                source_light1: optional_gff_byte(&fields, "Tile_SrcLight1"),
+                source_light2: optional_gff_byte(&fields, "Tile_SrcLight2"),
+                anim_loop1: optional_gff_byte(&fields, "Tile_AnimLoop1"),
+                anim_loop2: optional_gff_byte(&fields, "Tile_AnimLoop2"),
+                anim_loop3: optional_gff_byte(&fields, "Tile_AnimLoop3"),
+            };
+            (tile.tile_id <= 65_535 && tile.orientation <= 3).then_some(tile)
+        })
+        .collect()
 }
 
 fn parse_git_runtime_info(bytes: &[u8]) -> Option<(Vec<ModuleAreaMapNote>, Vec<ModuleAreaSound>)> {
@@ -3385,6 +3572,21 @@ fn parse_git_sound_resrefs(bytes: &[u8], fields: &[GffField]) -> Option<Vec<Stri
 
 fn required_gff_float(fields: &[GffField], label: &str) -> Option<f32> {
     gff_field_by_label(fields, label).and_then(gff_float_value)
+}
+
+fn required_gff_u32(fields: &[GffField], label: &str) -> Option<u32> {
+    gff_field_by_label(fields, label).and_then(gff_dword_value)
+}
+
+fn required_gff_raw_i32_bits(fields: &[GffField], label: &str) -> Option<u32> {
+    let field = gff_field_by_label(fields, label)?;
+    matches!(field.field_type, GFF_TYPE_INT | GFF_TYPE_DWORD).then_some(field.data)
+}
+
+fn optional_gff_byte(fields: &[GffField], label: &str) -> u8 {
+    gff_field_by_label(fields, label)
+        .and_then(gff_byte_value)
+        .unwrap_or(0)
 }
 
 fn sound_floats_finite(sound: &ModuleAreaSound) -> bool {
@@ -3707,6 +3909,17 @@ fn diamond_compact_area_name_fragments(
     (fragments.len() >= 2).then_some(fragments)
 }
 
+fn diamond_fixed_area_name_fragments(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<Vec<String>> {
+    read_diamond_fixed_area_name_shape(payload, fragment_offset)?;
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let end = payload_offset.checked_add(DIAMOND_LEGACY_AREA_NAME_BYTES)?;
+    let bytes = payload.get(payload_offset..end)?;
+    compact_fragmented_ascii_runs_allowing_singletons(bytes)
+}
+
 fn compact_fragmented_ascii_runs(bytes: &[u8]) -> Option<Vec<String>> {
     let mut fragments = Vec::new();
     let mut cursor = 0usize;
@@ -3930,6 +4143,16 @@ fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static MODULE_CONTEXT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn module_context_test_guard() -> MutexGuard<'static, ()> {
+        MODULE_CONTEXT_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("module context test lock poisoned")
+    }
 
     const DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT: &[u8] = include_bytes!(
         "../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
@@ -3943,6 +4166,8 @@ mod tests {
         include_bytes!("../../fixtures/area/local_diamond_bw167demo_client_area_fixed_name.bin");
     const LOCAL_TO_HEIR_CORMANTHOR_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_to_heir_cormanthor_client_area_compact.bin");
+    const LOCAL_DARK_RANGER_INN_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_dark_ranger_inn_client_area_compact.bin");
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -4227,6 +4452,7 @@ mod tests {
 
     #[test]
     fn local_to_heir_compact_area_uses_module_resource_dimensions() {
+        let _context_guard = module_context_test_guard();
         crate::translate::module::remember_observed_module_context_for_tests(
             crate::translate::module::ObservedModuleContext {
                 localized_name: "To H".to_string(),
@@ -4430,6 +4656,77 @@ mod tests {
         assert_eq!(proof.first_post_static_count, 0);
         assert_eq!(proof.second_post_static_count, 0);
         assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn local_dark_ranger_compact_area_uses_resource_height_when_width_is_present() {
+        let _context_guard = module_context_test_guard();
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "Dark R".to_string(),
+                module_resref: "Dark_R".to_string(),
+                areas: vec![
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Inn L".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Dead s Marsh".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "T Dark R s Ruins".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let mut payload = LOCAL_DARK_RANGER_INN_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let source_layout =
+            area_static_layout(&payload, fragment_offset).expect("compact static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondFixed20
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, source_layout.width_read_offset),
+            Some(5)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, source_layout.height_read_offset),
+            Some(0)
+        );
+
+        let compact_info =
+            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
+                .expect("observed module context maps compact area packet to local ARE resource");
+        assert_eq!(compact_info.resref, "innofthelasthope");
+        assert_eq!(compact_info.name, "Inn of the Lance");
+        assert_eq!(compact_info.width, 5);
+        assert_eq!(compact_info.height, 3);
+        assert_eq!(compact_info.tileset, "tin01");
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("compact local Dark Ranger area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten compact area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "innofthelasthope");
+        assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, 5);
+        assert_eq!(summary.packet_height, 3);
+        assert_eq!(summary.tile_count, 15);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert!(proof.read_end == summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }

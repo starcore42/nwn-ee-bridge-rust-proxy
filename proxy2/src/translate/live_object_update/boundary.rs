@@ -705,6 +705,26 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         return LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8;
     }
 
+    if raw_mask == 0x0000_0008 {
+        // Local Dark Ranger captures a standalone LowLightVision effect delta:
+        //
+        //   U/5 header + mask
+        //   0x0008 status-effect delta: WORD count, count * 3 legacy bytes
+        //
+        // EE `sub_1407B1F00` and Diamond both consume the opcode/row triplets
+        // before returning to the live-object stream. The following bytes may
+        // be CNW fragment storage, so keep a count-derived read floor before
+        // the generic scanner can consider the interior `A` effect opcode as a
+        // top-level add boundary.
+        let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        };
+        if count > 256 {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        }
+        return LEGACY_UPDATE_HEADER_BYTES + 2 + usize::from(count) * 3;
+    }
+
     if raw_mask == 0x0000_4008 {
         // HG live seq37 proves the same status-effect/self-status writer
         // family without the `0x0400`/`0x8000` scalar/visibility suffixes:

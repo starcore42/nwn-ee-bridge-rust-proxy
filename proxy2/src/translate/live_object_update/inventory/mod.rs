@@ -53,6 +53,11 @@ pub(super) struct InventoryRecordRewrite {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct InventoryFragmentBitRepair {
+    pub bits_materialized: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct GenericInventoryCandidate {
     cursor: usize,
     bits: usize,
@@ -594,6 +599,63 @@ pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(
         );
     }
     Some(record_end)
+}
+
+pub(super) fn repair_current_player_2a00_selector_bits_after_compact_effect_for_ee(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: usize,
+) -> Option<InventoryFragmentBitRepair> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+        || read_u32_le(bytes, record_offset + 1)? != 0x0000_00FE
+        || read_u16_le(bytes, record_offset + 5)? != 0x2A00
+    {
+        return None;
+    }
+
+    let claim = try_get_legacy_live_inventory_claim_candidate(bytes, record_offset, record_end)?;
+    if claim.bits > fragment_bits.len().saturating_sub(bit_cursor) {
+        return None;
+    }
+
+    // Local Dark Ranger's compact effect stream carries an already-present
+    // `I/0x2A00` current-player inventory row after the `U/5 0x0008`
+    // LowLightVision record.  The read-buffer body proves the EE/Diamond
+    // decompile-owned branch shape: 0x0200 byte-mask list, 0x2000 Feature-25
+    // object lists, then a true 0x0800 twelve-byte tail.  The legacy fragment
+    // span has the same cursor length but leaves those true selector BOOLs as
+    // zeroes, so materialize only true requirements from that exact parser
+    // claim.  Required false bits still have to be false on the wire.
+    let mut proof_bits = fragment_bits.clone();
+    if !claim.materialize_missing_true_fragment_requirements(&mut proof_bits, bit_cursor) {
+        return None;
+    }
+    let bits_materialized = proof_bits
+        .iter()
+        .zip(fragment_bits.iter())
+        .filter(|(after, before)| **after && !**before)
+        .count();
+    if bits_materialized == 0 {
+        return None;
+    }
+
+    let mut proof_cursor = bit_cursor;
+    advance_verified_inventory_record(
+        bytes,
+        record_offset,
+        record_end,
+        &proof_bits,
+        &mut proof_cursor,
+    )?;
+
+    *fragment_bits = proof_bits;
+    Some(InventoryFragmentBitRepair { bits_materialized })
 }
 
 fn generic_inventory_prefix_allows_interleaved_fragment_tail(
@@ -1517,3 +1579,43 @@ use feature25::*;
 use icon_list::*;
 use mask::*;
 use opcode_stream::*;
+
+#[cfg(test)]
+mod current_player_2a00_selector_repair_tests {
+    use super::*;
+
+    #[test]
+    fn current_player_2a00_byte_mask_tail_materializes_only_selector_bits() {
+        let record = [
+            b'I', 0xFE, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x02, 0xDE, 0x7B, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x80, 0x0E, 0x0D,
+            0x0D, 0x0A, 0x13, 0x0A, 0x0C, 0x0D, 0x0F, 0x0A, 0x13, 0x0A,
+        ];
+        let mut fragment_bits = vec![false; 32];
+        fragment_bits[3] = true;
+        let repair = repair_current_player_2a00_selector_bits_after_compact_effect_for_ee(
+            &record,
+            0,
+            record.len(),
+            &mut fragment_bits,
+            3,
+        )
+        .expect("current-player 2A00 selector repair should be exact");
+
+        assert_eq!(repair.bits_materialized, 2);
+        assert_eq!(fragment_bits[4], true, "0x0200 byte-mask selector");
+        assert_eq!(fragment_bits[11], true, "0x0800 true-tail selector");
+
+        let mut bit_cursor = 3usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        )
+        .expect("repaired inventory record should exact-claim");
+        assert_eq!(claim.fragment_bits, 9);
+        assert_eq!(bit_cursor, 12);
+    }
+}

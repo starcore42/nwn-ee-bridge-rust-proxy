@@ -547,7 +547,7 @@ fn compact_declared_zero_area_table(
         return Some((count_offset, areas));
     }
 
-    None
+    compact_declared_zero_countless_area_table(payload, search_start, declared_end)
 }
 
 fn compact_declared_zero_areas_at(
@@ -613,6 +613,62 @@ fn compact_declared_zero_areas_at(
     }
 
     Some(areas)
+}
+
+fn compact_declared_zero_countless_area_table(
+    payload: &[u8],
+    search_start: usize,
+    declared_end: usize,
+) -> Option<(usize, Vec<CompactLegacyArea>)> {
+    if search_start >= declared_end || declared_end > payload.len() {
+        return None;
+    }
+
+    let mut object_offsets = Vec::new();
+    let mut cursor = search_start;
+    while cursor + 4 <= declared_end {
+        let raw = read_le_u32(payload, cursor)?;
+        if is_likely_area_resource_id(raw) {
+            object_offsets.push(cursor);
+            cursor += 4;
+        } else {
+            cursor += 1;
+        }
+    }
+
+    if object_offsets.len() < 2
+        || object_offsets.len() > MAX_COMPACT_DECLARED_ZERO_AREA_COUNT as usize
+    {
+        return None;
+    }
+
+    let module_prefix_has_text =
+        compact_printable_runs(payload, search_start, object_offsets[0], 2)
+            .iter()
+            .any(|run| run.value.chars().any(|ch| ch.is_ascii_alphabetic()));
+    if !module_prefix_has_text {
+        return None;
+    }
+
+    let mut areas = Vec::with_capacity(object_offsets.len());
+    for (index, object_offset) in object_offsets.iter().copied().enumerate() {
+        let object_id = read_le_u32(payload, object_offset)?;
+        let name_start = object_offset.checked_add(4)?;
+        let name_end = object_offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or(declared_end);
+        if name_start >= name_end {
+            return None;
+        }
+        let name = compact_declared_zero_fragment_text(payload, name_start, name_end)?;
+        if name.len() > MAX_AREA_NAME_LENGTH {
+            return None;
+        }
+        areas.push(CompactLegacyArea { object_id, name });
+    }
+
+    Some((object_offsets[0], areas))
 }
 
 fn compact_declared_zero_module_name(payload: &[u8], start: usize, end: usize) -> Option<String> {
@@ -1477,6 +1533,25 @@ mod tests {
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.module_resref.as_deref(), Some("To_H"));
         assert_eq!(summary.resource_name_count, 5);
+        assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn rewrites_declared_zero_countless_compact_module_info_to_exact_ee_shape() {
+        let mut payload = include_bytes!(
+            "../../fixtures/module_info/local_dark_ranger_declared_zero_countless_module_info_20260519.bin"
+        )
+        .to_vec();
+
+        let summary = rewrite_module_info_payload(&mut payload)
+            .expect("countless declared-zero compact Module_Info should be rewritten");
+
+        assert!(summary.compact_legacy_no_resource);
+        assert_eq!(summary.old_declared, 0);
+        assert_eq!(summary.hak_count, 0);
+        assert_eq!(summary.module_resref.as_deref(), Some("Dark_R"));
+        assert_eq!(summary.resource_name_count, 3);
         assert!(crate::strict::module_info_shape_valid(&payload));
     }
 
