@@ -556,14 +556,11 @@ fn dump_pending_live_object_candidate(
     chunks: u32,
     reason: &str,
 ) {
-    let dir = if reason == "pending-live-object-claimed" {
-        // Claimed streams are fixture candidates, not unhandled packets.  Keep
-        // them under diagnostics/ so the quarantine root remains a clean signal
-        // for packet families the strict bridge actually refused to emit.
-        crate::translate::diagnostics::probe_dump_dir()
-    } else {
-        crate::translate::diagnostics::diagnostic_dump_dir()
-    };
+    // Pending live-object streams are speculative candidates assembled while
+    // later zlib windows may still arrive. Keep both rejected intermediate
+    // shapes and accepted fixture candidates under diagnostics/; complete
+    // live-object family refusals are still dumped from server_dispatch.
+    let dir = crate::translate::diagnostics::probe_dump_dir();
     let Some(dir) = dir else {
         return;
     };
