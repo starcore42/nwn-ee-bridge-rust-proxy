@@ -1422,6 +1422,27 @@ mod tests {
     }
 
     #[test]
+    fn use_object_local_auto_use_zero_residual_fragment_bits_match_decompile_cursor_shape() {
+        // Captured from C:\nwnbridge\local-diamond-bridge-20260519-120243
+        // after the driver used bw167demo's compact Abandoned Home placeable.
+        let fixture = [
+            0x70, 0x06, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x80, 0xA0,
+        ];
+        let summary =
+            claim_payload_if_verified(&fixture).expect("local auto-use should be claimed");
+        let parsed = parse_use_object(&fixture).expect("local auto-use should parse");
+
+        assert_eq!(summary.kind, ClientInputKind::UseObject);
+        assert_eq!(summary.packet_name, "Input_UseObject");
+        assert_eq!(summary.declared, USE_OBJECT_DECLARED_BYTES);
+        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.primary_object_id, 0x8000_0006);
+        assert_eq!(parsed.object_id, 0x8000_0006);
+        assert!(!parsed.mark_inventory_gui_state);
+        assert!(!parsed.schedule_script_event);
+    }
+
+    #[test]
     fn local_diamond_door_open_fixture_matches_decompile_cursor_shape() {
         // Captured from the local Diamond harness door auto-use path against
         // bw167demo's compact door id.
