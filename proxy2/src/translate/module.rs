@@ -29,6 +29,8 @@
 //! - The custom TLK is preserved only in the rewrite summary. EE consumes that
 //!   value later from `CNWCModule::LoadModuleResources`, not from `Module_Info`.
 
+use std::sync::{OnceLock, RwLock};
+
 const MAX_MODULE_INFO_STRING: usize = 4096;
 const MAX_LEGACY_NWM_RESOURCE_STRING: usize = 32;
 const MAX_LEGACY_HAK_BLOCK_LOOKAHEAD: usize = 128;
@@ -50,6 +52,21 @@ const MODULE_END_GAME_MINOR: u8 = 0x0E;
 const MODULE_END_GAME_MAX_TEXT_BYTES: usize = 4096;
 const MODULE_END_GAME_SHA1_HEX_BYTES: usize = 40;
 const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
+
+static OBSERVED_MODULE_CONTEXT: OnceLock<RwLock<Option<ObservedModuleContext>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedModuleContext {
+    pub(crate) localized_name: String,
+    pub(crate) module_resref: String,
+    pub(crate) areas: Vec<ObservedModuleArea>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedModuleArea {
+    pub(crate) object_id: u32,
+    pub(crate) name: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct RewriteSummary {
@@ -324,6 +341,7 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
         "server Module_Info compact Diamond no-resource shape rewritten to EE read-window layout"
     );
 
+    remember_compact_module_context(&compact);
     *payload = rewritten;
 
     Some(RewriteSummary {
@@ -343,6 +361,46 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
         zero_length_name_terminator: false,
         compact_legacy_no_resource: true,
     })
+}
+
+pub(crate) fn observed_module_context() -> Option<ObservedModuleContext> {
+    let lock = OBSERVED_MODULE_CONTEXT.get()?;
+    let guard = lock.read().ok()?;
+    guard.clone()
+}
+
+#[cfg(all(test, hgbridge_private_fixtures))]
+pub(crate) fn remember_observed_module_context_for_tests(context: ObservedModuleContext) {
+    let lock = OBSERVED_MODULE_CONTEXT.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        *guard = Some(context);
+    }
+}
+
+fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) {
+    let context = ObservedModuleContext {
+        localized_name: compact.localized_name.clone(),
+        module_resref: compact.module_resref.clone(),
+        areas: compact
+            .areas
+            .iter()
+            .map(|area| ObservedModuleArea {
+                object_id: area.object_id,
+                name: area.name.clone(),
+            })
+            .collect(),
+    };
+    let area_count = context.areas.len();
+    let lock = OBSERVED_MODULE_CONTEXT.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        *guard = Some(context.clone());
+    }
+    tracing::debug!(
+        module_name = context.localized_name.as_str(),
+        module_resref = context.module_resref.as_str(),
+        area_count,
+        "observed compact Module_Info context for later resource-backed packet translation"
+    );
 }
 
 fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<CompactLegacyModuleInfo> {

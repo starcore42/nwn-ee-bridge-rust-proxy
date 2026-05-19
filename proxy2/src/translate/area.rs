@@ -48,6 +48,12 @@
 //!   The old driver shim had to synthesize both counts at the client read site;
 //!   driver-only mode requires the proxy to insert both zero WORDs in-band.
 
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
+
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const AREA_MAJOR: u8 = 0x04;
 const AREA_CLIENT_AREA_MINOR: u8 = 0x01;
@@ -59,8 +65,11 @@ const CRESREF_TEXT_BYTES: usize = 16;
 const AREA_NAME_READ_OFFSET: usize = 44;
 const EE_CEXO_STRING_LENGTH_BYTES: usize = 4;
 const DIAMOND_LEGACY_AREA_NAME_BYTES: usize = 20;
+const DIAMOND_COMPACT_AREA_NAME_BYTES: usize = 14;
 const DIAMOND_FIXED_AREA_NAME_TEXT_BYTES: usize =
     DIAMOND_LEGACY_AREA_NAME_BYTES - EE_CEXO_STRING_LENGTH_BYTES;
+const DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES: usize =
+    DIAMOND_COMPACT_AREA_NAME_BYTES - EE_CEXO_STRING_LENGTH_BYTES;
 const LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
 const LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
 const LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
@@ -97,6 +106,28 @@ const MAX_AREA_POST_TILE_LIST_COUNT: u32 = 4096;
 const MAX_AREA_SOUND_RESREFS: u16 = 64;
 const AREA_LIGHT_PLACEABLE_ROW_BYTES: usize = 4 + 2 + 3 * 4;
 const AREA_STATIC_PLACEABLE_ROW_BYTES: usize = 4 + 2 + 6 * 4;
+const RESTYPE_ARE: u16 = 2012;
+const RESTYPE_IFO: u16 = 2014;
+const RESTYPE_GIT: u16 = 2023;
+const MAX_MODULE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ERF_KEY_COUNT: u32 = 65_536;
+const MAX_OBSERVED_MODULE_SCAN_FILES: usize = 512;
+const MIN_OBSERVED_MODULE_AREA_MATCHES: usize = 3;
+const MAX_GFF_FIELD_COUNT: u32 = 65_536;
+const MAX_GFF_STRUCT_COUNT: u32 = 65_536;
+const GFF_TYPE_BYTE: u32 = 0;
+const GFF_TYPE_DWORD: u32 = 4;
+const GFF_TYPE_INT: u32 = 5;
+const GFF_TYPE_FLOAT: u32 = 8;
+const GFF_TYPE_CEXO_STRING: u32 = 10;
+const GFF_TYPE_RESREF: u32 = 11;
+const GFF_TYPE_CEXO_LOCSTRING: u32 = 12;
+const GFF_TYPE_LIST: u32 = 15;
+const AREA_SOUND_X_OFFSET: usize = 40;
+const AREA_SOUND_Y_OFFSET: usize = 44;
+const AREA_SOUND_Z_OFFSET: usize = 48;
+const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
+const AREA_SOUND_BASE_BYTES: usize = 54;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaRewriteKind {
@@ -106,6 +137,9 @@ pub enum AreaRewriteKind {
     ExactEeAreaBuild365TileLoopBool,
     ExactEePostStaticListZeroWords,
     LegacyDiamondFixedAreaName,
+    LegacyDiamondCompactAreaName,
+    LegacyDiamondModuleResourceAreaRepair,
+    LegacyDiamondCompactPostTileTailRepair,
     LegacyDiamondMissingSquareDimensionsRepair,
     LegacyHgMissingHeightRepair,
     LegacyHgMissingWidthRepair,
@@ -221,6 +255,7 @@ impl Default for AreaStaticDialect {
 enum AreaNameEncoding {
     CExoString,
     DiamondFixed20,
+    DiamondCompactFragmented,
 }
 
 impl Default for AreaNameEncoding {
@@ -316,7 +351,7 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     }
 
     let legacy_area_object_id = read_u32_le(payload, LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET)?;
-    let area_resref = fixed_resref_preview(
+    let mut area_resref = fixed_resref_preview(
         payload,
         LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
     )?;
@@ -343,6 +378,15 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     }
 
     let mut working_payload = payload.clone();
+    let module_resource_area_repair = repair_compact_area_from_module_resource(
+        &mut working_payload,
+        fragment_offset,
+        legacy_area_object_id,
+        &static_layout,
+    );
+    if let Some(resource_info) = module_resource_area_repair.as_ref() {
+        area_resref = resource_info.resref.clone();
+    }
     let mut tile_scan = scan_area_tile_stream(&working_payload, fragment_offset);
     let square_dimensions_repaired = repair_missing_square_area_dimensions(
         &mut working_payload,
@@ -369,12 +413,30 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         }
         tile_scan = scan_area_tile_stream(&working_payload, fragment_offset);
     }
-    let sound_count_zero_one_repairs =
-        repair_legacy_zero_sound_counts(&mut working_payload, fragment_offset, &tile_scan)
-            .unwrap_or(0);
+    let compact_post_tile_tail_repaired =
+        module_resource_area_repair
+            .as_ref()
+            .is_some_and(|resource_info| {
+                repair_compact_post_tile_tail_for_ee(
+                    &mut working_payload,
+                    fragment_offset,
+                    &tile_scan,
+                    resource_info,
+                )
+            });
+    let (_, _, post_tail_fragment_offset, _) = area_client_area_read_window(&working_payload)?;
+    if compact_post_tile_tail_repaired {
+        tile_scan = scan_area_tile_stream(&working_payload, post_tail_fragment_offset);
+    }
+    let sound_count_zero_one_repairs = repair_legacy_zero_sound_counts(
+        &mut working_payload,
+        post_tail_fragment_offset,
+        &tile_scan,
+    )
+    .unwrap_or(0);
     let static_placeable_trailing_rows_dropped = drop_legacy_zero_static_placeable_trailing_rows(
         &mut working_payload,
-        fragment_offset,
+        post_tail_fragment_offset,
         &tile_scan,
     )
     .unwrap_or(0);
@@ -418,6 +480,13 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     }
     if static_layout.area_name_encoding == AreaNameEncoding::DiamondFixed20 {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondFixedAreaName);
+    }
+    if module_resource_area_repair.is_some() {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondCompactAreaName);
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair);
+    }
+    if compact_post_tile_tail_repaired {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondCompactPostTileTailRepair);
     }
     if square_dimensions_repaired {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondMissingSquareDimensionsRepair);
@@ -756,6 +825,18 @@ fn fragment_bit(fragment: &[u8], bit_index: usize) -> Option<bool> {
     Some((byte & (0x80 >> (bit_index % 8))) != 0)
 }
 
+fn area_payload_fragment_bits_available(payload: &[u8], fragment_offset: usize) -> Option<usize> {
+    cnw_fragment_consumable_bits(payload.get(fragment_offset..)?)
+}
+
+fn area_payload_fragment_bit(
+    payload: &[u8],
+    fragment_offset: usize,
+    bit_index: usize,
+) -> Option<bool> {
+    fragment_bit(payload.get(fragment_offset..)?, bit_index)
+}
+
 fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStaticLayout> {
     // The same packet family can appear in two strict shapes inside this
     // bridge:
@@ -800,6 +881,24 @@ fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStat
                 LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
             )
         }) {
+            return Some(layout);
+        }
+    }
+
+    if let Some((area_name_length, name_end)) =
+        read_diamond_compact_area_name_shape(payload, fragment_offset)
+    {
+        if let Some(layout) = area_static_layout_for_dialect(
+            payload,
+            fragment_offset,
+            AreaNameEncoding::DiamondCompactFragmented,
+            area_name_length,
+            name_end,
+            AreaStaticDialect::Legacy169,
+            LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+            LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+            LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        ) {
             return Some(layout);
         }
     }
@@ -958,6 +1057,532 @@ fn rewrite_diamond_fixed_area_name_to_ee_cexo_string(
     payload[payload_offset..payload_offset + EE_CEXO_STRING_LENGTH_BYTES]
         .copy_from_slice(&(DIAMOND_FIXED_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
     true
+}
+
+#[derive(Debug, Clone)]
+struct ModuleAreaResourceInfo {
+    resref: String,
+    name: String,
+    width: u32,
+    height: u32,
+    tileset: String,
+    map_notes: Vec<ModuleAreaMapNote>,
+    sounds: Vec<ModuleAreaSound>,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleAreaMapNote {
+    text: String,
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleAreaSound {
+    tag: String,
+    x: f32,
+    y: f32,
+    z: f32,
+    resrefs: Vec<String>,
+}
+
+fn repair_compact_area_from_module_resource(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    legacy_area_object_id: u32,
+    layout: &AreaStaticLayout,
+) -> Option<ModuleAreaResourceInfo> {
+    if layout.dialect != AreaStaticDialect::Legacy169
+        || layout.area_name_encoding != AreaNameEncoding::DiamondCompactFragmented
+    {
+        return None;
+    }
+
+    let packet_width = read_area_u32(payload, fragment_offset, layout.width_read_offset)?;
+    let packet_height = read_area_u32(payload, fragment_offset, layout.height_read_offset)?;
+    if packet_width != 0 || packet_height != 0 {
+        return None;
+    }
+
+    let info = module_area_resource_info_for_compact_packet(
+        payload,
+        fragment_offset,
+        legacy_area_object_id,
+    )?;
+    if info.width == 0
+        || info.height == 0
+        || info.width > MAX_REASONABLE_AREA_DIMENSION
+        || info.height > MAX_REASONABLE_AREA_DIMENSION
+        || match info.width.checked_mul(info.height) {
+            Some(count) => count > MAX_REASONABLE_AREA_TILE_COUNT,
+            None => true,
+        }
+    {
+        return None;
+    }
+
+    write_fixed_resref_payload(
+        payload,
+        LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
+        &info.resref,
+    )?;
+    write_compact_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
+    write_area_u32(
+        payload,
+        fragment_offset,
+        layout.width_read_offset,
+        info.width,
+    )?;
+    write_area_u32(
+        payload,
+        fragment_offset,
+        layout.height_read_offset,
+        info.height,
+    )?;
+    write_area_fixed_resref(
+        payload,
+        fragment_offset,
+        layout.tileset_read_offset,
+        &info.tileset,
+    )?;
+
+    let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
+    if !repaired_scan.valid
+        || repaired_scan.width != info.width
+        || repaired_scan.packet_height != info.height
+    {
+        return None;
+    }
+
+    tracing::info!(
+        area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+        area_resref = info.resref.as_str(),
+        area_name = info.name.as_str(),
+        width = info.width,
+        height = info.height,
+        tileset = info.tileset.as_str(),
+        "Area_ClientArea compact Diamond area fields repaired from observed Module_Info and local ARE resource"
+    );
+
+    Some(info)
+}
+
+fn write_compact_area_name_as_cexo_string(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    name: &str,
+) -> Option<()> {
+    let name_bytes = name.as_bytes();
+    if name_bytes.is_empty()
+        || name_bytes.len() > DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES
+        || !name_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+    {
+        return None;
+    }
+
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let end = payload_offset.checked_add(DIAMOND_COMPACT_AREA_NAME_BYTES)?;
+    if end > fragment_offset || end > payload.len() {
+        return None;
+    }
+    payload[payload_offset..payload_offset + 4]
+        .copy_from_slice(&(DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
+    payload[payload_offset + 4..end].fill(0);
+    payload[payload_offset + 4..payload_offset + 4 + name_bytes.len()].copy_from_slice(name_bytes);
+    Some(())
+}
+
+fn repair_compact_post_tile_tail_for_ee(
+    payload: &mut Vec<u8>,
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    info: &ModuleAreaResourceInfo,
+) -> bool {
+    if !scan.valid {
+        return false;
+    }
+    let tail_start = scan.tile_end_read_offset;
+    if read_area_u32(payload, fragment_offset, tail_start) != Some(0) {
+        return false;
+    }
+
+    let mut candidate = payload.clone();
+    let Some((sound_count_offset, _map_note_count_consumed)) =
+        repair_compact_map_note_tail_for_ee(&mut candidate, fragment_offset, scan, info)
+    else {
+        return false;
+    };
+    if repair_compact_sound_tail_for_ee(&mut candidate, fragment_offset, sound_count_offset, info)
+        .is_none()
+    {
+        return false;
+    }
+    let candidate_scan = scan_area_tile_stream(&candidate, fragment_offset);
+    if !candidate_scan.valid || candidate_scan.tile_end_read_offset != scan.tile_end_read_offset {
+        return false;
+    }
+    if legacy_area_source_tail_exact_read_proof(&candidate, fragment_offset, &candidate_scan)
+        .is_none()
+    {
+        return false;
+    }
+
+    *payload = candidate;
+    true
+}
+
+fn repair_compact_map_note_tail_for_ee(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    info: &ModuleAreaResourceInfo,
+) -> Option<(usize, usize)> {
+    let note_count = u32::try_from(info.map_notes.len()).ok()?;
+    if note_count == 0 || note_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+
+    let tail_start = scan.tile_end_read_offset;
+    write_area_u32(payload, fragment_offset, tail_start, note_count)?;
+
+    let mut cursor = tail_start.checked_add(4)?;
+    let mut remaining = (0..info.map_notes.len()).collect::<Vec<_>>();
+    let fragment_bits_available = area_payload_fragment_bits_available(payload, fragment_offset)?;
+    let mut bit_cursor = LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
+    for _ in 0..info.map_notes.len() {
+        if area_payload_fragment_bit(payload, fragment_offset, bit_cursor)? != true {
+            return None;
+        }
+        bit_cursor = bit_cursor.checked_add(1)?;
+        if area_payload_fragment_bit(payload, fragment_offset, bit_cursor)? != false {
+            return None;
+        }
+        bit_cursor = bit_cursor.checked_add(1)?;
+        if bit_cursor > fragment_bits_available {
+            return None;
+        }
+
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        let x = read_area_f32(payload, fragment_offset, cursor.checked_add(4)?)?;
+        let y = read_area_f32(payload, fragment_offset, cursor.checked_add(8)?)?;
+        let z = read_area_f32(payload, fragment_offset, cursor.checked_add(12)?)?;
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return None;
+        }
+
+        let matched_index = remaining
+            .iter()
+            .copied()
+            .filter(|index| {
+                let note = &info.map_notes[*index];
+                same_f32_bits(x, note.x) && same_f32_bits(y, note.y) && same_f32_bits(z, note.z)
+            })
+            .collect::<Vec<_>>();
+        if matched_index.len() != 1 {
+            return None;
+        }
+        let note_index = matched_index[0];
+        let note = &info.map_notes[note_index];
+        let text_read_offset = cursor.checked_add(4 + 3 * 4)?;
+        if !compact_cexo_string_span_matches_text(
+            payload,
+            fragment_offset,
+            text_read_offset,
+            &note.text,
+        ) {
+            return None;
+        }
+        write_area_cexo_string_exact(payload, fragment_offset, text_read_offset, &note.text)?;
+        cursor = text_read_offset
+            .checked_add(EE_CEXO_STRING_LENGTH_BYTES)?
+            .checked_add(note.text.len())?;
+        remaining.retain(|index| *index != note_index);
+    }
+
+    write_area_u32(payload, fragment_offset, cursor, 0)?;
+    Some((cursor.checked_add(4)?, info.map_notes.len()))
+}
+
+fn repair_compact_sound_tail_for_ee(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    sound_count_offset: usize,
+    info: &ModuleAreaResourceInfo,
+) -> Option<usize> {
+    let sound_count = usize::from(read_area_u16(payload, fragment_offset, sound_count_offset)?);
+    if sound_count == 0
+        || sound_count != info.sounds.len()
+        || sound_count > MAX_AREA_POST_TILE_LIST_COUNT as usize
+    {
+        return None;
+    }
+
+    let mut cursor = sound_count_offset.checked_add(2)?;
+    let mut remaining = (0..info.sounds.len()).collect::<Vec<_>>();
+    for _ in 0..sound_count {
+        let matches = remaining
+            .iter()
+            .copied()
+            .filter(|index| {
+                compact_sound_row_matches_resource(
+                    payload,
+                    fragment_offset,
+                    cursor,
+                    &info.sounds[*index],
+                )
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return None;
+        }
+        let sound_index = matches[0];
+        let sound = &info.sounds[sound_index];
+        write_sound_row_from_resource(payload, fragment_offset, cursor, sound)?;
+        cursor = cursor.checked_add(sound_row_bytes(sound)?)?;
+        remaining.retain(|index| *index != sound_index);
+    }
+
+    Some(cursor)
+}
+
+fn compact_sound_row_matches_resource(
+    payload: &[u8],
+    fragment_offset: usize,
+    row_read_offset: usize,
+    sound: &ModuleAreaSound,
+) -> bool {
+    let Some(row_bytes) = sound_row_bytes(sound) else {
+        return false;
+    };
+    if sound.tag.len() > 64 || !sound.tag.bytes().all(|byte| byte.is_ascii()) {
+        return false;
+    }
+    if HIGH_LEVEL_HEADER_BYTES
+        .checked_add(row_read_offset)
+        .and_then(|offset| offset.checked_add(row_bytes))
+        .is_none_or(|end| end > fragment_offset)
+    {
+        return false;
+    }
+    let Some(object_id) = read_area_u32(payload, fragment_offset, row_read_offset) else {
+        return false;
+    };
+    if !legacy_area_object_id_plausible(object_id) {
+        return false;
+    }
+    if read_area_f32(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_X_OFFSET,
+    )
+    .is_none_or(|value| !same_f32_bits(value, sound.x))
+        || read_area_f32(
+            payload,
+            fragment_offset,
+            row_read_offset + AREA_SOUND_Y_OFFSET,
+        )
+        .is_none_or(|value| !same_f32_bits(value, sound.y))
+    {
+        return false;
+    }
+
+    let source_count = read_area_u16(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_RESREF_COUNT_OFFSET,
+    );
+    let expected_count = u16::try_from(sound.resrefs.len()).ok();
+    if source_count != expected_count && !(source_count == Some(0) && expected_count == Some(1)) {
+        return false;
+    }
+    if !compact_sound_z_matches_resource(payload, fragment_offset, row_read_offset, sound) {
+        return false;
+    }
+
+    sound.resrefs.iter().enumerate().all(|(index, resref)| {
+        let read_offset = row_read_offset + AREA_SOUND_BASE_BYTES + index * CRESREF_TEXT_BYTES;
+        fixed_resref_at_read_offset(payload, fragment_offset, read_offset)
+            .is_some_and(|source| source.eq_ignore_ascii_case(resref))
+    })
+}
+
+fn compact_sound_z_matches_resource(
+    payload: &[u8],
+    fragment_offset: usize,
+    row_read_offset: usize,
+    sound: &ModuleAreaSound,
+) -> bool {
+    let Some(payload_offset) = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(row_read_offset)
+        .and_then(|offset| offset.checked_add(AREA_SOUND_Z_OFFSET))
+    else {
+        return false;
+    };
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < 4 {
+        return false;
+    }
+    let Some(source) = payload.get(payload_offset..payload_offset + 4) else {
+        return false;
+    };
+    let expected = sound.z.to_le_bytes();
+    source == expected.as_slice()
+        || (source.get(0..3) == Some(&expected[0..3]) && source.get(3) == Some(&0))
+}
+
+fn write_sound_row_from_resource(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    row_read_offset: usize,
+    sound: &ModuleAreaSound,
+) -> Option<()> {
+    let object_id = read_area_u32(payload, fragment_offset, row_read_offset)?;
+    if !legacy_area_object_id_plausible(object_id) {
+        return None;
+    }
+    // The local Diamond row already carries the decompiled sound scalar body.
+    // The compact defects proven in this packet are row-local: missing
+    // single-resref counts and truncated single-sound Z high bytes.
+    write_area_f32(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_Z_OFFSET,
+        sound.z,
+    )?;
+    write_area_u16(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_RESREF_COUNT_OFFSET,
+        u16::try_from(sound.resrefs.len()).ok()?,
+    )?;
+    for (index, resref) in sound.resrefs.iter().enumerate() {
+        write_area_fixed_resref(
+            payload,
+            fragment_offset,
+            row_read_offset + AREA_SOUND_BASE_BYTES + index * CRESREF_TEXT_BYTES,
+            resref,
+        )?;
+    }
+    Some(())
+}
+
+fn sound_row_bytes(sound: &ModuleAreaSound) -> Option<usize> {
+    if sound.resrefs.is_empty() || sound.resrefs.len() > MAX_AREA_SOUND_RESREFS as usize {
+        return None;
+    }
+    AREA_SOUND_BASE_BYTES.checked_add(sound.resrefs.len().checked_mul(CRESREF_TEXT_BYTES)?)
+}
+
+fn compact_cexo_string_span_matches_text(
+    payload: &[u8],
+    fragment_offset: usize,
+    read_offset: usize,
+    text: &str,
+) -> bool {
+    if text.is_empty() || text.len() > 4096 {
+        return false;
+    }
+    let Some(payload_offset) = HIGH_LEVEL_HEADER_BYTES.checked_add(read_offset) else {
+        return false;
+    };
+    let Some(end) = payload_offset
+        .checked_add(EE_CEXO_STRING_LENGTH_BYTES)
+        .and_then(|offset| offset.checked_add(text.len()))
+    else {
+        return false;
+    };
+    if end > fragment_offset || end > payload.len() {
+        return false;
+    }
+    if payload.get(payload_offset..payload_offset + EE_CEXO_STRING_LENGTH_BYTES)
+        != Some(&[0, 0, 0, 0])
+    {
+        return false;
+    }
+    let Some(text_bytes) = payload.get(payload_offset + EE_CEXO_STRING_LENGTH_BYTES..end) else {
+        return false;
+    };
+    let Some(fragments) = compact_fragmented_ascii_runs_allowing_singletons(text_bytes) else {
+        return false;
+    };
+    compact_fragments_match_allowing_singletons(text, &fragments)
+}
+
+fn write_area_cexo_string_exact(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    read_offset: usize,
+    text: &str,
+) -> Option<()> {
+    if text.is_empty() || text.len() > 4096 || !text.bytes().all(|byte| byte.is_ascii()) {
+        return None;
+    }
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(read_offset)?;
+    let text_start = payload_offset.checked_add(EE_CEXO_STRING_LENGTH_BYTES)?;
+    let end = text_start.checked_add(text.len())?;
+    if end > fragment_offset || end > payload.len() {
+        return None;
+    }
+    payload
+        .get_mut(payload_offset..text_start)?
+        .copy_from_slice(&(u32::try_from(text.len()).ok()?).to_le_bytes());
+    payload
+        .get_mut(text_start..end)?
+        .copy_from_slice(text.as_bytes());
+    Some(())
+}
+
+fn compact_fragmented_ascii_runs_allowing_singletons(bytes: &[u8]) -> Option<Vec<String>> {
+    let mut fragments = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor] == 0 {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != 0 {
+            let byte = bytes[cursor];
+            if !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b' ') {
+                return None;
+            }
+            cursor += 1;
+        }
+        if cursor > start {
+            let fragment = String::from_utf8_lossy(bytes.get(start..cursor)?).to_string();
+            if fragment.bytes().any(|byte| byte.is_ascii_alphabetic()) {
+                fragments.push(fragment);
+            }
+        }
+    }
+
+    (!fragments.is_empty()).then_some(fragments)
+}
+
+fn compact_fragments_match_allowing_singletons(target: &str, fragments: &[String]) -> bool {
+    let target = normalized_resource_text(target);
+    if target.is_empty() || fragments.is_empty() {
+        return false;
+    }
+
+    let mut cursor = 0usize;
+    let mut matched = 0usize;
+    for fragment in fragments {
+        let fragment = normalized_resource_text(fragment);
+        if fragment.is_empty() {
+            continue;
+        }
+        let Some(found) = target[cursor..].find(&fragment) else {
+            return false;
+        };
+        cursor = cursor.saturating_add(found).saturating_add(fragment.len());
+        matched = matched.saturating_add(fragment.len());
+    }
+    matched >= 4.min(target.len())
 }
 
 fn scan_area_tile_stream(payload: &[u8], fragment_offset: usize) -> AreaTileStreamScan {
@@ -1364,8 +1989,7 @@ fn legacy_area_source_tail_exact_read_proof(
     if fragment_size == 0 || !scan.valid {
         return None;
     }
-    let fragment = payload.get(fragment_offset..)?;
-    let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
+    let fragment_bits_available = area_payload_fragment_bits_available(payload, fragment_offset)?;
 
     // This is the legacy-side counterpart to the EE `LoadArea` proof below.
     // The source packet has not yet gained the two EE post-static zero WORDs,
@@ -1397,13 +2021,13 @@ fn legacy_area_source_tail_exact_read_proof(
             }
         }
 
-        fragment_bit(fragment, bit_cursor)?;
+        area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
         bit_cursor = bit_cursor.checked_add(1)?;
-        let client_tlk = fragment_bit(fragment, bit_cursor)?;
+        let client_tlk = area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
         bit_cursor = bit_cursor.checked_add(1)?;
         let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
         cursor = if client_tlk {
-            fragment_bit(fragment, bit_cursor)?;
+            area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
             bit_cursor = bit_cursor.checked_add(1)?;
             read_area_u32(payload, fragment_offset, locstring_offset)?;
             locstring_offset.checked_add(4)?
@@ -1753,13 +2377,13 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
         // `CExoLocStringServer` selector. HG Docks takes the inline
         // `CExoString` branch for each row; the TLK branch is modeled because
         // the decompiled helper has an exact one-bit-plus-DWORD shape.
-        fragment_bit(fragment, bit_cursor)?;
+        area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
         bit_cursor = bit_cursor.checked_add(1)?;
-        let client_tlk = fragment_bit(fragment, bit_cursor)?;
+        let client_tlk = area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
         bit_cursor = bit_cursor.checked_add(1)?;
         let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
         cursor = if client_tlk {
-            fragment_bit(fragment, bit_cursor)?;
+            area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
             bit_cursor = bit_cursor.checked_add(1)?;
             read_area_u32(payload, fragment_offset, locstring_offset)?;
             locstring_offset.checked_add(4)?
@@ -2236,6 +2860,763 @@ fn area_tile_record_byte_count(flags: u16) -> usize {
     length
 }
 
+#[derive(Debug, Clone)]
+struct ModuleAreaResourceTable {
+    module_name: Option<String>,
+    module_resref: Option<String>,
+    area_order: Vec<String>,
+    areas: Vec<ModuleAreaResourceInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct ErfResourceEntry {
+    resref: String,
+    restype: u16,
+    offset: usize,
+    size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GffField {
+    field_type: u32,
+    label: String,
+    data: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GffLayout {
+    struct_offset: usize,
+    struct_count: usize,
+    field_offset: usize,
+    field_count: usize,
+    label_offset: usize,
+    label_count: usize,
+    field_data_offset: usize,
+    field_indices_offset: usize,
+    field_indices_count: usize,
+    list_indices_offset: usize,
+    list_indices_count: usize,
+}
+
+fn module_area_resource_info_for_compact_packet(
+    payload: &[u8],
+    fragment_offset: usize,
+    legacy_area_object_id: u32,
+) -> Option<ModuleAreaResourceInfo> {
+    let context = crate::translate::module::observed_module_context()?;
+    let area_index = context
+        .areas
+        .iter()
+        .position(|area| area.object_id == legacy_area_object_id)?;
+    let observed_area_name = context.areas.get(area_index)?.name.as_str();
+    let compact_fragments = diamond_compact_area_name_fragments(payload, fragment_offset)?;
+    let module_path = observed_module_file_path(&context)?;
+    let table = read_module_area_resource_table(&module_path)?;
+    if !module_table_matches_observed_context(&table, &context) {
+        return None;
+    }
+    let area_resref = table.area_order.get(area_index)?;
+    let info = table
+        .areas
+        .iter()
+        .find(|area| area.resref.eq_ignore_ascii_case(area_resref))?
+        .clone();
+    if !area_resource_matches_observed_compact_name(&info, observed_area_name, &compact_fragments) {
+        return None;
+    }
+    Some(info)
+}
+
+fn module_table_matches_observed_context(
+    table: &ModuleAreaResourceTable,
+    context: &crate::translate::module::ObservedModuleContext,
+) -> bool {
+    table
+        .module_name
+        .as_deref()
+        .is_some_and(|name| same_resource_text(name, &context.localized_name))
+        || table
+            .module_resref
+            .as_deref()
+            .is_some_and(|resref| same_resource_text(resref, &context.module_resref))
+        || module_table_area_order_matches_observed_context(table, context)
+}
+
+fn area_resource_matches_observed_compact_name(
+    info: &ModuleAreaResourceInfo,
+    observed_area_name: &str,
+    compact_fragments: &[String],
+) -> bool {
+    let name = normalized_resource_text(&info.name);
+    let resref = normalized_resource_text(&info.resref);
+    let observed = normalized_resource_text(observed_area_name);
+    if !observed.is_empty() && (observed == name || observed == resref) {
+        return true;
+    }
+
+    let observed_fragments = compact_observed_text_fragments(observed_area_name);
+    if compact_fragments_match(&name, &observed_fragments)
+        || compact_fragments_match(&resref, &observed_fragments)
+    {
+        return true;
+    }
+
+    compact_fragments_match(&name, compact_fragments)
+        || compact_fragments_match(&resref, compact_fragments)
+}
+
+fn module_table_area_order_matches_observed_context(
+    table: &ModuleAreaResourceTable,
+    context: &crate::translate::module::ObservedModuleContext,
+) -> bool {
+    if context.areas.is_empty() || table.area_order.len() != context.areas.len() {
+        return false;
+    }
+
+    let required_matches = MIN_OBSERVED_MODULE_AREA_MATCHES
+        .min(context.areas.len())
+        .min(table.area_order.len());
+    let mut matches = 0usize;
+    for (index, observed_area) in context.areas.iter().enumerate() {
+        let Some(area_resref) = table.area_order.get(index) else {
+            return false;
+        };
+        let Some(info) = table
+            .areas
+            .iter()
+            .find(|area| area.resref.eq_ignore_ascii_case(area_resref))
+        else {
+            continue;
+        };
+        let observed_fragments = compact_observed_text_fragments(&observed_area.name);
+        if area_resource_matches_observed_compact_name(
+            info,
+            &observed_area.name,
+            &observed_fragments,
+        ) {
+            matches = matches.saturating_add(1);
+        }
+    }
+
+    matches >= required_matches
+}
+
+fn compact_observed_text_fragments(value: &str) -> Vec<String> {
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .filter(|fragment| !fragment.trim().is_empty())
+        .map(|fragment| fragment.trim().to_owned())
+        .collect()
+}
+
+fn compact_fragments_match(target: &str, fragments: &[String]) -> bool {
+    if target.is_empty() || fragments.is_empty() {
+        return false;
+    }
+
+    let mut cursor = 0usize;
+    let mut matched = 0usize;
+    for fragment in fragments {
+        let fragment = normalized_resource_text(fragment);
+        if fragment.len() < 2 {
+            continue;
+        }
+        let Some(found) = target[cursor..].find(&fragment) else {
+            return false;
+        };
+        cursor = cursor.saturating_add(found).saturating_add(fragment.len());
+        matched = matched.saturating_add(fragment.len());
+    }
+    matched >= 4
+}
+
+fn same_resource_text(left: &str, right: &str) -> bool {
+    normalized_resource_text(left) == normalized_resource_text(right)
+}
+
+fn normalized_resource_text(value: &str) -> String {
+    value
+        .bytes()
+        .filter(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect()
+}
+
+fn observed_module_file_path(
+    context: &crate::translate::module::ObservedModuleContext,
+) -> Option<PathBuf> {
+    let mut seen = HashSet::new();
+    for candidate in observed_module_file_candidates(context) {
+        if !seen.insert(path_key(&candidate)) || !candidate.is_file() {
+            continue;
+        }
+        if read_module_area_resource_table(&candidate)
+            .as_ref()
+            .is_some_and(|table| module_table_matches_observed_context(table, context))
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn observed_module_file_candidates(
+    context: &crate::translate::module::ObservedModuleContext,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("NWN_BRIDGE_MODULE_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    let mut names = Vec::new();
+    if !context.localized_name.trim().is_empty() {
+        names.push(context.localized_name.trim().to_owned());
+    }
+    if !context.module_resref.trim().is_empty() {
+        names.push(context.module_resref.trim().to_owned());
+    }
+
+    let mut dirs = Vec::new();
+    if let Ok(value) = std::env::var("NWN_BRIDGE_MODULE_DIRS") {
+        dirs.extend(split_env_list(&value).map(PathBuf::from));
+    }
+    dirs.extend([
+        PathBuf::from(r"C:\NWN\NWN Diamond\modules"),
+        PathBuf::from(r"C:\NWN\NWN Diamond\nwm"),
+        PathBuf::from("NWN Diamond").join("modules"),
+        PathBuf::from("NWN Diamond").join("nwm"),
+    ]);
+
+    for dir in &dirs {
+        for name in &names {
+            candidates.push(dir.join(format!("{name}.mod")));
+            candidates.push(dir.join(format!("{name}.nwm")));
+            candidates.push(dir.join(name));
+        }
+    }
+
+    for dir in &dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        let mut scanned = 0usize;
+        for entry in entries.flatten() {
+            if scanned >= MAX_OBSERVED_MODULE_SCAN_FILES {
+                break;
+            }
+            scanned = scanned.saturating_add(1);
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if extension.eq_ignore_ascii_case("mod") || extension.eq_ignore_ascii_case("nwm") {
+                candidates.push(path);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn read_module_area_resource_table(path: &Path) -> Option<ModuleAreaResourceTable> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_MODULE_FILE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let resources = read_erf_resource_entries(&bytes)?;
+
+    let ifo = resources
+        .iter()
+        .find(|entry| entry.restype == RESTYPE_IFO)?;
+    let ifo_bytes = bytes.get(ifo.offset..ifo.offset.checked_add(ifo.size)?)?;
+    let (module_name, module_resref, area_order) = parse_ifo_module_area_list(ifo_bytes)?;
+    if area_order.is_empty() {
+        return None;
+    }
+
+    let mut areas = Vec::new();
+    for area_resref in &area_order {
+        let Some(entry) = resources.iter().find(|entry| {
+            entry.restype == RESTYPE_ARE && entry.resref.eq_ignore_ascii_case(area_resref)
+        }) else {
+            continue;
+        };
+        let are_bytes = bytes.get(entry.offset..entry.offset.checked_add(entry.size)?)?;
+        if let Some(mut area) = parse_are_resource_info(are_bytes, &entry.resref) {
+            if let Some(git_entry) = resources.iter().find(|entry| {
+                entry.restype == RESTYPE_GIT && entry.resref.eq_ignore_ascii_case(area_resref)
+            }) {
+                let git_bytes =
+                    bytes.get(git_entry.offset..git_entry.offset.checked_add(git_entry.size)?)?;
+                if let Some((map_notes, sounds)) = parse_git_runtime_info(git_bytes) {
+                    area.map_notes = map_notes;
+                    area.sounds = sounds;
+                }
+            }
+            areas.push(area);
+        }
+    }
+    if areas.is_empty() {
+        return None;
+    }
+
+    Some(ModuleAreaResourceTable {
+        module_name,
+        module_resref,
+        area_order,
+        areas,
+    })
+}
+
+fn read_erf_resource_entries(bytes: &[u8]) -> Option<Vec<ErfResourceEntry>> {
+    if bytes.len() < 32 {
+        return None;
+    }
+    let magic = bytes.get(0..4)?;
+    if !matches!(magic, b"MOD " | b"NWM " | b"ERF " | b"HAK ") || bytes.get(4..8)? != b"V1.0" {
+        return None;
+    }
+
+    let entry_count = read_u32_le(bytes, 16)?;
+    let key_list_offset = usize::try_from(read_u32_le(bytes, 24)?).ok()?;
+    let resource_list_offset = usize::try_from(read_u32_le(bytes, 28)?).ok()?;
+    if entry_count > MAX_ERF_KEY_COUNT
+        || key_list_offset >= bytes.len()
+        || resource_list_offset >= bytes.len()
+    {
+        return None;
+    }
+
+    let mut entries = Vec::with_capacity(usize::try_from(entry_count).ok()?);
+    for index in 0..usize::try_from(entry_count).ok()? {
+        let key_offset = key_list_offset.checked_add(index.checked_mul(24)?)?;
+        let key = bytes.get(key_offset..key_offset.checked_add(24)?)?;
+        let resref = fixed_resref_bytes_to_string(key.get(0..16)?)?;
+        let resource_id = usize::try_from(read_u32_le(key, 16)?).ok()?;
+        let restype = u16::from_le_bytes([*key.get(20)?, *key.get(21)?]);
+        let resource_entry_offset =
+            resource_list_offset.checked_add(resource_id.checked_mul(8)?)?;
+        let resource_offset = usize::try_from(read_u32_le(bytes, resource_entry_offset)?).ok()?;
+        let resource_size = usize::try_from(read_u32_le(bytes, resource_entry_offset + 4)?).ok()?;
+        if resource_offset.checked_add(resource_size)? > bytes.len() {
+            return None;
+        }
+        entries.push(ErfResourceEntry {
+            resref,
+            restype,
+            offset: resource_offset,
+            size: resource_size,
+        });
+    }
+
+    Some(entries)
+}
+
+fn parse_ifo_module_area_list(
+    bytes: &[u8],
+) -> Option<(Option<String>, Option<String>, Vec<String>)> {
+    let fields = gff_root_fields(bytes)?;
+    let module_name = fields
+        .iter()
+        .find(|field| field.label == "Mod_Name")
+        .and_then(|field| gff_locstring_value(bytes, field));
+    let module_resref = fields
+        .iter()
+        .find(|field| field.label == "Mod_Entry_Area")
+        .and_then(|field| gff_resref_value(bytes, field));
+    let area_list = fields
+        .iter()
+        .find(|field| field.label == "Mod_Area_list" && field.field_type == GFF_TYPE_LIST)?;
+    let area_order = gff_list_structs(bytes, area_list.data)?
+        .into_iter()
+        .filter_map(|struct_index| {
+            gff_struct_fields(bytes, struct_index).and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|field| field.label == "Area_Name")
+                    .and_then(|field| gff_resref_value(bytes, field))
+            })
+        })
+        .collect::<Vec<_>>();
+    Some((module_name, module_resref, area_order))
+}
+
+fn parse_are_resource_info(bytes: &[u8], fallback_resref: &str) -> Option<ModuleAreaResourceInfo> {
+    let fields = gff_root_fields(bytes)?;
+    let resref = fields
+        .iter()
+        .find(|field| field.label == "ResRef")
+        .and_then(|field| gff_resref_value(bytes, field))
+        .unwrap_or_else(|| fallback_resref.to_owned());
+    let name = fields
+        .iter()
+        .find(|field| field.label == "Name")
+        .and_then(|field| gff_locstring_value(bytes, field))
+        .or_else(|| {
+            fields
+                .iter()
+                .find(|field| field.label == "Tag")
+                .and_then(|field| gff_string_value(bytes, field))
+        })
+        .unwrap_or_else(|| resref.clone());
+    let width = fields
+        .iter()
+        .find(|field| field.label == "Width")
+        .and_then(|field| gff_dword_value(field))?;
+    let height = fields
+        .iter()
+        .find(|field| field.label == "Height")
+        .and_then(|field| gff_dword_value(field))?;
+    let tileset = fields
+        .iter()
+        .find(|field| field.label == "Tileset")
+        .and_then(|field| gff_resref_value(bytes, field))?;
+    Some(ModuleAreaResourceInfo {
+        resref,
+        name,
+        width,
+        height,
+        tileset,
+        map_notes: Vec::new(),
+        sounds: Vec::new(),
+    })
+}
+
+fn parse_git_runtime_info(bytes: &[u8]) -> Option<(Vec<ModuleAreaMapNote>, Vec<ModuleAreaSound>)> {
+    let fields = gff_root_fields(bytes)?;
+    Some((
+        parse_git_map_notes(bytes, &fields)?,
+        parse_git_sounds(bytes, &fields)?,
+    ))
+}
+
+fn parse_git_map_notes(bytes: &[u8], root_fields: &[GffField]) -> Option<Vec<ModuleAreaMapNote>> {
+    let Some(waypoint_list) = gff_field_by_label(root_fields, "WaypointList") else {
+        return Some(Vec::new());
+    };
+    if waypoint_list.field_type != GFF_TYPE_LIST {
+        return None;
+    }
+
+    let mut notes = Vec::new();
+    for struct_index in gff_list_structs(bytes, waypoint_list.data)? {
+        let fields = gff_struct_fields(bytes, struct_index)?;
+        let has_map_note = gff_field_by_label(&fields, "HasMapNote")
+            .and_then(gff_byte_value)
+            .unwrap_or(0)
+            != 0;
+        let map_note_enabled = gff_field_by_label(&fields, "MapNoteEnabled")
+            .and_then(gff_byte_value)
+            .unwrap_or(0)
+            != 0;
+        if !has_map_note || !map_note_enabled {
+            continue;
+        }
+        let text = gff_field_by_label(&fields, "MapNote")
+            .and_then(|field| gff_locstring_value(bytes, field))?;
+        if text.trim().is_empty() || text.len() > 4096 || !text.bytes().all(|byte| byte.is_ascii())
+        {
+            continue;
+        }
+        let x = gff_field_by_label(&fields, "XPosition").and_then(gff_float_value)?;
+        let y = gff_field_by_label(&fields, "YPosition").and_then(gff_float_value)?;
+        let z = gff_field_by_label(&fields, "ZPosition").and_then(gff_float_value)?;
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return None;
+        }
+        notes.push(ModuleAreaMapNote { text, x, y, z });
+    }
+
+    Some(notes)
+}
+
+fn parse_git_sounds(bytes: &[u8], root_fields: &[GffField]) -> Option<Vec<ModuleAreaSound>> {
+    let Some(sound_list) = gff_field_by_label(root_fields, "SoundList") else {
+        return Some(Vec::new());
+    };
+    if sound_list.field_type != GFF_TYPE_LIST {
+        return None;
+    }
+
+    let mut sounds = Vec::new();
+    for struct_index in gff_list_structs(bytes, sound_list.data)? {
+        let fields = gff_struct_fields(bytes, struct_index)?;
+        let resrefs = parse_git_sound_resrefs(bytes, &fields)?;
+        if resrefs.is_empty() || resrefs.len() > MAX_AREA_SOUND_RESREFS as usize {
+            return None;
+        }
+        let sound = ModuleAreaSound {
+            tag: gff_field_by_label(&fields, "Tag")
+                .and_then(|field| gff_string_value(bytes, field))
+                .unwrap_or_default(),
+            x: required_gff_float(&fields, "XPosition")?,
+            y: required_gff_float(&fields, "YPosition")?,
+            z: required_gff_float(&fields, "ZPosition")?,
+            resrefs,
+        };
+        if !sound_floats_finite(&sound) {
+            return None;
+        }
+        sounds.push(sound);
+    }
+
+    Some(sounds)
+}
+
+fn parse_git_sound_resrefs(bytes: &[u8], fields: &[GffField]) -> Option<Vec<String>> {
+    let sounds_list = gff_field_by_label(fields, "Sounds")?;
+    if sounds_list.field_type != GFF_TYPE_LIST {
+        return None;
+    }
+    gff_list_structs(bytes, sounds_list.data)?
+        .into_iter()
+        .map(|struct_index| {
+            let fields = gff_struct_fields(bytes, struct_index)?;
+            let resref = gff_field_by_label(&fields, "Sound")
+                .and_then(|field| gff_resref_value(bytes, field))?;
+            area_resref_plausible(&resref).then_some(resref)
+        })
+        .collect()
+}
+
+fn required_gff_float(fields: &[GffField], label: &str) -> Option<f32> {
+    gff_field_by_label(fields, label).and_then(gff_float_value)
+}
+
+fn sound_floats_finite(sound: &ModuleAreaSound) -> bool {
+    [sound.x, sound.y, sound.z].into_iter().all(f32::is_finite)
+}
+
+fn gff_root_fields(bytes: &[u8]) -> Option<Vec<GffField>> {
+    let layout = gff_layout(bytes)?;
+    gff_struct_fields_with_layout(bytes, &layout, 0)
+}
+
+fn gff_struct_fields(bytes: &[u8], struct_index: u32) -> Option<Vec<GffField>> {
+    let layout = gff_layout(bytes)?;
+    gff_struct_fields_with_layout(bytes, &layout, struct_index)
+}
+
+fn gff_struct_fields_with_layout(
+    bytes: &[u8],
+    layout: &GffLayout,
+    struct_index: u32,
+) -> Option<Vec<GffField>> {
+    let struct_index = usize::try_from(struct_index).ok()?;
+    if struct_index >= layout.struct_count {
+        return None;
+    }
+    let struct_offset = layout
+        .struct_offset
+        .checked_add(struct_index.checked_mul(12)?)?;
+    let data = read_u32_le(bytes, struct_offset + 4)?;
+    let field_count = read_u32_le(bytes, struct_offset + 8)?;
+    if field_count > MAX_GFF_FIELD_COUNT {
+        return None;
+    }
+    let indices = if field_count == 1 {
+        vec![data]
+    } else {
+        let start = usize::try_from(data).ok()?;
+        let count = usize::try_from(field_count).ok()?;
+        if start.checked_add(count.checked_mul(4)?)? > layout.field_indices_count {
+            return None;
+        }
+        (0..count)
+            .map(|index| read_u32_le(bytes, layout.field_indices_offset + start + index * 4))
+            .collect::<Option<Vec<_>>>()?
+    };
+
+    indices
+        .into_iter()
+        .map(|field_index| gff_field(bytes, layout, field_index))
+        .collect()
+}
+
+fn gff_field(bytes: &[u8], layout: &GffLayout, field_index: u32) -> Option<GffField> {
+    let field_index = usize::try_from(field_index).ok()?;
+    if field_index >= layout.field_count {
+        return None;
+    }
+    let offset = layout
+        .field_offset
+        .checked_add(field_index.checked_mul(12)?)?;
+    let field_type = read_u32_le(bytes, offset)?;
+    let label_index = usize::try_from(read_u32_le(bytes, offset + 4)?).ok()?;
+    let data = read_u32_le(bytes, offset + 8)?;
+    if label_index >= layout.label_count {
+        return None;
+    }
+    let label_offset = layout
+        .label_offset
+        .checked_add(label_index.checked_mul(16)?)?;
+    let label = fixed_resref_bytes_to_string(bytes.get(label_offset..label_offset + 16)?)?;
+    Some(GffField {
+        field_type,
+        label,
+        data,
+    })
+}
+
+fn gff_layout(bytes: &[u8]) -> Option<GffLayout> {
+    if bytes.len() < 56 || bytes.get(4..8)? != b"V3.2" {
+        return None;
+    }
+    let magic = bytes.get(0..4)?;
+    if !matches!(magic, b"IFO " | b"ARE " | b"GIT " | b"GFF ") {
+        return None;
+    }
+    let struct_offset = usize::try_from(read_u32_le(bytes, 8)?).ok()?;
+    let struct_count = usize::try_from(read_u32_le(bytes, 12)?).ok()?;
+    let field_offset = usize::try_from(read_u32_le(bytes, 16)?).ok()?;
+    let field_count = usize::try_from(read_u32_le(bytes, 20)?).ok()?;
+    let label_offset = usize::try_from(read_u32_le(bytes, 24)?).ok()?;
+    let label_count = usize::try_from(read_u32_le(bytes, 28)?).ok()?;
+    let field_data_offset = usize::try_from(read_u32_le(bytes, 32)?).ok()?;
+    let _field_data_count = usize::try_from(read_u32_le(bytes, 36)?).ok()?;
+    let field_indices_offset = usize::try_from(read_u32_le(bytes, 40)?).ok()?;
+    let field_indices_count = usize::try_from(read_u32_le(bytes, 44)?).ok()?;
+    let list_indices_offset = usize::try_from(read_u32_le(bytes, 48)?).ok()?;
+    let list_indices_count = usize::try_from(read_u32_le(bytes, 52)?).ok()?;
+    if struct_count > MAX_GFF_STRUCT_COUNT as usize
+        || field_count > MAX_GFF_FIELD_COUNT as usize
+        || struct_offset >= bytes.len()
+        || field_offset >= bytes.len()
+        || label_offset >= bytes.len()
+        || field_data_offset >= bytes.len()
+        || field_indices_offset > bytes.len()
+        || list_indices_offset > bytes.len()
+    {
+        return None;
+    }
+    Some(GffLayout {
+        struct_offset,
+        struct_count,
+        field_offset,
+        field_count,
+        label_offset,
+        label_count,
+        field_data_offset,
+        field_indices_offset,
+        field_indices_count,
+        list_indices_offset,
+        list_indices_count,
+    })
+}
+
+fn gff_list_structs(bytes: &[u8], data: u32) -> Option<Vec<u32>> {
+    let layout = gff_layout(bytes)?;
+    let start = usize::try_from(data).ok()?;
+    let count_offset = layout.list_indices_offset.checked_add(start)?;
+    let count = usize::try_from(read_u32_le(bytes, count_offset)?).ok()?;
+    let entries_offset = count_offset.checked_add(4)?;
+    let end = entries_offset.checked_add(count.checked_mul(4)?)?;
+    if end
+        > layout
+            .list_indices_offset
+            .checked_add(layout.list_indices_count)?
+        || end > bytes.len()
+    {
+        return None;
+    }
+    (0..count)
+        .map(|index| read_u32_le(bytes, entries_offset + index * 4))
+        .collect()
+}
+
+fn gff_field_by_label<'a>(fields: &'a [GffField], label: &str) -> Option<&'a GffField> {
+    fields.iter().find(|field| field.label == label)
+}
+
+fn gff_byte_value(field: &GffField) -> Option<u8> {
+    match field.field_type {
+        GFF_TYPE_BYTE => u8::try_from(field.data).ok(),
+        _ => None,
+    }
+}
+
+fn gff_dword_value(field: &GffField) -> Option<u32> {
+    match field.field_type {
+        GFF_TYPE_DWORD => Some(field.data),
+        GFF_TYPE_INT if field.data <= i32::MAX as u32 => Some(field.data),
+        _ => None,
+    }
+}
+
+fn gff_float_value(field: &GffField) -> Option<f32> {
+    (field.field_type == GFF_TYPE_FLOAT).then_some(f32::from_bits(field.data))
+}
+
+fn gff_string_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_CEXO_STRING {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let len = usize::try_from(read_u32_le(bytes, offset)?).ok()?;
+    let start = offset.checked_add(4)?;
+    let end = start.checked_add(len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string())
+}
+
+fn gff_resref_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_RESREF {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let len = usize::from(*bytes.get(offset)?);
+    if len > CRESREF_TEXT_BYTES {
+        return None;
+    }
+    let start = offset.checked_add(1)?;
+    let end = start.checked_add(len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string())
+}
+
+fn gff_locstring_value(bytes: &[u8], field: &GffField) -> Option<String> {
+    if field.field_type != GFF_TYPE_CEXO_LOCSTRING {
+        return None;
+    }
+    let layout = gff_layout(bytes)?;
+    let offset = layout
+        .field_data_offset
+        .checked_add(usize::try_from(field.data).ok()?)?;
+    let _total_size = read_u32_le(bytes, offset)?;
+    let _string_ref = read_u32_le(bytes, offset + 4)?;
+    let count = usize::try_from(read_u32_le(bytes, offset + 8)?).ok()?;
+    let mut cursor = offset.checked_add(12)?;
+    let mut first = None;
+    for _ in 0..count {
+        let _language = read_u32_le(bytes, cursor)?;
+        let len = usize::try_from(read_u32_le(bytes, cursor + 4)?).ok()?;
+        let start = cursor.checked_add(8)?;
+        let end = start.checked_add(len)?;
+        if end > bytes.len() {
+            return None;
+        }
+        if first.is_none() {
+            first = Some(String::from_utf8_lossy(bytes.get(start..end)?).to_string());
+        }
+        cursor = end;
+    }
+    first
+}
+
 fn read_c_exo_string_shape(
     payload: &[u8],
     fragment_offset: usize,
@@ -2292,6 +3673,99 @@ fn read_diamond_fixed_area_name_shape(
         DIAMOND_LEGACY_AREA_NAME_BYTES as u32,
         AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES,
     ))
+}
+
+fn read_diamond_compact_area_name_shape(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<(u32, usize)> {
+    let fragments = diamond_compact_area_name_fragments(payload, fragment_offset)?;
+    let fragment_text_bytes = fragments.iter().map(String::len).sum::<usize>();
+    if fragment_text_bytes < 4 {
+        return None;
+    }
+    Some((
+        DIAMOND_COMPACT_AREA_NAME_BYTES as u32,
+        AREA_NAME_READ_OFFSET + DIAMOND_COMPACT_AREA_NAME_BYTES,
+    ))
+}
+
+fn diamond_compact_area_name_fragments(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<Vec<String>> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let end = payload_offset.checked_add(DIAMOND_COMPACT_AREA_NAME_BYTES)?;
+    if end > fragment_offset || end > payload.len() {
+        return None;
+    }
+    let bytes = payload.get(payload_offset..end)?;
+    if bytes.get(..EE_CEXO_STRING_LENGTH_BYTES)? != [0, 0, 0, 0] {
+        return None;
+    }
+    let fragments = compact_fragmented_ascii_runs(bytes.get(EE_CEXO_STRING_LENGTH_BYTES..)?)?;
+    (fragments.len() >= 2).then_some(fragments)
+}
+
+fn compact_fragmented_ascii_runs(bytes: &[u8]) -> Option<Vec<String>> {
+    let mut fragments = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor] == 0 {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != 0 {
+            let byte = bytes[cursor];
+            if !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b' ') {
+                return None;
+            }
+            cursor += 1;
+        }
+        if cursor > start {
+            let fragment = String::from_utf8_lossy(bytes.get(start..cursor)?).to_string();
+            if fragment.bytes().any(|byte| byte.is_ascii_alphabetic()) {
+                fragments.push(fragment);
+            }
+        }
+    }
+
+    let fragment_text_bytes = fragments.iter().map(String::len).sum::<usize>();
+    (fragment_text_bytes >= 2).then_some(fragments)
+}
+
+fn write_area_fixed_resref(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    read_offset: usize,
+    value: &str,
+) -> Option<()> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(read_offset)?;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < CRESREF_TEXT_BYTES {
+        return None;
+    }
+    write_fixed_resref_payload(payload, payload_offset, value)
+}
+
+fn write_fixed_resref_payload(payload: &mut [u8], offset: usize, value: &str) -> Option<()> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > CRESREF_TEXT_BYTES
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return None;
+    }
+    let end = offset.checked_add(CRESREF_TEXT_BYTES)?;
+    if end > payload.len() {
+        return None;
+    }
+    payload.get_mut(offset..end)?.fill(0);
+    payload
+        .get_mut(offset..offset + bytes.len())?
+        .copy_from_slice(bytes);
+    Some(())
 }
 
 fn read_area_u32(payload: &[u8], fragment_offset: usize, read_offset: usize) -> Option<u32> {
@@ -2369,17 +3843,25 @@ fn fixed_cresref_at_read_offset_plausible(
     fragment_offset: usize,
     read_offset: usize,
 ) -> bool {
-    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
-    if payload_offset > fragment_offset || fragment_offset - payload_offset < CRESREF_TEXT_BYTES {
-        return false;
-    }
-    fixed_resref_preview(payload, payload_offset).is_some_and(|resref| {
+    fixed_resref_at_read_offset(payload, fragment_offset, read_offset).is_some_and(|resref| {
         !resref.is_empty()
             && resref.len() <= CRESREF_TEXT_BYTES
             && resref
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     })
+}
+
+fn fixed_resref_at_read_offset(
+    payload: &[u8],
+    fragment_offset: usize,
+    read_offset: usize,
+) -> Option<String> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES + read_offset;
+    if payload_offset > fragment_offset || fragment_offset - payload_offset < CRESREF_TEXT_BYTES {
+        return None;
+    }
+    fixed_resref_preview(payload, payload_offset)
 }
 
 fn start_fields_plausible(payload: &[u8]) -> bool {
@@ -2391,11 +3873,29 @@ fn start_fields_plausible(payload: &[u8]) -> bool {
 
 fn fixed_resref_preview(payload: &[u8], offset: usize) -> Option<String> {
     let bytes = payload.get(offset..offset + CRESREF_TEXT_BYTES)?;
+    fixed_resref_bytes_to_string(bytes)
+}
+
+fn fixed_resref_bytes_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.len() != CRESREF_TEXT_BYTES {
+        return None;
+    }
     let end = bytes
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(CRESREF_TEXT_BYTES);
     Some(String::from_utf8_lossy(&bytes[..end]).to_string())
+}
+
+fn split_env_list(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split([';', ','])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+}
+
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy().to_ascii_lowercase()
 }
 
 fn legacy_area_object_id_plausible(object_id: u32) -> bool {
@@ -2441,6 +3941,8 @@ mod tests {
         include_bytes!("../../fixtures/area/hg_voyage_client_area_legacy_missing_width.bin");
     const LOCAL_DIAMOND_BW167DEMO_FIXED_NAME: &[u8] =
         include_bytes!("../../fixtures/area/local_diamond_bw167demo_client_area_fixed_name.bin");
+    const LOCAL_TO_HEIR_CORMANTHOR_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_to_heir_cormanthor_client_area_compact.bin");
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -2720,6 +4222,215 @@ mod tests {
             .as_deref(),
             Some("ttr01")
         );
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn local_to_heir_compact_area_uses_module_resource_dimensions() {
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "To H".to_string(),
+                module_resref: "To_H".to_string(),
+                areas: vec![
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Cor thor".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0001,
+                        name: "D F st".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0002,
+                        name: "Cavern Ent".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0003,
+                        name: "Dr Caverns".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0004,
+                        name: "F Cavern".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let mut payload = LOCAL_TO_HEIR_CORMANTHOR_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let source_layout =
+            area_static_layout(&payload, fragment_offset).expect("compact static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondCompactFragmented
+        );
+        assert_eq!(source_layout.area_name_end_read_offset, 58);
+        assert_eq!(source_layout.width_read_offset, 154);
+        assert_eq!(source_layout.height_read_offset, 158);
+        assert_eq!(source_layout.tileset_read_offset, 162);
+        assert_eq!(source_layout.first_tile_read_offset, 178);
+        assert!(!scan_area_tile_stream(&payload, fragment_offset).valid);
+
+        let context =
+            crate::translate::module::observed_module_context().expect("observed module context");
+        let compact_fragments = diamond_compact_area_name_fragments(&payload, fragment_offset)
+            .expect("compact area-name fragments");
+        assert_eq!(
+            compact_fragments,
+            vec!["Cor".to_string(), "thor".to_string()]
+        );
+        let module_path =
+            observed_module_file_path(&context).expect("observed local module file path");
+        let module_table =
+            read_module_area_resource_table(&module_path).expect("local module ARE table");
+        assert!(module_table_matches_observed_context(
+            &module_table,
+            &context
+        ));
+        assert_eq!(
+            module_table.area_order.first().map(String::as_str),
+            Some("cormanthor")
+        );
+
+        let compact_info =
+            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
+                .expect("observed module context maps compact area packet to local ARE resource");
+        assert_eq!(compact_info.resref, "cormanthor");
+        assert_eq!(compact_info.name, "Cormanthor");
+        assert_eq!(compact_info.width, 8);
+        assert_eq!(compact_info.height, 9);
+        assert_eq!(compact_info.tileset, "ttf01");
+        assert_eq!(compact_info.map_notes.len(), 2);
+        assert_eq!(compact_info.sounds.len(), 8);
+
+        let mut staged_source = payload.clone();
+        write_fixed_resref_payload(
+            &mut staged_source,
+            LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
+            &compact_info.resref,
+        )
+        .expect("write packet area resref");
+        write_compact_area_name_as_cexo_string(
+            &mut staged_source,
+            fragment_offset,
+            &compact_info.name,
+        )
+        .expect("write compact area name as CExoString");
+        write_area_u32(
+            &mut staged_source,
+            fragment_offset,
+            source_layout.width_read_offset,
+            compact_info.width,
+        )
+        .expect("write area width");
+        write_area_u32(
+            &mut staged_source,
+            fragment_offset,
+            source_layout.height_read_offset,
+            compact_info.height,
+        )
+        .expect("write area height");
+        write_area_fixed_resref(
+            &mut staged_source,
+            fragment_offset,
+            source_layout.tileset_read_offset,
+            &compact_info.tileset,
+        )
+        .expect("write area tileset");
+        let staged_scan = scan_area_tile_stream(&staged_source, fragment_offset);
+        assert!(staged_scan.valid);
+        assert!(repair_compact_post_tile_tail_for_ee(
+            &mut staged_source,
+            fragment_offset,
+            &staged_scan,
+            &compact_info,
+        ));
+        let (_, _, staged_fragment_offset, _) =
+            area_client_area_read_window(&staged_source).expect("staged read window");
+        let staged_scan = scan_area_tile_stream(&staged_source, staged_fragment_offset);
+        assert_eq!(
+            repair_legacy_zero_sound_counts(
+                &mut staged_source,
+                staged_fragment_offset,
+                &staged_scan
+            ),
+            Some(0)
+        );
+        let staged_proof = legacy_area_source_tail_exact_read_proof(
+            &staged_source,
+            staged_fragment_offset,
+            &staged_scan,
+        )
+        .expect("staged compact tail repair should validate source cursor");
+        assert_eq!(staged_proof.static_rows_count, 6);
+
+        let mut repaired_source = payload.clone();
+        repair_compact_area_from_module_resource(
+            &mut repaired_source,
+            fragment_offset,
+            0x8000_0000,
+            &source_layout,
+        )
+        .expect("compact area source fields repaired from local ARE resource");
+        let repaired_scan = scan_area_tile_stream(&repaired_source, fragment_offset);
+        assert!(repaired_scan.valid);
+        assert!(repair_compact_post_tile_tail_for_ee(
+            &mut repaired_source,
+            fragment_offset,
+            &repaired_scan,
+            &compact_info,
+        ));
+        let (_, _, repaired_fragment_offset, _) =
+            area_client_area_read_window(&repaired_source).expect("repaired read window");
+        let repaired_scan = scan_area_tile_stream(&repaired_source, repaired_fragment_offset);
+        assert_eq!(
+            repair_legacy_zero_sound_counts(
+                &mut repaired_source,
+                repaired_fragment_offset,
+                &repaired_scan
+            ),
+            Some(0)
+        );
+        assert!(legacy_area_source_tail_consumes_read_buffer(
+            &repaired_source,
+            repaired_fragment_offset,
+            &repaired_scan
+        ));
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("compact local To Heir area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten compact area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "cormanthor");
+        assert_eq!(summary.tileset_resref, "ttf01");
+        assert_eq!(summary.width, 8);
+        assert_eq!(summary.packet_height, 9);
+        assert_eq!(summary.tile_count, 72);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondCompactAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondCompactPostTileTailRepair)
+        );
+        assert_eq!(proof.transition_count, 2);
+        assert_eq!(proof.sound_count, 8);
+        assert_eq!(proof.light_count, 0);
+        assert_eq!(proof.static_count, 6);
+        assert_eq!(proof.first_post_static_count, 0);
+        assert_eq!(proof.second_post_static_count, 0);
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
 }

@@ -226,17 +226,24 @@ pub(super) fn try_parse_inventory_2a00_shape(
         None
     };
 
-    if record_end - branch_cursor >= 4 && read_u32_le(bytes, branch_cursor)? == 0 {
+    if record_end - branch_cursor >= 4 {
         // For the `0x0200` branch, both clients read two BOOLs before the
         // read-buffer branch body. The second BOOL selects the layout: false
-        // means the following DWORD-count branch, while true means the
-        // byte-mask-list branch. The first BOOL is semantic state and does not
-        // change the cursor shape, so this exact verifier only constrains the
-        // layout-selecting second bit.
-        let candidate =
-            GenericInventoryCandidate::new(branch_cursor + 4, 2).require_fragment_bit(1, false)?;
-        if let Some(candidate) = try_parse_after_0200(candidate, branch_cursor + 4) {
-            return Some(candidate);
+        // means the following DWORD count plus WORD entries, while true means
+        // the byte-mask-list branch. The first BOOL is semantic state and does
+        // not change the cursor shape, so this exact verifier only constrains
+        // the layout-selecting second bit.
+        let word_count = usize::try_from(read_u32_le(bytes, branch_cursor)?).ok()?;
+        if word_count <= usize::from(MAX_REASONABLE_VALUE_GROUPS) {
+            let word_list = branch_cursor.checked_add(4)?;
+            let after_word_list = word_list.checked_add(word_count.checked_mul(2)?)?;
+            if after_word_list <= record_end {
+                let candidate = GenericInventoryCandidate::new(after_word_list, 2)
+                    .require_fragment_bit(1, false)?;
+                if let Some(candidate) = try_parse_after_0200(candidate, after_word_list) {
+                    return Some(candidate);
+                }
+            }
         }
     }
 
@@ -327,10 +334,16 @@ fn try_parse_inventory_2a00_zero_feature25_prefix(
     }
 
     let branch_cursor = record_offset.checked_add(7)?;
-    if read_u32_le(bytes, branch_cursor)? != 0 {
+    let word_count = usize::try_from(read_u32_le(bytes, branch_cursor)?).ok()?;
+    if word_count > usize::from(MAX_REASONABLE_VALUE_GROUPS) {
         return None;
     }
-    let feature25_cursor = branch_cursor.checked_add(4)?;
+    let feature25_cursor = branch_cursor
+        .checked_add(4)?
+        .checked_add(word_count.checked_mul(2)?)?;
+    if feature25_cursor > scan_end {
+        return None;
+    }
     let first_count = read_u32_le(bytes, feature25_cursor)?;
     if first_count > MAX_REASONABLE_FEATURE25_OBJECTS {
         return None;

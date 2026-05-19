@@ -1248,6 +1248,76 @@ fn local_diamond_bw167demo_u5_4408_inventory_stream_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn local_diamond_auto_inventory_u5_4408_gui_rows_stream_rewrites_to_exact_shape() {
+    // Local Diamond harness capture from 2026-05-19 after the driver opened
+    // inventory immediately after Area_AreaLoaded. It starts with the same
+    // `U/5 0x00004408` compact creature status family as the shorter bw167demo
+    // fixture, then continues with the GUI inventory/repository row block
+    // emitted by the inventory panel. The live-object stream owner must keep
+    // this whole packet in the typed 0x4408 + GUI-row path instead of buffering
+    // it as an unclaimed continuation.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_diamond_seq18_auto_inventory_u5_4408_gui_rows_20260519_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw local Diamond auto-inventory stream lacks the exact EE live-object opcode shape"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("local Diamond auto-inventory 0x4408 stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1
+            || rewrite.bytes_inserted > 0
+            || rewrite.bytes_removed > 0
+            || rewrite.interleaved_fragment_spans_promoted > 0,
+        "auto-inventory 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten local Diamond auto-inventory stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(
+        claim.live_gui_item_create_records >= 1,
+        "GUI inventory/repository rows should remain owned by exact live-object claim"
+    );
+}
+
+#[test]
+fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
+    // Local To Heir harness capture from 2026-05-19 after Area_ClientArea was
+    // repaired from the module ARE. The stream starts with the decompile-owned
+    // compact `U/5 0x00004408` self/status record, then an `I/0x2A00` current
+    // player inventory body. This module takes the 0x0200 false branch as a
+    // nonzero DWORD count followed by WORD entries before the Feature-25 lists.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_to_heir_seq16_u5_4408_inventory_2a00_20260519_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw To Heir 0x4408 + 0x2A00 stream is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("To Heir 0x4408 + inventory stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
+        "To Heir 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten To Heir inventory stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
+}
+
+#[test]
 fn hg_starc5_seq37_creature_effect_delta_stream_rewrites_to_exact_shape() {
     // Live HG Starcore5 driver-only capture from 2026-05-18. The stream starts
     // with a standalone creature `U/5 0x00000008` looping visual-effect delta,
