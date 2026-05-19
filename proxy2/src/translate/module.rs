@@ -42,6 +42,9 @@ const ZERO_NAME_TERMINATOR_MIN_ENTRIES: u32 = 32;
 const RESREF_BYTES: usize = 16;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
+const MAX_COMPACT_DECLARED_ZERO_BYTES: usize = 512;
+const MAX_COMPACT_DECLARED_ZERO_AREA_COUNT: u32 = 64;
+const COMPACT_DECLARED_ZERO_FRAGMENT_BYTES: usize = 1;
 const MODULE_MAJOR: u8 = 0x03;
 const MODULE_END_GAME_MINOR: u8 = 0x0E;
 const MODULE_END_GAME_MAX_TEXT_BYTES: usize = 4096;
@@ -351,6 +354,10 @@ fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<Compac
     }
 
     let old_declared = read_le_u32(payload, 3)?;
+    if old_declared == 0 {
+        return parse_compact_legacy_declared_zero_module_info(payload);
+    }
+
     let declared = usize::try_from(old_declared).ok()?;
     if declared < 7 || declared >= payload.len() || payload.len().saturating_sub(declared) > 8 {
         return None;
@@ -409,6 +416,201 @@ fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<Compac
         official_campaign,
         fragment_tail,
     })
+}
+
+fn parse_compact_legacy_declared_zero_module_info(
+    payload: &[u8],
+) -> Option<CompactLegacyModuleInfo> {
+    if payload.len() < 48 || payload.len() > MAX_COMPACT_DECLARED_ZERO_BYTES {
+        return None;
+    }
+
+    // Local Diamond no-resource modules can emit a compact `Module_Info` stream
+    // with a zero declared read-window and one final fragment byte. The observed
+    // 1.69 bytes still carry the decompile-owned module metadata in order:
+    // leading empty module CExoString storage, compact locstring text fragments,
+    // area count, then one OBJECTID-framed area-name fragment group per area.
+    // EE has no zero-declared `CNWCModule::LoadModule` branch, so rebuild the
+    // same semantic fields into the EE read-window layout and let strict
+    // validation prove the result before dispatch can claim it.
+    let fragment_start = payload
+        .len()
+        .checked_sub(COMPACT_DECLARED_ZERO_FRAGMENT_BYTES)?;
+    let fragment_tail = payload.get(fragment_start..)?.to_vec();
+    if !compact_fragment_tail_has_module_info_bits(&fragment_tail) {
+        return None;
+    }
+
+    let (area_count_offset, areas) = compact_declared_zero_area_table(
+        payload,
+        HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES,
+        fragment_start,
+    )?;
+    let localized_name = compact_declared_zero_module_name(
+        payload,
+        HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES,
+        area_count_offset,
+    )?;
+    let module_resref = compact_resref_from_observed_text(&localized_name)?;
+
+    Some(CompactLegacyModuleInfo {
+        old_declared: 0,
+        module_name: None,
+        localized_name,
+        module_byte: 0,
+        module_resref,
+        areas,
+        official_campaign: 0,
+        fragment_tail,
+    })
+}
+
+fn compact_declared_zero_area_table(
+    payload: &[u8],
+    search_start: usize,
+    declared_end: usize,
+) -> Option<(usize, Vec<CompactLegacyArea>)> {
+    if search_start >= declared_end || declared_end > payload.len() {
+        return None;
+    }
+
+    let last_count_offset = declared_end.checked_sub(8)?;
+    for count_offset in search_start..=last_count_offset {
+        let count = read_le_u32(payload, count_offset)?;
+        if count == 0 || count > MAX_COMPACT_DECLARED_ZERO_AREA_COUNT {
+            continue;
+        }
+        let table_start = count_offset.checked_add(CNW_LENGTH_BYTES)?;
+        let Some(areas) =
+            compact_declared_zero_areas_at(payload, table_start, declared_end, count as usize)
+        else {
+            continue;
+        };
+        return Some((count_offset, areas));
+    }
+
+    None
+}
+
+fn compact_declared_zero_areas_at(
+    payload: &[u8],
+    table_start: usize,
+    declared_end: usize,
+    area_count: usize,
+) -> Option<Vec<CompactLegacyArea>> {
+    if area_count == 0
+        || area_count > MAX_COMPACT_DECLARED_ZERO_AREA_COUNT as usize
+        || table_start + 4 > declared_end
+        || declared_end > payload.len()
+    {
+        return None;
+    }
+
+    if !is_likely_area_resource_id(read_le_u32(payload, table_start)?) {
+        return None;
+    }
+
+    let mut object_offsets = Vec::with_capacity(area_count);
+    let mut cursor = table_start;
+    while cursor + 4 <= declared_end {
+        let raw = read_le_u32(payload, cursor)?;
+        if is_likely_area_resource_id(raw) {
+            object_offsets.push(cursor);
+            cursor += 4;
+            if object_offsets.len() == area_count {
+                break;
+            }
+            continue;
+        }
+        cursor += 1;
+    }
+
+    if object_offsets.len() != area_count {
+        return None;
+    }
+    if cursor + 4 <= declared_end {
+        for offset in cursor..=declared_end - 4 {
+            if is_likely_area_resource_id(read_le_u32(payload, offset)?) {
+                return None;
+            }
+        }
+    }
+
+    let mut areas = Vec::with_capacity(area_count);
+    for (index, object_offset) in object_offsets.iter().copied().enumerate() {
+        let object_id = read_le_u32(payload, object_offset)?;
+        let name_start = object_offset.checked_add(4)?;
+        let name_end = object_offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or(declared_end);
+        if name_start >= name_end {
+            return None;
+        }
+        let name = compact_declared_zero_fragment_text(payload, name_start, name_end)?;
+        if name.len() > MAX_AREA_NAME_LENGTH {
+            return None;
+        }
+        areas.push(CompactLegacyArea { object_id, name });
+    }
+
+    Some(areas)
+}
+
+fn compact_declared_zero_module_name(payload: &[u8], start: usize, end: usize) -> Option<String> {
+    compact_printable_runs(payload, start, end, 2)
+        .into_iter()
+        .find(|run| run.value.chars().any(|ch| ch.is_ascii_alphabetic()))
+        .map(|run| run.value)
+}
+
+fn compact_declared_zero_fragment_text(payload: &[u8], start: usize, end: usize) -> Option<String> {
+    let runs = compact_printable_runs(payload, start, end, 1);
+    if runs.is_empty() {
+        return None;
+    }
+
+    let mut value = String::new();
+    for run in runs {
+        let fragment = run.value.trim();
+        if fragment.is_empty() {
+            continue;
+        }
+        if !value.is_empty() {
+            value.push(' ');
+        }
+        value.push_str(fragment);
+    }
+
+    if value.is_empty() || !value.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(value)
+}
+
+fn compact_resref_from_observed_text(value: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut last_was_separator = false;
+    for byte in value.bytes() {
+        if is_resref_char(byte) {
+            out.push(char::from(byte));
+            last_was_separator = false;
+        } else if byte.is_ascii_whitespace() && !out.is_empty() && !last_was_separator {
+            out.push('_');
+            last_was_separator = true;
+        }
+        if out.len() == RESREF_BYTES {
+            break;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() || !out.as_bytes().iter().any(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(out)
 }
 
 fn find_compact_sanitized_module_resref(
@@ -481,6 +683,15 @@ fn compact_fragment_tail_has_module_info_bits(fragment: &[u8]) -> bool {
 }
 
 fn compact_area_name_runs(payload: &[u8], start: usize, declared: usize) -> Vec<PrintableRun> {
+    compact_printable_runs(payload, start, declared, 4)
+}
+
+fn compact_printable_runs(
+    payload: &[u8],
+    start: usize,
+    declared: usize,
+    min_len: usize,
+) -> Vec<PrintableRun> {
     let mut runs = Vec::new();
     if start >= declared || declared > payload.len() {
         return runs;
@@ -496,11 +707,11 @@ fn compact_area_name_runs(payload: &[u8], start: usize, declared: usize) -> Vec<
             cursor += 1;
         }
         let run_end = cursor;
-        if run_end.saturating_sub(run_start) >= 4 {
+        if run_end.saturating_sub(run_start) >= min_len {
             let value = String::from_utf8_lossy(&payload[run_start..run_end])
                 .trim()
                 .to_string();
-            if value.len() >= 4 && value.chars().any(|ch| ch.is_ascii_alphabetic()) {
+            if value.len() >= min_len && value.chars().any(|ch| ch.is_ascii_alphabetic()) {
                 runs.push(PrintableRun {
                     start: run_start,
                     end: run_end,
@@ -1189,6 +1400,25 @@ mod tests {
         assert_eq!(summary.module_resref.as_deref(), Some("bw167demo"));
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.resource_name_count, 3);
+        assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn rewrites_declared_zero_compact_module_info_to_exact_ee_shape() {
+        let mut payload = include_bytes!(
+            "../../fixtures/module_info/local_diamond_to_heir_declared_zero_module_info_20260519.bin"
+        )
+        .to_vec();
+
+        let summary = rewrite_module_info_payload(&mut payload)
+            .expect("declared-zero compact Module_Info should be rewritten");
+
+        assert!(summary.compact_legacy_no_resource);
+        assert_eq!(summary.old_declared, 0);
+        assert_eq!(summary.hak_count, 0);
+        assert_eq!(summary.module_resref.as_deref(), Some("To_H"));
+        assert_eq!(summary.resource_name_count, 5);
         assert!(crate::strict::module_info_shape_valid(&payload));
     }
 
