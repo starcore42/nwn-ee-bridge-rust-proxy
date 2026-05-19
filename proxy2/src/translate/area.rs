@@ -64,8 +64,11 @@ const MIN_READ_SIZE: usize = 4;
 const CRESREF_TEXT_BYTES: usize = 16;
 const AREA_NAME_READ_OFFSET: usize = 44;
 const EE_CEXO_STRING_LENGTH_BYTES: usize = 4;
+const DIAMOND_SHORT_AREA_NAME_BYTES: usize = 16;
 const DIAMOND_LEGACY_AREA_NAME_BYTES: usize = 20;
 const DIAMOND_COMPACT_AREA_NAME_BYTES: usize = 14;
+const DIAMOND_SHORT_AREA_NAME_TEXT_BYTES: usize =
+    DIAMOND_SHORT_AREA_NAME_BYTES - EE_CEXO_STRING_LENGTH_BYTES;
 const DIAMOND_FIXED_AREA_NAME_TEXT_BYTES: usize =
     DIAMOND_LEGACY_AREA_NAME_BYTES - EE_CEXO_STRING_LENGTH_BYTES;
 const DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES: usize =
@@ -137,6 +140,7 @@ pub enum AreaRewriteKind {
     ExactEeAreaBuild365TileLoopBool,
     ExactEePostStaticListZeroWords,
     LegacyDiamondFixedAreaName,
+    LegacyDiamondShortFixedAreaName,
     LegacyDiamondCompactAreaName,
     LegacyDiamondModuleResourceAreaRepair,
     LegacyDiamondCompactPostTileTailRepair,
@@ -255,6 +259,7 @@ impl Default for AreaStaticDialect {
 enum AreaNameEncoding {
     CExoString,
     DiamondFixed20,
+    DiamondFixed16,
     DiamondCompactFragmented,
 }
 
@@ -397,9 +402,10 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
         || repair_missing_area_width(&mut working_payload, fragment_offset, &mut tile_scan);
     let height_repaired = square_dimensions_repaired
         || repair_missing_area_height(&mut working_payload, fragment_offset, &mut tile_scan);
-    let diamond_fixed_name_rewritten = static_layout.area_name_encoding
-        == AreaNameEncoding::DiamondFixed20
-        && module_resource_area_repair.is_none();
+    let diamond_fixed_name_rewritten = matches!(
+        static_layout.area_name_encoding,
+        AreaNameEncoding::DiamondFixed20 | AreaNameEncoding::DiamondFixed16
+    ) && module_resource_area_repair.is_none();
     if diamond_fixed_name_rewritten {
         if !rewrite_diamond_fixed_area_name_to_ee_cexo_string(
             &mut working_payload,
@@ -479,8 +485,14 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
     if width_repaired {
         rewrite_kinds.push(AreaRewriteKind::LegacyHgMissingWidthRepair);
     }
-    if static_layout.area_name_encoding == AreaNameEncoding::DiamondFixed20 {
-        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondFixedAreaName);
+    match static_layout.area_name_encoding {
+        AreaNameEncoding::DiamondFixed20 => {
+            rewrite_kinds.push(AreaRewriteKind::LegacyDiamondFixedAreaName);
+        }
+        AreaNameEncoding::DiamondFixed16 => {
+            rewrite_kinds.push(AreaRewriteKind::LegacyDiamondShortFixedAreaName);
+        }
+        _ => {}
     }
     if module_resource_area_repair.is_some() {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondCompactAreaName);
@@ -904,6 +916,37 @@ fn area_static_layout(payload: &[u8], fragment_offset: usize) -> Option<AreaStat
         }
     }
 
+    if let Some((area_name_length, name_end)) =
+        read_diamond_short_fixed_area_name_shape(payload, fragment_offset)
+    {
+        if let Some(layout) = area_static_layout_for_dialect(
+            payload,
+            fragment_offset,
+            AreaNameEncoding::DiamondFixed16,
+            area_name_length,
+            name_end,
+            AreaStaticDialect::EeBuild8193StaticHeader,
+            EE_AREA_WIDTH_BYTES_AFTER_NAME_END,
+            EE_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+            EE_AREA_TILESET_BYTES_AFTER_NAME_END,
+        )
+        .or_else(|| {
+            area_static_layout_for_dialect(
+                payload,
+                fragment_offset,
+                AreaNameEncoding::DiamondFixed16,
+                area_name_length,
+                name_end,
+                AreaStaticDialect::Legacy169,
+                LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+                LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+                LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+            )
+        }) {
+            return Some(layout);
+        }
+    }
+
     let (area_name_length, name_end) =
         read_diamond_fixed_area_name_shape(payload, fragment_offset)?;
     area_static_layout_for_dialect(
@@ -1033,16 +1076,25 @@ fn rewrite_diamond_fixed_area_name_to_ee_cexo_string(
     fragment_offset: usize,
     layout: &AreaStaticLayout,
 ) -> bool {
-    if layout.area_name_encoding != AreaNameEncoding::DiamondFixed20
-        || layout.area_name_length as usize != DIAMOND_LEGACY_AREA_NAME_BYTES
-        || layout.area_name_end_read_offset
-            != AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES
+    let (fixed_name_bytes, text_bytes) = match layout.area_name_encoding {
+        AreaNameEncoding::DiamondFixed20 => (
+            DIAMOND_LEGACY_AREA_NAME_BYTES,
+            DIAMOND_FIXED_AREA_NAME_TEXT_BYTES,
+        ),
+        AreaNameEncoding::DiamondFixed16 => (
+            DIAMOND_SHORT_AREA_NAME_BYTES,
+            DIAMOND_SHORT_AREA_NAME_TEXT_BYTES,
+        ),
+        _ => return false,
+    };
+    if layout.area_name_length as usize != fixed_name_bytes
+        || layout.area_name_end_read_offset != AREA_NAME_READ_OFFSET + fixed_name_bytes
     {
         return false;
     }
 
     let payload_offset = HIGH_LEVEL_HEADER_BYTES + AREA_NAME_READ_OFFSET;
-    let Some(end) = payload_offset.checked_add(DIAMOND_LEGACY_AREA_NAME_BYTES) else {
+    let Some(end) = payload_offset.checked_add(fixed_name_bytes) else {
         return false;
     };
     if end > fragment_offset || end > payload.len() {
@@ -1051,12 +1103,12 @@ fn rewrite_diamond_fixed_area_name_to_ee_cexo_string(
 
     // EE `CNWCArea::LoadArea` reads the area-name mode BOOL and, in the true
     // branch, calls `CNWMessage::ReadCExoString(0x20)`: a 32-bit byte length
-    // followed by that many bytes. Local 1.69 demo captures carry a legacy
-    // twenty-byte fixed-name window here. Preserve the exact twenty-byte read
-    // cursor advance by turning the leading DWORD into `length = 16` and
-    // keeping the remaining sixteen legacy bytes as the CExoString payload.
+    // followed by that many bytes. Local 1.69 demo captures carry fixed-width
+    // legacy name windows here. Preserve the exact read cursor advance by
+    // turning the leading DWORD into the matching fixed-window text length and
+    // keeping the remaining legacy bytes as the CExoString payload.
     payload[payload_offset..payload_offset + EE_CEXO_STRING_LENGTH_BYTES]
-        .copy_from_slice(&(DIAMOND_FIXED_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
+        .copy_from_slice(&(text_bytes as u32).to_le_bytes());
     true
 }
 
@@ -1114,7 +1166,9 @@ fn repair_compact_area_from_module_resource(
     }
     if !matches!(
         layout.area_name_encoding,
-        AreaNameEncoding::DiamondCompactFragmented | AreaNameEncoding::DiamondFixed20
+        AreaNameEncoding::DiamondCompactFragmented
+            | AreaNameEncoding::DiamondFixed20
+            | AreaNameEncoding::DiamondFixed16
     ) {
         return None;
     }
@@ -1154,6 +1208,9 @@ fn repair_compact_area_from_module_resource(
         }
         AreaNameEncoding::DiamondFixed20 => {
             write_fixed_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
+        }
+        AreaNameEncoding::DiamondFixed16 => {
+            write_short_fixed_area_name_as_cexo_string(payload, fragment_offset, &info.name)?;
         }
         _ => return None,
     }
@@ -1305,6 +1362,37 @@ fn write_compact_area_name_as_cexo_string(
         .copy_from_slice(&(DIAMOND_COMPACT_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
     payload[payload_offset + 4..end].fill(0);
     payload[payload_offset + 4..payload_offset + 4 + name_bytes.len()].copy_from_slice(name_bytes);
+    Some(())
+}
+
+fn write_short_fixed_area_name_as_cexo_string(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    name: &str,
+) -> Option<()> {
+    let name_bytes = name.as_bytes();
+    if name_bytes.is_empty()
+        || name_bytes.len() > DIAMOND_SHORT_AREA_NAME_TEXT_BYTES
+        || !name_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+    {
+        return None;
+    }
+
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let text_start = payload_offset.checked_add(EE_CEXO_STRING_LENGTH_BYTES)?;
+    let text_end = text_start.checked_add(DIAMOND_SHORT_AREA_NAME_TEXT_BYTES)?;
+    if text_end > fragment_offset || text_end > payload.len() {
+        return None;
+    }
+    payload
+        .get_mut(payload_offset..text_start)?
+        .copy_from_slice(&(DIAMOND_SHORT_AREA_NAME_TEXT_BYTES as u32).to_le_bytes());
+    payload.get_mut(text_start..text_end)?.fill(0);
+    payload
+        .get_mut(text_start..text_start.checked_add(name_bytes.len())?)?
+        .copy_from_slice(name_bytes);
     Some(())
 }
 
@@ -1526,12 +1614,12 @@ fn compact_sound_row_matches_resource(
         row_read_offset + AREA_SOUND_X_OFFSET,
     )
     .is_none_or(|value| !same_f32_bits(value, sound.x))
-        || read_area_f32(
+        || !compact_sound_coord_matches_resource(
             payload,
             fragment_offset,
             row_read_offset + AREA_SOUND_Y_OFFSET,
+            sound.y,
         )
-        .is_none_or(|value| !same_f32_bits(value, sound.y))
     {
         return false;
     }
@@ -1545,7 +1633,12 @@ fn compact_sound_row_matches_resource(
     if source_count != expected_count && !(source_count == Some(0) && expected_count == Some(1)) {
         return false;
     }
-    if !compact_sound_z_matches_resource(payload, fragment_offset, row_read_offset, sound) {
+    if !compact_sound_coord_matches_resource(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_Z_OFFSET,
+        sound.z,
+    ) {
         return false;
     }
 
@@ -1556,16 +1649,13 @@ fn compact_sound_row_matches_resource(
     })
 }
 
-fn compact_sound_z_matches_resource(
+fn compact_sound_coord_matches_resource(
     payload: &[u8],
     fragment_offset: usize,
-    row_read_offset: usize,
-    sound: &ModuleAreaSound,
+    read_offset: usize,
+    expected: f32,
 ) -> bool {
-    let Some(payload_offset) = HIGH_LEVEL_HEADER_BYTES
-        .checked_add(row_read_offset)
-        .and_then(|offset| offset.checked_add(AREA_SOUND_Z_OFFSET))
-    else {
+    let Some(payload_offset) = HIGH_LEVEL_HEADER_BYTES.checked_add(read_offset) else {
         return false;
     };
     if payload_offset > fragment_offset || fragment_offset - payload_offset < 4 {
@@ -1574,7 +1664,7 @@ fn compact_sound_z_matches_resource(
     let Some(source) = payload.get(payload_offset..payload_offset + 4) else {
         return false;
     };
-    let expected = sound.z.to_le_bytes();
+    let expected = expected.to_le_bytes();
     source == expected.as_slice()
         || (source.get(0..3) == Some(&expected[0..3]) && source.get(3) == Some(&0))
 }
@@ -1590,8 +1680,14 @@ fn write_sound_row_from_resource(
         return None;
     }
     // The local Diamond row already carries the decompiled sound scalar body.
-    // The compact defects proven in this packet are row-local: missing
-    // single-resref counts and truncated single-sound Z high bytes.
+    // The compact defects proven in these packets are row-local: missing
+    // single-resref counts and truncated coordinate high bytes.
+    write_area_f32(
+        payload,
+        fragment_offset,
+        row_read_offset + AREA_SOUND_Y_OFFSET,
+        sound.y,
+    )?;
     write_area_f32(
         payload,
         fragment_offset,
@@ -1631,6 +1727,12 @@ fn compact_cexo_string_span_matches_text(
     if text.is_empty() || text.len() > 4096 {
         return false;
     }
+    let Some(declared) = read_area_u32(payload, fragment_offset, read_offset) else {
+        return false;
+    };
+    if declared != 0 && declared as usize != text.len() {
+        return false;
+    }
     let Some(payload_offset) = HIGH_LEVEL_HEADER_BYTES.checked_add(read_offset) else {
         return false;
     };
@@ -1643,11 +1745,10 @@ fn compact_cexo_string_span_matches_text(
     if end > fragment_offset || end > payload.len() {
         return false;
     }
-    if payload.get(payload_offset..payload_offset + EE_CEXO_STRING_LENGTH_BYTES)
-        != Some(&[0, 0, 0, 0])
-    {
-        return false;
-    }
+    // Compact local rows appear in two proven storage forms: a zero length
+    // field followed by the fixed-width compact text window, or a CExoString
+    // length whose payload is still fragmented ASCII. Both consume the same
+    // byte window that the exact EE writer overwrites below.
     let Some(text_bytes) = payload.get(payload_offset + EE_CEXO_STRING_LENGTH_BYTES..end) else {
         return false;
     };
@@ -3048,28 +3149,102 @@ fn module_area_resource_info_for_compact_packet(
     legacy_area_object_id: u32,
 ) -> Option<ModuleAreaResourceInfo> {
     let context = crate::translate::module::observed_module_context()?;
-    let area_index = context
+    let area_indices = context
         .areas
         .iter()
-        .position(|area| area.object_id == legacy_area_object_id)?;
-    let observed_area_name = context.areas.get(area_index)?.name.as_str();
+        .enumerate()
+        .filter_map(|(index, area)| (area.object_id == legacy_area_object_id).then_some(index))
+        .collect::<Vec<_>>();
+    if area_indices.is_empty() {
+        tracing::debug!(
+            legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+            observed_area_ids = ?context
+                .areas
+                .iter()
+                .map(|area| format!("0x{:08X}:{}", area.object_id, area.name))
+                .collect::<Vec<_>>(),
+            "Area_ClientArea compact resource repair skipped: area object id was not present in observed Module_Info context"
+        );
+        return None;
+    }
     let compact_fragments = diamond_compact_area_name_fragments(payload, fragment_offset)
-        .or_else(|| diamond_fixed_area_name_fragments(payload, fragment_offset))?;
+        .or_else(|| diamond_short_fixed_area_name_fragments(payload, fragment_offset))
+        .or_else(|| diamond_fixed_area_name_fragments(payload, fragment_offset));
+    let Some(compact_fragments) = compact_fragments else {
+        tracing::debug!(
+            legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+            area_indices = ?area_indices,
+            "Area_ClientArea compact resource repair skipped: compact area-name fragments were unavailable"
+        );
+        return None;
+    };
     let module_path = observed_module_file_path(&context)?;
     let table = read_module_area_resource_table(&module_path)?;
     if !module_table_matches_observed_context(&table, &context) {
+        tracing::debug!(
+            module_path = %module_path.display(),
+            module_name = table.module_name.as_deref().unwrap_or(""),
+            module_resref = table.module_resref.as_deref().unwrap_or(""),
+            observed_module_name = context.localized_name.as_str(),
+            observed_module_resref = context.module_resref.as_str(),
+            observed_areas = ?context
+                .areas
+                .iter()
+                .map(|area| format!("0x{:08X}:{}", area.object_id, area.name))
+                .collect::<Vec<_>>(),
+            table_area_order = ?table.area_order,
+            "Area_ClientArea compact resource repair skipped: local module table did not match observed Module_Info context"
+        );
         return None;
     }
-    let area_resref = table.area_order.get(area_index)?;
-    let info = table
+
+    if area_indices.len() == 1 {
+        let area_index = area_indices[0];
+        let observed_area_name = context.areas.get(area_index)?.name.as_str();
+        if let Some(area_resref) = table.area_order.get(area_index) {
+            if let Some(info) = table
+                .areas
+                .iter()
+                .find(|area| area.resref.eq_ignore_ascii_case(area_resref))
+                .filter(|info| {
+                    area_resource_matches_observed_compact_name(
+                        info,
+                        observed_area_name,
+                        &compact_fragments,
+                    )
+                })
+                .cloned()
+            {
+                return Some(info);
+            }
+        }
+    }
+
+    // Local compact Module_Info streams are still decompile-shaped area tables,
+    // but the observed object-id order can differ from the module IFO area
+    // order, and Diamond can reuse the same compact area object id for more
+    // than one visible area in the compact stream. Resolve those narrow cases
+    // by requiring one exact local ARE resource whose name/resref matches both
+    // a same-object-id observed Module_Info name and the current
+    // Area_ClientArea packet fragments. Ambiguous matches stay unclaimed so the
+    // exact EE validator remains the final authority.
+    let mut matches = table
         .areas
         .iter()
-        .find(|area| area.resref.eq_ignore_ascii_case(area_resref))?
-        .clone();
-    if !area_resource_matches_observed_compact_name(&info, observed_area_name, &compact_fragments) {
-        return None;
-    }
-    Some(info)
+        .filter(|info| {
+            area_indices.iter().any(|index| {
+                context.areas.get(*index).is_some_and(|observed_area| {
+                    area_resource_matches_observed_compact_name(
+                        info,
+                        &observed_area.name,
+                        &compact_fragments,
+                    )
+                })
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches.remove(0))
 }
 
 fn module_table_matches_observed_context(
@@ -3085,6 +3260,7 @@ fn module_table_matches_observed_context(
             .as_deref()
             .is_some_and(|resref| same_resource_text(resref, &context.module_resref))
         || module_table_area_order_matches_observed_context(table, context)
+        || module_table_unordered_area_matches_observed_context(table, context)
 }
 
 fn area_resource_matches_observed_compact_name(
@@ -3137,6 +3313,45 @@ fn module_table_area_order_matches_observed_context(
             &observed_area.name,
             &observed_fragments,
         ) {
+            matches = matches.saturating_add(1);
+        }
+    }
+
+    matches >= required_matches
+}
+
+fn module_table_unordered_area_matches_observed_context(
+    table: &ModuleAreaResourceTable,
+    context: &crate::translate::module::ObservedModuleContext,
+) -> bool {
+    if context.areas.is_empty() || table.areas.is_empty() {
+        return false;
+    }
+
+    let required_matches = MIN_OBSERVED_MODULE_AREA_MATCHES
+        .min(context.areas.len())
+        .min(table.areas.len());
+    let mut matched_table_indices = HashSet::new();
+    let mut matches = 0usize;
+    for observed_area in &context.areas {
+        let observed_fragments = compact_observed_text_fragments(&observed_area.name);
+        let matched_indices = table
+            .areas
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| {
+                area_resource_matches_observed_compact_name(
+                    info,
+                    &observed_area.name,
+                    &observed_fragments,
+                )
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matched_indices.len() != 1 {
+            continue;
+        }
+        if matched_table_indices.insert(matched_indices[0]) {
             matches = matches.saturating_add(1);
         }
     }
@@ -3877,6 +4092,33 @@ fn read_diamond_fixed_area_name_shape(
     ))
 }
 
+fn read_diamond_short_fixed_area_name_shape(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<(u32, usize)> {
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    if payload_offset > fragment_offset
+        || fragment_offset - payload_offset < DIAMOND_SHORT_AREA_NAME_BYTES
+    {
+        return None;
+    }
+    let bytes = payload.get(payload_offset..payload_offset + DIAMOND_SHORT_AREA_NAME_BYTES)?;
+    if !bytes
+        .iter()
+        .all(|byte| *byte == 0 || (0x20u8..=0x7Eu8).contains(byte))
+    {
+        return None;
+    }
+    if !bytes.iter().any(|byte| *byte != 0) {
+        return None;
+    }
+
+    Some((
+        DIAMOND_SHORT_AREA_NAME_BYTES as u32,
+        AREA_NAME_READ_OFFSET + DIAMOND_SHORT_AREA_NAME_BYTES,
+    ))
+}
+
 fn read_diamond_compact_area_name_shape(
     payload: &[u8],
     fragment_offset: usize,
@@ -3916,6 +4158,17 @@ fn diamond_fixed_area_name_fragments(
     read_diamond_fixed_area_name_shape(payload, fragment_offset)?;
     let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
     let end = payload_offset.checked_add(DIAMOND_LEGACY_AREA_NAME_BYTES)?;
+    let bytes = payload.get(payload_offset..end)?;
+    compact_fragmented_ascii_runs_allowing_singletons(bytes)
+}
+
+fn diamond_short_fixed_area_name_fragments(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<Vec<String>> {
+    read_diamond_short_fixed_area_name_shape(payload, fragment_offset)?;
+    let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(AREA_NAME_READ_OFFSET)?;
+    let end = payload_offset.checked_add(DIAMOND_SHORT_AREA_NAME_BYTES)?;
     let bytes = payload.get(payload_offset..end)?;
     compact_fragmented_ascii_runs_allowing_singletons(bytes)
 }
@@ -4168,6 +4421,8 @@ mod tests {
         include_bytes!("../../fixtures/area/local_to_heir_cormanthor_client_area_compact.bin");
     const LOCAL_DARK_RANGER_INN_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_dark_ranger_inn_client_area_compact.bin");
+    const LOCAL_WINDS_EREMOR_MOUNT_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_winds_eremor_mount_client_area_compact.bin");
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -4727,6 +4982,133 @@ mod tests {
                 .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
         );
         assert!(proof.read_end == summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn local_winds_eremor_compact_area_uses_packet_fragments_when_object_id_repeats() {
+        let _context_guard = module_context_test_guard();
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "Ere".to_string(),
+                module_resref: "Ere".to_string(),
+                areas: vec![
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Keep Ere".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "M t Ere".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0xE200_0000,
+                        name: "T Crypts Ere".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let mut payload = LOCAL_WINDS_EREMOR_MOUNT_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let source_layout =
+            area_static_layout(&payload, fragment_offset).expect("compact static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondFixed16
+        );
+        assert_eq!(source_layout.area_name_end_read_offset, 60);
+        assert_eq!(source_layout.width_read_offset, 156);
+        assert_eq!(source_layout.height_read_offset, 160);
+        assert_eq!(source_layout.tileset_read_offset, 164);
+        assert_eq!(source_layout.first_tile_read_offset, 180);
+        assert_eq!(
+            diamond_short_fixed_area_name_fragments(&payload, fragment_offset)
+                .expect("short fixed-window area fragments"),
+            vec!["M".to_string(), "t".to_string(), "Ere".to_string()]
+        );
+
+        let context =
+            crate::translate::module::observed_module_context().expect("observed module context");
+        let module_path =
+            observed_module_file_path(&context).expect("observed local module file path");
+        let module_table =
+            read_module_area_resource_table(&module_path).expect("local module ARE table");
+        assert!(module_table_area_order_matches_observed_context(
+            &module_table,
+            &context
+        ));
+        assert!(module_table_unordered_area_matches_observed_context(
+            &module_table,
+            &context
+        ));
+
+        let compact_info =
+            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
+                .expect("compact packet should resolve to the unique local ARE resource");
+        assert_eq!(compact_info.resref, "mountiridor");
+        assert_eq!(compact_info.name, "Mount Eremor");
+        assert_eq!(compact_info.width, 16);
+        assert_eq!(compact_info.height, 15);
+        assert_eq!(compact_info.tileset, "tcn01");
+        assert_eq!(compact_info.map_notes.len(), 3);
+        assert_eq!(compact_info.sounds.len(), 123);
+
+        let mut repaired_source = payload.clone();
+        repair_compact_area_from_module_resource(
+            &mut repaired_source,
+            fragment_offset,
+            0x8000_0000,
+            &source_layout,
+        )
+        .expect("compact area source fields repaired from local ARE resource");
+        let repaired_scan = scan_area_tile_stream(&repaired_source, fragment_offset);
+        assert!(repaired_scan.valid);
+        assert_eq!(repaired_scan.width, 16);
+        assert_eq!(repaired_scan.packet_height, 15);
+        assert!(repair_compact_post_tile_tail_for_ee(
+            &mut repaired_source,
+            fragment_offset,
+            &repaired_scan,
+            &compact_info,
+        ));
+        let (_, _, repaired_fragment_offset, _) =
+            area_client_area_read_window(&repaired_source).expect("repaired read window");
+        let repaired_scan = scan_area_tile_stream(&repaired_source, repaired_fragment_offset);
+        assert!(legacy_area_source_tail_consumes_read_buffer(
+            &repaired_source,
+            repaired_fragment_offset,
+            &repaired_scan
+        ));
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("compact local Winds of Eremor area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten compact area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "mountiridor");
+        assert_eq!(summary.tileset_resref, "tcn01");
+        assert_eq!(summary.width, 16);
+        assert_eq!(summary.packet_height, 15);
+        assert_eq!(summary.tile_count, 240);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondCompactAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondShortFixedAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }

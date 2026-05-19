@@ -395,10 +395,16 @@ fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) {
     if let Ok(mut guard) = lock.write() {
         *guard = Some(context.clone());
     }
+    let area_summaries = context
+        .areas
+        .iter()
+        .map(|area| format!("0x{:08X}:{}", area.object_id, area.name))
+        .collect::<Vec<_>>();
     tracing::debug!(
         module_name = context.localized_name.as_str(),
         module_resref = context.module_resref.as_str(),
         area_count,
+        areas = ?area_summaries,
         "observed compact Module_Info context for later resource-backed packet translation"
     );
 }
