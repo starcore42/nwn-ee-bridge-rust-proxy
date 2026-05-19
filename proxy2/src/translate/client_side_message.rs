@@ -645,7 +645,7 @@ fn cnw_fragment_offset_valid(payload: &[u8], declared: u32) -> bool {
     (declared as usize - HIGH_LEVEL_HEADER_BYTES) < read_message_len
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 
@@ -734,7 +734,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod captured_hg_feedback_93_tests {
     use super::*;
 

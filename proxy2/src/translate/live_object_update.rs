@@ -39,7 +39,7 @@ mod placeable;
 mod reader;
 mod record;
 mod tail_repair;
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests;
 mod trigger;
 pub(crate) mod visual_transform;
@@ -3565,7 +3565,7 @@ pub fn payload_contains_door_or_placeable_add_update_record(payload: &[u8]) -> b
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod claimed_records_guard_tests {
     use super::*;
 

@@ -598,7 +598,7 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
     state.deflate.server_zlib_stream_owner = Some(owner);
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

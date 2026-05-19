@@ -93,7 +93,7 @@ fn is_p_prefixed_zero_fill_payload(inflated: &[u8]) -> bool {
     inflated.len() >= 8 && inflated[0] == b'P' && inflated[1..].iter().all(|byte| *byte == 0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

@@ -289,7 +289,7 @@ fn meaningful_fragment_bits(fragment_bytes: &[u8]) -> Option<usize> {
     Some(meaningful_bits)
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

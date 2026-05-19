@@ -287,7 +287,7 @@ fn cnw_fragment_tail_has_exact_data_bits(fragment: &[u8], data_bits: usize) -> b
     usize::from((first & 0xE0) >> 5) == CNW_FRAGMENT_HEADER_BITS + data_bits
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

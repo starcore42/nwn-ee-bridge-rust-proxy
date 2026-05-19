@@ -263,7 +263,7 @@ fn current_area_object_id_from_payload(payload: &[u8]) -> Option<u32> {
     read_u32_le(payload, AREA_OBJECT_ID_OFFSET)
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

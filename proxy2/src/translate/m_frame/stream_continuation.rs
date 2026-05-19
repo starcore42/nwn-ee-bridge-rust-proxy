@@ -167,7 +167,7 @@ fn dump_server_stream_continuation(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

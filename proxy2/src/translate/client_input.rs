@@ -1165,7 +1165,7 @@ fn read_f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
     Some(f32::from_bits(raw))
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
     use crate::translate::semantic::{LiveObjectMention, LiveObjectPosition, SemanticSessionState};
@@ -1471,12 +1471,12 @@ mod tests {
     fn local_diamond_20260519_door_open_fixture_matches_decompile_cursor_shape() {
         // Captured from C:\nwnbridge\local-diamond-bridge-20260519-100428
         // after the driver opened bw167demo's compact transition door.
-        let fixture = [
-            0x70, 0x06, 0x03, 0x0D, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x80, 0x15, 0x00, 0x70,
-        ];
+        let fixture = include_bytes!(
+            "../../fixtures/client_input/local_diamond_bw167demo_door_open_20260519.bin"
+        );
         let summary =
-            claim_payload_if_verified(&fixture).expect("captured door-open should be claimed");
-        let parsed = parse_change_door_state(&fixture).expect("captured door-open should parse");
+            claim_payload_if_verified(fixture).expect("captured door-open should be claimed");
+        let parsed = parse_change_door_state(fixture).expect("captured door-open should parse");
 
         assert_eq!(fixture[13], 0x70);
         assert_eq!(summary.kind, ClientInputKind::ChangeDoorState);
@@ -1492,14 +1492,12 @@ mod tests {
     fn local_diamond_20260519_walk_probe_fixture_matches_decompile_cursor_shape() {
         // Captured from the same local Diamond harness run after the
         // auto-trigger walk probe fired near the opened transition door.
-        let fixture = [
-            0x70, 0x06, 0x01, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x9A, 0x99, 0xDD,
-            0x41, 0x00, 0x00, 0x10, 0x42, 0x6F, 0x12, 0x03, 0x3B, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x7F, 0xA0,
-        ];
+        let fixture = include_bytes!(
+            "../../fixtures/client_input/local_diamond_bw167demo_walk_probe_20260519.bin"
+        );
         let summary =
-            claim_payload_if_verified(&fixture).expect("captured walk probe should be claimed");
-        let parsed = parse_walk_to_waypoint(&fixture).expect("captured walk probe should parse");
+            claim_payload_if_verified(fixture).expect("captured walk probe should be claimed");
+        let parsed = parse_walk_to_waypoint(fixture).expect("captured walk probe should parse");
 
         assert_eq!(fixture[29], 0xA0);
         assert_eq!(summary.kind, ClientInputKind::WalkToWaypoint);

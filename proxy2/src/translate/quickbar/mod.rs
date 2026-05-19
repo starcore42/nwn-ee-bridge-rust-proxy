@@ -31,7 +31,7 @@ mod validator;
 mod wire;
 mod writer;
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests;
 
 use active_props::*;

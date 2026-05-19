@@ -1310,7 +1310,7 @@ fn apply_player_list_read_mutations(
     Some(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

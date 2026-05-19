@@ -6422,7 +6422,7 @@ fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
         .contains(&object_id)
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

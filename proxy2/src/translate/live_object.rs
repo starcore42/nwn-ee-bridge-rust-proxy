@@ -3677,7 +3677,7 @@ fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod placeable_name_mode_tests {
     use super::*;
 
@@ -3756,7 +3756,7 @@ mod placeable_name_mode_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 
@@ -4313,7 +4313,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod hg_mixed_door_placeable_translation_tests {
     use super::*;
     use crate::translate::live_object_update as live_update;
@@ -4483,7 +4483,7 @@ mod hg_mixed_door_placeable_translation_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod embedded_nul_placeable_name_tests {
     use super::*;
     use crate::translate::live_object_update as live_update;
@@ -4508,7 +4508,7 @@ mod embedded_nul_placeable_name_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod local_diamond_live_object_tests {
     use super::*;
     use crate::translate::live_object_update as live_update;

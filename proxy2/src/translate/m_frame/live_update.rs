@@ -207,7 +207,7 @@ fn exact_after_changed(candidate: &[u8], summary: ExactLiveObjectRewriteSummary)
     summary.changed() && claim_payload_if_verified(candidate).is_some()
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 
@@ -590,7 +590,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod mixed_live_object_regression_tests {
     use super::*;
     use crate::translate::live_object_update::claim_payload_if_verified;

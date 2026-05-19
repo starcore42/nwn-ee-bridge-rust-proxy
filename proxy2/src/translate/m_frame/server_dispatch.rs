@@ -1669,7 +1669,7 @@ fn rewrite_direct_semantic_frame_if_claimed(
     }))
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod live_object_dispatch_tests {
     use super::*;
 
@@ -1926,7 +1926,7 @@ fn rewrite_server_status_module_resources_frame_if_needed(
     Ok(Some(rewritten))
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 

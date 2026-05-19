@@ -393,7 +393,7 @@ fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     Some(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
 
