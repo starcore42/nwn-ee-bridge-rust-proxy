@@ -56,7 +56,10 @@ const EE_MODEL_TYPE_3_ARMOR_ACCESSORY_TABLE_BYTES: usize = 0x72;
 const LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS: usize = 1;
 const LEGACY_APPEARANCE_ITEM_NAME_BARE_INLINE_LOCSTRING_BITS: usize = 2;
 const LEGACY_APPEARANCE_ITEM_NAME_STRREF_LOCSTRING_BITS: usize = 3;
+const LEGACY_LOCSTRING_TOKEN_READ_BYTES: usize = 4;
+const LEGACY_LOCSTRING_TOKEN_FRAGMENT_BITS: usize = 2;
 const LEGACY_ARMOR_BASE_ITEM: u32 = 0x10;
+const LEGACY_BODY_VISUAL_SENTINEL_BASE_ITEM: u32 = 0;
 const WORK_REMAINING_OPCODE: u8 = b'W';
 const WORK_REMAINING_RECORD_BYTES: usize = 3;
 const GUI_ZERO_FRAGMENT_STORAGE_MAX_BYTES: usize = 8;
@@ -146,6 +149,7 @@ struct LegacyAppearanceRecord {
     ee_extra_insert_offsets: Vec<usize>,
     ee_name_bit_rewrites: Vec<FragmentNameBitRewrite>,
     ee_extra_byte_inserts: Vec<CreatureAppearanceByteInsert>,
+    appearance_name_bits: Option<Vec<bool>>,
     equipment_records: u8,
     preferred_zero_padding_relative_start: Option<usize>,
     token_selector_padding_repair_relative_start: Option<usize>,
@@ -480,6 +484,23 @@ pub(super) fn try_get_ee_creature_appearance_record_end_by_byte_shape(
     offset: usize,
     scan_end: usize,
 ) -> Option<usize> {
+    try_get_ee_creature_appearance_record_end_by_byte_shape_impl(bytes, offset, scan_end, false)
+}
+
+fn try_get_ee_creature_appearance_record_end_by_byte_shape_including_bounded_tail(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    try_get_ee_creature_appearance_record_end_by_byte_shape_impl(bytes, offset, scan_end, true)
+}
+
+fn try_get_ee_creature_appearance_record_end_by_byte_shape_impl(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    allow_bounded_tail_scan: bool,
+) -> Option<usize> {
     let scan_end = scan_end.min(bytes.len());
     let mut accepted: Option<LegacyAppearanceRecord> = None;
     let mask = read_u16_le(bytes, offset.checked_add(6)?).unwrap_or(0);
@@ -487,44 +508,131 @@ pub(super) fn try_get_ee_creature_appearance_record_end_by_byte_shape(
         AppearanceNameShape::LocStringPair,
         AppearanceNameShape::CExoString,
     ] {
-        let Some(record) = parse_creature_appearance_record(
-            bytes,
-            offset,
-            scan_end,
-            name_shape,
-            CreatureAppearanceWireDialect::EeBuild8193,
-            None,
-        ) else {
-            continue;
-        };
-        // This is a byte-shape guard for later rewrite passes whose fragment
-        // cursor has already become unreliable. EE `sub_14079FAC0` consumes
-        // the model-type 3 armor/accessory table and the legacy visual
-        // transform identity bytes before `sub_14076BD30`; Diamond omits those
-        // bytes. If the parser no longer requests any EE byte inserts, the
-        // visible-equipment subobjects are already in the EE read-buffer shape.
-        // Do not use this as a full validator: fragment-bit proof still belongs
-        // to `advance_verified_ee_creature_appearance_record`.
-        if !record.ee_extra_byte_inserts.is_empty() {
-            continue;
-        }
-        if legacy_full_appearance_extends_past_ee_candidate(
-            bytes,
-            offset,
-            scan_end,
-            record.record_end,
+        if let Some(record) = parse_ee_creature_appearance_byte_shape_candidate(
+            bytes, offset, scan_end, scan_end, name_shape,
         ) {
-            continue;
+            if accepted
+                .as_ref()
+                .map(|current| {
+                    legacy_appearance_boundary_candidate_is_better(mask, &record, current)
+                })
+                .unwrap_or(true)
+            {
+                accepted = Some(record);
+            }
         }
-        if accepted
-            .as_ref()
-            .map(|current| legacy_appearance_boundary_candidate_is_better(mask, &record, current))
-            .unwrap_or(true)
-        {
-            accepted = Some(record);
+    }
+    if allow_bounded_tail_scan && mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK {
+        let min_candidate = offset.saturating_add(LEGACY_APPEARANCE_HEADER_BYTES);
+        let max_candidate = scan_end.min(
+            offset
+                .saturating_add(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+                .saturating_add(512),
+        );
+        let mut following_offset = min_candidate;
+        while following_offset + 1 < max_candidate {
+            if bytes.get(following_offset).copied() == Some(b'U')
+                && bytes.get(following_offset + 1).copied() == Some(LEGACY_CREATURE_TYPE)
+                && read_u32_le(bytes, following_offset.saturating_add(6)) == Some(0x0000_3967)
+            {
+                for name_shape in [
+                    AppearanceNameShape::LocStringPair,
+                    AppearanceNameShape::CExoString,
+                ] {
+                    if let Some(record) = parse_ee_creature_appearance_byte_shape_candidate(
+                        bytes,
+                        offset,
+                        following_offset,
+                        scan_end,
+                        name_shape,
+                    ) {
+                        if accepted
+                            .as_ref()
+                            .map(|current| {
+                                legacy_appearance_boundary_candidate_is_better(
+                                    mask, &record, current,
+                                )
+                            })
+                            .unwrap_or(true)
+                        {
+                            accepted = Some(record);
+                        }
+                    }
+                }
+                if accepted
+                    .as_ref()
+                    .is_none_or(|record| record.record_end != following_offset)
+                {
+                    let tail_start = following_offset
+                        .saturating_sub(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+                        .max(min_candidate);
+                    for candidate_end in tail_start..following_offset {
+                        for name_shape in [
+                            AppearanceNameShape::LocStringPair,
+                            AppearanceNameShape::CExoString,
+                        ] {
+                            if let Some(record) = parse_ee_creature_appearance_byte_shape_candidate(
+                                bytes,
+                                offset,
+                                candidate_end,
+                                scan_end,
+                                name_shape,
+                            ) {
+                                if accepted
+                                    .as_ref()
+                                    .map(|current| {
+                                        legacy_appearance_boundary_candidate_is_better(
+                                            mask, &record, current,
+                                        )
+                                    })
+                                    .unwrap_or(true)
+                                {
+                                    accepted = Some(record);
+                                }
+                            }
+                        }
+                    }
+                }
+                // This fallback models a bounded legacy tail immediately before
+                // the next creature update. Later `U/5` records belong to later
+                // top-level live-object records, not to this appearance block.
+                break;
+            }
+            following_offset = following_offset.saturating_add(1);
         }
     }
     accepted.map(|record| record.record_end)
+}
+
+fn parse_ee_creature_appearance_byte_shape_candidate(
+    bytes: &[u8],
+    offset: usize,
+    limit: usize,
+    scan_end: usize,
+    name_shape: AppearanceNameShape,
+) -> Option<LegacyAppearanceRecord> {
+    let record = parse_creature_appearance_record(
+        bytes,
+        offset,
+        limit,
+        name_shape,
+        CreatureAppearanceWireDialect::EeBuild8193,
+        None,
+    )?;
+    // This is a byte-shape guard for later rewrite passes whose fragment
+    // cursor has already become unreliable. EE `sub_14079FAC0` consumes
+    // the model-type 3 armor/accessory table and the legacy visual
+    // transform identity bytes before `sub_14076BD30`; Diamond omits those
+    // bytes. If the parser no longer requests any EE byte inserts, the
+    // visible-equipment subobjects are already in the EE read-buffer shape.
+    // Do not use this as a full validator: fragment-bit proof still belongs
+    // to `advance_verified_ee_creature_appearance_record`.
+    if !record.ee_extra_byte_inserts.is_empty()
+        || legacy_full_appearance_extends_past_ee_candidate(bytes, offset, scan_end, &record)
+    {
+        return None;
+    }
+    Some(record)
 }
 
 fn legacy_appearance_boundary_candidate_is_better(
@@ -556,9 +664,14 @@ fn legacy_full_appearance_extends_past_ee_candidate(
     bytes: &[u8],
     offset: usize,
     scan_end: usize,
-    candidate_end: usize,
+    candidate: &LegacyAppearanceRecord,
 ) -> bool {
     if read_u16_le(bytes, offset.saturating_add(6)) != Some(LEGACY_APPEARANCE_ALL_FIELDS_MASK) {
+        return false;
+    }
+    if ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
+        bytes, candidate, scan_end,
+    ) {
         return false;
     }
 
@@ -574,7 +687,27 @@ fn legacy_full_appearance_extends_past_ee_candidate(
     // full appearance record at the same offset, that shorter EE claim is only
     // shifted legacy bytes and must not suppress the typed translation.
     try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end)
-        .is_some_and(|legacy_end| legacy_end > candidate_end)
+        .is_some_and(|legacy_end| legacy_end > candidate.record_end)
+}
+
+fn ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
+    bytes: &[u8],
+    candidate: &LegacyAppearanceRecord,
+    scan_end: usize,
+) -> bool {
+    if candidate.equipment_records == 0 || !candidate.ee_extra_byte_inserts.is_empty() {
+        return false;
+    }
+    let search_limit = candidate
+        .record_end
+        .saturating_add(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+        .min(scan_end)
+        .min(bytes.len());
+    (candidate.record_end..search_limit.saturating_sub(1)).any(|following_offset| {
+        bytes.get(following_offset).copied() == Some(b'U')
+            && bytes.get(following_offset + 1).copied() == Some(LEGACY_CREATURE_TYPE)
+            && read_u32_le(bytes, following_offset.saturating_add(6)) == Some(0x0000_3967)
+    })
 }
 
 pub(super) fn advance_verified_legacy_creature_appearance_record(
@@ -651,7 +784,8 @@ pub(super) fn advance_verified_ee_creature_appearance_record(
         }
         return false;
     }
-    if legacy_full_appearance_extends_past_ee_candidate(bytes, offset, bytes.len(), record_end) {
+    if legacy_full_appearance_extends_past_ee_candidate(bytes, offset, record_end, &verified.record)
+    {
         if debug_live_claim_enabled_for_offset(offset) {
             eprintln!(
                 "live-object EE appearance verify rejected: offset={offset} reason=legacy-full-record-extends-past-ee-candidate record_end={record_end} bit_cursor={} proof_cursor={}",
@@ -708,11 +842,28 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
+    try_get_verified_ee_creature_appearance_record_end_and_cursor(
+        bytes,
+        offset,
+        scan_end,
+        fragment_bits,
+        bit_cursor,
+    )
+    .map(|(record_end, _)| record_end)
+}
+
+pub(super) fn try_get_verified_ee_creature_appearance_record_end_and_cursor(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(usize, usize)> {
     let scan_end = scan_end.min(bytes.len());
     if offset >= scan_end {
         return None;
     }
-    let exact_candidate = |candidate_end: usize| -> Option<usize> {
+    let exact_candidate = |candidate_end: usize| -> Option<(usize, usize)> {
         if candidate_end <= offset || candidate_end > scan_end {
             return None;
         }
@@ -734,22 +885,15 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end(
                 bytes,
                 offset,
                 scan_end,
-                candidate_end,
+                &verified.record,
             )
         {
             return None;
         }
 
-        let mut exact_cursor = bit_cursor;
-        if !advance_verified_ee_creature_appearance_record(
-            bytes,
-            offset,
-            candidate_end,
-            fragment_bits,
-            &mut exact_cursor,
-        ) {
-            return None;
-        }
+        let exact_cursor = verified
+            .proof_cursor
+            .checked_add(verified.record.ee_fragment_bits_consumed)?;
 
         let candidate_is_boundary = candidate_end >= scan_end
             || boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, candidate_end);
@@ -772,38 +916,38 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end(
             // exact fragment cursor left by this appearance record.
             return None;
         }
-        Some(candidate_end)
+        Some((candidate_end, exact_cursor))
     };
 
+    let mut candidate_ends = Vec::new();
     if let Some(byte_shape_end) =
-        try_get_ee_creature_appearance_record_end_by_byte_shape(bytes, offset, scan_end)
-    {
-        if let Some(record_end) = exact_candidate(byte_shape_end) {
-            return Some(record_end);
-        }
-    }
-
-    let mut search_from = offset.saturating_add(2);
-    while search_from < scan_end {
-        let candidate_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
-            bytes,
-            search_from,
-            scan_end,
+        try_get_ee_creature_appearance_record_end_by_byte_shape_including_bounded_tail(
+            bytes, offset, scan_end,
         )
-        .min(scan_end);
-        if candidate_end <= offset || candidate_end > scan_end {
-            break;
+    {
+        push_verified_tail_candidate_end(&mut candidate_ends, offset, scan_end, byte_shape_end);
+    }
+    let boundary_end =
+        boundary::find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, scan_end)
+            .min(scan_end);
+    push_verified_tail_candidate_end(&mut candidate_ends, offset, scan_end, boundary_end);
+    collect_verified_tail_candidate_ends_from_following_creature_updates(
+        bytes,
+        offset,
+        scan_end,
+        &mut candidate_ends,
+    );
+    push_verified_tail_candidate_end(&mut candidate_ends, offset, scan_end, scan_end);
+
+    dedup_verified_tail_candidate_ends_preserving_order(&mut candidate_ends);
+
+    for candidate_end in candidate_ends {
+        if let Some(verified_end) = exact_candidate(candidate_end) {
+            return Some(verified_end);
         }
-        if let Some(record_end) = exact_candidate(candidate_end) {
-            return Some(record_end);
-        }
-        if candidate_end == scan_end {
-            return None;
-        }
-        search_from = candidate_end.saturating_add(1);
     }
 
-    exact_candidate(scan_end)
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -836,8 +980,7 @@ pub(super) fn try_get_ee_creature_appearance_record_end_before_verified_creature
         &mut candidate_ends,
     );
 
-    candidate_ends.sort_unstable();
-    candidate_ends.dedup();
+    dedup_verified_tail_candidate_ends_preserving_order(&mut candidate_ends);
 
     let mut accepted_end = None;
     for candidate_end in candidate_ends {
@@ -853,28 +996,39 @@ pub(super) fn try_get_ee_creature_appearance_record_end_before_verified_creature
         ) else {
             continue;
         };
-        if verified.record.record_end == candidate_end
-            && verified.record.ee_fragment_bits_consumed
-                <= fragment_bits.len().saturating_sub(verified.proof_cursor)
-            && verified.record.ee_extra_byte_inserts.is_empty()
-        {
-            let mut exact_cursor = bit_cursor;
-            if advance_verified_ee_creature_appearance_record(
-                bytes,
-                offset,
-                candidate_end,
-                fragment_bits,
-                &mut exact_cursor,
-            ) && find_verified_following_creature_update_offset_after_appearance(
+        let record_end_matches = verified.record.record_end == candidate_end;
+        let bits_available = verified.record.ee_fragment_bits_consumed
+            <= fragment_bits.len().saturating_sub(verified.proof_cursor);
+        let byte_shape_translated = verified.record.ee_extra_byte_inserts.is_empty();
+        if !(record_end_matches && bits_available && byte_shape_translated) {
+            continue;
+        }
+        let mut exact_cursor = bit_cursor;
+        let exact_appearance = advance_verified_ee_creature_appearance_record(
+            bytes,
+            offset,
+            candidate_end,
+            fragment_bits,
+            &mut exact_cursor,
+        );
+        let direct_following = exact_appearance
+            && find_verified_following_creature_update_offset_after_appearance(
                 bytes,
                 candidate_end,
                 fragment_bits,
                 exact_cursor,
             )
-            .is_some()
-            {
-                accepted_end = Some(candidate_end);
-            }
+            .is_some();
+        let promoted_following = exact_appearance
+            && fragment_spans::verified_appearance_following_creature_update_span_offset_for_ee(
+                bytes,
+                candidate_end,
+                exact_cursor,
+                fragment_bits,
+            )
+            .is_some();
+        if direct_following || promoted_following {
+            accepted_end = Some(candidate_end);
         }
     }
 
@@ -906,6 +1060,19 @@ fn collect_verified_tail_candidate_ends_from_following_creature_updates(
                     );
                 }
             }
+            if read_u32_le(bytes, following_offset.saturating_add(6)) == Some(0x0000_3967) {
+                let tail_start = following_offset
+                    .saturating_sub(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+                    .max(offset.saturating_add(LEGACY_APPEARANCE_HEADER_BYTES));
+                for candidate_end in tail_start..=following_offset {
+                    push_verified_tail_candidate_end(
+                        candidate_ends,
+                        offset,
+                        scan_end,
+                        candidate_end,
+                    );
+                }
+            }
         }
         following_offset = following_offset.saturating_add(1);
     }
@@ -922,6 +1089,19 @@ fn push_verified_tail_candidate_end(
     {
         candidate_ends.push(candidate_end);
     }
+}
+
+fn dedup_verified_tail_candidate_ends_preserving_order(candidate_ends: &mut Vec<usize>) {
+    let mut write = 0usize;
+    for read in 0..candidate_ends.len() {
+        let candidate = candidate_ends[read];
+        if candidate_ends[..write].contains(&candidate) {
+            continue;
+        }
+        candidate_ends[write] = candidate;
+        write = write.saturating_add(1);
+    }
+    candidate_ends.truncate(write);
 }
 
 fn find_verified_following_creature_update_offset_after_appearance(
@@ -1770,20 +1950,30 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
     let original_bytes = bytes.clone();
     let original_fragment_bits = fragment_bits.clone();
     let original_record_end = *record_end;
-    if let Some(existing_ee_end) =
-        try_get_ee_creature_appearance_record_end_by_byte_shape(bytes, offset, bytes.len())
-    {
-        if existing_ee_end > *record_end {
-            // A previous structured pass may already have inserted EE's
-            // visible-equipment byte-only subobjects, while the generic legacy
-            // boundary finder still stops at the old Diamond active-tail
-            // offset. Extend the record to the proven EE byte shape instead of
-            // inserting a second armor table / visual-transform block. Fragment
-            // validation still happens immediately after this function returns.
-            *record_end = existing_ee_end;
+    let current_window_is_legacy_appearance =
+        try_get_legacy_creature_appearance_record_end(bytes, offset, *record_end)
+            == Some(*record_end);
+    if !current_window_is_legacy_appearance {
+        if let Some(existing_ee_end) =
+            try_get_ee_creature_appearance_record_end_by_byte_shape_including_bounded_tail(
+                bytes,
+                offset,
+                bytes.len(),
+            )
+        {
+            if existing_ee_end > *record_end {
+                // A previous structured pass may already have inserted EE's
+                // visible-equipment byte-only subobjects, while the generic
+                // legacy boundary finder still stops at the old Diamond
+                // active-tail offset. Extend the record to the proven EE byte
+                // shape instead of inserting a second armor table /
+                // visual-transform block. Fragment validation still happens
+                // immediately after this function returns.
+                *record_end = existing_ee_end;
+            }
         }
     }
-    let name_shape = read_appearance_name_shape(fragment_bits, bit_cursor)?;
+    let name_shape = read_appearance_name_shape(fragment_bits, bit_cursor);
     let leading_fence = LEGACY_FULL_APPEARANCE_PRECEDING_FRAGMENT_FENCE_CANDIDATES
         .iter()
         .copied()
@@ -1801,17 +1991,18 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             Some((fence_bits, cursor, shape))
         });
     let mut repaired_name_shape = None;
-    let mut record_name_shape = name_shape;
+    let mut record_name_shape = name_shape.unwrap_or(AppearanceNameShape::LocStringPair);
     let mut record_from_fragment_proof = false;
     let mut appearance_bit_cursor = bit_cursor;
-    let proof = AppearanceBitProof {
+    let proof = name_shape.map(|_| AppearanceBitProof {
         bit_cursor,
         fragment_bits,
         translated_ee: false,
         allow_cross_record_fence: false,
         owner_offset: offset,
-    };
+    });
     let parse_exact_record = |shape| {
+        let proof = proof?;
         let record = parse_creature_appearance_record(
             bytes,
             offset,
@@ -1844,8 +2035,12 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             CreatureAppearanceWireDialect::LegacyDiamond,
             None,
         )?;
-        if record.record_end != *record_end
-            || record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
+        if !(record.record_end == *record_end
+            || appearance_record_can_leave_legacy_tail_before_boundary(bytes, &record, *record_end))
+            || !appearance_record_fragment_bits_fit_after_name_pattern_insert(
+                &record,
+                fragment_bits.len().saturating_sub(bit_cursor),
+            )
         {
             return None;
         }
@@ -1865,8 +2060,12 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             CreatureAppearanceWireDialect::LegacyDiamond,
             None,
         )?;
-        if record.record_end != *record_end
-            || record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
+        if !(record.record_end == *record_end
+            || appearance_record_can_leave_legacy_tail_before_boundary(bytes, &record, *record_end))
+            || !appearance_record_fragment_bits_fit_after_name_pattern_insert(
+                &record,
+                fragment_bits.len().saturating_sub(bit_cursor),
+            )
         {
             return None;
         }
@@ -1887,13 +2086,16 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             None,
         )?;
         if record.record_end != *record_end
-            || record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
+            || !appearance_record_fragment_bits_fit_after_name_pattern_insert(
+                &record,
+                fragment_bits.len().saturating_sub(bit_cursor),
+            )
         {
             return None;
         }
         Some(record)
     };
-    let verified_preceding_fence_record =
+    let verified_preceding_fence_record = proof.and_then(|_| {
         parse_verified_creature_appearance_with_optional_preceding_fence(
             bytes,
             offset,
@@ -1908,22 +2110,24 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             verified.record.record_end == *record_end
                 && verified.record.fragment_bits_consumed
                     <= fragment_bits.len().saturating_sub(verified.proof_cursor)
-        });
+        })
+    });
     let Some(mut record) = verified_preceding_fence_record
         .map(|verified| {
             appearance_bit_cursor = verified.proof_cursor;
             record_from_fragment_proof = true;
             record_name_shape = read_appearance_name_shape(fragment_bits, verified.proof_cursor)
-                .unwrap_or(name_shape);
+                .unwrap_or(record_name_shape);
             verified.record
         })
         .or_else(|| {
-            parse_exact_record(name_shape).inspect(|_| {
+            let shape = name_shape?;
+            parse_exact_record(shape).inspect(|_| {
                 record_from_fragment_proof = true;
             })
         })
         .or_else(|| {
-            let alternate = name_shape.alternate();
+            let alternate = name_shape?.alternate();
             let record = parse_exact_record(alternate)?;
             record_from_fragment_proof = true;
             repaired_name_shape = Some(alternate);
@@ -1938,15 +2142,34 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             Some(record)
         })
         .or_else(|| {
-            let record = parse_exact_byte_record_without_fragment_proof(name_shape)?;
-            record_name_shape = name_shape;
+            let shape = name_shape?;
+            let record = parse_exact_byte_record_without_fragment_proof(shape)?;
+            record_name_shape = shape;
             Some(record)
         })
         .or_else(|| {
-            let alternate = name_shape.alternate();
+            let alternate = name_shape?.alternate();
             let record = parse_exact_byte_record_without_fragment_proof(alternate)?;
             repaired_name_shape = Some(alternate);
             record_name_shape = alternate;
+            Some(record)
+        })
+        .or_else(|| {
+            if name_shape.is_some() {
+                return None;
+            }
+            let record =
+                parse_exact_byte_record_without_fragment_proof(AppearanceNameShape::LocStringPair)?;
+            record_name_shape = AppearanceNameShape::LocStringPair;
+            Some(record)
+        })
+        .or_else(|| {
+            if name_shape.is_some() {
+                return None;
+            }
+            let record =
+                parse_exact_byte_record_without_fragment_proof(AppearanceNameShape::CExoString)?;
+            record_name_shape = AppearanceNameShape::CExoString;
             Some(record)
         })
         .or_else(|| {
@@ -1957,27 +2180,68 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             Some(record)
         })
         .or_else(|| {
-            let record = parse_bounded_byte_record_without_fragment_proof(name_shape)?;
-            record_name_shape = name_shape;
+            let shape = name_shape?;
+            let record = parse_bounded_byte_record_without_fragment_proof(shape)?;
+            record_name_shape = shape;
             Some(record)
         })
         .or_else(|| {
-            let alternate = name_shape.alternate();
+            let alternate = name_shape?.alternate();
             let record = parse_bounded_byte_record_without_fragment_proof(alternate)?;
             repaired_name_shape = Some(alternate);
             record_name_shape = alternate;
             Some(record)
         })
         .or_else(|| {
-            let record = parse_bounded_ee_body_record_without_fragment_proof(name_shape)?;
-            record_name_shape = name_shape;
+            if name_shape.is_some() {
+                return None;
+            }
+            let record = parse_bounded_byte_record_without_fragment_proof(
+                AppearanceNameShape::LocStringPair,
+            )?;
+            record_name_shape = AppearanceNameShape::LocStringPair;
             Some(record)
         })
         .or_else(|| {
-            let alternate = name_shape.alternate();
+            if name_shape.is_some() {
+                return None;
+            }
+            let record =
+                parse_bounded_byte_record_without_fragment_proof(AppearanceNameShape::CExoString)?;
+            record_name_shape = AppearanceNameShape::CExoString;
+            Some(record)
+        })
+        .or_else(|| {
+            let shape = name_shape?;
+            let record = parse_bounded_ee_body_record_without_fragment_proof(shape)?;
+            record_name_shape = shape;
+            Some(record)
+        })
+        .or_else(|| {
+            let alternate = name_shape?.alternate();
             let record = parse_bounded_ee_body_record_without_fragment_proof(alternate)?;
             repaired_name_shape = Some(alternate);
             record_name_shape = alternate;
+            Some(record)
+        })
+        .or_else(|| {
+            if name_shape.is_some() {
+                return None;
+            }
+            let record = parse_bounded_ee_body_record_without_fragment_proof(
+                AppearanceNameShape::LocStringPair,
+            )?;
+            record_name_shape = AppearanceNameShape::LocStringPair;
+            Some(record)
+        })
+        .or_else(|| {
+            if name_shape.is_some() {
+                return None;
+            }
+            let record = parse_bounded_ee_body_record_without_fragment_proof(
+                AppearanceNameShape::CExoString,
+            )?;
+            record_name_shape = AppearanceNameShape::CExoString;
             Some(record)
         })
     else {
@@ -1992,14 +2256,10 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         // forwarding a raw overflowing `P` record.
         *fragment_bits.get_mut(appearance_bit_cursor)? = repaired.fragment_bit();
     }
-    if !record_from_fragment_proof && record_name_shape == AppearanceNameShape::LocStringPair {
-        // Diamond/HG creature appearances can byte-prove the two-name branch
-        // even when the incoming fragment cursor advertises the single-string
-        // branch. EE then routes each component through the locstring helper,
-        // whose inner BOOL must select the inline CExoString path for this
-        // decompile-backed HG wire shape.
-        *fragment_bits.get_mut(appearance_bit_cursor.checked_add(1)?)? = false;
-        *fragment_bits.get_mut(appearance_bit_cursor.checked_add(2)?)? = false;
+    let mut name_pattern_bits_inserted = 0usize;
+    if !record_from_fragment_proof {
+        name_pattern_bits_inserted =
+            apply_appearance_name_bit_pattern(fragment_bits, appearance_bit_cursor, &record)?;
     }
     let byte_only_stream_padding_probe = record_from_fragment_proof
         && record.ee_extra_insert_offsets.is_empty()
@@ -2009,6 +2269,11 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
     if !record_from_fragment_proof || byte_only_stream_padding_probe {
         if let Some(delta) = proven_name_fragment_delta_for_byte_only_appearance_parse(
             record_name_shape,
+            record
+                .appearance_name_bits
+                .as_ref()
+                .map(|bits| bits.len())
+                .unwrap_or_else(|| byte_only_appearance_name_fragment_bits(record_name_shape)),
             fragment_bits,
             appearance_bit_cursor,
         ) {
@@ -2124,7 +2389,6 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         *record_end = original_record_end;
         return None;
     };
-
     let mut bytes_removed = byte_apply.bytes_removed;
     let mut proof_cursor = bit_cursor;
     if !advance_verified_ee_creature_appearance_record(
@@ -2138,7 +2402,9 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             try_get_ee_creature_appearance_record_end_before_verified_creature_update_tail_for_ee(
                 bytes,
                 offset,
-                *record_end,
+                record_end
+                    .saturating_add(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+                    .min(bytes.len()),
                 fragment_bits,
                 bit_cursor,
             )
@@ -2155,9 +2421,9 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                 // read-buffer tail bytes immediately before the following
                 // creature update after the EE body/item widening is applied.
                 // This is not a generic truncation: the tail is removed only
-                // when the EE appearance validates at the shorter end and the
-                // following `U/5` record is verified from the same fragment
-                // cursor.
+                // when the EE appearance validates at a bounded byte-shape end
+                // and the following `U/5` record is verified from the same
+                // fragment cursor.
                 if let Some(removal) =
                     remove_ee_appearance_trailing_legacy_tail_before_verified_creature_update_for_ee(
                         bytes,
@@ -2177,7 +2443,34 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                         &mut proof_cursor,
                     ) {
                         return Some(CreatureAppearanceExtraRewrite {
-                            bits_inserted: nested_name_bits_inserted
+                            bits_inserted: name_pattern_bits_inserted
+                                .saturating_add(nested_name_bits_inserted)
+                                .saturating_add(record.ee_extra_insert_offsets.len()),
+                            bits_removed,
+                            bytes_inserted: byte_apply.bytes_inserted,
+                            bytes_removed,
+                        });
+                    }
+                } else if fragment_spans::verified_appearance_following_creature_update_span_offset_for_ee(
+                    bytes,
+                    translated_end,
+                    translated_cursor,
+                    fragment_bits,
+                )
+                .is_some()
+                {
+                    *record_end = translated_end;
+                    proof_cursor = bit_cursor;
+                    if advance_verified_ee_creature_appearance_record(
+                        bytes,
+                        offset,
+                        *record_end,
+                        fragment_bits,
+                        &mut proof_cursor,
+                    ) {
+                        return Some(CreatureAppearanceExtraRewrite {
+                            bits_inserted: name_pattern_bits_inserted
+                                .saturating_add(nested_name_bits_inserted)
                                 .saturating_add(record.ee_extra_insert_offsets.len()),
                             bits_removed,
                             bytes_inserted: byte_apply.bytes_inserted,
@@ -2187,15 +2480,6 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                 }
             }
         }
-        if debug_live_claim_enabled_for_offset(offset) {
-            eprintln!(
-                "live-object appearance transactional rewrite rejected: offset={offset} record_end={} bits_inserted={} bytes_inserted={} bytes_removed={}",
-                *record_end,
-                record.ee_extra_insert_offsets.len(),
-                byte_apply.bytes_inserted,
-                bytes_removed,
-            );
-        }
         *bytes = original_bytes;
         *fragment_bits = original_fragment_bits;
         *record_end = original_record_end;
@@ -2203,7 +2487,8 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
     }
 
     Some(CreatureAppearanceExtraRewrite {
-        bits_inserted: nested_name_bits_inserted
+        bits_inserted: name_pattern_bits_inserted
+            .saturating_add(nested_name_bits_inserted)
             .saturating_add(record.ee_extra_insert_offsets.len()),
         bits_removed,
         bytes_inserted: byte_apply.bytes_inserted,
@@ -2221,7 +2506,11 @@ pub(super) fn remove_ee_creature_appearance_zero_fragment_padding_if_possible(
     let original_fragment_bits = fragment_bits.clone();
     let original_record_end = *record_end;
     let existing_ee_end =
-        try_get_ee_creature_appearance_record_end_by_byte_shape(bytes, offset, bytes.len())?;
+        try_get_ee_creature_appearance_record_end_by_byte_shape_including_bounded_tail(
+            bytes,
+            offset,
+            bytes.len(),
+        )?;
     if debug_live_claim_enabled_for_offset(offset) {
         eprintln!(
             "live-object EE appearance name bit repair probe: offset={offset} original_record_end={original_record_end} existing_ee_end={existing_ee_end} bit_cursor={bit_cursor}"
@@ -2367,7 +2656,11 @@ pub(super) fn repair_ee_creature_appearance_name_bits_if_possible(
     let original_fragment_bits = fragment_bits.clone();
     let original_record_end = *record_end;
     let existing_ee_end =
-        try_get_ee_creature_appearance_record_end_by_byte_shape(bytes, offset, bytes.len())?;
+        try_get_ee_creature_appearance_record_end_by_byte_shape_including_bounded_tail(
+            bytes,
+            offset,
+            bytes.len(),
+        )?;
     if existing_ee_end > *record_end {
         *record_end = existing_ee_end;
     }
@@ -3648,6 +3941,11 @@ fn zero_fragment_padding_removal_candidate_is_exact(
     record: &LegacyAppearanceRecord,
     ranges: &[ZeroFragmentPaddingRange],
 ) -> bool {
+    if record_end < bytes.len()
+        && (!record.ee_extra_byte_inserts.is_empty() || !record.ee_name_bit_rewrites.is_empty())
+    {
+        return false;
+    }
     let mut trial_bits = fragment_bits.to_vec();
     for range in ranges.iter().rev() {
         let Some(absolute_start) = bit_cursor.checked_add(range.relative_start) else {
@@ -3686,6 +3984,14 @@ fn zero_fragment_padding_removal_candidate_is_exact(
     ) else {
         return false;
     };
+    if try_get_ee_creature_appearance_record_end_by_byte_shape(
+        &trial_bytes,
+        offset,
+        trial_record_end,
+    ) != Some(trial_record_end)
+    {
+        return false;
+    }
 
     let mut proof_cursor = bit_cursor;
     let exact = advance_verified_ee_creature_appearance_record(
@@ -3902,6 +4208,12 @@ fn build_zero_fragment_padding_trial(
         &mut trial_record_end,
         &record.ee_extra_byte_inserts,
     )?;
+    if trial_record_end + 2 > trial_bytes.len()
+        || trial_bytes.get(trial_record_end).copied() != Some(b'U')
+        || trial_bytes.get(trial_record_end + 1).copied() != Some(LEGACY_CREATURE_TYPE)
+    {
+        return None;
+    }
 
     let mut proof_cursor = bit_cursor;
     if !advance_verified_ee_creature_appearance_record(
@@ -4098,6 +4410,11 @@ fn parse_verified_creature_appearance_with_optional_preceding_fence(
     if accepted.is_some() && mask != LEGACY_APPEARANCE_ALL_FIELDS_MASK {
         return accepted;
     }
+    if accepted.as_ref().is_some_and(|current| {
+        preferred_record_end.is_some_and(|preferred| current.record.record_end == preferred)
+    }) {
+        return accepted;
+    }
 
     for preceding_fence_bits in LEGACY_FULL_APPEARANCE_PRECEDING_FRAGMENT_FENCE_CANDIDATES {
         if preceding_fence_bits == 0 {
@@ -4191,12 +4508,133 @@ fn legacy_full_appearance_preceding_fence_bits_are_proven(
 
 fn proven_name_fragment_delta_for_byte_only_appearance_parse(
     name_shape: AppearanceNameShape,
+    assumed_bits: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
     let actual = proven_appearance_name_fragment_bits(name_shape, fragment_bits, bit_cursor)?;
-    let assumed = byte_only_appearance_name_fragment_bits(name_shape);
-    actual.checked_sub(assumed)
+    actual.checked_sub(assumed_bits)
+}
+
+fn appearance_record_fragment_bits_fit_after_name_pattern_insert(
+    record: &LegacyAppearanceRecord,
+    available_bits: usize,
+) -> bool {
+    if record.fragment_bits_consumed <= available_bits {
+        return true;
+    }
+    let Some(pattern) = record.appearance_name_bits.as_deref() else {
+        return false;
+    };
+    record
+        .fragment_bits_consumed
+        .checked_sub(available_bits)
+        .map(|missing| {
+            missing == pattern.len()
+                || (record
+                    .token_selector_padding_repair_relative_start
+                    .is_some()
+                    && missing <= LEGACY_LOCSTRING_TOKEN_FRAGMENT_BITS)
+                || record
+                    .token_selector_padding_repair_relative_start
+                    .map(|repair_start| {
+                        available_bits >= repair_start
+                            && missing <= record.fragment_bits_consumed.saturating_sub(repair_start)
+                            && record.ee_name_bit_rewrites.iter().any(|rewrite| {
+                                rewrite.proof == LegacyItemNameFragmentProof::LocStringToken
+                            })
+                    })
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn appearance_record_can_leave_legacy_tail_before_boundary(
+    bytes: &[u8],
+    record: &LegacyAppearanceRecord,
+    boundary: usize,
+) -> bool {
+    if record.record_end >= boundary
+        || boundary > bytes.len()
+        || boundary.saturating_sub(record.record_end) > MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES
+        || bytes.get(boundary).copied() != Some(b'U')
+        || bytes.get(boundary.saturating_add(1)).copied() != Some(LEGACY_CREATURE_TYPE)
+    {
+        return false;
+    }
+
+    record.ee_extra_byte_inserts.iter().any(|insert| {
+        matches!(
+            insert,
+            CreatureAppearanceByteInsert::LegacyVisualTransformIdentity { .. }
+                | CreatureAppearanceByteInsert::LegacyVisualTransformIdentitySuffix { .. }
+                | CreatureAppearanceByteInsert::LegacyScalarVisualTransformIdentityReplacement { .. }
+        )
+    })
+}
+
+fn apply_appearance_name_bit_pattern(
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: usize,
+    record: &LegacyAppearanceRecord,
+) -> Option<usize> {
+    let pattern = record.appearance_name_bits.as_deref();
+    let Some(pattern) = pattern else {
+        return Some(0);
+    };
+    if pattern.is_empty() {
+        return Some(0);
+    }
+    let available_bits = fragment_bits.len().saturating_sub(bit_cursor);
+    if record.fragment_bits_consumed > available_bits {
+        let missing = record.fragment_bits_consumed.checked_sub(available_bits)?;
+        if missing != pattern.len() {
+            if record
+                .token_selector_padding_repair_relative_start
+                .is_some()
+                && missing <= LEGACY_LOCSTRING_TOKEN_FRAGMENT_BITS
+            {
+                if available_bits >= pattern.len() {
+                    let end = bit_cursor.checked_add(pattern.len())?;
+                    let target = fragment_bits.get_mut(bit_cursor..end)?;
+                    target.copy_from_slice(pattern);
+                }
+                let insert_at = bit_cursor.checked_add(available_bits)?;
+                let padding = vec![false; missing];
+                super::bits::insert_msb_bits(fragment_bits, insert_at, &padding)?;
+                return Some(missing);
+            }
+            if record
+                .token_selector_padding_repair_relative_start
+                .map(|repair_start| {
+                    available_bits >= repair_start
+                        && missing <= record.fragment_bits_consumed.saturating_sub(repair_start)
+                        && record.ee_name_bit_rewrites.iter().any(|rewrite| {
+                            rewrite.proof == LegacyItemNameFragmentProof::LocStringToken
+                        })
+                })
+                .unwrap_or(false)
+            {
+                if available_bits < pattern.len() {
+                    return None;
+                }
+                let end = bit_cursor.checked_add(pattern.len())?;
+                let target = fragment_bits.get_mut(bit_cursor..end)?;
+                target.copy_from_slice(pattern);
+                let insert_at = bit_cursor.checked_add(available_bits)?;
+                let padding = vec![false; missing];
+                super::bits::insert_msb_bits(fragment_bits, insert_at, &padding)?;
+                return Some(missing);
+            }
+            return None;
+        }
+        super::bits::insert_msb_bits(fragment_bits, bit_cursor, pattern)?;
+        return Some(pattern.len());
+    }
+    let end = bit_cursor.checked_add(pattern.len())?;
+    let target = fragment_bits.get_mut(bit_cursor..end)?;
+    target.copy_from_slice(pattern);
+    Some(0)
 }
 
 fn byte_only_appearance_name_fragment_bits(name_shape: AppearanceNameShape) -> usize {
@@ -4332,6 +4770,7 @@ fn parse_creature_appearance_record(
     let mut preferred_zero_padding_relative_start = None;
     let mut token_selector_padding_repair_relative_start = None;
     let mut inline_active_name_fence_repair_relative_start = None;
+    let mut appearance_name_bits = None;
     let translated_ee_bit_proof = dialect == CreatureAppearanceWireDialect::EeBuild8193;
     if (mask & LEGACY_APPEARANCE_NAME_MASK) != 0 {
         if let Some(proof) = bit_proof {
@@ -4408,8 +4847,44 @@ fn parse_creature_appearance_record(
                         cursor = candidate.second_name_end;
                         fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
                     }
+                } else if let Some(first) =
+                    advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
+                {
+                    cursor = first.end;
+                    fragment_bits_consumed =
+                        fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
+                    let mut name_bits = vec![true, true, false];
+                    if let Some(second) =
+                        advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
+                    {
+                        cursor = second.end;
+                        fragment_bits_consumed =
+                            fragment_bits_consumed.checked_add(second.fragment_bits_consumed)?;
+                        name_bits.extend([true, false]);
+                    } else if let Some(second_end) =
+                        advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
+                    {
+                        cursor = second_end;
+                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                        name_bits.push(false);
+                    } else {
+                        let candidate = select_missing_second_inline_name_candidate(
+                            bytes, cursor, limit, mask, None,
+                        )?;
+                        ee_extra_byte_inserts.push(
+                            CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
+                                offset: cursor,
+                                length: u32::try_from(candidate.name_len).ok()?,
+                            },
+                        );
+                        cursor = candidate.name_end;
+                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                        name_bits.push(false);
+                    }
+                    appearance_name_bits = Some(name_bits);
                 } else {
                     fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
+                    appearance_name_bits = Some(vec![true, false, false]);
                     let mut second_component_consumed = false;
                     if let Some(first_end) =
                         advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
@@ -4449,6 +4924,9 @@ fn parse_creature_appearance_record(
                 }
             }
             AppearanceNameShape::CExoString => {
+                if bit_proof.is_none() {
+                    appearance_name_bits = Some(vec![false]);
+                }
                 cursor = advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)?;
             }
         }
@@ -4629,6 +5107,7 @@ fn parse_creature_appearance_record(
         ee_extra_insert_offsets,
         ee_name_bit_rewrites,
         ee_extra_byte_inserts,
+        appearance_name_bits,
         equipment_records,
         preferred_zero_padding_relative_start,
         token_selector_padding_repair_relative_start,
@@ -5209,13 +5688,16 @@ fn advance_legacy_locstring_component_with_proof(
 ) -> Option<LegacyLocStringComponentAdvance> {
     let inner_is_tlk_token = *proof.fragment_bits.get(component_bit_cursor)?;
     if inner_is_tlk_token {
-        let end = cursor.checked_add(1)?.checked_add(4)?;
+        proof
+            .fragment_bits
+            .get(component_bit_cursor.checked_add(1)?)?;
+        let end = cursor.checked_add(LEGACY_LOCSTRING_TOKEN_READ_BYTES)?;
         if end > limit || end > bytes.len() {
             return None;
         }
         Some(LegacyLocStringComponentAdvance {
             end,
-            fragment_bits_consumed: 1,
+            fragment_bits_consumed: LEGACY_LOCSTRING_TOKEN_FRAGMENT_BITS,
         })
     } else {
         Some(LegacyLocStringComponentAdvance {
@@ -5223,6 +5705,31 @@ fn advance_legacy_locstring_component_with_proof(
             fragment_bits_consumed: 1,
         })
     }
+}
+
+fn advance_legacy_locstring_token_without_proof(
+    bytes: &[u8],
+    cursor: usize,
+    limit: usize,
+) -> Option<LegacyLocStringComponentAdvance> {
+    let end = cursor.checked_add(LEGACY_LOCSTRING_TOKEN_READ_BYTES)?;
+    if end > limit || end > bytes.len() {
+        return None;
+    }
+    if bytes.get(cursor).copied()? & 0x80 == 0 {
+        return None;
+    }
+    // Diamond `sub_53E700` reads the locstring inner selector and language
+    // selector from the fragment stream, then reads the 32-bit TLK/custom-token
+    // reference at the current read-buffer cursor.
+    let token_ref = read_u32_le(bytes, cursor)?;
+    if token_ref == u32::MAX {
+        return None;
+    }
+    Some(LegacyLocStringComponentAdvance {
+        end,
+        fragment_bits_consumed: LEGACY_LOCSTRING_TOKEN_FRAGMENT_BITS,
+    })
 }
 
 fn advance_legacy_scalar_appearance_fields(
@@ -5374,7 +5881,7 @@ fn parse_legacy_visible_equipment_records(
                     .checked_add(LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES)
                     .map(|end| end.min(limit))
                     .unwrap_or(limit);
-                let mut accepted: Option<LegacyVisibleEquipmentParse> = None;
+                let mut accepted: Option<(LegacyVisibleEquipmentParse, bool)> = None;
                 for next in min_next..=max_next {
                     for item in parse_legacy_item_add_record_candidates(bytes, cursor, next) {
                         let spans_record_boundary =
@@ -5426,20 +5933,52 @@ fn parse_legacy_visible_equipment_records(
                                 &item,
                                 legacy_bits_before,
                             );
+                        let fixed_token_tail =
+                            visible_equipment_final_item_fixed_token_tail_before_creature_update(
+                                bytes, next, &item,
+                            );
+                        let mut ee_extra_byte_inserts = item.ee_extra_byte_inserts;
+                        if fixed_token_tail {
+                            ee_extra_byte_inserts.retain(|insert| {
+                                !matches!(
+                                    insert,
+                                    CreatureAppearanceByteInsert::LegacyVisualTransformIdentity {
+                                        ..
+                                    }
+                                )
+                            });
+                        }
                         let candidate = LegacyVisibleEquipmentParse {
                             end: next,
                             fragment_bits_consumed: item.fragment_bits_consumed,
                             ee_extra_fragment_bits: item.ee_extra_fragment_bits,
                             ee_extra_insert_offsets: item.ee_extra_insert_offsets,
                             ee_name_bit_rewrites,
-                            ee_extra_byte_inserts: item.ee_extra_byte_inserts,
+                            ee_extra_byte_inserts,
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
                         };
                         if accepted
                             .as_ref()
-                            .map(|current| {
+                            .map(|(current, current_fixed_token_tail)| {
+                                if fixed_token_tail != *current_fixed_token_tail {
+                                    return fixed_token_tail;
+                                }
+                                let candidate_has_missing_inline_item_name =
+                                    visible_equipment_parse_has_missing_inline_item_name(
+                                        &candidate,
+                                    );
+                                let current_has_missing_inline_item_name =
+                                    visible_equipment_parse_has_missing_inline_item_name(current);
+                                if candidate_has_missing_inline_item_name
+                                    != current_has_missing_inline_item_name
+                                {
+                                    return !candidate_has_missing_inline_item_name;
+                                }
+                                if fixed_token_tail {
+                                    return candidate.end < current.end;
+                                }
                                 candidate.end > current.end
                                     || (!has_pending_byte_inserts
                                         && !current.ee_extra_byte_inserts.is_empty()
@@ -5447,11 +5986,11 @@ fn parse_legacy_visible_equipment_records(
                             })
                             .unwrap_or(true)
                         {
-                            accepted = Some(candidate);
+                            accepted = Some((candidate, fixed_token_tail));
                         }
                     }
                 }
-                return accepted;
+                return accepted.map(|(parse, _)| parse);
             }
 
             let min_next =
@@ -5656,7 +6195,7 @@ fn parse_legacy_compact_visible_equipment_records(
                     .checked_add(LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES)
                     .map(|end| end.min(limit))
                     .unwrap_or(limit);
-                let mut accepted: Option<LegacyVisibleEquipmentParse> = None;
+                let mut accepted: Option<(LegacyVisibleEquipmentParse, bool)> = None;
                 for next in min_next..=max_next {
                     for item in parse_legacy_item_add_record_candidates(bytes, cursor, next) {
                         let spans_record_boundary =
@@ -5708,20 +6247,52 @@ fn parse_legacy_compact_visible_equipment_records(
                                 &item,
                                 legacy_bits_before,
                             );
+                        let fixed_token_tail =
+                            visible_equipment_final_item_fixed_token_tail_before_creature_update(
+                                bytes, next, &item,
+                            );
+                        let mut ee_extra_byte_inserts = item.ee_extra_byte_inserts;
+                        if fixed_token_tail {
+                            ee_extra_byte_inserts.retain(|insert| {
+                                !matches!(
+                                    insert,
+                                    CreatureAppearanceByteInsert::LegacyVisualTransformIdentity {
+                                        ..
+                                    }
+                                )
+                            });
+                        }
                         let candidate = LegacyVisibleEquipmentParse {
                             end: next,
                             fragment_bits_consumed: item.fragment_bits_consumed,
                             ee_extra_fragment_bits: item.ee_extra_fragment_bits,
                             ee_extra_insert_offsets: item.ee_extra_insert_offsets,
                             ee_name_bit_rewrites,
-                            ee_extra_byte_inserts: item.ee_extra_byte_inserts,
+                            ee_extra_byte_inserts,
                             first_positive_name_selector_relative_start,
                             token_selector_padding_repair_relative_start,
                             inline_active_name_fence_repair_relative_start,
                         };
                         if accepted
                             .as_ref()
-                            .map(|current| {
+                            .map(|(current, current_fixed_token_tail)| {
+                                if fixed_token_tail != *current_fixed_token_tail {
+                                    return fixed_token_tail;
+                                }
+                                let candidate_has_missing_inline_item_name =
+                                    visible_equipment_parse_has_missing_inline_item_name(
+                                        &candidate,
+                                    );
+                                let current_has_missing_inline_item_name =
+                                    visible_equipment_parse_has_missing_inline_item_name(current);
+                                if candidate_has_missing_inline_item_name
+                                    != current_has_missing_inline_item_name
+                                {
+                                    return !candidate_has_missing_inline_item_name;
+                                }
+                                if fixed_token_tail {
+                                    return candidate.end < current.end;
+                                }
                                 candidate.end > current.end
                                     || (!has_pending_byte_inserts
                                         && !current.ee_extra_byte_inserts.is_empty()
@@ -5729,11 +6300,11 @@ fn parse_legacy_compact_visible_equipment_records(
                             })
                             .unwrap_or(true)
                         {
-                            accepted = Some(candidate);
+                            accepted = Some((candidate, fixed_token_tail));
                         }
                     }
                 }
-                return accepted;
+                return accepted.map(|(parse, _)| parse);
             }
 
             let min_next =
@@ -6088,8 +6659,81 @@ fn visible_equipment_item_candidate_spans_live_object_boundary(
         .unwrap_or(candidate_end)
         .min(candidate_end);
     (scan_start..candidate_end.saturating_sub(1)).any(|candidate| {
-        boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, candidate)
+        looks_like_top_level_live_object_boundary_inside_visible_equipment_item(bytes, candidate)
     })
+}
+
+fn visible_equipment_final_item_fixed_token_tail_before_creature_update(
+    bytes: &[u8],
+    candidate_end: usize,
+    item: &LegacyAppearanceItemAddRecord,
+) -> bool {
+    if item.name_fragment_proof != LegacyItemNameFragmentProof::LocStringToken {
+        return false;
+    }
+    if item.ee_extra_byte_inserts.iter().any(|insert| {
+        matches!(
+            insert,
+            CreatureAppearanceByteInsert::MissingSecondInlineNameLength { .. }
+                | CreatureAppearanceByteInsert::LegacyVisualTransformIdentity { .. }
+        )
+    }) {
+        return false;
+    }
+    let search_end = candidate_end
+        .saturating_add(MAX_EE_APPEARANCE_TRAILING_LEGACY_TAIL_BYTES)
+        .min(bytes.len());
+    (candidate_end..search_end.saturating_sub(1)).any(|offset| {
+        bytes.get(offset).copied() == Some(b'U')
+            && bytes.get(offset + 1).copied() == Some(LEGACY_CREATURE_TYPE)
+    })
+}
+
+fn visible_equipment_parse_has_missing_inline_item_name(
+    parse: &LegacyVisibleEquipmentParse,
+) -> bool {
+    parse.ee_extra_byte_inserts.iter().any(|insert| {
+        matches!(
+            insert,
+            CreatureAppearanceByteInsert::MissingFirstInlineNameLengthLowByte { .. }
+                | CreatureAppearanceByteInsert::MissingSecondInlineNameLength { .. }
+        )
+    })
+}
+
+fn looks_like_top_level_live_object_boundary_inside_visible_equipment_item(
+    bytes: &[u8],
+    offset: usize,
+) -> bool {
+    if offset > bytes.len() || bytes.len().saturating_sub(offset) < 2 {
+        return false;
+    }
+
+    let opcode = bytes[offset];
+    let marker = bytes[offset + 1];
+    let typed_object_boundary = matches!(marker, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A)
+        && boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2);
+    let legacy_type5_sentinel_boundary = marker == LEGACY_CREATURE_TYPE
+        && bytes.len().saturating_sub(offset) >= 6
+        && bytes[offset + 2] == 0xFD
+        && bytes[offset + 3] == 0xFF
+        && bytes[offset + 4] == 0xFF
+        && bytes[offset + 5] == 0xFF;
+    if matches!(opcode, b'A' | b'D' | b'U' | b'P')
+        && (typed_object_boundary || legacy_type5_sentinel_boundary)
+    {
+        return true;
+    }
+
+    if opcode == b'A' && looks_like_legacy_item_add_record_boundary(bytes, offset) {
+        // Embedded visible-equipment item-add boundaries are handled by the
+        // counted visible-equipment parser itself. Treating every byte-plausible
+        // embedded `A` record as a top-level live-object boundary makes item
+        // names such as "Ale" split a decompile-owned `P/5` appearance record.
+        return false;
+    }
+
+    boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
 }
 
 fn trace_visible_equipment_parse_skip(
@@ -6239,7 +6883,7 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
     bytes: &[u8],
     body_start: usize,
     record_end: usize,
-    _slot: u32,
+    slot: u32,
 ) -> Vec<LegacyAppearanceItemAddRecord> {
     let Some(base_item) = read_u32_le(bytes, body_start) else {
         return Vec::new();
@@ -6266,6 +6910,50 @@ fn parse_legacy_visible_equipment_item_add_by_appearance_candidates(
         ItemAppearanceWireDialect::EeBuild8193,
         &mut candidates,
     );
+    if let Some(body_visual_layout) =
+        legacy_slot_zero_body_visual_appearance_layout(base_item, slot, appearance_layout)
+    {
+        collect_visible_equipment_item_add_candidates_for_dialect(
+            bytes,
+            body_start,
+            record_end,
+            base_item,
+            body_visual_layout,
+            ItemAppearanceWireDialect::LegacyDiamond,
+            &mut candidates,
+        );
+        collect_visible_equipment_item_add_candidates_for_dialect(
+            bytes,
+            body_start,
+            record_end,
+            base_item,
+            body_visual_layout,
+            ItemAppearanceWireDialect::EeBuild8193,
+            &mut candidates,
+        );
+    }
+    if let Some(body_visual_inline_layout) =
+        legacy_slot_zero_body_visual_inline_appearance_layout(base_item, slot, appearance_layout)
+    {
+        collect_visible_equipment_item_add_candidates_for_dialect(
+            bytes,
+            body_start,
+            record_end,
+            base_item,
+            body_visual_inline_layout,
+            ItemAppearanceWireDialect::LegacyDiamond,
+            &mut candidates,
+        );
+        collect_visible_equipment_item_add_candidates_for_dialect(
+            bytes,
+            body_start,
+            record_end,
+            base_item,
+            body_visual_inline_layout,
+            ItemAppearanceWireDialect::EeBuild8193,
+            &mut candidates,
+        );
+    }
     candidates
 }
 
@@ -6384,16 +7072,27 @@ fn collect_visible_equipment_item_add_candidates_for_dialect(
         appearance_layout.model_type,
         &bytes[active_offset..record_end],
     );
-    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_ACTIVE_TAIL").is_some() {
-        eprintln!(
-            "live-object visible-equipment active-tail candidates: body_start={body_start} record_end={record_end} base_item=0x{base_item:08X} legacy_active_offset={legacy_active_offset} active_offset={active_offset} tail_len={} tail_preview={:02X?} candidates={active_tails:?}",
-            record_end.saturating_sub(active_offset),
-            bytes
-                .get(active_offset..record_end.min(active_offset.saturating_add(96)))
-                .unwrap_or(&[])
-        );
-    }
     for active_tail in active_tails {
+        if dialect == ItemAppearanceWireDialect::LegacyDiamond
+            && appearance_layout.slot_zero_body_visual_compat
+            && appearance_layout.needs_ee_model_type_3_table
+            && (active_tail.name_fragment_proof != LegacyItemNameFragmentProof::LocStringToken
+                || active_tail.visual_transform_identity_prefix_bytes == 0
+                || active_tail.visual_transform_identity_prefix_bytes > 2)
+        {
+            continue;
+        }
+        if dialect == ItemAppearanceWireDialect::LegacyDiamond
+            && appearance_layout.slot_zero_body_visual_compat
+            && !appearance_layout.needs_ee_model_type_3_table
+            && (!matches!(
+                active_tail.name_fragment_proof,
+                LegacyItemNameFragmentProof::InlineCExoString
+                    | LegacyItemNameFragmentProof::LocStringInlineCExoString
+            ) || active_tail.visual_transform_identity_prefix_bytes < 3)
+        {
+            continue;
+        }
         let mut ee_extra_insert_offsets =
             Vec::with_capacity(active_tail.ee_extra_insert_offsets.len());
         let mut active_byte_inserts =
@@ -6468,6 +7167,7 @@ struct LegacyVisibleEquipmentAppearanceLayout {
     model_type: i8,
     legacy_bytes: usize,
     needs_ee_model_type_3_table: bool,
+    slot_zero_body_visual_compat: bool,
 }
 
 fn legacy_visible_equipment_appearance_layout(
@@ -6485,6 +7185,49 @@ fn legacy_visible_equipment_appearance_layout(
         model_type,
         legacy_bytes,
         needs_ee_model_type_3_table: model_type == 3,
+        slot_zero_body_visual_compat: false,
+    })
+}
+
+fn legacy_slot_zero_body_visual_appearance_layout(
+    base_item: u32,
+    slot: u32,
+    table_layout: LegacyVisibleEquipmentAppearanceLayout,
+) -> Option<LegacyVisibleEquipmentAppearanceLayout> {
+    if slot != 0
+        || base_item != LEGACY_BODY_VISUAL_SENTINEL_BASE_ITEM
+        || table_layout.model_type == 3
+    {
+        return None;
+    }
+    let legacy_bytes =
+        crate::translate::baseitems::legacy_item_appearance_read_size_for_model_type(3)?;
+    Some(LegacyVisibleEquipmentAppearanceLayout {
+        model_type: 3,
+        legacy_bytes,
+        needs_ee_model_type_3_table: true,
+        slot_zero_body_visual_compat: true,
+    })
+}
+
+fn legacy_slot_zero_body_visual_inline_appearance_layout(
+    base_item: u32,
+    slot: u32,
+    table_layout: LegacyVisibleEquipmentAppearanceLayout,
+) -> Option<LegacyVisibleEquipmentAppearanceLayout> {
+    if slot != 0
+        || base_item != LEGACY_BODY_VISUAL_SENTINEL_BASE_ITEM
+        || table_layout.model_type == 3
+    {
+        return None;
+    }
+    let legacy_bytes =
+        crate::translate::baseitems::legacy_item_appearance_read_size_for_model_type(3)?;
+    Some(LegacyVisibleEquipmentAppearanceLayout {
+        model_type: 3,
+        legacy_bytes,
+        needs_ee_model_type_3_table: false,
+        slot_zero_body_visual_compat: true,
     })
 }
 
@@ -6700,6 +7443,72 @@ fn legacy_active_item_properties_tail_candidates_for_visible_equipment(
         });
     }
 
+    if model_type == 3 {
+        for prefix in 1..EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len() {
+            if tail.len() <= prefix + 4
+                || tail[..prefix] != EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES[..prefix]
+            {
+                continue;
+            }
+            if let Some(name_len) = legacy_direct_bare_inline_active_item_name_length(tail, prefix)
+            {
+                // The same slot-0 body-visual compatibility point can be
+                // followed by Diamond's bare inline active-item name rather
+                // than a TLK/custom-token reference. The leading zero prefix is
+                // still EE's object visual-transform identity map prefix; the
+                // bridge completes that map and inserts the omitted CExoString
+                // length before the printable active-property name.
+                let name_bits = LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS;
+                candidates.push(LegacyVisibleEquipmentActiveTail {
+                    fragment_bits_consumed: name_bits
+                        + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
+                    ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
+                        name_bits,
+                    )],
+                    missing_inline_name_length: Some(name_len),
+                    missing_inline_name_relative_offset: prefix,
+                    visual_transform_identity_prefix_bytes: prefix,
+                    name_fragment_proof: LegacyItemNameFragmentProof::InlineCExoString,
+                });
+
+                let name_bits = LEGACY_APPEARANCE_ITEM_NAME_BARE_INLINE_LOCSTRING_BITS;
+                candidates.push(LegacyVisibleEquipmentActiveTail {
+                    fragment_bits_consumed: name_bits
+                        + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
+                    ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
+                        name_bits,
+                    )],
+                    missing_inline_name_length: Some(name_len),
+                    missing_inline_name_relative_offset: prefix,
+                    visual_transform_identity_prefix_bytes: prefix,
+                    name_fragment_proof: LegacyItemNameFragmentProof::LocStringInlineCExoString,
+                });
+            }
+            if !parse_legacy_active_item_properties_tail_after_name(tail, prefix + 4) {
+                continue;
+            }
+            // Local CEP v2.2 body-visual slot-0 captures show the legacy item
+            // name immediately after a short zero prefix at the semantic point
+            // where EE `AddItemAppearanceToMessage` now calls the object visual
+            // transform map reader. The prefix is not discarded: it becomes the
+            // first bytes of the EE empty visual-transform map, and the bridge
+            // inserts only the missing identity suffix before the decompiled
+            // locstring-token item-name branch.
+            let name_bits = LEGACY_APPEARANCE_ITEM_NAME_STRREF_LOCSTRING_BITS;
+            candidates.push(LegacyVisibleEquipmentActiveTail {
+                fragment_bits_consumed: name_bits
+                    + LEGACY_APPEARANCE_DIAMOND_ACTIVE_PROPERTY_BOOL_BITS,
+                ee_extra_insert_offsets: vec![ee_active_property_extra_bool_insert_offset(
+                    name_bits,
+                )],
+                missing_inline_name_length: None,
+                missing_inline_name_relative_offset: 0,
+                visual_transform_identity_prefix_bytes: prefix,
+                name_fragment_proof: LegacyItemNameFragmentProof::LocStringToken,
+            });
+        }
+    }
+
     if parse_legacy_active_item_properties_tail_after_inline_string(tail, cursor) {
         let name_bits = LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS;
         candidates.push(LegacyVisibleEquipmentActiveTail {
@@ -6888,7 +7697,10 @@ fn parse_legacy_active_item_properties_tail_after_inline_string(
     if name_end > tail.len() {
         return false;
     }
-    if length != 0 && !mostly_printable_message_string(&tail[name_start..name_end]) {
+    if length != 0
+        && !mostly_printable_message_string(&tail[name_start..name_end])
+        && !nul_padded_printable_message_string(&tail[name_start..name_end])
+    {
         return false;
     }
     parse_legacy_active_item_properties_tail_after_name(tail, name_end)
@@ -7032,6 +7844,27 @@ fn mostly_printable_message_string(bytes: &[u8]) -> bool {
     printable + 2 >= bytes.len()
 }
 
+fn nul_padded_printable_message_string(bytes: &[u8]) -> bool {
+    let Some(first) = bytes.first().copied() else {
+        return false;
+    };
+    if !is_legacy_bare_active_item_name_byte(first) {
+        return false;
+    }
+
+    let mut seen_padding = false;
+    for byte in bytes.iter().copied() {
+        if byte == 0 {
+            seen_padding = true;
+            continue;
+        }
+        if seen_padding || !is_legacy_bare_active_item_name_byte(byte) {
+            return false;
+        }
+    }
+    seen_padding
+}
+
 fn is_legacy_visible_equipment_slot(slot: u32) -> bool {
     // `WriteGameObjUpdate_WriteInventorySlotAdd` writes the caller-provided
     // slot DWORD verbatim immediately after the item object id. EE's full
@@ -7146,6 +7979,64 @@ mod tests {
             })
             .expect("model-type 3 armor table should be immediately followed by EE identity map");
         assert!(super::super::claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn local_cepv22_seq15_second_creature_appearance_byte_model_is_owned() {
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/local_cepv22_builder_seq15_declared112_stream_20260520.bin"
+        );
+        let first_item = parse_legacy_item_add_record_candidates(payload, 0x01C3, 0x0202);
+        assert!(
+            first_item.iter().any(|item| {
+                item.name_fragment_proof == LegacyItemNameFragmentProof::LocStringToken
+                    && item.ee_extra_byte_inserts.iter().any(|insert| {
+                        matches!(
+                            insert,
+                            CreatureAppearanceByteInsert::LegacyVisualTransformIdentitySuffix {
+                                offset: 0x01EB,
+                                start: 2
+                            }
+                        )
+                    })
+                    && item.ee_extra_byte_inserts.iter().any(|insert| {
+                        matches!(
+                            insert,
+                            CreatureAppearanceByteInsert::EeModelType3ArmorAccessoryTable {
+                                offset: 0x01E9,
+                                ..
+                            }
+                        )
+                    })
+            }),
+            "first CEPv22 body-visual item should complete EE visual-transform identity before its locstring token"
+        );
+        let second_item = parse_legacy_item_add_record_candidates(payload, 0x0202, 0x022A);
+        assert!(
+            second_item
+                .iter()
+                .any(|item| item.name_fragment_proof == LegacyItemNameFragmentProof::LocStringToken),
+            "second CEPv22 row-0 item should remain the baseitems.2da model-type-2 path"
+        );
+        let equipment =
+            parse_legacy_visible_equipment_records(payload, 0x0196, 0x022A, 7, false, None, 0, 0)
+                .expect("CEPv22 visible equipment list");
+        assert_eq!(equipment.end, 0x022A);
+        let record = parse_creature_appearance_record(
+            payload,
+            0x015A,
+            0x022A,
+            AppearanceNameShape::LocStringPair,
+            CreatureAppearanceWireDialect::LegacyDiamond,
+            None,
+        )
+        .expect("second CEPv22 seq15 P/5 appearance byte model");
+        assert_eq!(record.record_end, 0x022A);
+        assert_eq!(record.equipment_records, 7);
+        assert_eq!(
+            record.appearance_name_bits.as_deref(),
+            Some(&[true, true, false, false][..])
+        );
     }
 
     #[test]

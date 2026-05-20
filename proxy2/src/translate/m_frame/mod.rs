@@ -57,6 +57,14 @@ const CNW_LENGTH_BYTES: usize = 4;
 
 pub use state::SessionState;
 
+#[cfg(test)]
+pub(crate) fn rewrite_live_object_payload_to_exact_ee_for_test(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) -> bool {
+    live_update::rewrite_payload_to_exact_ee_if_possible(payload, latest_area_placeables).is_some()
+}
+
 pub fn take_pending_client_to_server_packets(state: &mut SessionState) -> Vec<Vec<u8>> {
     if let Err(err) =
         maybe_queue_area_loaded_fallback_from_timer(state, "session pending client drain")

@@ -11,7 +11,7 @@ use super::{
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
     MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
     TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item, locstring, read_u16_le,
-    read_u32_le, trigger,
+    read_u32_le, reader, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -149,6 +149,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     ) {
         if let Some(record_end) =
             try_get_legacy_door_placeable_inline_name_update_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
+            try_get_legacy_placeable_word_name_suffix_update_record_end(bytes, offset, scan_end)
         {
             return record_end;
         }
@@ -597,6 +602,50 @@ fn try_get_legacy_door_placeable_inline_name_update_record_end(
     }
 
     proven_end
+}
+
+fn try_get_legacy_placeable_word_name_suffix_update_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    let suffix_mask = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK;
+    if raw_mask != suffix_mask {
+        return None;
+    }
+
+    let mut prefix_end = offset
+        .checked_add(LEGACY_UPDATE_HEADER_BYTES)?
+        .checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?
+        .checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?
+        .checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+    if prefix_end + 2 > scan_end || read_u16_le(bytes, prefix_end).is_none() {
+        return None;
+    }
+    prefix_end = prefix_end.checked_add(2)?;
+    let name_end = locstring::inline_cexo_string_end(bytes, prefix_end)?;
+    if name_end <= scan_end
+        && (name_end == scan_end
+            || looks_like_legacy_live_object_sub_message_boundary(bytes, name_end))
+        && reader::legacy_name_tail_ready(bytes, prefix_end, name_end)
+    {
+        return Some(name_end);
+    }
+
+    None
 }
 
 fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> usize {

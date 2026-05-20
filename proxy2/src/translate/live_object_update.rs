@@ -17,7 +17,7 @@
 //!   focused here instead of folding it into `m_frame`.
 
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::{Mutex, OnceLock},
 };
 
@@ -57,6 +57,7 @@ const CNW_LENGTH_BYTES: usize = 4;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
+const ITEM_OBJECT_TYPE: u8 = 0x06;
 const TRIGGER_OBJECT_TYPE: u8 = 0x07;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const DOOR_OBJECT_TYPE: u8 = 0x0A;
@@ -270,6 +271,7 @@ pub struct LiveObjectLifecycleRewriteSummary {
     pub new_declared: u32,
     pub removed_update_records: u32,
     pub diamond_missing_object_update_records: u32,
+    pub diamond_missing_object_appearance_records: u32,
     pub ee_sentinel_inventory_owner_records: u32,
     pub removed_bytes: u32,
     pub removed_fragment_bits: u32,
@@ -278,6 +280,7 @@ pub struct LiveObjectLifecycleRewriteSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectLifecycleRewriteKind {
     DiamondMissingObjectUpdateNoop,
+    DiamondMissingObjectAppearanceNoop,
     EeSentinelInventoryOwnerAbort,
 }
 
@@ -286,6 +289,9 @@ impl LiveObjectLifecycleRewriteKind {
         match self {
             LiveObjectLifecycleRewriteKind::DiamondMissingObjectUpdateNoop => {
                 "DiamondMissingObjectUpdateNoop"
+            }
+            LiveObjectLifecycleRewriteKind::DiamondMissingObjectAppearanceNoop => {
+                "DiamondMissingObjectAppearanceNoop"
             }
             LiveObjectLifecycleRewriteKind::EeSentinelInventoryOwnerAbort => {
                 "EeSentinelInventoryOwnerAbort"
@@ -406,11 +412,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             )
             .min(live_bytes.len())
         });
+        let mut verified_creature_appearance_next_bit_cursor = None;
         if live_bytes.get(offset).copied() == Some(b'P')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
         {
-            if let Some(verified_end) =
-                appearance::try_get_verified_ee_creature_appearance_record_end(
+            if let Some((verified_end, next_bit_cursor)) =
+                appearance::try_get_verified_ee_creature_appearance_record_end_and_cursor(
                     live_bytes,
                     offset,
                     live_bytes.len(),
@@ -419,6 +426,7 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 )
             {
                 record_end = verified_end;
+                verified_creature_appearance_next_bit_cursor = Some(next_bit_cursor);
             }
         }
         if live_bytes.get(offset).copied() == Some(b'G') {
@@ -471,6 +479,32 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
 
         summary.records_examined = summary.records_examined.saturating_add(1);
         let record_bit_cursor = bit_cursor;
+        if let Some(next_bit_cursor) = verified_creature_appearance_next_bit_cursor {
+            bit_cursor = next_bit_cursor;
+            summary.creature_appearance_records =
+                summary.creature_appearance_records.saturating_add(1);
+            push_verified_record_mention(
+                &mut summary,
+                live_bytes,
+                offset,
+                record_end,
+                &fragment_bits,
+                record_bit_cursor,
+                bit_cursor,
+            );
+            pending_creature_appearance_update_proof =
+                live_object_record_object_id(live_bytes, offset, record_end)
+                    .map(|object_id| (object_id, bit_cursor));
+            trace_claim_accept(
+                "creature-appearance",
+                live_bytes,
+                offset,
+                record_end,
+                bit_cursor,
+            );
+            offset = record_end;
+            continue;
+        }
         if let Some(inventory_claim) = inventory::advance_verified_inventory_record(
             live_bytes,
             offset,
@@ -1669,6 +1703,24 @@ fn inventory_record_requires_materialized_owner_for_ee(
     (mask & 0x2000) != 0 && matches!(object_id, 0xFFFF_FFFE | 0xFFFF_FFFD)
 }
 
+fn cached_external_materialized<F>(
+    external_materialized: &mut BTreeMap<(u8, u32), bool>,
+    is_already_materialized: &mut F,
+    object_type: u8,
+    object_id: u32,
+) -> bool
+where
+    F: FnMut(u8, u32) -> bool,
+{
+    let key = (object_type, object_id);
+    if let Some(materialized) = external_materialized.get(&key) {
+        return *materialized;
+    }
+    let materialized = is_already_materialized(object_type, object_id);
+    external_materialized.insert(key, materialized);
+    materialized
+}
+
 pub fn remove_unmaterialized_update_records_payload_if_possible<F>(
     payload: &mut Vec<u8>,
     mut is_already_materialized: F,
@@ -1678,6 +1730,8 @@ where
 {
     let claim = claim_payload_if_verified(payload)?;
     let mut materialized_in_payload = BTreeSet::<(u8, u32)>::new();
+    let mut external_materialized = BTreeMap::<(u8, u32), bool>::new();
+    let mut missing_removable_required_record_offsets = BTreeSet::<(u8, u32, usize)>::new();
     let mut removals = Vec::<LiveObjectLifecycleRemoval>::new();
 
     for mention in &claim.mentions {
@@ -1692,7 +1746,71 @@ where
             b'U' | b'P' | b'I' | b'G' | b'W' => {
                 if mention.requires_materialized_object
                     && !materialized_in_payload.contains(&key)
-                    && !is_already_materialized(mention.object_type, mention.object_id)
+                    && !cached_external_materialized(
+                        &mut external_materialized,
+                        &mut is_already_materialized,
+                        mention.object_type,
+                        mention.object_id,
+                    )
+                    && removable_unmaterialized_lifecycle_kind(mention).is_some()
+                {
+                    missing_removable_required_record_offsets.insert((
+                        mention.object_type,
+                        mention.object_id,
+                        mention.record_offset,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    materialized_in_payload.clear();
+    for mention in &claim.mentions {
+        let key = (mention.object_type, mention.object_id);
+        match mention.opcode {
+            b'A' => {
+                materialized_in_payload.insert(key);
+            }
+            b'D' => {
+                materialized_in_payload.remove(&key);
+            }
+            b'P' if mention.object_type == CREATURE_OBJECT_TYPE
+                && !materialized_in_payload.contains(&key)
+                && !cached_external_materialized(
+                    &mut external_materialized,
+                    &mut is_already_materialized,
+                    mention.object_type,
+                    mention.object_id,
+                )
+                && missing_removable_required_record_offsets.contains(&(
+                    mention.object_type,
+                    mention.object_id,
+                    mention.record_end,
+                )) =>
+            {
+                // EE's creature appearance reader consumes `P/5` bodies even
+                // when the target creature is absent, with all writes guarded
+                // by the resolved pointer. If the immediately following
+                // same-object `U/5` is a Diamond-only missing-object no-op that
+                // EE would abort before consuming, removing only the `U/5`
+                // record can invalidate the exact appearance tail proof. Drop
+                // the adjacent absent-creature `P/5` no-op as part of the same
+                // bounded lifecycle rewrite.
+                removals.push(LiveObjectLifecycleRemoval {
+                    mention: mention.clone(),
+                    kind: LiveObjectLifecycleRewriteKind::DiamondMissingObjectAppearanceNoop,
+                });
+            }
+            b'U' | b'P' | b'I' | b'G' | b'W' => {
+                if mention.requires_materialized_object
+                    && !materialized_in_payload.contains(&key)
+                    && !cached_external_materialized(
+                        &mut external_materialized,
+                        &mut is_already_materialized,
+                        mention.object_type,
+                        mention.object_id,
+                    )
                 {
                     let Some(kind) = removable_unmaterialized_lifecycle_kind(mention) else {
                         tracing::warn!(
@@ -1733,6 +1851,7 @@ where
         old_declared,
         ..LiveObjectLifecycleRewriteSummary::default()
     };
+    let mut applied_removals = Vec::new();
 
     removals.sort_by_key(|removal| removal.mention.record_offset);
     for removal in removals.into_iter().rev() {
@@ -1757,6 +1876,11 @@ where
                     .diamond_missing_object_update_records
                     .saturating_add(1);
             }
+            LiveObjectLifecycleRewriteKind::DiamondMissingObjectAppearanceNoop => {
+                summary.diamond_missing_object_appearance_records = summary
+                    .diamond_missing_object_appearance_records
+                    .saturating_add(1);
+            }
             LiveObjectLifecycleRewriteKind::EeSentinelInventoryOwnerAbort => {
                 summary.ee_sentinel_inventory_owner_records = summary
                     .ee_sentinel_inventory_owner_records
@@ -1769,15 +1893,14 @@ where
         summary.removed_fragment_bits = summary
             .removed_fragment_bits
             .saturating_add(u32::try_from(removed_bits).unwrap_or(u32::MAX));
-        tracing::info!(
-            rewrite_kind = removal.kind.as_str(),
-            opcode = %char::from(mention.opcode),
-            object_type = mention.object_type,
-            object_id = mention.object_id,
+        applied_removals.push((
+            removal.kind,
+            mention.opcode,
+            mention.object_type,
+            mention.object_id,
             removed_bytes,
             removed_bits,
-            "live-object lifecycle record removed after exact boundary proof"
-        );
+        ));
     }
 
     let new_declared = HIGH_LEVEL_HEADER_BYTES
@@ -1798,9 +1921,20 @@ where
         CNW_FRAGMENT_HEADER_BITS,
     ));
     summary.new_declared = new_declared_u32;
-    *payload = rewritten;
 
-    claim_payload_if_verified(payload)?;
+    claim_payload_if_verified(&rewritten)?;
+    *payload = rewritten;
+    for (kind, opcode, object_type, object_id, removed_bytes, removed_bits) in applied_removals {
+        tracing::info!(
+            rewrite_kind = kind.as_str(),
+            opcode = %char::from(opcode),
+            object_type,
+            object_id,
+            removed_bytes,
+            removed_bits,
+            "live-object lifecycle record removed after exact boundary proof"
+        );
+    }
     Some(summary)
 }
 
@@ -2186,8 +2320,23 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut last_verified_record_end = 0usize;
     let mut last_verified_creature_4408_record_end = None;
     let mut last_verified_creature_effect_only_record_end = None;
+    let mut last_verified_creature_0047_fragment_prefix_record_end = None;
+    let mut last_verified_door_add_fragment_span_record: Option<(usize, u32)> = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
+    let mut loop_iterations = 0usize;
+    let max_loop_iterations = old_live_bytes_length.saturating_mul(4).saturating_add(64);
     while offset + 2 <= live_bytes.len() {
+        loop_iterations = loop_iterations.saturating_add(1);
+        if loop_iterations > max_loop_iterations {
+            trace_update_rewrite_cursor_unreliable(
+                "live-object-update-rewrite-iteration-bound",
+                &live_bytes,
+                offset,
+                offset.saturating_add(2).min(live_bytes.len()),
+                bit_cursor,
+            );
+            return None;
+        }
         let proven_gui_record_end =
             if bit_cursor_reliable && live_bytes.get(offset).copied() == Some(b'G') {
                 gui::try_get_legacy_live_gui_record_end_with_fragment_proof(
@@ -2253,6 +2402,41 @@ pub fn rewrite_update_records_payload_if_possible(
             && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset)
         {
             if summary.records_examined > 0 {
+                if bit_cursor_reliable {
+                    if let Some((door_record_end, door_object_id)) =
+                        last_verified_door_add_fragment_span_record
+                    {
+                        if door_record_end == offset {
+                            if let Some(promotion) = fragment_spans::
+                                promote_door_add_following_missing_type_update_fragment_span_for_ee(
+                                    &mut live_bytes,
+                                    &mut fragment_bits,
+                                    offset,
+                                    bit_cursor,
+                                    door_object_id,
+                                )
+                            {
+                                changed = true;
+                                summary.interleaved_fragment_spans_promoted = summary
+                                    .interleaved_fragment_spans_promoted
+                                    .saturating_add(1);
+                                summary.interleaved_fragment_bytes_promoted =
+                                    summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                        u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                                    );
+                                summary.interleaved_fragment_bits_promoted =
+                                    summary.interleaved_fragment_bits_promoted.saturating_add(
+                                        u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                                    );
+                                summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                    u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                                );
+                                last_verified_door_add_fragment_span_record = None;
+                                continue;
+                            }
+                        }
+                    }
+                }
                 if let Some(removal) =
                     fragment_spans::remove_trailing_zero_fragment_storage_after_verified_record_for_ee(
                         &mut live_bytes,
@@ -2274,6 +2458,8 @@ pub fn rewrite_update_records_payload_if_possible(
             }
             last_verified_record_allows_trailing_fragment_promotion = false;
             last_verified_creature_4408_record_end = None;
+            last_verified_creature_0047_fragment_prefix_record_end = None;
+            last_verified_door_add_fragment_span_record = None;
             offset += 1;
             continue;
         }
@@ -2417,6 +2603,36 @@ pub fn rewrite_update_records_payload_if_possible(
             }
 
             if bit_cursor_reliable {
+                if object_type == ITEM_OBJECT_TYPE {
+                    if let Some(item_rewrite) = appearance::insert_ee_item_create_extras_for_ee(
+                        &mut live_bytes,
+                        offset + 2,
+                        &mut record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    ) {
+                        if item_rewrite.bits_inserted != 0
+                            || item_rewrite.bits_removed != 0
+                            || item_rewrite.bytes_inserted != 0
+                            || item_rewrite.bytes_removed != 0
+                        {
+                            changed = true;
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(item_rewrite.bits_inserted).unwrap_or(u32::MAX),
+                            );
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(item_rewrite.bits_removed).unwrap_or(u32::MAX),
+                            );
+                            summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                                u32::try_from(item_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                            );
+                            summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                            );
+                        }
+                    }
+                }
+
                 if let Some(item_rewrite) = appearance::insert_ee_item_add_extras_for_ee(
                     &mut live_bytes,
                     offset,
@@ -2461,26 +2677,66 @@ pub fn rewrite_update_records_payload_if_possible(
                     continue;
                 }
 
+                if object_type == DOOR_OBJECT_TYPE {
+                    if let Some(promotion) = fragment_spans::
+                        promote_door_add_embedded_missing_type_update_fragment_span_for_ee(
+                            &mut live_bytes,
+                            &mut fragment_bits,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        )
+                    {
+                        changed = true;
+                        summary.interleaved_fragment_spans_promoted =
+                            summary.interleaved_fragment_spans_promoted.saturating_add(1);
+                        summary.interleaved_fragment_bytes_promoted =
+                            summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.interleaved_fragment_bits_promoted =
+                            summary.interleaved_fragment_bits_promoted.saturating_add(
+                                u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.bytes_removed = summary.bytes_removed.saturating_add(
+                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                        );
+                        last_verified_door_add_fragment_span_record = None;
+                        continue;
+                    }
+                }
+
                 let add_record_start_bit_cursor = bit_cursor;
-                if !appearance::advance_verified_ee_item_add_record(
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    &fragment_bits,
-                    &mut bit_cursor,
-                ) && !cursor::advance_live_add_record_bit_cursor(
-                    &live_bytes,
-                    &fragment_bits,
-                    offset,
-                    record_end,
-                    &mut bit_cursor,
-                ) && !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
-                    &live_bytes,
-                    &fragment_bits,
-                    offset,
-                    record_end,
-                    &mut bit_cursor,
-                ) {
+                if !(object_type == ITEM_OBJECT_TYPE
+                    && appearance::advance_verified_ee_item_create_record(
+                        &live_bytes,
+                        offset + 2,
+                        record_end,
+                        &fragment_bits,
+                        &mut bit_cursor,
+                    ))
+                    && !appearance::advance_verified_ee_item_add_record(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        &mut bit_cursor,
+                    )
+                    && !cursor::advance_live_add_record_bit_cursor(
+                        &live_bytes,
+                        &fragment_bits,
+                        offset,
+                        record_end,
+                        &mut bit_cursor,
+                    )
+                    && !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+                        &live_bytes,
+                        &fragment_bits,
+                        offset,
+                        record_end,
+                        &mut bit_cursor,
+                    )
+                {
                     bit_cursor = add_record_start_bit_cursor;
                     if last_verified_record_allows_trailing_fragment_promotion
                         && offset == last_verified_record_end
@@ -2526,6 +2782,12 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_record_end = record_end;
             let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                 && creature::looks_like_ee_creature_add_record(&live_bytes, offset, record_end);
+            last_verified_door_add_fragment_span_record =
+                if bit_cursor_reliable && object_type == DOOR_OBJECT_TYPE {
+                    read_u32_le(&live_bytes, offset + 2).map(|object_id| (record_end, object_id))
+                } else {
+                    None
+                };
             last_verified_record_allows_trailing_fragment_promotion = ee_creature_add_record;
             if ee_creature_add_record && record_end < live_bytes.len() {
                 if let Some(promotion) =
@@ -2756,6 +3018,19 @@ pub fn rewrite_update_records_payload_if_possible(
                             bit_cursor = ee_shape_cursor;
                             bit_cursor_reliable = true;
                             appearance_tail_fragment_bits_adjusted = true;
+                            repaired_tail = true;
+                        } else if fragment_spans::
+                            verified_appearance_following_creature_update_span_offset_for_ee(
+                                &live_bytes,
+                                ee_shape_end,
+                                ee_shape_cursor,
+                                &fragment_bits,
+                            )
+                            .is_some()
+                        {
+                            record_end = ee_shape_end;
+                            bit_cursor = ee_shape_cursor;
+                            bit_cursor_reliable = true;
                             repaired_tail = true;
                         }
                     }
@@ -3091,6 +3366,42 @@ pub fn rewrite_update_records_payload_if_possible(
                     );
                 }
                 if let Some(promotion) =
+                    fragment_spans::promote_effect_only_creature_update_following_gui_fragment_span_for_ee(
+                        &mut live_bytes,
+                        &mut fragment_bits,
+                        offset,
+                        &mut record_end,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.interleaved_fragment_spans_promoted = summary
+                        .interleaved_fragment_spans_promoted
+                        .saturating_add(1);
+                    summary.interleaved_fragment_bytes_promoted =
+                        summary.interleaved_fragment_bytes_promoted.saturating_add(
+                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                        );
+                    summary.interleaved_fragment_bits_promoted =
+                        summary.interleaved_fragment_bits_promoted.saturating_add(
+                            u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                        );
+                    summary.bytes_removed = summary.bytes_removed.saturating_add(
+                        u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                    );
+                    summary.bits_inserted = summary
+                        .bits_inserted
+                        .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    bit_cursor = promotion.end_bit_cursor;
+                    last_verified_record_end = record_end;
+                    last_verified_record_allows_trailing_fragment_promotion = true;
+                    last_verified_creature_4408_record_end = None;
+                    last_verified_creature_effect_only_record_end = Some(record_end);
+                    last_verified_creature_0047_fragment_prefix_record_end = None;
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
+                if let Some(promotion) =
                     fragment_spans::promote_legacy_creature_update_3967_large_interleaved_fragment_span_for_ee(
                         &mut live_bytes,
                         &mut fragment_bits,
@@ -3124,6 +3435,8 @@ pub fn rewrite_update_records_payload_if_possible(
                         (promoted_creature_mask == Some(0x0000_4408)).then_some(record_end);
                     last_verified_creature_effect_only_record_end =
                         (promoted_creature_mask == Some(0x0000_0008)).then_some(record_end);
+                    last_verified_creature_0047_fragment_prefix_record_end =
+                        (promoted_creature_mask == Some(0x0000_0047)).then_some(record_end);
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3161,6 +3474,8 @@ pub fn rewrite_update_records_payload_if_possible(
                         (promoted_creature_mask == Some(0x0000_4408)).then_some(record_end);
                     last_verified_creature_effect_only_record_end =
                         (promoted_creature_mask == Some(0x0000_0008)).then_some(record_end);
+                    last_verified_creature_0047_fragment_prefix_record_end =
+                        (promoted_creature_mask == Some(0x0000_0047)).then_some(record_end);
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3181,6 +3496,8 @@ pub fn rewrite_update_records_payload_if_possible(
                         (verified_creature_mask == Some(0x0000_4408)).then_some(record_end);
                     last_verified_creature_effect_only_record_end =
                         (verified_creature_mask == Some(0x0000_0008)).then_some(record_end);
+                    last_verified_creature_0047_fragment_prefix_record_end =
+                        (verified_creature_mask == Some(0x0000_0047)).then_some(record_end);
                 } else if let Some(pending) = pending_creature_p_tail_repair.as_ref() {
                     if let Some(repair) = tail_repair::try_repair_for_creature_update(
                         pending,
@@ -3218,6 +3535,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         pending_creature_p_tail_repair = None;
                         last_verified_creature_4408_record_end = None;
                         last_verified_creature_effect_only_record_end = None;
+                        last_verified_creature_0047_fragment_prefix_record_end = None;
                     } else {
                         trace_update_rewrite_cursor_unreliable(
                             "creature-update-cursor-advance-failed",
@@ -3397,6 +3715,39 @@ pub fn rewrite_update_records_payload_if_possible(
                 )
                 .is_none()
                 {
+                    if last_verified_creature_0047_fragment_prefix_record_end == Some(offset) {
+                        if let Some(promotion) = fragment_spans::
+                            promote_creature_0047_following_add_boundary_collision_fragment_span_for_ee(
+                                &mut live_bytes,
+                                &mut fragment_bits,
+                                offset,
+                                record_end,
+                                bit_cursor,
+                            )
+                        {
+                            changed = true;
+                            summary.interleaved_fragment_spans_promoted = summary
+                                .interleaved_fragment_spans_promoted
+                                .saturating_add(1);
+                            summary.interleaved_fragment_bytes_promoted =
+                                summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                    u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                                );
+                            summary.interleaved_fragment_bits_promoted =
+                                summary.interleaved_fragment_bits_promoted.saturating_add(
+                                    u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                                );
+                            summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                            );
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                            );
+                            last_verified_record_allows_trailing_fragment_promotion = false;
+                            last_verified_creature_0047_fragment_prefix_record_end = None;
+                            continue;
+                        }
+                    }
                     trace_update_rewrite_cursor_unreliable(
                         "inventory-cursor-advance-failed",
                         &live_bytes,
@@ -3410,6 +3761,7 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_record_end = record_end;
             last_verified_creature_4408_record_end = None;
             last_verified_creature_effect_only_record_end = None;
+            last_verified_creature_0047_fragment_prefix_record_end = None;
             offset = record_end.max(offset + 1);
             continue;
         }
@@ -3417,7 +3769,7 @@ pub fn rewrite_update_records_payload_if_possible(
         if opcode != b'U'
             || !matches!(
                 object_type,
-                TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+                TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE | ITEM_OBJECT_TYPE
             )
             || record_end < offset + LEGACY_UPDATE_HEADER_BYTES
         {

@@ -53,6 +53,7 @@ const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = MAX_LEGACY_LIVE_LEADIN_SCAN
 const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
+const ITEM_OBJECT_TYPE: u8 = 0x06;
 const TRIGGER_OBJECT_TYPE: u8 = 0x07;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 const DOOR_OBJECT_TYPE: u8 = 0x0A;
@@ -63,6 +64,7 @@ const LEGACY_UPDATE_STATE_MASK: u32 = 0x0000_0010;
 const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
+const LEGACY_CREATURE_UPDATE_3967_MIN_READ_BYTES: usize = 67;
 const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 256;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
@@ -71,6 +73,7 @@ const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 const LEGACY_DOOR_PLACEABLE_GENERIC_UPDATE_TAIL_BYTES: usize = 9;
 const EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES: usize = 1;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
+const MIN_AMBIGUOUS_TAIL_READ_BYTES: usize = 16;
 const CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET: usize = 32;
 const EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES: [u8;
     crate::translate::live_object_update::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN] =
@@ -234,11 +237,6 @@ pub fn declared_length_repair_candidates(
     // This function only proposes transport boundaries. Callers must still run
     // the focused semantic translators and exact `GameObjUpdate_LiveObject`
     // validator before emitting a repaired packet.
-    const MAX_FRAGMENT_TAIL_SEARCH_BYTES: usize = 1024;
-    let max_tail = payload
-        .len()
-        .saturating_sub(LEGACY_LIVE_BYTES_OFFSET)
-        .min(MAX_FRAGMENT_TAIL_SEARCH_BYTES);
     let mut candidates = Vec::new();
     let mut seen_splits = HashSet::new();
 
@@ -247,69 +245,98 @@ pub fn declared_length_repair_candidates(
         LEGACY_LIVE_BYTES_OFFSET,
         payload.len(),
     ) {
-        push_declared_length_repair_candidate_for_split(
+        if let Some(candidate) = declared_length_repair_candidate_for_split(
             payload,
             old_declared,
             split,
             &mut seen_splits,
-            &mut candidates,
-        );
+            true,
+        ) {
+            candidates.push(candidate);
+        }
     }
 
-    // Preserve candidate order by decreasing fragment-tail size instead of
-    // hoisting every "fragment-capacity plausible" split ahead of every
-    // fallback split.  The EE live-object loop at `sub_14079BCE0` dispatches
-    // one submessage at a time until `CNWMessage::MessageMoreDataToRead`
-    // reports no read bytes / fragment bits left, and Diamond writers such as
-    // `sub_4489F0` emit fixed read spans that can leave a large CNW fragment
-    // tail after the final legal record.  A fallback split is therefore not a
-    // weaker semantic proof; it is only a transport proposal whose final safety
-    // is decided by the focused live-object translator plus exact EE reader
-    // validator.  Keeping the wire-order queue prevents valid HG short-declared
-    // splits from waiting behind hundreds of later false-positive tails.
+    // Some stale-declared captures end a decompile-owned record with adjacent
+    // CNW fragment storage rather than another live-object opcode. Search only
+    // the compact physical tail proven by current HG/local evidence. The first
+    // compact candidates also prove the legacy read-prefix walk here; later
+    // tail hypotheses are transport-only and must pass dispatcher capacity
+    // preflight plus exact semantic validation before any claim.
+    const MAX_DECLARED_REPAIR_FRAGMENT_TAIL_SEARCH_BYTES: usize = 96;
+    const MAX_DECLARED_REPAIR_FRAGMENT_TAIL_CANDIDATES: usize = 16;
+    let max_tail = payload
+        .len()
+        .saturating_sub(LEGACY_LIVE_BYTES_OFFSET)
+        .min(MAX_DECLARED_REPAIR_FRAGMENT_TAIL_SEARCH_BYTES);
     for tail_len in 1..=max_tail {
         let split = payload.len().saturating_sub(tail_len);
         if split <= LEGACY_LIVE_BYTES_OFFSET {
             break;
         }
-        push_declared_length_repair_candidate_for_split(
+        let require_prefix_walk = tail_len <= MAX_DECLARED_REPAIR_FRAGMENT_TAIL_CANDIDATES;
+        if let Some(candidate) = declared_length_repair_candidate_for_split(
             payload,
             old_declared,
             split,
             &mut seen_splits,
-            &mut candidates,
-        );
+            require_prefix_walk,
+        ) {
+            candidates.push(candidate);
+        }
     }
+
     candidates
 }
 
-fn push_declared_length_repair_candidate_for_split(
+pub fn declared_length_window_transport_plausible(payload: &[u8]) -> bool {
+    if payload.len() < LEGACY_LIVE_BYTES_OFFSET
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
+        || payload[2] != LIVE_OBJECT_MINOR
+    {
+        return false;
+    }
+    let Some(declared) = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)
+        .and_then(|declared| usize::try_from(declared).ok())
+    else {
+        return false;
+    };
+    if declared <= LEGACY_LIVE_BYTES_OFFSET || declared >= payload.len() {
+        return false;
+    }
+    decode_cnw_msb_valid_bits(&payload[declared..]).is_some()
+        && !fragment_tail_contains_legacy_live_object_read_boundary(payload, declared)
+        && live_object_read_prefix_walks_to(payload, LEGACY_LIVE_BYTES_OFFSET, declared)
+}
+
+fn declared_length_repair_candidate_for_split(
     payload: &[u8],
     old_declared: u32,
     split: usize,
     seen_splits: &mut HashSet<usize>,
-    candidates: &mut Vec<LiveObjectDeclaredLengthRepairCandidate>,
-) {
+    require_prefix_walk: bool,
+) -> Option<LiveObjectDeclaredLengthRepairCandidate> {
     if split <= LEGACY_LIVE_BYTES_OFFSET || split >= payload.len() || !seen_splits.insert(split) {
-        return;
+        return None;
     }
     if decode_cnw_msb_valid_bits(&payload[split..]).is_none() {
-        return;
+        return None;
     }
-    if !live_object_read_prefix_walks_to(payload, LEGACY_LIVE_BYTES_OFFSET, split) {
-        return;
+    if require_prefix_walk
+        && !live_object_read_prefix_walks_to(payload, LEGACY_LIVE_BYTES_OFFSET, split)
+    {
+        return None;
     }
     let Ok(new_declared) = u32::try_from(split) else {
-        return;
+        return None;
     };
-    let candidate = LiveObjectDeclaredLengthRepairCandidate {
+    Some(LiveObjectDeclaredLengthRepairCandidate {
         old_declared,
         new_declared,
         old_payload_length: payload.len(),
         read_bytes_length: split - LEGACY_LIVE_BYTES_OFFSET,
         fragment_bytes_length: payload.len() - split,
-    };
-    candidates.push(candidate);
+    })
 }
 
 fn decompile_owned_live_object_read_split_candidates(
@@ -319,23 +346,21 @@ fn decompile_owned_live_object_read_split_candidates(
 ) -> Vec<usize> {
     let scan_end = scan_end.min(bytes.len());
     let mut offset = start;
-    let mut terminal_split = None;
+    let mut splits = Vec::new();
     let mut records = 0usize;
     while offset < scan_end && records < 256 {
         if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
             break;
         }
-        let record_end =
-            find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, scan_end)
-                .min(scan_end);
+        let record_end = declared_repair_read_record_end_for_transport(bytes, offset, scan_end);
         if record_end <= offset || record_end > scan_end {
             break;
         }
-        terminal_split = Some(record_end);
+        splits.push(record_end);
         offset = record_end;
         records = records.saturating_add(1);
     }
-    terminal_split.into_iter().collect()
+    splits
 }
 
 fn zero_declared_live_object_tail_split(payload: &[u8], live_bytes_offset: usize) -> Option<usize> {
@@ -432,9 +457,30 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
         if end.saturating_sub(offset) < min_record_len {
             return false;
         }
-        let record_end =
+        let mut record_end =
             find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
         if record_end <= offset || record_end > end {
+            return false;
+        }
+        if bytes.get(offset).copied() == Some(HIGH_LEVEL_ENVELOPE)
+            && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+            && record_end < end
+            && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+        {
+            if let Some(span_end) =
+                appearance_following_creature_update_fragment_span_end_for_transport(
+                    bytes, record_end, end,
+                )
+            {
+                record_end = span_end;
+            }
+        }
+        if bytes.get(offset).copied() == Some(b'U')
+            && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+            && read_u32_le(bytes, offset.saturating_add(6))
+                == Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+            && record_end < offset.saturating_add(LEGACY_CREATURE_UPDATE_3967_MIN_READ_BYTES)
+        {
             return false;
         }
 
@@ -535,6 +581,33 @@ pub fn declared_length_repair_tail_contains_live_object_read_boundary(
     fragment_tail_contains_legacy_live_object_read_boundary(bytes, tail_start)
 }
 
+pub fn declared_length_repair_fragment_capacity_plausible(
+    bytes: &[u8],
+    repair: &LiveObjectDeclaredLengthRepairCandidate,
+) -> bool {
+    let Ok(tail_start) = usize::try_from(repair.new_declared) else {
+        return false;
+    };
+    if tail_start <= LEGACY_LIVE_BYTES_OFFSET || tail_start >= bytes.len() {
+        return false;
+    }
+    let Some(fragment_bits) = decode_cnw_msb_valid_bits(&bytes[tail_start..]) else {
+        return false;
+    };
+
+    // EE seeds `GameObjUpdate_LiveObject` with one read-buffer window and one
+    // compact fragment stream. A stale-declared repair candidate is impossible
+    // if the proposed fragment tail cannot supply the fragment BOOLs consumed
+    // by the typed legacy read prefix. This is only a preflight; exact ownership
+    // is still decided by the focused semantic rewriters plus EE validator.
+    live_object_read_prefix_has_plausible_fragment_capacity(
+        bytes,
+        LEGACY_LIVE_BYTES_OFFSET,
+        tail_start,
+        &fragment_bits,
+    )
+}
+
 fn fragment_tail_contains_legacy_live_object_read_boundary(
     bytes: &[u8],
     tail_start: usize,
@@ -555,8 +628,6 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
     if tail_start >= bytes.len() {
         return false;
     }
-
-    const MIN_AMBIGUOUS_TAIL_READ_BYTES: usize = 16;
 
     let mut offset = tail_start;
     while offset + 1 < bytes.len() {
@@ -791,6 +862,21 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
 ) -> Option<LiveObjectVisualTransformSummary> {
+    rewrite_creature_add_visual_transform_maps_inner(payload, area_context, false)
+}
+
+pub fn rewrite_creature_add_visual_transform_maps_after_update_if_possible(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<LiveObjectVisualTransformSummary> {
+    rewrite_creature_add_visual_transform_maps_inner(payload, area_context, true)
+}
+
+fn rewrite_creature_add_visual_transform_maps_inner(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+    prefer_verified_update_cursor: bool,
+) -> Option<LiveObjectVisualTransformSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != GAME_OBJECT_UPDATE_MAJOR
@@ -968,16 +1054,24 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                 if live_bytes.get(offset).copied() == Some(b'U')
                     && matches!(
                         live_bytes.get(offset + 1).copied(),
-                        Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
-                    )
-                    && advance_legacy_live_update_record_fragment_cursor_for_add_pass(
-                        &live_bytes,
-                        bits,
-                        offset,
-                        record_end,
-                        &mut fragment_bit_cursor,
+                        Some(DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | ITEM_OBJECT_TYPE)
                     )
                 {
+                    if prefer_verified_update_cursor {
+                        let mut verified_cursor = fragment_bit_cursor;
+                        if crate::translate::live_object_update::advance_verified_door_placeable_update_fragment_cursor_for_ee(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bits,
+                            &mut verified_cursor,
+                        ) {
+                            fragment_bit_cursor = verified_cursor;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
+                    }
+
                     // This pass is still walking the Diamond/HG source stream so
                     // it can insert EE visual-transform maps into following add
                     // records. Door updates are especially sensitive here:
@@ -987,8 +1081,17 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
                     // later. Advancing with the EE exact cursor here steals the
                     // first fragment bit from the next add record and makes the
                     // visual-map pass drift.
-                    offset = record_end.max(offset + 1);
-                    continue;
+                    if advance_legacy_live_update_record_fragment_cursor_for_add_pass(
+                        &live_bytes,
+                        bits,
+                        offset,
+                        record_end,
+                        &mut fragment_bit_cursor,
+                    ) {
+                        fragment_bits_trim_safe = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                 }
                 if live_bytes.get(offset).copied() == Some(b'A')
                     && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
@@ -1038,6 +1141,17 @@ pub fn rewrite_creature_add_visual_transform_maps_if_possible(
         let Some(insert_offset) =
             legacy_add_visual_transform_insert_offset(&live_bytes, offset, record_end)
         else {
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                eprintln!(
+                    "live-object visual add pass cursor lost: offset={offset} record_end={record_end} opcode=0x{:02X} marker=0x{:02X} bit_cursor={} preview={:02X?}",
+                    live_bytes.get(offset).copied().unwrap_or_default(),
+                    live_bytes.get(offset + 1).copied().unwrap_or_default(),
+                    fragment_bit_cursor,
+                    live_bytes
+                        .get(offset..offset.saturating_add(96).min(live_bytes.len()))
+                        .unwrap_or(&[])
+                );
+            }
             fragment_bits_reliable = false;
             offset = record_end.max(offset + 1);
             continue;
@@ -1167,29 +1281,32 @@ fn live_object_read_prefix_walks_to(bytes: &[u8], start: usize, end: usize) -> b
         if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
             return false;
         }
-        let mut record_end =
-            find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
+        let record_end = declared_repair_read_record_end_for_transport(bytes, offset, end);
         if record_end <= offset || record_end > end {
             return false;
-        }
-        if bytes.get(offset).copied() == Some(HIGH_LEVEL_ENVELOPE)
-            && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
-            && record_end < end
-            && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
-        {
-            if let Some(span_end) =
-                appearance_following_creature_update_fragment_span_end_for_transport(
-                    bytes, record_end, end,
-                )
-            {
-                record_end = span_end;
-            }
         }
         records = records.saturating_add(1);
         offset = record_end;
     }
 
     records != 0 && offset == end
+}
+
+fn declared_repair_read_record_end_for_transport(bytes: &[u8], offset: usize, end: usize) -> usize {
+    let record_end =
+        find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
+    if bytes.get(offset).copied() == Some(HIGH_LEVEL_ENVELOPE)
+        && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+        && record_end < end
+        && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+    {
+        if let Some(span_end) = appearance_following_creature_update_fragment_span_end_for_transport(
+            bytes, record_end, end,
+        ) {
+            return span_end;
+        }
+    }
+    record_end
 }
 
 fn appearance_following_creature_update_fragment_span_end_for_transport(
@@ -2724,7 +2841,20 @@ fn advance_known_live_record_fragment_cursor_for_ee(
             advance_live_add_record_bit_cursor(bytes, bits, record_offset, record_end, bit_cursor)
                 .then_some(true)
         }
-        (b'U', TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) => {
+        (b'A', ITEM_OBJECT_TYPE) => {
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                bytes,
+                record_offset,
+                record_end,
+                bits,
+                bit_cursor,
+            )
+            .then_some(true)
+        }
+        (
+            b'U',
+            TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE | ITEM_OBJECT_TYPE,
+        ) => {
             if crate::translate::live_object_update::advance_verified_door_placeable_update_fragment_cursor_for_ee(
                 bytes,
                 record_offset,
@@ -2811,15 +2941,32 @@ fn advance_legacy_live_update_record_fragment_cursor_for_add_pass(
     if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
         consumed = consumed.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
     }
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+    if matches!(
+        object_type,
+        ITEM_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
     {
-        consumed = consumed.saturating_add(LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS);
+        let orientation_cursor = bit_cursor.saturating_add(consumed);
+        let orientation_bits = if bits.get(orientation_cursor).copied().unwrap_or(false) {
+            1
+        } else {
+            LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+        };
+        consumed = consumed.saturating_add(orientation_bits);
     }
-    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0
+    if matches!(
+        object_type,
+        ITEM_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0
     {
         consumed = consumed.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
+    }
+    if object_type == ITEM_OBJECT_TYPE && (raw_mask & 0x0000_0040) != 0 {
+        // Diamond's item-specific update branch writes its mask-0x40 byte tail
+        // in the read buffer and one BOOL in the CNW fragment stream. EE keeps
+        // only the BOOL; the later typed item update rewrite owns the byte
+        // removal, while this add-map pass only keeps the cursor aligned.
+        consumed = consumed.saturating_add(1);
     }
 
     if bits.len().saturating_sub(*bit_cursor) < consumed {
@@ -3810,6 +3957,21 @@ mod placeable_name_mode_tests {
 mod tests {
     use super::*;
 
+    fn rewrite_payload_to_exact_claim_for_test(
+        payload: &mut Vec<u8>,
+        latest_area_placeables: Option<&crate::translate::area::AreaPlaceableContext>,
+    ) -> crate::translate::live_object_update::LiveObjectUpdateClaimSummary {
+        assert!(
+            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                payload,
+                latest_area_placeables,
+            ),
+            "live-object payload should rewrite through the bounded exact adapter"
+        );
+        crate::translate::live_object_update::claim_payload_if_verified(payload)
+            .expect("rewritten live-object payload should exact-claim")
+    }
+
     #[test]
     fn add_map_rewrite_advances_across_legacy_door_update_records() {
         let mut live = Vec::new();
@@ -3899,47 +4061,7 @@ mod tests {
             include_bytes!("../../fixtures/live_object/hg_seq29_trigger_door_mixed_add_update.bin")
                 .to_vec();
 
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-        let visual_summary =
-            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
-                .expect("trigger/door mixed add-record rewrite");
-        assert!(
-            visual_summary.maps_inserted > 0,
-            "door add records after the trigger must receive EE visual-transform maps"
-        );
-        let update_summary =
-            crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-                &mut payload,
-            );
-        if let Some(update_summary) = update_summary {
-            assert!(update_summary.update_records_rewritten > 0);
-        }
-        let final_visual_summary =
-            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        if let Some(final_visual_summary) = final_visual_summary {
-            // The update finalizer may expose additional legacy add records, but it is also
-            // valid for the earlier visual-map pass to have consumed every add-family record
-            // already. The exact final claim below is the invariant that matters here.
-            let _ = final_visual_summary;
-        }
-        let _ = crate::translate::live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(
-            &mut payload,
-        );
-        let add_name_visual_summary =
-            rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        if let Some(add_name_visual_summary) = add_name_visual_summary {
-            // Same cleanup rule as above: a late visual pass is allowed to be a no-op as long as
-            // the final strict live-object claim proves the resulting mixed burst is exact.
-            let _ = add_name_visual_summary;
-        }
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-
-        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
-            .expect("trigger/door mixed exact claim");
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload, None);
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
     }
@@ -3956,24 +4078,7 @@ mod tests {
         assert_eq!(normalize_summary.old_wire_declared, 0);
         assert_eq!(normalize_summary.prefixed_fragment_bytes, [0, 0, 0, 0]);
 
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-        let _ =
-            crate::translate::live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(
-                &mut payload,
-            );
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-
-        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
-            .expect("local Diamond zero-prefixed door burst should exact-claim after rewrite");
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload, None);
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
     }
@@ -3985,23 +4090,7 @@ mod tests {
         )
         .to_vec();
 
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-        let _ =
-            crate::translate::live_object_update::rewrite_add_name_fragment_bits_payload_if_possible(
-                &mut payload,
-            );
-        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-            &mut payload,
-        );
-
-        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
-            .expect("creature/trigger/door mixed exact claim");
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload, None);
         assert!(claim.add_records > 0);
         assert!(claim.update_records > 0);
         assert!(claim.creature_update_records > 0);
@@ -4158,6 +4247,33 @@ mod tests {
     }
 
     #[test]
+    fn empty_inline_placeable_name_with_embedded_nuls_is_recovered_before_visual_map() {
+        let mut live = Vec::new();
+        live.push(b'A');
+        live.push(PLACEABLE_OBJECT_TYPE);
+        live.extend_from_slice(&0x8000_0007u32.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.extend_from_slice(b"Lute (");
+        live.extend_from_slice(&[0, 0, 0, 0]);
+        live.extend_from_slice(b"ding)");
+        live.extend_from_slice(&[0x05, 0xB9, 0x00, 0x00, 0x00]);
+
+        let fragment_bits = vec![
+            false, false, false, // CNW fragment length header, rewritten by pack.
+            false, false, false, false,
+        ];
+        let mut payload = live_object_payload(live, fragment_bits);
+
+        let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
+            .expect("embedded-NUL compact placeable add should rewrite");
+        assert_eq!(summary.maps_inserted, 1);
+        assert!(summary.bytes_inserted >= EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32);
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
     fn pending_seq31_stream_rewrites_to_exact_live_object_claim() {
         let mut payload =
             include_bytes!("../../fixtures/live_object/pending_live_object_seq31_chunks9.bin")
@@ -4266,29 +4382,43 @@ mod tests {
             ..crate::translate::area::AreaPlaceableContext::default()
         };
 
+        let pre_visual_summary = rewrite_creature_add_visual_transform_maps_if_possible(
+            &mut payload,
+            Some(&area_context),
+        );
         let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
             &mut payload,
         );
+        if crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some() {
+            assert!(
+                pre_visual_summary
+                    .as_ref()
+                    .map(|summary| summary.maps_inserted >= 4)
+                    .unwrap_or(false),
+                "expected board and Portal placeable maps to be retained and rewritten, got pre={pre_visual_summary:?}"
+            );
+            return;
+        }
         let visual_summary = rewrite_creature_add_visual_transform_maps_if_possible(
             &mut payload,
             Some(&area_context),
-        )
-        .expect("placeable add visual-transform rewrite");
+        );
+        let maps_inserted = pre_visual_summary
+            .as_ref()
+            .map(|summary| summary.maps_inserted)
+            .unwrap_or_default()
+            + visual_summary
+                .as_ref()
+                .map(|summary| summary.maps_inserted)
+                .unwrap_or_default();
         assert!(
-            visual_summary.maps_inserted >= 4,
-            "expected board and Portal placeable maps to be retained and rewritten, got {visual_summary:?}"
+            maps_inserted >= 4,
+            "expected board and Portal placeable maps to be retained and rewritten, got pre={pre_visual_summary:?} post={visual_summary:?}"
         );
 
-        let second_update =
-            crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
-                &mut payload,
-            );
-        if second_update.is_none() {
-            assert!(
-                crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some(),
-                "placeable stream must be exact-claimable if the second update pass is a no-op"
-            );
-        }
+        let _ = crate::translate::live_object_update::rewrite_update_records_payload_if_possible(
+            &mut payload,
+        );
         let _ = rewrite_creature_add_visual_transform_maps_if_possible(
             &mut payload,
             Some(&area_context),
@@ -4368,6 +4498,19 @@ mod hg_mixed_door_placeable_translation_tests {
     use super::*;
     use crate::translate::live_object_update as live_update;
 
+    fn rewrite_payload_to_exact_claim_for_test(
+        payload: &mut Vec<u8>,
+    ) -> live_update::LiveObjectUpdateClaimSummary {
+        assert!(
+            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                payload, None,
+            ),
+            "mixed add/update stream should rewrite through the bounded exact adapter"
+        );
+        live_update::claim_payload_if_verified(payload)
+            .expect("rewritten mixed add/update stream should exact-claim")
+    }
+
     #[test]
     fn hg_door_mixed_add_update_fixture_rewrites_to_exact_ee_claim() {
         let mut payload = include_bytes!(
@@ -4392,16 +4535,9 @@ mod hg_mixed_door_placeable_translation_tests {
             "../../fixtures/live_object/hg_placeable_mixed_add_update_claimed_records.bin"
         )
         .to_vec();
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        assert!(
-            live_update::claim_payload_if_verified(&payload).is_some(),
-            "rewritten placeable mixed add/update stream must be exact-claimable"
-        );
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert!(claim.add_records > 0);
+        assert!(claim.update_records > 0);
     }
 
     #[test]

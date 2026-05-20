@@ -447,6 +447,8 @@ fn flush_pending_live_object_stream_if_verified(
                 removed_update_records = summary.removed_update_records,
                 diamond_missing_object_update_records =
                     summary.diamond_missing_object_update_records,
+                diamond_missing_object_appearance_records =
+                    summary.diamond_missing_object_appearance_records,
                 ee_sentinel_inventory_owner_records = summary.ee_sentinel_inventory_owner_records,
                 removed_bytes = summary.removed_bytes,
                 removed_fragment_bits = summary.removed_fragment_bits,

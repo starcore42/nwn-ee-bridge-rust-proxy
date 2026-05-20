@@ -7,7 +7,7 @@
 //! perform only that bounded transport normalization; family parsers still own
 //! the exact byte/bit proof.
 
-use super::{appearance, bits, boundary, creature, inventory, read_u32_le};
+use super::{DOOR_OBJECT_TYPE, appearance, bits, boundary, creature, gui, inventory, read_u32_le};
 
 const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
 // HG short-declared creature updates can leave the chunk-local CNW fragment
@@ -40,6 +40,7 @@ const MAX_APPEARANCE_FOLLOWING_ITEM_FRAGMENT_SPAN_BYTES: usize = 128;
 const MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES: usize = 2;
 const MAX_TRAILING_FRAGMENT_PREFIX_BYTES: usize = MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES;
 const MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES: usize = 96;
+const MAX_EFFECT_ONLY_FOLLOWING_GUI_FRAGMENT_SPAN_BYTES: usize = 128;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
@@ -221,6 +222,122 @@ pub(super) fn promote_creature_update_interleaved_fragment_span_for_ee(
     })
 }
 
+pub(super) fn promote_effect_only_creature_update_following_gui_fragment_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    offset: usize,
+    record_end: &mut usize,
+    bit_cursor: usize,
+) -> Option<PromotedCreatureUpdateFragmentSpan> {
+    if offset.checked_add(10)? >= live_bytes.len()
+        || live_bytes.get(offset).copied()? != b'U'
+        || live_bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(live_bytes, offset + 6)? != LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK
+    {
+        return None;
+    }
+
+    let count = usize::from(super::read_u16_le(live_bytes, offset + 10)?);
+    if count == 0 || count > 256 {
+        return None;
+    }
+    let read_end = offset
+        .checked_add(10)?
+        .checked_add(2)?
+        .checked_add(count.checked_mul(3)?)?;
+    if read_end >= live_bytes.len() || *record_end > live_bytes.len() {
+        return None;
+    }
+
+    // Local CEP v2.2 builder seq26 proves a compact feature-0x0E-false
+    // creature effect row followed by a chunk-local CNW fragment span whose
+    // first interior false boundary is `I 0xFE ... mask=0`. Diamond/EE do not
+    // have an inventory reader for that byte shape; the next decompile-owned
+    // live-object submessage is the `G Q` quickbar item-link row after the
+    // fragment span. Keep this intentionally narrower than generic span
+    // recovery: the shortened creature record must validate first, any
+    // interior `I` candidate must fail the inventory reader/prefix proof, the
+    // promoted bytes must decode as CNW fragment storage, and the following
+    // `GQ` read-buffer record must prove its exact byte end.
+    let mut proof_cursor = bit_cursor;
+    if !creature::advance_verified_noop_creature_update_record_exact_cursor(
+        live_bytes,
+        offset,
+        read_end,
+        fragment_bits,
+        &mut proof_cursor,
+    ) {
+        return None;
+    }
+
+    let scan_end = read_end
+        .checked_add(MAX_EFFECT_ONLY_FOLLOWING_GUI_FRAGMENT_SPAN_BYTES)?
+        .min(live_bytes.len());
+    let mut accepted: Option<(usize, Vec<bool>)> = None;
+    for span_end in read_end.checked_add(1)?..scan_end {
+        if live_bytes.get(span_end).copied() != Some(b'G')
+            || live_bytes.get(span_end + 1).copied() != Some(b'Q')
+        {
+            continue;
+        }
+        let Some(gui_end) = gui::try_get_legacy_live_gui_record_end_with_fragment_proof(
+            live_bytes,
+            span_end,
+            live_bytes.len(),
+            fragment_bits,
+            proof_cursor,
+        ) else {
+            continue;
+        };
+        if !gui::is_verified_live_gui_read_buffer_record(live_bytes, span_end, gui_end) {
+            continue;
+        }
+        for interior in read_end..span_end {
+            if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, interior) {
+                continue;
+            }
+            if live_bytes.get(interior).copied() == Some(b'I')
+                && inventory::try_get_legacy_live_inventory_prefix_claim(
+                    live_bytes, interior, span_end,
+                )
+                .is_none()
+                && inventory::try_get_legacy_live_inventory_fragment_bit_count(
+                    live_bytes, interior, span_end,
+                )
+                .is_none()
+            {
+                continue;
+            }
+            return None;
+        }
+        let span = live_bytes.get(read_end..span_end)?;
+        if span.is_empty() {
+            continue;
+        }
+        let promoted_bits = unpack_promoted_fragment_span_payload_bits(span)?;
+        if promoted_bits.iter().all(|bit| !*bit) {
+            continue;
+        }
+        if accepted.replace((span_end, promoted_bits)).is_some() {
+            return None;
+        }
+    }
+
+    let (span_end, promoted_bits) = accepted?;
+    bits::insert_msb_bits(fragment_bits, proof_cursor, &promoted_bits)?;
+    live_bytes.drain(read_end..span_end);
+    *record_end = read_end;
+
+    Some(PromotedCreatureUpdateFragmentSpan {
+        read_end,
+        old_record_end: span_end,
+        bytes_promoted: span_end.saturating_sub(read_end),
+        bits_promoted: promoted_bits.len(),
+        start_bit_cursor: bit_cursor,
+        end_bit_cursor: proof_cursor,
+    })
+}
+
 pub(super) fn promote_legacy_creature_update_3967_large_interleaved_fragment_span_for_ee(
     live_bytes: &mut Vec<u8>,
     fragment_bits: &mut Vec<bool>,
@@ -316,6 +433,26 @@ pub(super) fn promote_appearance_following_creature_update_span_for_ee(
         bytes_promoted: span_end.saturating_sub(span_start),
         bits_promoted: promoted_bits.len(),
     })
+}
+
+pub(super) fn verified_appearance_following_creature_update_span_offset_for_ee(
+    live_bytes: &[u8],
+    span_start: usize,
+    bit_cursor: usize,
+    fragment_bits: &[bool],
+) -> Option<usize> {
+    // Immutable companion to the promotion helper above.  Creature appearance
+    // boundary repair uses this to prove that the bytes after an exact EE
+    // `P/5` record are CNW fragment storage owned by the following `U/5 0x3967`
+    // update; the caller still leaves mutation to
+    // `promote_appearance_following_creature_update_span_for_ee`.
+    find_appearance_following_creature_update_span(
+        live_bytes,
+        span_start,
+        bit_cursor,
+        fragment_bits,
+    )
+    .map(|(span_end, _, _)| span_end)
 }
 
 fn find_appearance_following_creature_update_span(
@@ -583,6 +720,226 @@ pub(super) fn promote_boundary_collision_trailing_fragment_prefix_after_verified
         bytes_promoted: prefix.len(),
         bits_promoted,
     })
+}
+
+pub(super) fn promote_creature_0047_following_add_boundary_collision_fragment_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    span_start: usize,
+    span_end: usize,
+    bit_cursor: usize,
+) -> Option<PromotedTrailingFragmentPrefix> {
+    if span_start >= span_end
+        || span_end >= live_bytes.len()
+        || live_bytes.get(span_start).copied()? != b'I'
+        || live_bytes.get(span_end).copied()? != b'A'
+        || live_bytes.get(span_end + 1).copied()? != 0x05
+    {
+        return None;
+    }
+
+    let span = live_bytes.get(span_start..span_end)?;
+    if span.is_empty() || span.len() > MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES {
+        return None;
+    }
+
+    // Starcore5 Sooty Crow seq35 proves a decompile-owned `U/5 0x47`
+    // movement/state update whose adjacent CNW fragment-storage span begins
+    // with bytes that look like an `I/FE` inventory record. The following
+    // record is a real creature `A/5` add. Promote only this exact collision:
+    // the caller has already proven the owning `U/5 0x47` record, the apparent
+    // inventory record has failed the inventory reader, the span must decode
+    // as CNW fragment storage, and the following add record must expose the
+    // fixed decompile-owned creature-add byte fields.
+    let mut promoted_bits = bits::decode_msb_valid_bits(span, 3)?;
+    if promoted_bits.len() < 3 {
+        return None;
+    }
+    promoted_bits.drain(0..3);
+    if promoted_bits.is_empty() {
+        return None;
+    }
+
+    let following_legacy_add_end =
+        span_end.checked_add(creature::LEGACY_CREATURE_ADD_RECORD_BYTES)?;
+    if following_legacy_add_end > live_bytes.len()
+        || !creature::looks_like_legacy_creature_add_transform_fields(
+            live_bytes,
+            span_end,
+            following_legacy_add_end,
+        )
+    {
+        return None;
+    }
+
+    let bits_promoted = promoted_bits.len();
+    bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+    live_bytes.drain(span_start..span_end);
+
+    Some(PromotedTrailingFragmentPrefix {
+        bytes_promoted: span_end.saturating_sub(span_start),
+        bits_promoted,
+    })
+}
+
+pub(super) fn promote_door_add_following_missing_type_update_fragment_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    span_start: usize,
+    bit_cursor: usize,
+    preceding_door_object_id: u32,
+) -> Option<PromotedTrailingFragmentPrefix> {
+    if span_start >= live_bytes.len()
+        || live_bytes.get(span_start).copied()? != b'U'
+        || live_bytes.get(span_start + 1).copied()? != 0
+        || read_u32_le(live_bytes, span_start + 2)? != preceding_door_object_id
+    {
+        return None;
+    }
+
+    let span_end = find_interleaved_fragment_span_end(live_bytes, span_start, live_bytes.len(), 1)?;
+    let span = live_bytes.get(span_start..span_end)?;
+    if span.is_empty() || span.len() > MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES {
+        return None;
+    }
+
+    let following_world_status_then_door = span_end
+        .checked_add(3)
+        .filter(|following_world_status_end| *following_world_status_end < live_bytes.len())
+        .is_some_and(|following_world_status_end| {
+            live_bytes.get(span_end).copied() == Some(b'W')
+                && live_bytes
+                    .get(span_end + 1)
+                    .copied()
+                    .is_some_and(|marker| marker <= 0x0F)
+                && live_bytes.get(span_end + 2).copied() == Some(0x0E)
+                && looks_like_door_add_fixed_prefix(live_bytes, following_world_status_end)
+        });
+    let following_item_add = live_bytes.get(span_end).copied() == Some(b'A')
+        && live_bytes.get(span_end + 1).copied() == Some(0x06)
+        && boundary::looks_like_legacy_live_object_id_at(live_bytes, span_end + 2);
+    if !following_world_status_then_door && !following_item_add {
+        return None;
+    }
+    let mut promoted_bits = bits::decode_msb_valid_bits(span, 3)?;
+    if promoted_bits.len() < 3 {
+        return None;
+    }
+    promoted_bits.drain(0..3);
+    if promoted_bits.is_empty() {
+        return None;
+    }
+
+    let bits_promoted = promoted_bits.len();
+    bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+    live_bytes.drain(span_start..span_end);
+
+    Some(PromotedTrailingFragmentPrefix {
+        bytes_promoted: span_end.saturating_sub(span_start),
+        bits_promoted,
+    })
+}
+
+pub(super) fn promote_door_add_embedded_missing_type_update_fragment_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    record_offset: usize,
+    old_record_end: usize,
+    bit_cursor: usize,
+) -> Option<PromotedTrailingFragmentPrefix> {
+    if old_record_end > live_bytes.len()
+        || record_offset.checked_add(20)? > old_record_end
+        || live_bytes.get(record_offset).copied()? != b'A'
+        || live_bytes.get(record_offset + 1).copied()? != DOOR_OBJECT_TYPE
+        || !boundary::looks_like_legacy_live_object_id_at(live_bytes, record_offset + 2)
+    {
+        return None;
+    }
+
+    let door_object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    let first_dword = read_u32_le(live_bytes, record_offset + 6)?;
+    let _generic_door_row = read_u32_le(live_bytes, record_offset + 10)?;
+    if first_dword != 0 {
+        return None;
+    }
+
+    let name_offset = record_offset.checked_add(14)?;
+    let span_start = name_offset.checked_add(6)?;
+    if span_start > old_record_end
+        || read_u32_le(live_bytes, name_offset).is_none_or(|name_token| name_token == 0)
+        || live_bytes.get(span_start).copied()? != b'U'
+        || live_bytes.get(span_start + 1).copied()? != 0
+        || read_u32_le(live_bytes, span_start + 2)? != door_object_id
+    {
+        return None;
+    }
+
+    let span_end = find_interleaved_fragment_span_end(live_bytes, span_start, live_bytes.len(), 1)?;
+    if span_end != old_record_end {
+        return None;
+    }
+    let span = live_bytes.get(span_start..span_end)?;
+    if span.is_empty() || span.len() > MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES {
+        return None;
+    }
+
+    let following_world_status_then_door = span_end
+        .checked_add(3)
+        .filter(|following_world_status_end| *following_world_status_end < live_bytes.len())
+        .is_some_and(|following_world_status_end| {
+            live_bytes.get(span_end).copied() == Some(b'W')
+                && live_bytes
+                    .get(span_end + 1)
+                    .copied()
+                    .is_some_and(|marker| marker <= 0x0F)
+                && live_bytes.get(span_end + 2).copied() == Some(0x0E)
+                && looks_like_door_add_fixed_prefix(live_bytes, following_world_status_end)
+        });
+    let following_item_add = live_bytes.get(span_end).copied() == Some(b'A')
+        && live_bytes.get(span_end + 1).copied() == Some(0x06)
+        && boundary::looks_like_legacy_live_object_id_at(live_bytes, span_end + 2);
+    if !following_world_status_then_door && !following_item_add {
+        return None;
+    }
+
+    let mut promoted_bits = bits::decode_msb_valid_bits(span, 3)?;
+    if promoted_bits.len() < 3 {
+        return None;
+    }
+    promoted_bits.drain(0..3);
+    if promoted_bits.is_empty() {
+        return None;
+    }
+
+    // Diamond's compact tail-before-empty-name source shape contributes four
+    // final door BOOLs. The focused add translator later inserts EE's two
+    // omitted direct-name branch bits before those source bits, so inserting the
+    // promoted span after the four source bits lets it shift to the exact
+    // post-add cursor after visual/name normalization.
+    let insertion_cursor = bit_cursor.checked_add(4)?;
+    let bits_promoted = promoted_bits.len();
+    bits::insert_msb_bits(fragment_bits, insertion_cursor, &promoted_bits)?;
+    live_bytes.drain(span_start..span_end);
+
+    Some(PromotedTrailingFragmentPrefix {
+        bytes_promoted: span_end.saturating_sub(span_start),
+        bits_promoted,
+    })
+}
+
+fn looks_like_door_add_fixed_prefix(live_bytes: &[u8], offset: usize) -> bool {
+    if offset + 10 > live_bytes.len()
+        || live_bytes.get(offset).copied() != Some(b'A')
+        || live_bytes.get(offset + 1).copied() != Some(DOOR_OBJECT_TYPE)
+        || !boundary::looks_like_legacy_live_object_id_at(live_bytes, offset + 2)
+    {
+        return false;
+    }
+
+    let Some(first_dword) = read_u32_le(live_bytes, offset + 6) else {
+        return false;
+    };
+    first_dword != 0 || offset + 14 <= live_bytes.len()
 }
 
 struct CreatureUpdateFragmentSpanProof {

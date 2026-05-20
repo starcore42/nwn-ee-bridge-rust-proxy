@@ -1,7 +1,33 @@
-//! Item-family live-object boundary helpers.
+//! Item-family live-object update helpers.
 //!
-//! These routines classify legacy item sentinels only; they do not rewrite item
-//! records. That keeps item parsing policy out of the generic boundary walker.
+//! Keep item-specific update parsing here. The generic record walker only asks
+//! whether a bounded `U/06` record can be emitted in the EE reader shape.
+
+use super::{
+    EE_UPDATE_APPEARANCE_RESREF_READ_BYTES, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
+    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
+    EE_UPDATE_SCALE_STATE_READ_BYTES, ITEM_OBJECT_TYPE, LEGACY_UPDATE_APPEARANCE_MASK,
+    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
+    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
+    LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, boundary, read_u16_le,
+    read_u32_le, write_u32_le,
+};
+
+const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
+const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
+const DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES: usize = 6;
+const DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES: usize = 4;
+const MAX_UNOWNED_IGNORED_LOW_80_ZERO_PAD_BYTES: usize = 3;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ItemUpdateRewrite {
+    pub(super) rewritten: bool,
+    pub(super) mask_changed: bool,
+    pub(super) bytes_removed: u32,
+    pub(super) next_bit_cursor: usize,
+}
 
 pub(super) fn is_known_legacy_item_marker(marker: u8) -> bool {
     matches!(marker, 0x05 | 0xC5)
@@ -12,4 +38,271 @@ pub(super) fn is_legacy_item_sentinel(bytes: &[u8], offset: usize) -> bool {
         && bytes.get(offset + 2) == Some(&0xFF)
         && bytes.get(offset + 3) == Some(&0xFF)
         && bytes.get(offset + 4) == Some(&0xFF)
+}
+
+pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
+    raw_mask & !LEGACY_ITEM_IGNORED_LOW_80_MASK
+}
+
+pub(super) fn rewrite_update_record_for_ee(
+    live_bytes: &mut Vec<u8>,
+    record_offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<ItemUpdateRewrite> {
+    if let Some(next_bit_cursor) = advance_verified_ee_item_update_record(
+        live_bytes,
+        record_offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        return Some(ItemUpdateRewrite {
+            next_bit_cursor,
+            ..ItemUpdateRewrite::default()
+        });
+    }
+
+    let raw_mask = item_update_mask(live_bytes, record_offset, *record_end)?;
+    let translated_mask = translate_update_mask(raw_mask);
+    let common = parse_item_update_common_prefix(
+        live_bytes,
+        record_offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+        raw_mask,
+    )?;
+
+    let mut bytes_removed = 0usize;
+    if (raw_mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
+        let legacy_tail_end = diamond_item_update_40_tail_end(
+            live_bytes,
+            common.read_end,
+            *record_end,
+            (raw_mask & LEGACY_ITEM_IGNORED_LOW_80_MASK) != 0,
+        )?;
+        bytes_removed = bytes_removed.saturating_add((*record_end).saturating_sub(common.read_end));
+        live_bytes.drain(common.read_end..legacy_tail_end);
+        *record_end = common.read_end;
+    } else if common.read_end != *record_end {
+        return None;
+    }
+
+    write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
+    let verified_next = advance_verified_ee_item_update_record(
+        live_bytes,
+        record_offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+
+    Some(ItemUpdateRewrite {
+        rewritten: bytes_removed != 0 || translated_mask != raw_mask,
+        mask_changed: translated_mask != raw_mask,
+        bytes_removed: u32::try_from(bytes_removed).unwrap_or(u32::MAX),
+        next_bit_cursor: verified_next,
+    })
+}
+
+pub(super) fn advance_verified_ee_item_update_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    let mask = item_update_mask(bytes, offset, record_end)?;
+    if !ee_item_update_mask_supported(mask) {
+        return None;
+    }
+
+    let common = parse_item_update_common_prefix(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        mask,
+    )?;
+    let next_bit_cursor = if (mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
+        advance_bits(fragment_bits, common.next_bit_cursor, 1)?
+    } else {
+        common.next_bit_cursor
+    };
+
+    (common.read_end == record_end).then_some(next_bit_cursor)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ItemUpdateCommonPrefix {
+    read_end: usize,
+    next_bit_cursor: usize,
+}
+
+fn item_update_mask(bytes: &[u8], offset: usize, record_end: usize) -> Option<u32> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != ITEM_OBJECT_TYPE
+        || !boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    read_u32_le(bytes, offset + 6)
+}
+
+fn parse_item_update_common_prefix(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    mask: u32,
+) -> Option<ItemUpdateCommonPrefix> {
+    if !legacy_item_update_mask_supported(mask) {
+        return None;
+    }
+
+    let mut read_cursor = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+    let mut fragment_cursor = bit_cursor;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+        )?;
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
+        if vector_branch {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+            )?;
+        } else {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+            fragment_cursor = advance_bits(
+                fragment_bits,
+                fragment_cursor,
+                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+            )?;
+        }
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let appearance_word = read_u16_le(bytes, read_cursor)?;
+        read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        if appearance_word >= 0xFFFE {
+            read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        }
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+        if read_cursor > record_end {
+            return None;
+        }
+    }
+
+    if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        fragment_cursor = advance_bits(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+        )?;
+    }
+
+    Some(ItemUpdateCommonPrefix {
+        read_end: read_cursor,
+        next_bit_cursor: fragment_cursor,
+    })
+}
+
+fn ee_item_update_mask_supported(mask: u32) -> bool {
+    let allowed = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK
+        | EE_ITEM_UPDATE_HIDDEN_MASK;
+    mask != 0 && (mask & !allowed) == 0
+}
+
+fn legacy_item_update_mask_supported(mask: u32) -> bool {
+    let allowed = LEGACY_UPDATE_POSITION_MASK
+        | LEGACY_UPDATE_ORIENTATION_MASK
+        | LEGACY_UPDATE_SCALE_STATE_MASK
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK
+        | EE_ITEM_UPDATE_HIDDEN_MASK
+        | LEGACY_ITEM_IGNORED_LOW_80_MASK;
+
+    // EE's item reader has a decompiled bit-19 display-name branch, but this
+    // bridge does not rewrite that branch yet. Quarantine it until a capture
+    // proves the exact Diamond writer shape for item display-name updates.
+    (mask & LEGACY_UPDATE_NAME_MASK) == 0 && mask != 0 && (mask & !allowed) == 0
+}
+
+fn diamond_item_update_40_tail_end(
+    bytes: &[u8],
+    tail_offset: usize,
+    record_end: usize,
+    raw_had_ignored_low_80: bool,
+) -> Option<usize> {
+    let fixed_end = tail_offset.checked_add(DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES)?;
+    if fixed_end > record_end {
+        return None;
+    }
+
+    // Diamond item update mask `0x40` writes WORD, BYTE, WORD, BYTE, one
+    // fragment BOOL, then an optional object id only when the first BYTE is 2.
+    let first_mode_byte = *bytes.get(tail_offset + 2)?;
+    let decompile_tail_end = if first_mode_byte == 2 {
+        fixed_end.checked_add(DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES)?
+    } else {
+        fixed_end
+    };
+    if decompile_tail_end > record_end {
+        return None;
+    }
+    if decompile_tail_end == record_end {
+        return Some(record_end);
+    }
+
+    let remaining = record_end - decompile_tail_end;
+    if raw_had_ignored_low_80
+        && remaining <= MAX_UNOWNED_IGNORED_LOW_80_ZERO_PAD_BYTES
+        && bytes
+            .get(decompile_tail_end..record_end)?
+            .iter()
+            .all(|byte| *byte == 0)
+    {
+        return Some(record_end);
+    }
+
+    None
+}
+
+fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
+    if bits.len().saturating_sub(cursor) < count {
+        return None;
+    }
+    cursor.checked_add(count)
 }

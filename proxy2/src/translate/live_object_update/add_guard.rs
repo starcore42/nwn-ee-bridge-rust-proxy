@@ -82,16 +82,25 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
             // EE-shaped byte layout while the legacy fragment cursor still has
             // outer=true and four optional-object bytes present; the following
             // bit remains the first post-name state bit rather than an EE
-            // locstring inner selector. Non-optional direct-name captures keep
-            // the older locstring-inline branch proven by existing fixtures.
+            // locstring inner selector.
             changed |= set_bit(fragment_bits, *bit_cursor, false)?;
             0
         } else {
             let inner_client_tlk = fragment_bits.get(*bit_cursor + 1).copied()?;
-            if inner_client_tlk {
-                return None;
+            if direct_inline_name && inner_client_tlk {
+                // Same decompile-backed direct-name repair as the add writer:
+                // `outer=true, inner=true` would send EE into the TLK helper,
+                // but the read-buffer cursor holds an inline CExoString. The
+                // former inner bit is the first post-name state BOOL; only the
+                // branch selector is forced to EE's direct-name path.
+                changed |= set_bit(fragment_bits, *bit_cursor, false)?;
+                0
+            } else {
+                if inner_client_tlk {
+                    return None;
+                }
+                1
             }
-            1
         }
     } else {
         0

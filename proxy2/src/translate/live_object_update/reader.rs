@@ -450,10 +450,11 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             fragment_cursor,
             LEGACY_UPDATE_STATE_FRAGMENT_BITS,
         )?;
-        if object_type == DOOR_OBJECT_TYPE {
-            // EE's door update path has one extra BOOL beyond the five
-            // Diamond state bits. The translator inserts `false`, so an exact
-            // claimed bridge packet must still carry that neutral branch.
+        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+            // EE's object-specific placeable/door update readers consume one
+            // extra BOOL beyond Diamond's five legacy state bits. The
+            // translator inserts `false`, so an exact bridge packet must carry
+            // that neutral branch.
             if fragment_bits.get(fragment_cursor).copied()? {
                 return None;
             }
@@ -487,7 +488,11 @@ fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     Some(offset + 4 + length)
 }
 
-fn legacy_packed_name_tail_ready(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+pub(super) fn legacy_packed_name_tail_ready(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> bool {
     if offset >= record_end || record_end > bytes.len() {
         return false;
     }
@@ -518,6 +523,11 @@ fn legacy_packed_name_tail_ready(bytes: &[u8], offset: usize, record_end: usize)
     tail[text_start..]
         .iter()
         .all(|byte| *byte == 0 || matches!(*byte, 0x20..=0x7E | b'\t'))
+}
+
+pub(super) fn legacy_name_tail_ready(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+    inline_cexo_string_end(bytes, offset) == Some(record_end)
+        || legacy_packed_name_tail_ready(bytes, offset, record_end)
 }
 
 fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {

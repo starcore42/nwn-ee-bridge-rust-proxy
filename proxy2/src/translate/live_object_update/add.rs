@@ -8,8 +8,8 @@
 //! fragment-bit cursor; it never mutates bytes.
 
 use super::{
-    DOOR_OBJECT_TYPE, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, boundary, creature,
-    cursor, locstring, read_u16_le, read_u32_le, trigger,
+    DOOR_OBJECT_TYPE, ITEM_OBJECT_TYPE, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
+    boundary, creature, cursor, locstring, read_u16_le, read_u32_le, trigger,
 };
 
 pub(super) fn advance_verified_add_record(
@@ -40,6 +40,18 @@ pub(super) fn advance_verified_add_record(
         fragment_bits,
         bit_cursor,
     ) {
+        return true;
+    }
+    *bit_cursor = original_bit_cursor;
+    if bytes.get(offset + 1).copied() == Some(ITEM_OBJECT_TYPE)
+        && appearance::advance_verified_ee_item_create_record(
+            bytes,
+            offset + 2,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        )
+    {
         return true;
     }
     *bit_cursor = original_bit_cursor;

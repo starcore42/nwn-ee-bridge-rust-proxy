@@ -53,6 +53,17 @@ fn assert_no_full_creature_appearance_has_longer_legacy_shape(payload: &[u8]) {
     }
 }
 
+fn rewrite_payload_to_exact_claim_for_test(
+    payload: &mut Vec<u8>,
+) -> super::LiveObjectUpdateClaimSummary {
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(payload, None),
+        "live-object payload should rewrite through the bounded exact adapter"
+    );
+    super::claim_payload_if_verified(payload)
+        .expect("rewritten live-object payload should exact-claim")
+}
+
 #[test]
 fn legacy_facing_zero_preserves_shared_diamond_ee_packet_basis() {
     assert_eq!(
@@ -382,6 +393,145 @@ fn legacy_all_bits_placeable_update_preserves_orientation_mask_when_rewritten() 
         &ee_scalar_orientation_fragment_bits_from_legacy_facing(0x0000),
         "rewritten placeable update must carry the low four CNW WriteUnsigned yaw bits in the fragment stream"
     );
+}
+
+#[test]
+fn low_bits_placeable_update_drops_bounded_tail_before_ee_claim() {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x09, 0x07, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
+    live.extend_from_slice(&[
+        0xBC, 0x04, 0x65, 0x04, 0x11, 0x0F, // position
+        0x00, // scalar orientation high byte
+        0x00, 0x00, // appearance word
+        0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, // scale/state
+        0x00, 0x00, 0x00, 0x00, // legacy low-bit control/name prefix
+        b'L', b'u', b't', b'e', b' ', b'(', 0x00, 0x00, 0x00, 0x00, b'd', b'i', b'n', b'g', b')',
+    ]);
+
+    let fragment_bits = vec![
+        false, false, false, // CNW fragment length header, rewritten by pack.
+        false, true, // position low bits retained.
+        false, false, false, false, false, // scalar orientation selector + low bits.
+        false, false, false, false, false, // five Diamond placeable state bits.
+    ];
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (7 + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        fragment_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("low-bit placeable update rewrite");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.bytes_removed, 19);
+    assert_eq!(rewrite.bits_inserted, 1);
+    let translated_mask = super::read_u32_le(&payload, 7 + 6).expect("translated placeable mask");
+    assert_eq!(translated_mask, 0x37);
+    assert!(
+        !live_object_read_window(&payload)
+            .windows(b"Lute".len())
+            .any(|window| window == b"Lute"),
+        "bounded legacy low-bit placeable tail must not be forwarded to EE"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("low-bit placeable update should become an exact EE update");
+    assert_eq!(claim.update_records, 1);
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten placeable fragment bits");
+    let ee_placeable_extra_state_bit = super::CNW_FRAGMENT_HEADER_BITS
+        + super::LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        + super::EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+        + super::LEGACY_UPDATE_STATE_FRAGMENT_BITS;
+    assert!(
+        !fragment_bits[ee_placeable_extra_state_bit],
+        "EE placeable-specific state reader consumes a neutral trailing BOOL"
+    );
+}
+
+#[test]
+fn low_bits_placeable_update_drops_cexo_tail_before_ee_claim() {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x09, 0x09, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
+    live.extend_from_slice(&[
+        0xBD, 0x02, 0xD7, 0x05, 0x9F, 0x00, // position
+        0x00, // scalar orientation high byte
+        0x00, 0x00, // appearance word
+        0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, // scale/state
+    ]);
+    live.extend_from_slice(&4u32.to_le_bytes());
+    live.extend_from_slice(b"Lute");
+
+    let fragment_bits = vec![
+        false, false, false, // CNW fragment length header, rewritten by pack.
+        false, false, // position low bits retained.
+        false, false, false, false, false, // scalar orientation selector + low bits.
+        false, false, false, false, false, // five Diamond placeable state bits.
+    ];
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (7 + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        fragment_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("low-bit placeable CExoString tail rewrite");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.bytes_removed, 8);
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(super::read_u32_le(&payload, 7 + 6), Some(0x37));
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("CExoString-tail placeable update should become exact EE");
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn low_bits_placeable_update_drops_absent_appearance_bit_when_prefix_is_exact() {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x09, 0x19, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
+    live.extend_from_slice(&[
+        0xF0, 0x03, 0xA7, 0x06, 0x0F, 0x00, // position
+        0x00, // scalar orientation high byte
+        0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, // scale/state, no appearance WORD.
+    ]);
+
+    let fragment_bits = vec![
+        false, false, false, // CNW fragment length header, rewritten by pack.
+        false, false, // position low bits retained.
+        false, false, false, false, false, // scalar orientation selector + low bits.
+        false, false, false, false, false, // five Diamond placeable state bits.
+    ];
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (7 + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        fragment_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("low-bit placeable absent-appearance rewrite");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.bytes_removed, 0);
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(
+        super::read_u32_le(&payload, 7 + 6),
+        Some(0x17),
+        "EE/Diamond 0x20 consumes a WORD, so absent appearance bytes cannot keep that bit"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("absent-appearance placeable update should become exact EE");
+    assert_eq!(claim.update_records, 1);
 }
 
 #[test]
@@ -1050,12 +1200,12 @@ fn hg_starc5_sooty_3967_action0_bridge_followup_rewrites_to_ee_shape() {
         .expect("0x3967 action-0 bridge follow-up rewrite");
     assert_eq!(summary.update_records_rewritten, 1);
     assert_eq!(summary.bytes_inserted, 29);
-    assert_eq!(summary.bytes_removed, 42);
+    assert_eq!(summary.bytes_removed, 46);
 
     let new_declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
         .expect("rewritten declared length");
-    assert_eq!(new_declared, old_declared - 13);
-    assert_eq!(payload.len(), raw.len() - 13);
+    assert_eq!(new_declared, old_declared - 17);
+    assert_eq!(payload.len(), raw.len() - 17);
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten 0x3967 action-0 stream should validate exactly");
@@ -1091,21 +1241,7 @@ fn area_entry_door_pairs_rewrite_to_exact_ee_shape() {
     )
     .to_vec();
 
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten area-entry door pairs should validate exactly");
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
     assert!(claim.add_records >= 2);
     assert!(claim.update_records >= 2);
 }
@@ -1117,21 +1253,7 @@ fn area_entry_door_and_signs_rewrite_to_exact_ee_shape() {
     )
     .to_vec();
 
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten area-entry door/sign burst should validate exactly");
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
     assert!(claim.add_records >= 7);
     assert!(claim.update_records >= 7);
 }
@@ -1142,21 +1264,7 @@ fn trigger_add_mentions_expose_verified_geometry_bounds() {
         include_bytes!("../../../fixtures/live_object/hg_seq29_trigger_door_mixed_add_update.bin")
             .to_vec();
 
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("trigger/door mixed live-object burst should claim exactly");
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
     let trigger = claim
         .mentions
         .iter()
@@ -1353,6 +1461,39 @@ fn local_dark_ranger_u5_effect_inventory_gui_stream_rewrites_to_exact_shape() {
     assert!(claim.inventory_records >= 1);
     assert!(claim.live_gui_read_buffer_records >= 1);
     assert!(claim.add_records >= 1);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_cepv22_current_player_effect_gui_stream_rewrites_to_exact_shape() {
+    // Local CEP v2.2 builder harness capture from 2026-05-20 after the compact
+    // area/live-object startup repairs. The stream starts with the same
+    // decompile-owned compact `U/5 0x00000008` current-player status/effect
+    // row family as Dark Ranger, then continues into GUI/update rows in one
+    // exact live-object payload.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_cepv22_builder_seq26_current_player_effect_gui_20260520.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw CEP v2.2 current-player effect/GUI stream is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("CEP v2.2 current-player effect/GUI stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1
+            || rewrite.bytes_inserted > 0
+            || rewrite.interleaved_fragment_spans_promoted > 0,
+        "CEP v2.2 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten CEP v2.2 stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
 }
 
 #[test]
@@ -1554,39 +1695,11 @@ fn captured_hg_transition_seq48_delete_inventory_door_stream_is_claimed() {
         "../../../fixtures/live_object/hg_transition_seq48_delete_inventory_door.bin"
     )
     .to_vec();
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
-    eprintln!("rewrite={rewrite:?}");
-    assert!(
-        rewrite
-            .as_ref()
-            .map(|summary| summary.bytes_removed > 0 && summary.update_records_rewritten > 0)
-            .unwrap_or(false),
-        "captured transition stream should first normalize its legacy inventory/update records"
-    );
-    let add_rewrite =
-        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-            &mut payload,
-            None,
-        );
-    assert!(
-        add_rewrite
-            .as_ref()
-            .map(|summary| summary.maps_inserted > 0)
-            .unwrap_or(false),
-        "captured transition door add should receive the EE visual-transform map"
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-    let _ = crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-        &mut payload,
-        None,
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let claim = super::claim_payload_if_verified(&payload);
-    assert!(
-        claim.is_some(),
-        "captured transition delete/inventory/door live-object stream should rewrite and claim"
-    );
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.delete_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.add_records >= 1);
+    assert!(claim.update_records >= 1);
 }
 
 #[test]
@@ -1596,43 +1709,7 @@ fn captured_hg_starc5_seq48_door_sign_transition_stream_is_claimed() {
     )
     .to_vec();
 
-    let first_rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
-    assert!(
-        first_rewrite
-            .as_ref()
-            .map(|summary| summary.update_records_rewritten >= 7 && summary.bytes_removed > 0)
-            .unwrap_or(false),
-        "captured Starcore5 door/sign stream should first normalize legacy update records"
-    );
-    let first_add_rewrite =
-        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-            &mut payload,
-            None,
-        );
-    assert!(
-        first_add_rewrite
-            .as_ref()
-            .map(|summary| summary.maps_inserted >= 7)
-            .unwrap_or(false),
-        "captured Starcore5 door/sign adds should receive EE visual-transform maps"
-    );
-    let _ = super::rewrite_update_records_payload_if_possible(&mut payload);
-    let _ = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-    let second_add_rewrite =
-        crate::translate::live_object::rewrite_creature_add_visual_transform_maps_if_possible(
-            &mut payload,
-            None,
-        );
-    let final_rewrite = super::rewrite_update_records_payload_if_possible(&mut payload);
-    if second_add_rewrite.is_none() && final_rewrite.is_none() {
-        assert!(
-            super::claim_payload_if_verified(&payload).is_some(),
-            "captured Starcore5 door/sign stream must be exact-claimable if final add/update passes are no-ops"
-        );
-    }
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("captured Starcore5 door/sign transition live-object stream should claim");
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
     assert!(claim.add_records >= 7);
     assert!(claim.update_records >= 7);
 }
@@ -1978,10 +2055,13 @@ fn hg_starc5_sooty_current_seq35_u5_visual_transform_update_rewrites_and_claims_
     assert_ne!(repair.new_declared, repair.old_declared);
     // The quarantined capture was initially named from the visible inventory
     // symptom, but the decompile-backed live-object opcode is `U` for object
-    // type 5 and the exact accepted subfamily is EE creature visual-transform
-    // update, not the `I` inventory-record reader.
+    // type 5 with mask 0x47. The following `I/FE` bytes are chunk-local CNW
+    // fragment storage, not an inventory row and not the one-byte legacy
+    // visual-transform selector.
     assert_eq!(claim.inventory_records, 0);
-    assert!(claim.creature_visual_transform_update_records >= 1);
+    assert_eq!(claim.creature_visual_transform_update_records, 0);
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.add_records >= 1);
 }
 
 #[test]
@@ -2425,13 +2505,17 @@ fn local_cepv22_seq11_zero_declared_stream_rewrites_and_claims_exactly() {
 
     assert!(
         super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
-        "the CEP stream contains an exact but unmaterialized Diamond no-op U/5 record"
+        "the CEP stream contains adjacent exact but unmaterialized Diamond P/5 and U/5 no-op records"
     );
     let lifecycle_rewrite =
         super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
-            .expect("exact missing-object U/5 should be removable after boundary proof");
-    assert_eq!(lifecycle_rewrite.removed_update_records, 1);
+            .expect("exact missing-object P/5 and U/5 should be removable after boundary proof");
+    assert_eq!(lifecycle_rewrite.removed_update_records, 2);
     assert_eq!(lifecycle_rewrite.diamond_missing_object_update_records, 1);
+    assert_eq!(
+        lifecycle_rewrite.diamond_missing_object_appearance_records,
+        1
+    );
 
     let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
         .expect("zero-declared CEP stream should be lifecycle-safe after cleanup");
@@ -2460,16 +2544,19 @@ fn local_cepv22_seq11_zero_declared_stream_rewrites_and_claims_exactly() {
 }
 
 #[test]
-fn local_diamond_seq12_door_placeable_stream_claims_with_materialized_adds() {
+fn local_diamond_seq12_door_placeable_stream_claims_exact_shape_before_lifecycle_cleanup() {
     let payload = include_bytes!(
         "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260517_rewritten.bin"
     );
 
-    let claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+    let claim = super::claim_payload_if_verified(payload)
         .expect("local Diamond seq12 door/placeable stream should claim after exact rewrite");
 
     assert_eq!(claim.add_records, 5);
-    assert_eq!(claim.update_records, 5);
+    assert_eq!(
+        claim.update_records, 6,
+        "pre-cleanup compact stream still carries the orphan Diamond update"
+    );
     assert!(claim.mentions.iter().any(|mention| {
         mention.opcode == b'A'
             && mention.object_type == super::DOOR_OBJECT_TYPE
@@ -2486,6 +2573,10 @@ fn local_diamond_seq12_door_placeable_stream_claims_with_materialized_adds() {
             && mention.object_id == 0x8000_000E
             && mention.requires_materialized_object
     }));
+    assert!(
+        super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false).is_none(),
+        "compact seq12 fixture documents the orphan Diamond update before lifecycle cleanup"
+    );
 }
 
 #[test]
@@ -2514,8 +2605,17 @@ fn local_diamond_seq12_compact_door_ids_canonicalize_to_ee_external_namespace() 
             && mention.requires_materialized_object
     }));
     assert!(
+        super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
+        "canonicalization proves the EE object namespace but does not remove the orphan Diamond update"
+    );
+
+    let cleanup =
+        super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
+            .expect("canonicalized orphan Diamond update should be removable after exact proof");
+    assert_eq!(cleanup.removed_update_records, 1);
+    assert!(
         super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_some(),
-        "canonicalized add/update ids must lifecycle-proof within the same payload"
+        "canonicalized payload must lifecycle-proof after the bounded missing-object cleanup"
     );
 }
 

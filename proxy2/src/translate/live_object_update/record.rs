@@ -8,11 +8,12 @@ use super::{
     CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
     EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
     EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
-    EE_UPDATE_SCALE_STATE_READ_BYTES, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
-    LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
-    LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
+    EE_UPDATE_SCALE_STATE_READ_BYTES, ITEM_OBJECT_TYPE, LEGACY_UPDATE_APPEARANCE_MASK,
+    LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
+    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, door, effects, locstring, placeable, read_u16_le, read_u32_le,
+    TRIGGER_OBJECT_TYPE, bits, door, effects, item, locstring, placeable, read_u16_le, read_u32_le,
     reader, trigger, write_u32_le, writer,
 };
 
@@ -73,6 +74,39 @@ pub(super) fn rewrite_update_record_for_ee(
             bytes_inserted: effect_rewrite.bytes_inserted,
             ..RecordRewrite::default()
         });
+    }
+
+    if object_type == ITEM_OBJECT_TYPE {
+        if !*bit_cursor_reliable {
+            return None;
+        }
+        let item_rewrite = item::rewrite_update_record_for_ee(
+            live_bytes,
+            record_offset,
+            record_end,
+            bits,
+            *bit_cursor,
+        )?;
+        *bit_cursor = item_rewrite.next_bit_cursor;
+        let rewrite = RecordRewrite {
+            rewritten: item_rewrite.rewritten,
+            mask_changed: item_rewrite.mask_changed,
+            bytes_removed: item_rewrite.bytes_removed,
+            ..RecordRewrite::default()
+        };
+        if rewrite.rewritten {
+            tracing::info!(
+                object_type,
+                object_id = format_args!("0x{object_id:08X}"),
+                raw_mask = format_args!("0x{raw_mask:08X}"),
+                translated_mask = format_args!("0x{:08X}", item::translate_update_mask(raw_mask)),
+                record_offset,
+                record_end = *record_end,
+                bytes_removed = rewrite.bytes_removed,
+                "server->client live-object item update translated for EE"
+            );
+        }
+        return Some(rewrite);
     }
     let legacy_door_state_update_requires_translation =
         object_type == DOOR_OBJECT_TYPE && (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0;
@@ -332,6 +366,95 @@ pub(super) fn rewrite_update_record_for_ee(
                 fragment_source_mask = translated_mask | LEGACY_UPDATE_NAME_MASK;
                 orientation_fragment_rewrite = OrientationFragmentRewrite::ForceScalar;
             }
+        }
+    } else if object_type == PLACEABLE_OBJECT_TYPE
+        && translated_mask != raw_mask
+        && (raw_mask & LEGACY_UPDATE_NAME_MASK) == 0
+        && (raw_mask & !translated_mask) != 0
+        && (raw_mask & !translated_mask & !placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) == 0
+    {
+        let mut low_tail_candidate_mask = translated_mask;
+        let mut low_tail_prefix_end =
+            door_placeable_update_read_end_for_current_orientation_branch(
+                live_bytes,
+                record_offset,
+                *record_end,
+                low_tail_candidate_mask,
+                bits,
+                *bit_cursor,
+            )
+            .filter(|prefix_end| {
+                *prefix_end == *record_end
+                    || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+            });
+        if low_tail_prefix_end.is_none() && (translated_mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+            // `0x20` is decompile-owned in EE `sub_14079C050` and Diamond
+            // `sub_467AE0`: it must read at least a WORD. Some CEP placeable
+            // low-bit updates set that bit without carrying the read bytes.
+            // In that exact case, the only valid EE shape is the same shared
+            // prefix with the absent appearance field removed.
+            let without_appearance = translated_mask & !LEGACY_UPDATE_APPEARANCE_MASK;
+            if let Some(prefix_end) = door_placeable_update_read_end_for_current_orientation_branch(
+                live_bytes,
+                record_offset,
+                *record_end,
+                without_appearance,
+                bits,
+                *bit_cursor,
+            )
+            .filter(|prefix_end| {
+                *prefix_end == *record_end
+                    || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+            }) {
+                low_tail_candidate_mask = without_appearance;
+                low_tail_prefix_end = Some(prefix_end);
+            }
+        }
+        if let Some(prefix_end) = low_tail_prefix_end {
+            // CEP v2.2 local Diamond placeable updates can set low 0x40/0x80
+            // mask bits and append a bounded legacy name/control tail after
+            // the exact shared generic prefix. EE has no reader for those low
+            // bits in either the generic update leg (`sub_14079C050`) or
+            // placeable-specific leg (`sub_140797780`), so the bridge must
+            // prove the prefix and remove only the legacy-only tail before
+            // emitting the EE mask.
+            translated_mask = low_tail_candidate_mask;
+            can_translate_read_buffer = true;
+            fragment_source_mask = translated_mask;
+            inline_name_drop_begin = (prefix_end < *record_end).then_some(prefix_end);
+        }
+    } else if object_type == PLACEABLE_OBJECT_TYPE
+        && raw_mask == translated_mask
+        && raw_mask
+            == (LEGACY_UPDATE_POSITION_MASK
+                | LEGACY_UPDATE_ORIENTATION_MASK
+                | LEGACY_UPDATE_SCALE_STATE_MASK
+                | LEGACY_UPDATE_STATE_MASK)
+    {
+        if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
+            live_bytes,
+            record_offset,
+            *record_end,
+            translated_mask,
+            false,
+        )
+        .filter(|prefix_end| {
+            prefix_end
+                .checked_add(2)
+                .is_some_and(|name_offset| name_offset <= *record_end)
+                && read_u16_le(live_bytes, *prefix_end).is_some()
+                && reader::legacy_name_tail_ready(live_bytes, *prefix_end + 2, *record_end)
+        }) {
+            // Local CEP placeable updates can append a legacy-only generic
+            // WORD plus direct CExoString after the exact EE shared
+            // position/orientation/scale/state prefix even though the name bit
+            // is not present. EE `sub_14079C050` and placeable-specific
+            // `sub_140797780` have no consumer for that suffix; once the typed
+            // prefix is proven, drop only the suffix before exact validation.
+            can_translate_read_buffer = true;
+            inline_name_drop_begin = Some(prefix_end);
+            fragment_source_mask = translated_mask;
+            orientation_fragment_rewrite = OrientationFragmentRewrite::ForceScalar;
         }
     }
 
@@ -658,6 +781,17 @@ pub(super) fn advance_verified_update_record_for_ee(
         return true;
     }
 
+    if let Some(next_bit_cursor) = item::advance_verified_ee_item_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) {
+        *bit_cursor = next_bit_cursor;
+        return true;
+    }
+
     let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
         live_bytes,
         offset,
@@ -695,6 +829,7 @@ fn translate_legacy_live_object_update_mask(object_type: u8, raw_mask: u32) -> u
     match object_type {
         PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
         DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
+        ITEM_OBJECT_TYPE => item::translate_update_mask(raw_mask),
         TRIGGER_OBJECT_TYPE => raw_mask & LEGACY_UPDATE_POSITION_MASK,
         _ => raw_mask,
     }
@@ -748,6 +883,34 @@ fn door_placeable_update_read_end_for_orientation_branch(
         cursor = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
     }
     (cursor <= record_end).then_some(cursor)
+}
+
+fn door_placeable_update_read_end_for_current_orientation_branch(
+    bytes: &[u8],
+    record_start: usize,
+    record_end: usize,
+    mask: u32,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    let orientation_bit_cursor =
+        bit_cursor.checked_add(if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        } else {
+            0
+        })?;
+    let vector_orientation = if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        fragment_bits.get(orientation_bit_cursor).copied()?
+    } else {
+        false
+    };
+    door_placeable_update_read_end_for_orientation_branch(
+        bytes,
+        record_start,
+        record_end,
+        mask,
+        vector_orientation,
+    )
 }
 
 pub(super) fn door_placeable_legacy_inline_name_cursor(record_start: usize, mask: u32) -> usize {
@@ -931,7 +1094,7 @@ fn rewrite_legacy_live_object_update_bits(
                 return None;
             }
             cursor += LEGACY_UPDATE_STATE_FRAGMENT_BITS;
-            if object_type == DOOR_OBJECT_TYPE {
+            if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
                 bits::insert_msb_bit(bits, cursor, false)?;
                 cursor += 1;
                 rewrite.bits_inserted = rewrite.bits_inserted.saturating_add(1);
