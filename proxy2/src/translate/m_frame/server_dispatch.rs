@@ -1065,10 +1065,45 @@ fn translate_live_object_declared_length_repair(
         live_object::LiveObjectDeclaredLengthRepairCandidate,
     > = None;
 
+    if let Some(repair) =
+        live_object::declared_length_repair_creature_appearance_update_read_split_candidate(payload)
+    {
+        if let Some((candidate, claim, changed_by_semantic_rewrite)) =
+            build_declared_length_repaired_live_object_candidate(
+                payload,
+                &repair,
+                latest_area_placeables,
+            )
+        {
+            if claim.add_records > 0
+                && claim.creature_appearance_records > 0
+                && claim.creature_update_records > 0
+            {
+                tracing::info!(
+                    old_declared = repair.old_declared,
+                    repaired_declared = repair.new_declared,
+                    old_payload_length = repair.old_payload_length,
+                    read_bytes = repair.read_bytes_length,
+                    fragment_bytes = repair.fragment_bytes_length,
+                    add_records = claim.add_records,
+                    creature_appearance_records = claim.creature_appearance_records,
+                    creature_update_records = claim.creature_update_records,
+                    changed_by_semantic_rewrite,
+                    exact_claim = true,
+                    "server live-object declared length repaired by exact creature appearance/update proof despite ambiguous fragment-tail bytes"
+                );
+                *payload = candidate;
+                return claimed();
+            }
+        }
+    }
+
     for repair in live_object::declared_length_repair_candidates(payload) {
         if repair.old_declared == repair.new_declared {
             continue;
         }
+        let source_fragment_capacity_plausible =
+            live_object::declared_length_repair_fragment_capacity_plausible(payload, &repair);
         let ambiguous_live_tail =
             live_object::declared_length_repair_tail_contains_live_object_read_boundary(
                 payload, &repair,
@@ -1081,8 +1116,6 @@ fn translate_live_object_declared_length_repair(
             last_ambiguous_tail_repair = Some(repair);
             continue;
         }
-        let source_fragment_capacity_plausible =
-            live_object::declared_length_repair_fragment_capacity_plausible(payload, &repair);
         if !source_fragment_capacity_plausible && latest_area_placeables.is_none() {
             fragment_capacity_candidates_skipped =
                 fragment_capacity_candidates_skipped.saturating_add(1);
@@ -1093,19 +1126,13 @@ fn translate_live_object_declared_length_repair(
             continue;
         }
 
-        let mut candidate = payload.clone();
-        let Some(declared_slot) = candidate.get_mut(3..7) else {
-            continue;
-        };
-        declared_slot.copy_from_slice(&repair.new_declared.to_le_bytes());
-
-        let claimed_by_rewrite = live_update::rewrite_payload_to_exact_ee_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some();
-        let exact_claim = live_update::claim_payload_if_verified(&candidate).is_some();
-        if claimed_by_rewrite || exact_claim {
+        if let Some((candidate, _claim, changed_by_semantic_rewrite)) =
+            build_declared_length_repaired_live_object_candidate(
+                payload,
+                &repair,
+                latest_area_placeables,
+            )
+        {
             tracing::info!(
                 old_declared = repair.old_declared,
                 repaired_declared = repair.new_declared,
@@ -1113,8 +1140,8 @@ fn translate_live_object_declared_length_repair(
                 read_bytes = repair.read_bytes_length,
                 fragment_bytes = repair.fragment_bytes_length,
                 source_fragment_capacity_preflight = source_fragment_capacity_plausible,
-                changed_by_semantic_rewrite = claimed_by_rewrite,
-                exact_claim,
+                changed_by_semantic_rewrite,
+                exact_claim = true,
                 "server live-object declared length repaired by exact semantic proof in dispatch"
             );
             *payload = candidate;
@@ -1184,6 +1211,24 @@ fn translate_live_object_declared_length_repair(
     }
 
     ServerTranslatorOutcome::None
+}
+
+fn build_declared_length_repaired_live_object_candidate(
+    payload: &[u8],
+    repair: &live_object::LiveObjectDeclaredLengthRepairCandidate,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) -> Option<(Vec<u8>, live_update::ClaimSummary, bool)> {
+    let mut candidate = payload.to_vec();
+    let declared_slot = candidate.get_mut(3..7)?;
+    declared_slot.copy_from_slice(&repair.new_declared.to_le_bytes());
+
+    let changed_by_semantic_rewrite = live_update::rewrite_payload_to_exact_ee_if_possible(
+        &mut candidate,
+        latest_area_placeables,
+    )
+    .is_some();
+    let claim = live_update::claim_payload_if_verified(&candidate)?;
+    Some((candidate, claim, changed_by_semantic_rewrite))
 }
 
 fn translate_live_object_add_records(
@@ -2277,6 +2322,37 @@ mod tests {
         assert!(
             crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
         );
+    }
+
+    #[test]
+    fn dispatcher_claims_local_dark_ranger_current_player_declared_repair() {
+        // Local Dark Ranger seq13 carries a stale declared read window over a
+        // current-player `A/5`, `P/5`, `U/5` trio. Its real CNW fragment tail
+        // contains byte patterns that resemble live-object opcodes, so the
+        // dispatcher must not accept a short prefix, but it may accept the
+        // exact same-object creature appearance/update split after the focused
+        // typed translators and final EE validator prove it.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq13_current_player_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Dark Ranger declared repair must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Dark Ranger payload must be exact EE live-object shape");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+        assert!(claim.creature_update_records >= 1);
     }
 
     #[test]

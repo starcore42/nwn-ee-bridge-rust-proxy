@@ -581,6 +581,93 @@ pub fn declared_length_repair_tail_contains_live_object_read_boundary(
     fragment_tail_contains_legacy_live_object_read_boundary(bytes, tail_start)
 }
 
+pub fn declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
+    bytes: &[u8],
+    repair: &LiveObjectDeclaredLengthRepairCandidate,
+) -> bool {
+    let Ok(split) = usize::try_from(repair.new_declared) else {
+        return false;
+    };
+    if split <= LEGACY_LIVE_BYTES_OFFSET || split > bytes.len() {
+        return false;
+    }
+
+    // This is not a semantic claim. It only allows the dispatcher to spend a
+    // bounded exact-rewrite attempt on an otherwise ambiguous stale-declared
+    // split whose read side ends exactly after the decompile-owned creature
+    // appearance/update pairing. The final EE validator still owns the emitted
+    // packet shape.
+    let live = &bytes[LEGACY_LIVE_BYTES_OFFSET..split];
+    let mut appearance_ids = HashSet::new();
+    let mut offset = 0usize;
+    let mut records = 0usize;
+    while offset + LEGACY_UPDATE_HEADER_BYTES <= live.len() && records < 64 {
+        if !looks_like_legacy_live_object_sub_message_boundary(live, offset) {
+            offset = offset.saturating_add(1);
+            continue;
+        }
+
+        let next =
+            find_next_legacy_live_object_sub_message_boundary_after(live, offset, live.len())
+                .min(live.len());
+        if next <= offset {
+            break;
+        }
+        let opcode = live[offset];
+        let object_type = live[offset + 1];
+        let object_id = read_u32_le(live, offset + 2).unwrap_or(u32::MAX);
+        if object_type == CREATURE_OBJECT_TYPE && object_id != u32::MAX {
+            if opcode == b'P' {
+                appearance_ids.insert(object_id);
+            } else if opcode == b'U' && appearance_ids.contains(&object_id) && next == live.len() {
+                return true;
+            }
+        }
+        offset = next;
+        records = records.saturating_add(1);
+    }
+
+    false
+}
+
+pub fn declared_length_repair_creature_appearance_update_read_split_candidate(
+    payload: &[u8],
+) -> Option<LiveObjectDeclaredLengthRepairCandidate> {
+    if payload.len() < LEGACY_LIVE_BYTES_OFFSET + 1
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
+        || payload[2] != LIVE_OBJECT_MINOR
+    {
+        return None;
+    }
+
+    let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    let mut seen_splits = HashSet::new();
+    decompile_owned_live_object_read_split_candidates(
+        payload,
+        LEGACY_LIVE_BYTES_OFFSET,
+        payload.len(),
+    )
+    .into_iter()
+    .filter_map(|split| {
+        declared_length_repair_candidate_for_split(
+            payload,
+            old_declared,
+            split,
+            &mut seen_splits,
+            true,
+        )
+    })
+    .filter(|candidate| {
+        declared_length_repair_tail_contains_live_object_read_boundary(payload, candidate)
+            && declared_length_repair_fragment_capacity_plausible(payload, candidate)
+            && declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
+                payload, candidate,
+            )
+    })
+    .max_by_key(|candidate| candidate.read_bytes_length)
+}
+
 pub fn declared_length_repair_fragment_capacity_plausible(
     bytes: &[u8],
     repair: &LiveObjectDeclaredLengthRepairCandidate,

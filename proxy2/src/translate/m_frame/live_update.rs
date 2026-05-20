@@ -283,6 +283,67 @@ mod tests {
     }
 
     #[test]
+    fn local_dark_ranger_seq13_current_player_stream_rewrites_to_exact_shape() {
+        // Local Dark Ranger harness capture from 2026-05-21. The Diamond
+        // server emitted a stale declared read-window over a current-player
+        // add/appearance/update stream; strict dispatch quarantined it until
+        // the typed live-object translators owned the full EE reader shape.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq13_current_player_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Dark Ranger current-player stream documents the pre-rewrite Diamond shape"
+        );
+        let repair = live_object::declared_length_repair_candidates(&payload)
+            .into_iter()
+            .filter(|candidate| {
+                live_object::declared_length_repair_tail_contains_live_object_read_boundary(
+                    &payload, candidate,
+                ) && live_object::declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
+                    &payload, candidate,
+                )
+            })
+            .max_by_key(|candidate| candidate.read_bytes_length)
+            .expect("fixture should contain a bounded current-player appearance/update split");
+        payload[3..7].copy_from_slice(&repair.new_declared.to_le_bytes());
+
+        let started = std::time::Instant::now();
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Dark Ranger current-player stream should rewrite to exact EE shape");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "Dark Ranger current-player rewrite must stay bounded"
+        );
+
+        assert!(summary.changed());
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Dark Ranger current-player stream must validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+    }
+
+    #[test]
+    fn local_dark_ranger_seq15_pending_stream_validates_exact_shape() {
+        // Claimed pending stream from the same Dark Ranger harness pass. This
+        // stays as fixture evidence that the stream buffer flush emits an exact
+        // EE live-object shape after the declared-length repair above.
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq15_pending_claimed_liveobject_20260521.bin"
+        )
+        .as_slice();
+
+        let claim = claim_payload_if_verified(payload)
+            .expect("Dark Ranger pending live-object stream must validate exactly");
+        assert_eq!(claim.live_bytes_length + 7, claim.declared);
+        assert!(claim.records_examined >= 1);
+        assert!(claim.add_records >= 1);
+    }
+
+    #[test]
     fn local_diamond_seq20_auto_inventory_gia_gra_claims_exact_ee_shape() {
         let payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_seq20_auto_inventory_gia_gra_20260519.bin"
