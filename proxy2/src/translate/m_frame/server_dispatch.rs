@@ -1496,7 +1496,7 @@ fn translate_area_client_area(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
     scope: SemanticScope,
-    _: Option<&module_resources::ModuleResourceRuntime>,
+    module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     // `Area_ClientArea` is a semantic CNW payload; the reliable-window
     // transport may carry it either as the whole deflated reassembly or as a
@@ -1505,7 +1505,16 @@ fn translate_area_client_area(
     // area translator owns both scopes instead of letting coalescing decide
     // packet validity.
     let _ = scope;
-    match area::rewrite_area_client_area_payload(payload) {
+    let observed_module_context =
+        module_resource_runtime.and_then(|runtime| runtime.observed_module_context());
+    tracing::debug!(
+        has_observed_module_context = observed_module_context.is_some(),
+        "server Area_ClientArea translator checking runtime Module_Info context"
+    );
+    match area::rewrite_area_client_area_payload_with_module_context(
+        payload,
+        observed_module_context.as_ref(),
+    ) {
         Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
             area_rewrite: Some(summary),
         }),
@@ -1533,6 +1542,15 @@ fn translate_module_info(
                     "server Module_Info resource declaration was not accepted by runtime"
                 );
                 return ServerTranslatorOutcome::None;
+            }
+            if let Some(context) = summary.observed_context.clone() {
+                if !runtime.observe_module_context(context) {
+                    tracing::warn!(
+                        "server Module_Info observed module context was not accepted by runtime"
+                    );
+                    return ServerTranslatorOutcome::None;
+                }
+                tracing::debug!("server Module_Info observed module context recorded in runtime");
             }
         }
         *payload = candidate;

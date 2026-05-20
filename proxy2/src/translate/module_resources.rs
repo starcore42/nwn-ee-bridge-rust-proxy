@@ -55,6 +55,7 @@ pub struct ModuleResourceRuntime {
     profile_name: String,
     nwsync_advertisement: Option<Advertisement>,
     observed_declaration: Arc<Mutex<Option<ObservedModuleResourceDeclaration>>>,
+    observed_module_context: Arc<Mutex<Option<crate::translate::module::ObservedModuleContext>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,7 @@ impl ModuleResourceRuntime {
             profile_name,
             nwsync_advertisement,
             observed_declaration: Arc::new(Mutex::new(None)),
+            observed_module_context: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -83,6 +85,7 @@ impl ModuleResourceRuntime {
             profile_name: self.profile_name.clone(),
             nwsync_advertisement: self.nwsync_advertisement.clone(),
             observed_declaration: Arc::new(Mutex::new(None)),
+            observed_module_context: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -132,6 +135,23 @@ impl ModuleResourceRuntime {
         true
     }
 
+    pub(crate) fn observe_module_context(
+        &self,
+        context: crate::translate::module::ObservedModuleContext,
+    ) -> bool {
+        let Ok(mut observed) = self.observed_module_context.lock() else {
+            return false;
+        };
+        *observed = Some(context);
+        true
+    }
+
+    pub(crate) fn observed_module_context(
+        &self,
+    ) -> Option<crate::translate::module::ObservedModuleContext> {
+        self.observed_module_context.lock().ok()?.clone()
+    }
+
     fn observed_module_resource_declaration(&self) -> Option<ObservedModuleResourceDeclaration> {
         self.observed_declaration.lock().ok()?.clone()
     }
@@ -143,6 +163,7 @@ impl Default for ModuleResourceRuntime {
             profile_name: "higher-ground".to_string(),
             nwsync_advertisement: None,
             observed_declaration: Arc::new(Mutex::new(None)),
+            observed_module_context: Arc::new(Mutex::new(None)),
         }
     }
 }

@@ -50,6 +50,7 @@
 
 use std::{
     collections::HashSet,
+    fmt::Write,
     fs,
     path::{Path, PathBuf},
 };
@@ -314,6 +315,13 @@ struct LegacyAreaSourceTailProof {
 }
 
 pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
+    rewrite_area_client_area_payload_with_module_context(payload, None)
+}
+
+pub(crate) fn rewrite_area_client_area_payload_with_module_context(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<AreaRewriteSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != AREA_MAJOR
@@ -324,15 +332,20 @@ pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRew
 
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared == 0 {
-        if let Some(summary) = rewrite_declared_zero_area_client_area_payload(payload) {
+        if let Some(summary) =
+            rewrite_declared_zero_area_client_area_payload(payload, module_context)
+        {
             return Some(summary);
         }
     }
 
-    rewrite_declared_area_client_area_payload(payload)
+    rewrite_declared_area_client_area_payload(payload, module_context)
 }
 
-fn rewrite_declared_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
+fn rewrite_declared_area_client_area_payload(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<AreaRewriteSummary> {
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared < (HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES) as u32 {
         tracing::warn!(
@@ -416,6 +429,7 @@ fn rewrite_declared_area_client_area_payload(payload: &mut Vec<u8>) -> Option<Ar
         legacy_area_object_id,
         &static_layout,
         !area_resref_was_plausible || fragmented_cexo_resource_repair_required,
+        module_context,
     );
     if let Some(resource_info) = module_resource_area_repair.as_ref() {
         area_resref = resource_info.resref.clone();
@@ -726,6 +740,7 @@ fn rewrite_declared_area_client_area_payload(payload: &mut Vec<u8>) -> Option<Ar
 
 fn rewrite_declared_zero_area_client_area_payload(
     payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
         return None;
@@ -746,7 +761,9 @@ fn rewrite_declared_zero_area_client_area_payload(
 
         let mut staged = payload.clone();
         write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
-        let Some(mut summary) = rewrite_declared_area_client_area_payload(&mut staged) else {
+        let Some(mut summary) =
+            rewrite_declared_area_client_area_payload(&mut staged, module_context)
+        else {
             continue;
         };
         summary.old_declared = 0;
@@ -1296,6 +1313,7 @@ fn repair_compact_area_from_module_resource(
     legacy_area_object_id: u32,
     layout: &AreaStaticLayout,
     allow_fragmented_cexo_name_repair: bool,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<ModuleAreaResourceInfo> {
     if layout.dialect != AreaStaticDialect::Legacy169 {
         return None;
@@ -1323,6 +1341,7 @@ fn repair_compact_area_from_module_resource(
         payload,
         fragment_offset,
         legacy_area_object_id,
+        module_context,
     )?;
     if info.width == 0
         || info.height == 0
@@ -3411,8 +3430,20 @@ fn module_area_resource_info_for_compact_packet(
     payload: &[u8],
     fragment_offset: usize,
     legacy_area_object_id: u32,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<ModuleAreaResourceInfo> {
-    let context = crate::translate::module::observed_module_context()?;
+    let owned_context = if module_context.is_none() {
+        crate::translate::module::observed_module_context()
+    } else {
+        None
+    };
+    let Some(context) = module_context.or(owned_context.as_ref()) else {
+        tracing::debug!(
+            legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+            "Area_ClientArea compact resource repair skipped: no observed Module_Info context"
+        );
+        return None;
+    };
     let area_indices = context
         .areas
         .iter()
@@ -3443,7 +3474,20 @@ fn module_area_resource_info_for_compact_packet(
         );
         return None;
     };
-    let module_path = observed_module_file_path(&context)?;
+    let Some(module_path) = observed_module_file_path(context) else {
+        tracing::debug!(
+            legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+            module_name = context.localized_name.as_str(),
+            module_resref = context.module_resref.as_str(),
+            observed_areas = ?context
+                .areas
+                .iter()
+                .map(|area| format!("0x{:08X}:{}", area.object_id, area.name))
+                .collect::<Vec<_>>(),
+            "Area_ClientArea compact resource repair skipped: observed Module_Info context did not resolve to one local module file"
+        );
+        return None;
+    };
     let table = read_module_area_resource_table(&module_path)?;
     if !module_table_matches_observed_context(&table, &context) {
         tracing::debug!(
@@ -3738,10 +3782,21 @@ fn normalized_resource_text(value: &str) -> String {
 fn observed_module_file_path(
     context: &crate::translate::module::ObservedModuleContext,
 ) -> Option<PathBuf> {
+    observed_module_file_path_from_candidates(context, observed_module_file_candidates(context))
+}
+
+fn observed_module_file_path_from_candidates<I>(
+    context: &crate::translate::module::ObservedModuleContext,
+    candidates: I,
+) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
     let mut seen = HashSet::new();
     let mut fallback = None;
     let mut fallback_count = 0usize;
-    for candidate in observed_module_file_candidates(context) {
+    let mut fallback_keys = HashSet::new();
+    for candidate in candidates {
         if !seen.insert(path_key(&candidate)) || !candidate.is_file() {
             continue;
         }
@@ -3757,13 +3812,80 @@ fn observed_module_file_path(
             return Some(candidate);
         }
         if area_matches {
-            fallback_count = fallback_count.saturating_add(1);
-            if fallback.is_none() {
-                fallback = Some(candidate);
+            let table_key = module_area_resource_table_match_key(&table);
+            if fallback_keys.insert(table_key) {
+                fallback_count = fallback_count.saturating_add(1);
+                if fallback.is_none() {
+                    fallback = Some(candidate);
+                }
             }
         }
     }
     if fallback_count == 1 { fallback } else { None }
+}
+
+fn module_area_resource_table_match_key(table: &ModuleAreaResourceTable) -> String {
+    let mut key = String::new();
+    let _ = write!(
+        key,
+        "module:{:?}:{:?}|order:",
+        table.module_name.as_deref().unwrap_or_default(),
+        table.module_resref.as_deref().unwrap_or_default()
+    );
+    for area_resref in &table.area_order {
+        let _ = write!(key, "{area_resref:?};");
+    }
+    key.push_str("|areas:");
+    for area in &table.areas {
+        let _ = write!(
+            key,
+            "{:?}:{:?}:{}:{}:{:?}|tiles:",
+            area.resref, area.name, area.width, area.height, area.tileset
+        );
+        for tile in &area.tiles {
+            let _ = write!(
+                key,
+                "{}:{:08X}:{}:{}:{}:{}:{}:{}:{}:{};",
+                tile.tile_id,
+                tile.orientation,
+                tile.height_raw,
+                tile.main_light1,
+                tile.main_light2,
+                tile.source_light1,
+                tile.source_light2,
+                tile.anim_loop1,
+                tile.anim_loop2,
+                tile.anim_loop3
+            );
+        }
+        key.push_str("|notes:");
+        for note in &area.map_notes {
+            let _ = write!(
+                key,
+                "{:?}:{:08X}:{:08X}:{:08X};",
+                note.text,
+                note.x.to_bits(),
+                note.y.to_bits(),
+                note.z.to_bits()
+            );
+        }
+        key.push_str("|sounds:");
+        for sound in &area.sounds {
+            let _ = write!(
+                key,
+                "{:?}:{:08X}:{:08X}:{:08X}:",
+                sound.tag,
+                sound.x.to_bits(),
+                sound.y.to_bits(),
+                sound.z.to_bits()
+            );
+            for resref in &sound.resrefs {
+                let _ = write!(key, "{resref:?};");
+            }
+        }
+        key.push('|');
+    }
+    key
 }
 
 fn module_table_single_area_matches_observed_context(
@@ -4846,6 +4968,9 @@ mod tests {
         include_bytes!("../../fixtures/area/local_to_heir_cormanthor_client_area_compact.bin");
     const LOCAL_DARK_RANGER_INN_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_dark_ranger_inn_client_area_compact.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_DARK_RANGER_INN_AREA_VARIANT: &[u8] =
+        include_bytes!("../../fixtures/area/local_dark_ranger_inn_area_variant_20260521.bin");
     const LOCAL_WINDS_EREMOR_MOUNT_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_winds_eremor_mount_client_area_compact.bin");
     #[cfg(hgbridge_private_fixtures)]
@@ -5211,9 +5336,13 @@ mod tests {
             Some("cormanthor")
         );
 
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect("observed module context maps compact area packet to local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("observed module context maps compact area packet to local ARE resource");
         assert_eq!(compact_info.resref, "cormanthor");
         assert_eq!(compact_info.name, "Cormanthor");
         assert_eq!(compact_info.width, 8);
@@ -5290,6 +5419,7 @@ mod tests {
             0x8000_0000,
             &source_layout,
             false,
+            None,
         )
         .expect("compact area source fields repaired from local ARE resource");
         let repaired_scan = scan_area_tile_stream(&repaired_source, fragment_offset);
@@ -5395,9 +5525,13 @@ mod tests {
             Some(0)
         );
 
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect("observed module context maps compact area packet to local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("observed module context maps compact area packet to local ARE resource");
         assert_eq!(compact_info.resref, "innofthelasthope");
         assert_eq!(compact_info.name, "Inn of the Lance");
         assert_eq!(compact_info.width, 5);
@@ -5406,6 +5540,97 @@ mod tests {
 
         let summary = rewrite_area_client_area_payload(&mut payload)
             .expect("compact local Dark Ranger area rewrite");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten compact area should match EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "innofthelasthope");
+        assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, 5);
+        assert_eq!(summary.packet_height, 3);
+        assert_eq!(summary.tile_count, 15);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert!(proof.read_end == summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_dark_ranger_area_variant_uses_resource_tiles_when_packet_tiles_differ() {
+        let _context_guard = module_context_test_guard();
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            localized_name: "Dark R".to_string(),
+            module_resref: "Dark_R".to_string(),
+            areas: vec![
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0000,
+                    name: "Inn L".to_string(),
+                },
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0000,
+                    name: "Dead 's Marsh".to_string(),
+                },
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0000,
+                    name: "T Dark R 's Ruins".to_string(),
+                },
+            ],
+        };
+
+        let mut payload = LOCAL_DARK_RANGER_INN_AREA_VARIANT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("fixture read window");
+        let source_layout =
+            area_static_layout(&payload, fragment_offset).expect("compact static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondFixed20
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("innof")
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, source_layout.width_read_offset),
+            Some(5)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, source_layout.height_read_offset),
+            Some(0)
+        );
+        assert!(!scan_area_tile_stream(&payload, fragment_offset).valid);
+
+        let module_path = observed_module_file_path(&observed_context)
+            .expect("observed Dark Ranger local module file path");
+        let duplicate_path = std::env::temp_dir().join(format!(
+            "hgbridge-dark-ranger-module-copy-{}.mod",
+            std::process::id()
+        ));
+        std::fs::copy(&module_path, &duplicate_path)
+            .expect("copy matching module table for duplicate fallback proof");
+        let resolved_duplicate = observed_module_file_path_from_candidates(
+            &observed_context,
+            vec![duplicate_path.clone(), module_path.clone()],
+        );
+        std::fs::remove_file(&duplicate_path).expect("remove duplicate module copy");
+        assert_eq!(
+            resolved_duplicate.as_deref(),
+            Some(duplicate_path.as_path())
+        );
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("compact local Dark Ranger variant area rewrite");
         let proof = ee_area_client_area_exact_read_proof(&payload)
             .expect("rewritten compact area should match EE LoadArea cursor proof");
 
@@ -5483,9 +5708,13 @@ mod tests {
             &context
         ));
 
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect("compact packet should resolve to the unique local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("compact packet should resolve to the unique local ARE resource");
         assert_eq!(compact_info.resref, "mountiridor");
         assert_eq!(compact_info.name, "Mount Eremor");
         assert_eq!(compact_info.width, 16);
@@ -5501,6 +5730,7 @@ mod tests {
             0x8000_0000,
             &source_layout,
             false,
+            None,
         )
         .expect("compact area source fields repaired from local ARE resource");
         let repaired_scan = scan_area_tile_stream(&repaired_source, fragment_offset);
@@ -5611,9 +5841,13 @@ mod tests {
                 .expect("fragmented CExoString area-name fragments"),
             vec!["Welcom".to_string(), "o CEPv2.2".to_string()]
         );
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect("observed module context maps fragmented CExo area to local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("observed module context maps fragmented CExo area to local ARE resource");
         assert_eq!(
             usize::try_from(source_layout.area_name_length).ok(),
             Some(compact_info.name.len())
@@ -5718,9 +5952,13 @@ mod tests {
         ));
         assert!(!scan_area_tile_stream(&payload, fragment_offset).valid);
 
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect("observed module context maps fragmented CExo area to local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("observed module context maps fragmented CExo area to local ARE resource");
         assert_eq!(compact_info.resref, "area");
         assert_eq!(
             usize::try_from(source_layout.area_name_length).ok(),
@@ -5797,9 +6035,13 @@ mod tests {
                 .expect("short fixed area-name fragments"),
             vec![" A".to_string()]
         );
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&staged, fragment_offset, 0x8000_0000)
-                .expect("single-area Module_Info alias maps to local ARE resource");
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &staged,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("single-area Module_Info alias maps to local ARE resource");
         assert_eq!(compact_info.resref, "startarea");
         assert_eq!(compact_info.name, "! Start Area");
         let summary = rewrite_area_client_area_payload(&mut payload)
@@ -5887,11 +6129,13 @@ mod tests {
             source_layout.area_name_encoding,
             AreaNameEncoding::DiamondFixed21
         );
-        let compact_info =
-            module_area_resource_info_for_compact_packet(&payload, fragment_offset, 0x8000_0000)
-                .expect(
-                    "observed module context maps split item area packet to local ARE resource",
-                );
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            None,
+        )
+        .expect("observed module context maps split item area packet to local ARE resource");
         assert_eq!(compact_info.resref, "itemrestrictions");
         assert_eq!(compact_info.name, "Restrictions Area");
 

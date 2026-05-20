@@ -102,6 +102,7 @@ pub struct RewriteSummary {
     pub zero_length_name_repairs: u32,
     pub zero_length_name_terminator: bool,
     pub compact_legacy_no_resource: bool,
+    pub(crate) observed_context: Option<ObservedModuleContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +297,7 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
             .map(|rewrite| rewrite.zero_length_name_terminator)
             .unwrap_or(false),
         compact_legacy_no_resource: false,
+        observed_context: None,
     })
 }
 
@@ -413,7 +415,7 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
         "server Module_Info compact Diamond no-resource shape rewritten to EE read-window layout"
     );
 
-    remember_compact_module_context(&compact);
+    let observed_context = remember_compact_module_context(&compact);
     *payload = rewritten;
 
     Some(RewriteSummary {
@@ -432,6 +434,7 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
         zero_length_name_repairs: 0,
         zero_length_name_terminator: false,
         compact_legacy_no_resource: true,
+        observed_context: Some(observed_context),
     })
 }
 
@@ -449,7 +452,7 @@ pub(crate) fn remember_observed_module_context_for_tests(context: ObservedModule
     }
 }
 
-fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) {
+fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) -> ObservedModuleContext {
     let context = ObservedModuleContext {
         localized_name: compact.localized_name.clone(),
         module_resref: compact.module_resref.clone(),
@@ -479,6 +482,7 @@ fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) {
         areas = ?area_summaries,
         "observed compact Module_Info context for later resource-backed packet translation"
     );
+    context
 }
 
 fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<CompactLegacyModuleInfo> {
