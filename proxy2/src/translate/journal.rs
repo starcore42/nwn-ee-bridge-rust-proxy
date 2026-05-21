@@ -17,9 +17,10 @@
 //! - `SendServerToPlayerJournalRemoveQuest`: one CExoString.
 //! - `SendServerToPlayerJournalSetQuestPicture`: CExoString tag, INT picture.
 //!
-//! `Journal_AddQuest`, `Journal_FullUpdate`, and the broader
-//! `Journal_Updated` locstring payload should each get a typed
-//! `CExoLocString` parser before being broadened further.
+//! `Journal_AddQuest` and `Journal_FullUpdate` should each get a typed parser
+//! before being claimed. `Journal_Updated` is currently claimed for the
+//! decompile-backed TLK/string-ref `WriteCExoLocStringServer(..., 0)` branch
+//! followed by the two update BOOLs.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -41,6 +42,11 @@ const MAX_JOURNAL_TITLE_BYTES: usize = 512;
 const MAX_JOURNAL_STRING_BYTES: usize = 4096;
 const MAX_JOURNAL_FRAGMENT_BYTES: usize = 8;
 const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const JOURNAL_UPDATED_TLK_FRAGMENT_BITS: usize = 4;
+const JOURNAL_UPDATED_INLINE_FRAGMENT_BITS: usize = 3;
+const JOURNAL_UPDATED_LOCSTRING_HAS_TLK_REF_BIT: usize = CNW_FRAGMENT_HEADER_BITS;
+const JOURNAL_UPDATED_LOCSTRING_CLIENT_TLK_BIT: usize = CNW_FRAGMENT_HEADER_BITS + 1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct JournalClaimSummary {
@@ -153,15 +159,39 @@ fn claim_journal_set_quest_picture(payload: &[u8], minor: u8) -> Option<JournalC
 }
 
 fn claim_journal_updated(payload: &[u8], minor: u8) -> Option<JournalClaimSummary> {
-    if payload.len() < READ_START + CNW_LENGTH_BYTES {
+    claim_journal_updated_tlk_ref(payload, minor)
+        .or_else(|| claim_journal_updated_inline_locstring(payload, minor))
+}
+
+fn claim_journal_updated_tlk_ref(payload: &[u8], minor: u8) -> Option<JournalClaimSummary> {
+    let declared = exact_declared_with_fragment_bits(payload, JOURNAL_UPDATED_TLK_FRAGMENT_BITS)?;
+    if declared != READ_START.checked_add(DWORD_BYTES)? {
         return None;
     }
 
-    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
-    if declared < READ_START + CNW_LENGTH_BYTES
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_JOURNAL_FRAGMENT_BYTES
+    let fragment = payload.get(declared..)?;
+    if fragment_bit(fragment, JOURNAL_UPDATED_LOCSTRING_HAS_TLK_REF_BIT)? != true
+        || fragment_bit(fragment, JOURNAL_UPDATED_LOCSTRING_CLIENT_TLK_BIT)? != false
     {
+        return None;
+    }
+
+    Some(JournalClaimSummary {
+        minor,
+        declared,
+        title_len: 0,
+        fragment_bytes: payload.len() - declared,
+    })
+}
+
+fn claim_journal_updated_inline_locstring(
+    payload: &[u8],
+    minor: u8,
+) -> Option<JournalClaimSummary> {
+    let declared =
+        exact_declared_with_fragment_bits(payload, JOURNAL_UPDATED_INLINE_FRAGMENT_BITS)?;
+    let fragment = payload.get(declared..)?;
+    if fragment_bit(fragment, JOURNAL_UPDATED_LOCSTRING_HAS_TLK_REF_BIT)? {
         return None;
     }
 
@@ -183,6 +213,20 @@ fn claim_journal_updated(payload: &[u8], minor: u8) -> Option<JournalClaimSummar
     })
 }
 
+fn exact_declared_with_fragment_bits(payload: &[u8], data_bits: usize) -> Option<usize> {
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let required_bits = CNW_FRAGMENT_HEADER_BITS.checked_add(data_bits)?;
+    let required_fragment_bytes = required_bits.checked_add(7)?.checked_div(8)?;
+    if declared < READ_START
+        || payload.len() != declared.checked_add(required_fragment_bytes)?
+        || payload.len().saturating_sub(declared) > MAX_JOURNAL_FRAGMENT_BYTES
+        || cnw_fragment_consumable_bits(payload.get(declared..)?)? != required_bits
+    {
+        return None;
+    }
+    Some(declared)
+}
+
 fn exact_declared_with_empty_fragment(payload: &[u8]) -> Option<usize> {
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared < READ_START
@@ -192,6 +236,28 @@ fn exact_declared_with_empty_fragment(payload: &[u8]) -> Option<usize> {
         return None;
     }
     Some(declared)
+}
+
+fn cnw_fragment_consumable_bits(fragment: &[u8]) -> Option<usize> {
+    let first = *fragment.first()?;
+    let final_fragment_bits = ((first & 0xE0) >> 5) as usize;
+    if final_fragment_bits == 0 {
+        fragment.len().checked_mul(8)
+    } else {
+        fragment
+            .len()
+            .checked_sub(1)?
+            .checked_mul(8)?
+            .checked_add(final_fragment_bits)
+    }
+}
+
+fn fragment_bit(fragment: &[u8], bit_index: usize) -> Option<bool> {
+    if bit_index >= cnw_fragment_consumable_bits(fragment)? {
+        return None;
+    }
+    let byte = *fragment.get(bit_index / 8)?;
+    Some((byte & (0x80 >> (bit_index % 8))) != 0)
 }
 
 fn read_c_exo_string(
@@ -259,6 +325,74 @@ mod tests {
         *payload.last_mut().unwrap() = 0;
 
         assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn claims_decompile_backed_journal_updated_tlk_ref_shape() {
+        let payload = [
+            b'P',
+            JOURNAL_MAJOR,
+            JOURNAL_UPDATED_MINOR,
+            0x0B,
+            0,
+            0,
+            0,
+            0x16,
+            0xE2,
+            0,
+            0,
+            0xF4,
+        ];
+
+        let claim = claim_payload_if_verified(&payload).expect("claim");
+        assert_eq!(claim.minor, JOURNAL_UPDATED_MINOR);
+        assert_eq!(claim.declared, READ_START + DWORD_BYTES);
+        assert_eq!(claim.title_len, 0);
+        assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn claims_decompile_backed_journal_updated_inline_locstring_shape() {
+        let mut payload = journal_prefix(JOURNAL_UPDATED_MINOR);
+        write_string(&mut payload, "Quest advanced");
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.push(0xC8);
+
+        let claim = claim_payload_if_verified(&payload).expect("claim");
+        assert_eq!(claim.minor, JOURNAL_UPDATED_MINOR);
+        assert_eq!(
+            claim.declared,
+            READ_START + DWORD_BYTES + "Quest advanced".len()
+        );
+        assert_eq!(claim.title_len, "Quest advanced".len());
+        assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn rejects_journal_updated_tlk_ref_without_exact_fragment_shape() {
+        let mut payload = [
+            b'P',
+            JOURNAL_MAJOR,
+            JOURNAL_UPDATED_MINOR,
+            0x0B,
+            0,
+            0,
+            0,
+            0x16,
+            0xE2,
+            0,
+            0,
+            0xF4,
+        ];
+
+        payload[11] = 0xE4;
+        assert!(claim_payload_if_verified(&payload).is_none());
+
+        let mut trailing = payload.to_vec();
+        trailing[11] = 0xF4;
+        trailing.push(0);
+        assert!(claim_payload_if_verified(&trailing).is_none());
     }
 
     fn assert_claimed(payload: &[u8], minor: u8) {
