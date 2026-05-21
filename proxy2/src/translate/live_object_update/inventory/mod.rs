@@ -740,6 +740,14 @@ pub(super) fn rewrite_legacy_inventory_record_for_ee(
     }
 
     let mask = read_u16_le(bytes, record_offset + 5)?;
+    if mask == 0xD500 {
+        repair_d500_missing_low_d5ff_mask_for_ee(bytes, record_offset, *record_end)?;
+        return Some(InventoryRecordRewrite {
+            bytes_inserted: 0,
+            bytes_removed: 0,
+        });
+    }
+
     let feature25_cursor = match mask {
         0x2000 => record_offset.checked_add(7)?,
         0x2008 => {

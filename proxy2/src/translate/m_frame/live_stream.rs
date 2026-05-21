@@ -224,6 +224,32 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     }
 
     if starts_with_live_object_high_level(bytes) {
+        if state.live_object.pending_stream.is_some()
+            && complete_live_object_payload_claims_independently(
+                bytes,
+                Some(&state.area_context.latest_area_placeables),
+            )
+        {
+            if let Some(pending) = state.live_object.pending_stream.take() {
+                if let Some(candidate) = build_live_object_stream_payload(&pending) {
+                    dump_pending_live_object_candidate(
+                        &candidate,
+                        pending.first_sequence,
+                        pending.chunks,
+                        "pending-live-object-stale-before-independent-packet",
+                    );
+                }
+                tracing::info!(
+                    stale_first_sequence = pending.first_sequence,
+                    current_sequence = reassembly.first_sequence,
+                    stream_kind = pending.kind.as_str(),
+                    stale_chunks = pending.chunks,
+                    read_bytes = pending.read_bytes.len(),
+                    fragment_bytes = pending.fragment_bytes.len(),
+                    "server live-object pending stream dropped before independent complete GameObjUpdate_LiveObject"
+                );
+            }
+        }
         // Complete high-level live-object packets belong to server_dispatch's
         // focused semantic translators. This stream layer only buffers actual
         // continuations/fragments; running declared-length repair here forces
@@ -276,6 +302,22 @@ pub(super) fn maybe_buffer_or_flush_server_live_object_stream(
     }
 
     Ok(None)
+}
+
+fn complete_live_object_payload_claims_independently(
+    bytes: &[u8],
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) -> bool {
+    if !starts_with_live_object_high_level(bytes) || HighLevel::parse(bytes).is_none() {
+        return false;
+    }
+    if live_update::claim_payload_if_verified(bytes).is_some() {
+        return true;
+    }
+    let mut probe = bytes.to_vec();
+    live_update::rewrite_payload_to_exact_ee_if_possible(&mut probe, latest_area_placeables)
+        .is_some()
+        && live_update::claim_payload_if_verified(&probe).is_some()
 }
 
 fn starts_with_live_object_high_level(bytes: &[u8]) -> bool {
@@ -504,11 +546,6 @@ fn build_pending_live_object_stream_payload(state: &SessionState) -> Option<Vec<
     build_live_object_stream_payload(pending)
 }
 
-fn take_pending_live_object_stream_payload(state: &mut SessionState) -> Option<Vec<u8>> {
-    let pending = state.live_object.pending_stream.take()?;
-    build_live_object_stream_payload(&pending)
-}
-
 fn build_live_object_stream_payload(pending: &PendingLiveObjectStream) -> Option<Vec<u8>> {
     if pending.read_bytes.is_empty() || pending.fragment_bytes.is_empty() {
         return None;
@@ -632,6 +669,45 @@ mod tests {
             emit.is_none(),
             "complete P/05/01 payloads should continue to server_dispatch"
         );
+        assert_eq!(payload, original);
+        assert!(state.live_object.pending_stream.is_none());
+    }
+
+    #[test]
+    fn independent_complete_live_object_clears_stale_pending_stream() {
+        let mut state = SessionState::default();
+        state.live_object.pending_stream = Some(PendingLiveObjectStream {
+            kind: PendingLiveObjectStreamKind::LegacyHighLevelFragmentPrefix,
+            read_bytes: vec![b'A', 0x09, 0x84],
+            fragment_bytes: vec![0x60],
+            first_sequence: 16,
+            chunks: 4,
+        });
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 579,
+            expected_frames: 1,
+            first_sequence: 24,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+        };
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_seq38_town_greeter_northern_trader_20260519.bin"
+        )
+        .to_vec();
+        let original = payload.clone();
+
+        let emit = maybe_buffer_or_flush_server_live_object_stream(
+            &mut state,
+            &reassembly,
+            0,
+            true,
+            &mut payload,
+        )
+        .expect("stream inspection should not fail for complete high-level payload");
+
+        assert!(emit.is_none());
         assert_eq!(payload, original);
         assert!(state.live_object.pending_stream.is_none());
     }

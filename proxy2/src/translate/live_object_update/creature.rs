@@ -13,7 +13,9 @@ const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const VFX_DUR_LOWLIGHTVISION_ROW: u16 = 0x00F3;
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES: [u8; 2] = [0, 0];
-const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_OFFSET: usize = 26;
+const LEGACY_CREATURE_UPDATE_3967_ACTION0_WOE_BRIDGE_BLOCK_BYTES: [u8; 11] =
+    [0, 0, 0, 0, 0x80, 0x3F, 1, 0, 0, 0, 0];
+const LEGACY_CREATURE_APPEARANCE_NOOP_MASK: u16 = 0x0000;
 const LEGACY_CREATURE_APPEARANCE_NAME_ONLY_MASK: u16 = 0x0400;
 const MAX_CREATURE_UPDATE_ADJACENT_FRAGMENT_SPAN_BYTES: usize = 32;
 const LEGACY_LIVE_CREATURE_UPDATE_UNSUPPORTED_FEATURE_MASK: u32 =
@@ -188,11 +190,14 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
             return true;
         }
         *bit_cursor = original_bit_cursor;
-        if find_legacy_3967_action0_bridge_followup_removal(
-            bytes,
+        let mut trial_live_bytes = bytes.to_vec();
+        let mut trial_record_end = record_end;
+        let mut trial_fragment_bits = fragment_bits.to_vec();
+        if remove_3967_action0_legacy_bridge_followup_for_ee(
+            &mut trial_live_bytes,
             offset,
-            record_end,
-            fragment_bits,
+            &mut trial_record_end,
+            &mut trial_fragment_bits,
             original_bit_cursor,
         )
         .is_some()
@@ -1211,7 +1216,7 @@ fn advance_verified_creature_update_3967_action0_ee_record(
 }
 
 fn simulate_creature_update_3967_action0_ee_tail_cursor(
-    mut cursor: LegacyCreatureUpdateCursor<'_>,
+    cursor: LegacyCreatureUpdateCursor<'_>,
 ) -> Option<LegacyCreatureUpdateCursor<'_>> {
     let cursor = simulate_creature_update_3967_action0_pre_identity_ee_cursor(cursor)?;
     try_simulate_ee_creature_update_identity_optional_suffix(
@@ -1233,27 +1238,16 @@ fn simulate_creature_update_3967_action0_pre_identity_ee_cursor(
         return None;
     }
 
-    // EE `sub_140781E80` reads the mask-0x0004 action state byte after the
-    // action-code branch, then falls through to the next enabled mask branch.
-    // What action code 0 does not read is the legacy/HG movement follow-up
-    // count WORD that Diamond bridge captures carry after that state byte.
-    cursor.read_u8()?;
-
-    let branch_mode = {
-        cursor.read_u16()?;
-        cursor.read_u8()?
-    };
-    cursor.read_u16()?;
-    cursor.read_u8()?;
-    cursor.read_bool()?;
-    if branch_mode == 2 {
-        cursor.read_u32()?;
+    // EE `sub_140781E80` action code 0 reaches `loc_140782FA0`: it has no
+    // action-specific subobject. The reader then consumes mask-0x0008 status
+    // effects at `loc_140782FA6` before the mask-0x0004 action-state byte at
+    // `loc_140782FD1`.
+    if !simulate_ee_creature_update_status_effect_helper_cursor(&mut cursor) {
+        return None;
     }
-
-    cursor.read_unsigned_bits(32)?;
-    cursor.read_unsigned_bits(32)?;
     cursor.read_u8()?;
-    Some(cursor)
+
+    simulate_creature_update_3967_action0_fixed_tail_after_state_cursor(cursor)
 }
 
 fn simulate_creature_update_3967_action0_missing_damage_pre_identity_cursor(
@@ -1269,13 +1263,16 @@ fn simulate_creature_update_3967_action0_missing_damage_pre_identity_cursor(
         return None;
     }
 
-    // Companion to the legacy bridge-followup removal path above. Stock Diamond
-    // and EE both write/read one damage BYTE for mask bit `0x0800`; the
-    // Starcore5 action0 bridge capture reaches the identity branch immediately
-    // after the two `0x0100` FLOATs. Insert a conservative zero damage byte only
-    // when the following legacy identity/associate suffix proves the exact end.
+    if !simulate_ee_creature_update_status_effect_helper_cursor(&mut cursor) {
+        return None;
+    }
     cursor.read_u8()?;
 
+    // Companion to the action0 bridge removal path above. Stock EE reads one
+    // mask-0x0800 BYTE after the two mask-0x0100 FLOATs; the Starcore5 action0
+    // bridge capture reaches the identity branch immediately after those
+    // FLOATs. Insert zero only when the identity/associate suffix proves the
+    // exact record end.
     let branch_mode = {
         cursor.read_u16()?;
         cursor.read_u8()?
@@ -1291,6 +1288,26 @@ fn simulate_creature_update_3967_action0_missing_damage_pre_identity_cursor(
     cursor.read_unsigned_bits(32)?;
     let damage_insert_offset = cursor.read_cursor;
     Some((cursor, damage_insert_offset))
+}
+
+fn simulate_creature_update_3967_action0_fixed_tail_after_state_cursor(
+    mut cursor: LegacyCreatureUpdateCursor<'_>,
+) -> Option<LegacyCreatureUpdateCursor<'_>> {
+    let branch_mode = {
+        cursor.read_u16()?;
+        cursor.read_u8()?
+    };
+    cursor.read_u16()?;
+    cursor.read_u8()?;
+    cursor.read_bool()?;
+    if branch_mode == 2 {
+        cursor.read_u32()?;
+    }
+
+    cursor.read_unsigned_bits(32)?;
+    cursor.read_unsigned_bits(32)?;
+    cursor.read_u8()?;
+    Some(cursor)
 }
 
 fn simulate_creature_update_3967_hg_action_ffff_omitted_code_pre_identity_cursor(
@@ -1370,6 +1387,32 @@ pub(super) struct Creature3967Action0BridgeFollowupRewrite {
     pub bytes_inserted: usize,
     pub bytes_removed: usize,
     pub bits_inserted: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Creature3967Action0MissingDamageByteRewrite {
+    pub bytes_inserted: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Creature3967Action0ShortAssociateSuffixRewrite {
+    pub bytes_inserted: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Creature3967Action0BridgeRemoval {
+    start: usize,
+    len: usize,
+}
+
+struct Creature3967Action0BridgeRewriteTrial {
+    bytes: Vec<u8>,
+    fragment_bits: Vec<bool>,
+    record_end: usize,
+    bytes_inserted: usize,
+    bytes_removed: usize,
+    bits_inserted: usize,
+    removal_start: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1652,27 +1695,167 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<Creature3967Action0BridgeFollowupRewrite> {
-    let Some(removal_start) = find_legacy_3967_action0_bridge_followup_removal(
+    let removals = find_legacy_3967_action0_bridge_followup_removals(
         bytes.as_slice(),
         offset,
         *record_end,
         fragment_bits,
         bit_cursor,
-    ) else {
+    );
+    if removals.is_empty() {
         if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
             eprintln!(
                 "live-object creature update 0x3967 action0 bridge followup not found: offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
             );
         }
         return None;
-    };
-    let removal_end = removal_start
-        .checked_add(LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len())?;
+    }
 
-    let mut trial_bytes_after_removal = bytes.clone();
-    trial_bytes_after_removal.drain(removal_start..removal_end);
-    let trial_record_end_after_removal =
-        record_end.checked_sub(LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len())?;
+    let mut accepted: Option<Creature3967Action0BridgeRewriteTrial> = None;
+    for removal in removals {
+        let Some(trial) = build_3967_action0_bridge_rewrite_trial(
+            bytes.as_slice(),
+            offset,
+            *record_end,
+            fragment_bits,
+            bit_cursor,
+            removal,
+        ) else {
+            continue;
+        };
+        if accepted.replace(trial).is_some() {
+            if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+                eprintln!(
+                    "live-object creature update 0x3967 action0 bridge followup ambiguous repairs: offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+                );
+            }
+            return None;
+        }
+    }
+
+    let Some(trial) = accepted else {
+        if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+            eprintln!(
+                "live-object creature update 0x3967 action0 bridge followup trial failed exact suffix repair: offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+            );
+        }
+        return None;
+    };
+
+    *bytes = trial.bytes;
+    *fragment_bits = trial.fragment_bits;
+    *record_end = trial.record_end;
+    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+        let removal_start = trial.removal_start;
+        let bytes_inserted = trial.bytes_inserted;
+        let bytes_removed = trial.bytes_removed;
+        let bits_inserted = trial.bits_inserted;
+        eprintln!(
+            "live-object creature update 0x3967 action0 bridge followup removed: offset={offset} removal_start={removal_start} bytes_inserted={bytes_inserted} bytes_removed={bytes_removed} bits_inserted={bits_inserted} new_record_end={record_end}"
+        );
+    }
+    Some(Creature3967Action0BridgeFollowupRewrite {
+        bytes_inserted: trial.bytes_inserted,
+        bytes_removed: trial.bytes_removed,
+        bits_inserted: trial.bits_inserted,
+    })
+}
+
+pub(super) fn insert_3967_action0_missing_damage_byte_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<Creature3967Action0MissingDamageByteRewrite> {
+    let (damage_insert_offset, _advanced_bit_cursor) =
+        find_legacy_3967_action0_missing_damage_byte_ee_repair(
+            bytes.as_slice(),
+            offset,
+            *record_end,
+            fragment_bits,
+            bit_cursor,
+        )?;
+
+    let mut trial_bytes = bytes.clone();
+    trial_bytes.insert(damage_insert_offset, 0);
+    let trial_record_end = (*record_end).checked_add(1)?;
+    let mut trial_bit_cursor = bit_cursor;
+    if !advance_verified_creature_update_3967_action0_ee_record(
+        &trial_bytes,
+        offset,
+        trial_record_end,
+        fragment_bits,
+        &mut trial_bit_cursor,
+    ) {
+        return None;
+    }
+
+    *bytes = trial_bytes;
+    *record_end = trial_record_end;
+    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+        eprintln!(
+            "live-object creature update 0x3967 action0 missing damage byte inserted: offset={offset} insertion_offset={damage_insert_offset} new_record_end={record_end}"
+        );
+    }
+    Some(Creature3967Action0MissingDamageByteRewrite { bytes_inserted: 1 })
+}
+
+pub(super) fn insert_3967_action0_short_associate_suffix_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<Creature3967Action0ShortAssociateSuffixRewrite> {
+    let insertion_offset = find_legacy_3967_action0_short_associate_suffix_insertion(
+        bytes.as_slice(),
+        offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+
+    let mut trial_bytes = bytes.clone();
+    trial_bytes.splice(insertion_offset..insertion_offset, [0, 0, 0, 0]);
+    let trial_record_end = (*record_end).checked_add(4)?;
+    let mut trial_bit_cursor = bit_cursor;
+    if !advance_verified_creature_update_3967_action0_ee_record(
+        &trial_bytes,
+        offset,
+        trial_record_end,
+        fragment_bits,
+        &mut trial_bit_cursor,
+    ) {
+        return None;
+    }
+
+    *bytes = trial_bytes;
+    *record_end = trial_record_end;
+    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+        eprintln!(
+            "live-object creature update 0x3967 action0 short associate suffix expanded: offset={offset} insertion_offset={insertion_offset} new_record_end={record_end}"
+        );
+    }
+    Some(Creature3967Action0ShortAssociateSuffixRewrite { bytes_inserted: 4 })
+}
+
+fn build_3967_action0_bridge_rewrite_trial(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    removal: Creature3967Action0BridgeRemoval,
+) -> Option<Creature3967Action0BridgeRewriteTrial> {
+    let removal_end = removal.start.checked_add(removal.len)?;
+    if removal_end > record_end {
+        return None;
+    }
+
+    let mut trial_bytes_after_removal = bytes.to_vec();
+    trial_bytes_after_removal.drain(removal.start..removal_end);
+    let trial_record_end_after_removal = record_end.checked_sub(removal.len)?;
     let (trial_bytes, trial_record_end, insert_bit, bytes_inserted, bytes_removed) = {
         let mut trial_bit_cursor = bit_cursor;
         if advance_verified_creature_update_3967_action0_ee_record(
@@ -1687,7 +1870,7 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
                 trial_record_end_after_removal,
                 None,
                 0,
-                LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len(),
+                removal.len,
             )
         } else if let Some((damage_insert_offset, _insert_bit)) =
             find_legacy_3967_action0_missing_damage_byte_ee_repair(
@@ -1711,13 +1894,7 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
             ) {
                 return None;
             }
-            (
-                trial_bytes,
-                trial_record_end,
-                None,
-                1,
-                LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len(),
-            )
+            (trial_bytes, trial_record_end, None, 1, removal.len)
         } else if let Some((read_end, _insert_bit)) =
             find_legacy_3967_action0_reader_end_before_empty_fragment_storage(
                 &trial_bytes_after_removal,
@@ -1745,9 +1922,7 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
                 read_end,
                 None,
                 0,
-                LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES
-                    .len()
-                    .saturating_add(trailing_storage_bytes),
+                removal.len.saturating_add(trailing_storage_bytes),
             )
         } else if let Some(insert_bit) =
             find_legacy_3967_action0_missing_second_associate_bool_insert_bit(
@@ -1763,18 +1938,19 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
                 trial_record_end_after_removal,
                 Some(insert_bit),
                 0,
-                LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len(),
+                removal.len,
             )
         } else {
             if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
                 eprintln!(
-                    "live-object creature update 0x3967 action0 bridge followup trial failed exact suffix repair: offset={offset} removal_start={removal_start} trial_record_end={trial_record_end_after_removal} bit_cursor={bit_cursor}"
+                    "live-object creature update 0x3967 action0 bridge followup candidate failed exact suffix repair: offset={offset} removal_start={} removal_len={} trial_record_end={trial_record_end_after_removal} bit_cursor={bit_cursor}",
+                    removal.start, removal.len
                 );
             }
             return None;
         }
     };
-    let mut trial_fragment_bits = fragment_bits.clone();
+    let mut trial_fragment_bits = fragment_bits.to_vec();
     if let Some(insert_bit) = insert_bit {
         bits::insert_msb_bit(&mut trial_fragment_bits, insert_bit, false)?;
     }
@@ -1788,24 +1964,21 @@ pub(super) fn remove_3967_action0_legacy_bridge_followup_for_ee(
     ) {
         if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
             eprintln!(
-                "live-object creature update 0x3967 action0 bridge followup trial failed exact EE validator: offset={offset} removal_start={removal_start} insert_bit={insert_bit:?} trial_record_end={trial_record_end} trial_bit_cursor={trial_bit_cursor}"
+                "live-object creature update 0x3967 action0 bridge followup candidate failed exact EE validator: offset={offset} removal_start={} removal_len={} insert_bit={insert_bit:?} trial_record_end={trial_record_end} trial_bit_cursor={trial_bit_cursor}",
+                removal.start, removal.len
             );
         }
         return None;
     }
 
-    *bytes = trial_bytes;
-    *fragment_bits = trial_fragment_bits;
-    *record_end = trial_record_end;
-    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
-        eprintln!(
-            "live-object creature update 0x3967 action0 bridge followup removed: offset={offset} removal_start={removal_start} bytes_inserted={bytes_inserted} missing_associate_bool_insert_bit={insert_bit:?} new_record_end={record_end}"
-        );
-    }
-    Some(Creature3967Action0BridgeFollowupRewrite {
+    Some(Creature3967Action0BridgeRewriteTrial {
+        bytes: trial_bytes,
+        fragment_bits: trial_fragment_bits,
+        record_end: trial_record_end,
         bytes_inserted,
         bytes_removed,
         bits_inserted: usize::from(insert_bit.is_some()),
+        removal_start: removal.start,
     })
 }
 
@@ -1999,6 +2172,73 @@ fn empty_fragment_storage_tail_after_creature_update(
         .all(|bit| !*bit)
 }
 
+fn find_legacy_3967_action0_short_associate_suffix_insertion(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<usize> {
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+    {
+        return None;
+    }
+
+    let mut cursor = LegacyCreatureUpdateCursor {
+        bytes,
+        record_end,
+        read_cursor: offset + 10,
+        bit_cursor,
+        fragment_bits,
+    };
+    cursor.read_unsigned_bits(16)?;
+    cursor.read_unsigned_bits(16)?;
+    cursor.read_unsigned_bits(18)?;
+
+    let candidates = build_legacy_creature_orientation_branch_candidate_states(
+        LEGACY_CREATURE_UPDATE_3967_MASK,
+        cursor,
+    )?;
+    let mut accepted: Option<usize> = None;
+    for candidate in candidates {
+        let Some(identity_start) =
+            simulate_creature_update_3967_action0_pre_identity_ee_cursor(candidate)
+        else {
+            continue;
+        };
+        let Some(identity_candidates) =
+            build_legacy_creature_update_identity_branch_candidate_states(identity_start)
+        else {
+            continue;
+        };
+        for suffix in identity_candidates {
+            // EE `sub_140781E80` and Diamond `sub_44ADD0` read mask `0x2000`
+            // as raw OBJECTID + WORD before the two associate BOOLs. This HG
+            // action0 shape ends after the two low zero bytes; materialize the
+            // remaining four zero read-buffer bytes only when the full EE
+            // validator accepts the expanded record.
+            let remaining = record_end.checked_sub(suffix.read_cursor)?;
+            if remaining != 2 {
+                continue;
+            }
+            if bytes.get(suffix.read_cursor..record_end) != Some([0, 0].as_slice()) {
+                continue;
+            }
+            if accepted
+                .replace(record_end)
+                .is_some_and(|old| old != record_end)
+            {
+                return None;
+            }
+        }
+    }
+    accepted
+}
+
 fn find_legacy_3967_action0_missing_damage_byte_ee_repair(
     bytes: &[u8],
     offset: usize,
@@ -2090,20 +2330,20 @@ fn simulate_legacy_creature_update_3967_pre_identity_cursor(
     Some(cursor)
 }
 
-fn find_legacy_3967_action0_bridge_followup_removal(
+fn find_legacy_3967_action0_bridge_followup_removals(
     bytes: &[u8],
     offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-) -> Option<usize> {
+) -> Vec<Creature3967Action0BridgeRemoval> {
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
         || bytes.get(offset + 1).copied() != Some(0x05)
         || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
     {
-        return None;
+        return Vec::new();
     }
 
     let mut cursor = LegacyCreatureUpdateCursor {
@@ -2118,15 +2358,17 @@ fn find_legacy_3967_action0_bridge_followup_removal(
         || cursor.read_unsigned_bits(16).is_none()
         || cursor.read_unsigned_bits(18).is_none()
     {
-        return None;
+        return Vec::new();
     }
 
-    let candidates = build_legacy_creature_orientation_branch_candidate_states(
+    let Some(candidates) = build_legacy_creature_orientation_branch_candidate_states(
         LEGACY_CREATURE_UPDATE_3967_MASK,
         cursor,
-    )?;
+    ) else {
+        return Vec::new();
+    };
 
-    let mut accepted: Option<usize> = None;
+    let mut accepted = Vec::new();
     for mut candidate in candidates {
         let Some(portrait_row) = candidate.read_u16() else {
             continue;
@@ -2143,36 +2385,50 @@ fn find_legacy_3967_action0_bridge_followup_removal(
             continue;
         }
 
-        // Diamond/HG bridge traffic can carry the EE-owned action-state byte
-        // followed by a legacy zero movement-followup WORD after action code 0.
-        // EE `sub_140781E80` reads the state byte for mask bit 0x0004, but does
-        // not read the movement-followup WORD for non-movement action code 0:
-        // after the state byte it falls through to the mask-0x0040
-        // creature-state branch. The proxy may therefore remove exactly that
-        // all-zero WORD, while preserving the state byte.
+        if !simulate_ee_creature_update_status_effect_helper_cursor(&mut candidate) {
+            continue;
+        }
         if candidate.read_u8().is_none() {
             continue;
         }
-        let removal_start = candidate.read_cursor;
-        if removal_start
-            != offset.checked_add(LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_OFFSET)?
-        {
-            continue;
-        }
-        let removal_end = removal_start
-            .checked_add(LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.len())?;
-        if removal_end > record_end {
-            continue;
-        }
-        if bytes.get(removal_start..removal_end)
-            != Some(LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.as_slice())
-        {
-            continue;
-        }
-
-        accepted = Some(accepted.map_or(removal_start, |existing| existing.min(removal_start)));
+        push_unique_action0_bridge_removal(
+            bytes,
+            record_end,
+            &mut accepted,
+            candidate.read_cursor,
+            LEGACY_CREATURE_UPDATE_3967_ACTION0_WOE_BRIDGE_BLOCK_BYTES.as_slice(),
+        );
+        push_unique_action0_bridge_removal(
+            bytes,
+            record_end,
+            &mut accepted,
+            candidate.read_cursor,
+            LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES.as_slice(),
+        );
     }
     accepted
+}
+
+fn push_unique_action0_bridge_removal(
+    bytes: &[u8],
+    record_end: usize,
+    accepted: &mut Vec<Creature3967Action0BridgeRemoval>,
+    removal_start: usize,
+    expected: &[u8],
+) {
+    let Some(removal_end) = removal_start.checked_add(expected.len()) else {
+        return;
+    };
+    if removal_end > record_end || bytes.get(removal_start..removal_end) != Some(expected) {
+        return;
+    }
+    let removal = Creature3967Action0BridgeRemoval {
+        start: removal_start,
+        len: expected.len(),
+    };
+    if !accepted.contains(&removal) {
+        accepted.push(removal);
+    }
 }
 
 fn find_legacy_3967_action_ffff_bridge_followup_removal(
@@ -2493,6 +2749,14 @@ pub(super) fn advance_verified_noop_creature_appearance_record(
     if !looks_like_legacy_creature_object_id(object_id) {
         return false;
     }
+    if flags == LEGACY_CREATURE_APPEARANCE_NOOP_MASK {
+        // Diamond `sub_448E30` and EE `sub_14077FE10` both read the `P/5`
+        // object id and WORD appearance mask before the mask-gated body. A
+        // zero mask has no body branches and consumes no CNW fragment BOOLs.
+        // Keep this as a true zero-length body, not a fallback for failed
+        // complex appearance parses.
+        return record_end == offset + 8 && *bit_cursor <= fragment_bits.len();
+    }
     if flags != LEGACY_CREATURE_APPEARANCE_NAME_ONLY_MASK {
         return false;
     }
@@ -2538,6 +2802,24 @@ pub(super) fn advance_verified_noop_creature_appearance_record(
 
     *bit_cursor = cursor.bit_cursor;
     true
+}
+
+pub(super) fn try_get_zero_mask_creature_appearance_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let record_end = offset.checked_add(8)?;
+    if record_end > scan_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'P'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || !looks_like_legacy_creature_object_id(read_u32_le(bytes, offset + 2)?)
+        || read_u16_le(bytes, offset + 6)? != LEGACY_CREATURE_APPEARANCE_NOOP_MASK
+    {
+        return None;
+    }
+    Some(record_end)
 }
 
 fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {

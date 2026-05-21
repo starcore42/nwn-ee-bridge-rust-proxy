@@ -10,8 +10,8 @@ use super::{
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
     MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, appearance, creature, gui, inventory, item, locstring, read_u16_le,
-    read_u32_le, reader, trigger,
+    TRIGGER_OBJECT_TYPE, appearance, creature, door, gui, inventory, item, locstring, placeable,
+    read_u16_le, read_u32_le, reader, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -117,9 +117,19 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         {
             return record_end;
         }
+        if let Some(record_end) = try_get_legacy_placeable_short_name_add_record_end_for_transport(
+            bytes, offset, scan_end,
+        ) {
+            return record_end;
+        }
     }
 
     if bytes.get(offset).copied() == Some(b'P') && bytes.get(offset + 1).copied() == Some(0x05) {
+        if let Some(record_end) =
+            creature::try_get_zero_mask_creature_appearance_record_end(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
         let legacy_end =
             appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end);
         let ee_byte_shape_end = appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
@@ -292,6 +302,176 @@ pub(super) fn try_get_ee_door_placeable_add_record_end_for_transport(
     scan_end: usize,
 ) -> Option<usize> {
     try_get_ee_door_placeable_add_record_end(bytes, offset, scan_end)
+}
+
+pub(super) fn try_get_legacy_placeable_short_name_add_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + 15 > scan_end
+        || offset + 15 > bytes.len()
+        || bytes.get(offset).copied()? != b'A'
+        || bytes.get(offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+        || read_u32_le(bytes, offset + 6).is_none()
+        || read_u16_le(bytes, offset + 11).is_none()
+        || read_u16_le(bytes, offset + 13).is_none()
+    {
+        return None;
+    }
+
+    // Diamond `CNWSMessage::AddPlaceableAppearanceToMessage` can emit the
+    // compact short-name form seen in local Winds captures: OBJECTID, a
+    // four-byte legacy name/token slot, then BYTE type, WORD appearance, WORD
+    // static/state. The add translator rewrites that token slot into an empty
+    // EE CExoString and inserts the visual-transform map; this boundary helper
+    // only prevents the following `U/9` update from being swallowed as an
+    // imaginary large inline string.
+    let object_id = read_u32_le(bytes, offset + 2)?;
+    let record_end = offset + 15;
+    if record_end < scan_end
+        && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+        && try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+            bytes,
+            record_end,
+            scan_end,
+            PLACEABLE_OBJECT_TYPE,
+            object_id,
+        )
+        .is_none()
+    {
+        return None;
+    }
+    Some(record_end)
+}
+
+pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    expected_object_type: u8,
+    expected_object_id: u32,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    if !matches!(
+        expected_object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) {
+        return None;
+    }
+
+    let body_offset = if bytes.get(offset).copied()? == expected_object_type {
+        offset
+    } else if bytes.get(offset).copied()? == 0
+        && bytes.get(offset + 1).copied()? == expected_object_type
+    {
+        offset.checked_add(1)?
+    } else {
+        return None;
+    };
+
+    if body_offset + LEGACY_UPDATE_HEADER_BYTES - 1 > scan_end
+        || read_u32_le(bytes, body_offset + 1)? != expected_object_id
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, body_offset + 5)?;
+    if raw_mask == 0 {
+        return None;
+    }
+    let translated_mask = match expected_object_type {
+        PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
+        DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
+        _ => return None,
+    };
+    if translated_mask == 0 {
+        return None;
+    }
+
+    for vector_orientation in [false, true] {
+        if let Some(record_end) = missing_opcode_update_body_read_end(
+            bytes,
+            body_offset,
+            scan_end,
+            translated_mask,
+            vector_orientation,
+        ) {
+            if record_end_lands_on_boundary(bytes, record_end, scan_end) {
+                return Some(record_end);
+            }
+        }
+    }
+
+    if expected_object_type == PLACEABLE_OBJECT_TYPE
+        && (raw_mask & !translated_mask & !placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) == 0
+        && (raw_mask & !translated_mask & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) != 0
+    {
+        for vector_orientation in [false, true] {
+            let Some(prefix_end) = missing_opcode_update_body_read_end(
+                bytes,
+                body_offset,
+                scan_end,
+                translated_mask,
+                vector_orientation,
+            ) else {
+                continue;
+            };
+            for suffix_len in [2usize, 4usize, 6usize] {
+                let record_end = prefix_end.checked_add(suffix_len)?;
+                if record_end <= scan_end
+                    && reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
+                    && record_end_lands_on_boundary(bytes, record_end, scan_end)
+                {
+                    return Some(record_end);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn missing_opcode_update_body_read_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    mask: u32,
+    vector_orientation: bool,
+) -> Option<usize> {
+    let mut cursor = offset.checked_add(1 + 4 + 4)?;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        cursor = cursor.checked_add(if vector_orientation {
+            EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES
+        } else {
+            EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
+        })?;
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let appearance = read_u16_le(bytes, cursor)?;
+        cursor = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        if appearance >= 0xFFFE {
+            cursor = cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        }
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        cursor = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
+    }
+    if cursor > scan_end || cursor > bytes.len() {
+        return None;
+    }
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        cursor = locstring::inline_cexo_string_end(bytes, cursor)?;
+    }
+    (cursor <= scan_end && cursor <= bytes.len()).then_some(cursor)
+}
+
+fn record_end_lands_on_boundary(bytes: &[u8], record_end: usize, scan_end: usize) -> bool {
+    record_end == scan_end || looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
 }
 
 pub(super) fn try_get_ee_creature_update_record_end_for_transport(
@@ -924,4 +1104,73 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
             | 0xAC00_0000
     ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
         .contains(&object_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_placeable_add_short_name_boundary_precedes_following_update() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x7E, 0x00, 0x00, 0x80, 0xF2, 0x38, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
+            0x00,
+        ]);
+        live.extend_from_slice(&[
+            b'U', 0x09, 0x7E, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00, 0x32, 0x39, 0x54, 0x13,
+            0xE3, 0x0F, 0xBD, 0x69, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0xF2, 0x38, 0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            15
+        );
+    }
+
+    #[test]
+    fn compact_placeable_add_short_name_boundary_precedes_missing_opcode_same_object_update() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x84, 0x00, 0x00, 0x80, 0x18, 0x16, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+            0x00,
+        ]);
+        live.extend_from_slice(&[
+            0x00, 0x09, 0x84, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00, 0xE5, 0x37, 0xFF, 0x1B,
+            0xE3, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x18, 0x16,
+        ]);
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x85, 0x00, 0x00, 0x80, 0x18, 0x16, 0x00, 0x00, 0x05, 0x0E, 0x00, 0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            try_get_legacy_placeable_short_name_add_record_end_for_transport(&live, 0, live.len(),),
+            Some(15)
+        );
+        assert_eq!(
+            try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+                &live,
+                15,
+                live.len(),
+                PLACEABLE_OBJECT_TYPE,
+                0x8000_0084,
+            ),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn compact_placeable_add_short_name_boundary_requires_following_record() {
+        let live = [
+            b'A', 0x09, 0x7E, 0x00, 0x00, 0x80, 0xF2, 0x38, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
+            0x00, b'X', 0x09,
+        ];
+
+        assert!(
+            try_get_legacy_placeable_short_name_add_record_end_for_transport(&live, 0, live.len(),)
+                .is_none()
+        );
+    }
 }

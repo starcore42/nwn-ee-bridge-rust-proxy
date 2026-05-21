@@ -530,6 +530,39 @@ pub(super) fn legacy_name_tail_ready(bytes: &[u8], offset: usize, record_end: us
         || legacy_packed_name_tail_ready(bytes, offset, record_end)
 }
 
+pub(super) fn legacy_low_bit_control_tail_ready(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> bool {
+    if offset > record_end || record_end > bytes.len() {
+        return false;
+    }
+
+    // Winds of Eremor local Diamond captures show placeable `U/9 0xF7`
+    // records whose shared generic prefix is exact, followed by a
+    // legacy-only low 0x40/0x80 control WORD, with some records appending a
+    // zero WORD. EE `sub_14079C050` and `sub_1407A8460` have no consumers for
+    // those low
+    // bits; the bridge may drop this suffix only after the generic prefix has
+    // been proven by the caller's typed read-end check.
+    match record_end - offset {
+        2 => read_u16_le(bytes, offset).is_some(),
+        4 => read_u16_le(bytes, offset).is_some() && read_u16_le(bytes, offset + 2) == Some(0),
+        6 => {
+            // The same local family can carry a leading zero WORD before the
+            // control/zero pair when a compact add is followed by a same-object
+            // update body with the top-level `U` byte omitted. That leading
+            // WORD has no EE/Diamond low-bit consumer either, so it is accepted
+            // only as part of this bounded suffix shape.
+            read_u16_le(bytes, offset) == Some(0)
+                && read_u16_le(bytes, offset + 2).is_some()
+                && read_u16_le(bytes, offset + 4) == Some(0)
+        }
+        _ => false,
+    }
+}
+
 fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
     if bits.len().saturating_sub(cursor) < count {
         return None;
@@ -539,4 +572,29 @@ fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
 
 fn is_plausible_legacy_object_scale(scale: f32) -> bool {
     scale.is_finite() && (0.01..=100.0).contains(&scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_low_bit_control_tail_accepts_bounded_word_suffixes() {
+        assert!(legacy_low_bit_control_tail_ready(&[0x18, 0x16], 0, 2));
+        assert!(legacy_low_bit_control_tail_ready(
+            &[0x18, 0x16, 0x00, 0x00],
+            0,
+            4
+        ));
+        assert!(legacy_low_bit_control_tail_ready(
+            &[0x00, 0x00, 0x18, 0x16, 0x00, 0x00],
+            0,
+            6
+        ));
+        assert!(!legacy_low_bit_control_tail_ready(
+            &[0x18, 0x16, 0x01, 0x00],
+            0,
+            4
+        ));
+    }
 }

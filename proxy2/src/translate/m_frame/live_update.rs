@@ -117,6 +117,13 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
     // than a raw passthrough or unbounded resync loop.
     let mut candidate = payload.clone();
     let mut summary = ExactLiveObjectRewriteSummary::default();
+    let mut add_name_bits_attempted = false;
+    let max_alternating_add_update_passes = candidate
+        .len()
+        .saturating_div(10)
+        .saturating_add(4)
+        .min(128)
+        .max(16);
 
     summary.record_add(
         live_object::rewrite_creature_add_visual_transform_maps_if_possible(
@@ -130,73 +137,43 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         *payload = candidate;
         return Some(summary);
     }
-    summary.record_add(
-        live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some(),
-    );
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
+
+    for _ in 0..max_alternating_add_update_passes {
+        let add_changed =
+            live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
+                &mut candidate,
+                latest_area_placeables,
+            )
+            .is_some();
+        summary.record_add(add_changed);
+        if exact_after_changed(&candidate, summary) {
+            *payload = candidate;
+            return Some(summary);
+        }
+
+        let update_changed = rewrite_payload_if_needed(&mut candidate).is_some();
+        summary.record_update(update_changed);
+        if exact_after_changed(&candidate, summary) {
+            *payload = candidate;
+            return Some(summary);
+        }
+
+        let mut add_name_bits_changed = false;
+        if !add_name_bits_attempted {
+            add_name_bits_changed =
+                rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate).is_some();
+            summary.record_add_name_bits(add_name_bits_changed);
+            add_name_bits_attempted = true;
+            if exact_after_changed(&candidate, summary) {
+                *payload = candidate;
+                return Some(summary);
+            }
+        }
+
+        if !add_changed && !update_changed && !add_name_bits_changed {
+            break;
+        }
     }
-    summary.record_update(rewrite_payload_if_needed(&mut candidate).is_some());
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_add_name_bits(
-        rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate).is_some(),
-    );
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_add(
-        live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some(),
-    );
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_update(rewrite_payload_if_needed(&mut candidate).is_some());
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_add(
-        live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some(),
-    );
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_update(rewrite_payload_if_needed(&mut candidate).is_some());
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_add(
-        live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
-            &mut candidate,
-            latest_area_placeables,
-        )
-        .is_some(),
-    );
-    if exact_after_changed(&candidate, summary) {
-        *payload = candidate;
-        return Some(summary);
-    }
-    summary.record_update(rewrite_payload_if_needed(&mut candidate).is_some());
 
     if !summary.changed() || claim_payload_if_verified(&candidate).is_none() {
         return None;
@@ -327,20 +304,102 @@ mod tests {
     }
 
     #[test]
-    fn local_dark_ranger_seq15_pending_stream_validates_exact_shape() {
-        // Claimed pending stream from the same Dark Ranger harness pass. This
-        // stays as fixture evidence that the stream buffer flush emits an exact
-        // EE live-object shape after the declared-length repair above.
-        let payload = include_bytes!(
+    fn local_dark_ranger_seq15_pending_stream_rewrites_to_exact_shape() {
+        // Pending stream from the same Dark Ranger harness pass. It preserves
+        // the legacy action-0 0x3967 missing-damage-byte shape, so the bridge
+        // must repair it before exact EE validation.
+        let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_dark_ranger_seq15_pending_claimed_liveobject_20260521.bin"
         )
-        .as_slice();
+        .to_vec();
 
-        let claim = claim_payload_if_verified(payload)
+        assert!(claim_payload_if_verified(&payload).is_none());
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Dark Ranger pending live-object stream should rewrite");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
             .expect("Dark Ranger pending live-object stream must validate exactly");
         assert_eq!(claim.live_bytes_length + 7, claim.declared);
         assert!(claim.records_examined >= 1);
         assert!(claim.add_records >= 1);
+    }
+
+    #[test]
+    fn local_winds_eremor_seq22_placeable_stream_rewrites_to_exact_shape() {
+        // Local Winds of Eremor harness capture from 2026-05-21. The module's
+        // opening area emits several placeable adds in a coalesced live-object
+        // stream after the area gate opens.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_winds_eremor_seq22_placeable_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Winds of Eremor placeable burst documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Winds of Eremor placeable stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Winds of Eremor stream should validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.inventory_records >= 1);
+    }
+
+    #[test]
+    fn local_winds_eremor_seq16_placeable_pending_stream_rewrites_to_exact_shape() {
+        // Earlier local Winds of Eremor area-entry burst from the same module:
+        // four declared-zero Diamond chunks rebuilt by the pending stream
+        // accumulator before a later independent live-object packet arrives.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_winds_eremor_seq16_placeable_pending_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Winds of Eremor pending stream documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Winds of Eremor pending placeable stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Winds of Eremor pending stream should validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+    }
+
+    #[test]
+    fn local_winds_eremor_seq24_creature_stream_rewrites_to_exact_shape() {
+        // Follow-up live-object stream from the same local module after the
+        // placeable burst. It is kept separate because the root quarantine
+        // captured it as a standalone deflated payload.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_winds_eremor_seq24_creature_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Winds of Eremor creature burst documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Winds of Eremor creature stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Winds of Eremor creature stream should validate exactly");
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.live_gui_read_buffer_records >= 1);
     }
 
     #[test]

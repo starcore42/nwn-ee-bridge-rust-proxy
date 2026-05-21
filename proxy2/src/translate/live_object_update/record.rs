@@ -134,6 +134,8 @@ pub(super) fn rewrite_update_record_for_ee(
     let mut inline_name_drop_begin = None;
     let mut low_prefix_interleaved_fragment_span_begin = None;
     let mut fragment_source_mask = raw_mask;
+    let mut legacy_low_tail_fragment_bits_to_remove = 0usize;
+    let mut low_tail_zero_fragment_bits_to_insert = 0usize;
     let mut orientation_fragment_rewrite =
         if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
             && (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
@@ -386,6 +388,11 @@ pub(super) fn rewrite_update_record_for_ee(
             .filter(|prefix_end| {
                 *prefix_end == *record_end
                     || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+                    || reader::legacy_low_bit_control_tail_ready(
+                        live_bytes,
+                        *prefix_end,
+                        *record_end,
+                    )
             });
         if low_tail_prefix_end.is_none() && (translated_mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
             // `0x20` is decompile-owned in EE `sub_14079C050` and Diamond
@@ -410,6 +417,45 @@ pub(super) fn rewrite_update_record_for_ee(
                 low_tail_prefix_end = Some(prefix_end);
             }
         }
+        if low_tail_prefix_end.is_none()
+            && bits.len() == *bit_cursor
+            && (raw_mask & !translated_mask & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) != 0
+        {
+            if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
+                live_bytes,
+                record_offset,
+                *record_end,
+                low_tail_candidate_mask,
+                false,
+            )
+            .filter(|prefix_end| {
+                reader::legacy_low_bit_control_tail_ready(live_bytes, *prefix_end, *record_end)
+            }) {
+                if door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    prefix_end,
+                    low_tail_candidate_mask,
+                    true,
+                ) != Some(prefix_end)
+                {
+                    // Late Winds local Diamond low-tail records can arrive
+                    // after the fragment stream has been fully consumed by
+                    // preceding add/update pairs. The read-buffer prefix still
+                    // proves the scalar branch and the trailing WORD/zero-WORD
+                    // low-bit suffix, but EE's `sub_14079C050` needs the CNW
+                    // low bits for position, scalar orientation, and neutral
+                    // state. Insert only those zero lower bits for this exact
+                    // no-fragment low-tail shape; the byte prefix and final
+                    // exact validator still own the record.
+                    low_tail_prefix_end = Some(prefix_end);
+                    low_tail_zero_fragment_bits_to_insert =
+                        low_prefix_door_placeable_update_source_fragment_bits(
+                            low_tail_candidate_mask,
+                        );
+                }
+            }
+        }
         if let Some(prefix_end) = low_tail_prefix_end {
             // CEP v2.2 local Diamond placeable updates can set low 0x40/0x80
             // mask bits and append a bounded legacy name/control tail after
@@ -422,6 +468,65 @@ pub(super) fn rewrite_update_record_for_ee(
             can_translate_read_buffer = true;
             fragment_source_mask = translated_mask;
             inline_name_drop_begin = (prefix_end < *record_end).then_some(prefix_end);
+            if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+                && (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0
+            {
+                let orientation_bit_cursor = *bit_cursor
+                    + if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+                        LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    } else {
+                        0
+                    };
+                let source_tail_bits = if (raw_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+                    LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                } else {
+                    0
+                };
+                let available_after_orientation = bits.len().saturating_sub(orientation_bit_cursor);
+                let legacy_low_tail_bits =
+                    (raw_mask & !translated_mask & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK)
+                        .count_ones() as usize;
+                if available_after_orientation >= source_tail_bits
+                    && available_after_orientation
+                        < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                            .saturating_add(source_tail_bits)
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        prefix_end,
+                        translated_mask,
+                        false,
+                    ) == Some(prefix_end)
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        prefix_end,
+                        translated_mask,
+                        true,
+                    ) != Some(prefix_end)
+                {
+                    // The low 0x40/0x80 placeable-tail captures can have the
+                    // same scalar-orientation split as the inline-name legacy
+                    // form above: the read buffer carries the high eight yaw
+                    // bits, while the legacy fragment stream resumes at the
+                    // state bits. EE's scalar branch still needs the selector
+                    // plus four low bits, so insert zero padding only after the
+                    // typed low-tail prefix proves the scalar byte cursor.
+                    orientation_fragment_rewrite =
+                        OrientationFragmentRewrite::InsertLegacyByteScalarPad;
+                    if available_after_orientation
+                        == source_tail_bits.saturating_add(legacy_low_tail_bits)
+                    {
+                        // The two low placeable-specific mask bits are
+                        // Diamond-only input for this tail form. Once their
+                        // bounded WORD/zero-WORD read-buffer suffix has been
+                        // proven and dropped, remove the matching fragment
+                        // BOOLs so the following compact add starts at its own
+                        // decompiled cursor.
+                        legacy_low_tail_fragment_bits_to_remove = legacy_low_tail_bits;
+                    }
+                }
+            }
         }
     } else if object_type == PLACEABLE_OBJECT_TYPE
         && raw_mask == translated_mask
@@ -589,6 +694,13 @@ pub(super) fn rewrite_update_record_for_ee(
         }
         let mut rewritten_bits = bits.clone();
         let mut rewritten_bit_cursor = *bit_cursor;
+        let mut preinserted_zero_bits = 0u32;
+        if low_tail_zero_fragment_bits_to_insert != 0 {
+            let inserted = vec![false; low_tail_zero_fragment_bits_to_insert];
+            bits::insert_msb_bits(&mut rewritten_bits, rewritten_bit_cursor, &inserted)?;
+            preinserted_zero_bits =
+                u32::try_from(low_tail_zero_fragment_bits_to_insert).unwrap_or(u32::MAX);
+        }
         let Some(bit_rewrite) = rewrite_legacy_live_object_update_bits(
             object_type,
             fragment_source_mask,
@@ -609,6 +721,10 @@ pub(super) fn rewrite_update_record_for_ee(
             *bit_cursor_reliable = false;
             return None;
         };
+        let mut bit_rewrite = bit_rewrite;
+        bit_rewrite.bits_inserted = bit_rewrite
+            .bits_inserted
+            .saturating_add(preinserted_zero_bits);
         Some((rewritten_bits, rewritten_bit_cursor, bit_rewrite))
     } else {
         None
@@ -699,7 +815,31 @@ pub(super) fn rewrite_update_record_for_ee(
         return None;
     }
 
-    if let Some((rewritten_bits, rewritten_bit_cursor, bit_rewrite)) = bit_rewrite_candidate {
+    if let Some((mut rewritten_bits, rewritten_bit_cursor, mut bit_rewrite)) = bit_rewrite_candidate
+    {
+        if legacy_low_tail_fragment_bits_to_remove != 0 {
+            if bits::erase_msb_bits(
+                &mut rewritten_bits,
+                rewritten_bit_cursor,
+                legacy_low_tail_fragment_bits_to_remove,
+            )
+            .is_none()
+            {
+                debug_update_record_reject(
+                    "low-tail-fragment-bit-remove-failed",
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    raw_mask,
+                    translated_mask,
+                    *bit_cursor,
+                );
+                return None;
+            }
+            bit_rewrite.bits_removed = bit_rewrite.bits_removed.saturating_add(
+                u32::try_from(legacy_low_tail_fragment_bits_to_remove).unwrap_or(u32::MAX),
+            );
+        }
         *bits = rewritten_bits;
         *bit_cursor = rewritten_bit_cursor;
         rewrite.bits_inserted = rewrite

@@ -6,7 +6,7 @@
 
 use super::{
     CNW_LENGTH_BYTES, DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, MAX_LIVE_OBJECT_NAME_BYTES,
-    PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, boundary, creature, locstring, read_u16_le,
+    PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, add, boundary, creature, locstring, read_u16_le,
     read_u32_le, trigger,
 };
 
@@ -53,6 +53,12 @@ pub(super) fn advance_legacy_add_record_bit_cursor_for_update_pass(
     if record_offset + 6 > record_end || record_end > bytes.len() || *bit_cursor >= bits.len() {
         return false;
     }
+
+    let original_bit_cursor = *bit_cursor;
+    if add::advance_verified_add_record(bytes, record_offset, record_end, bits, bit_cursor) {
+        return true;
+    }
+    *bit_cursor = original_bit_cursor;
 
     match bytes[record_offset + 1] {
         0x05 => true,

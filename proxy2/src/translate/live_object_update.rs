@@ -186,6 +186,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub world_status_records_normalized: u32,
     pub creature_visual_transform_update_records: u32,
     pub live_gui_missing_add_opcodes_repaired: u32,
+    pub live_object_missing_update_opcodes_repaired: u32,
     pub interleaved_fragment_spans_promoted: u32,
     pub interleaved_fragment_bytes_promoted: u32,
     pub interleaved_fragment_bits_promoted: u32,
@@ -1328,6 +1329,16 @@ pub(crate) fn try_get_verified_door_placeable_add_record_end_for_transport(
     boundary::try_get_ee_door_placeable_add_record_end_for_transport(live_bytes, offset, scan_end)
 }
 
+pub(crate) fn try_get_legacy_placeable_short_name_add_record_end_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+        live_bytes, offset, scan_end,
+    )
+}
+
 pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,
@@ -2321,6 +2332,7 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut last_verified_creature_4408_record_end = None;
     let mut last_verified_creature_effect_only_record_end = None;
     let mut last_verified_creature_0047_fragment_prefix_record_end = None;
+    let mut last_verified_add_record: Option<(usize, u8, u32)> = None;
     let mut last_verified_door_add_fragment_span_record: Option<(usize, u32)> = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
     let mut loop_iterations = 0usize;
@@ -2397,6 +2409,46 @@ pub fn rewrite_update_records_payload_if_possible(
                 continue;
             }
         }
+        if bit_cursor_reliable {
+            if let Some((add_record_end, add_object_type, add_object_id)) = last_verified_add_record
+            {
+                if add_record_end == offset
+                    && boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+                        &live_bytes,
+                        offset,
+                        live_bytes.len(),
+                        add_object_type,
+                        add_object_id,
+                    )
+                    .is_some()
+                {
+                    // Local Winds of Eremor Diamond streams can emit a compact
+                    // `A/9` placeable add followed immediately by the same
+                    // object's update body starting at the type byte, or at a
+                    // leading zero byte before the type (`00 09 id mask...`),
+                    // instead of the top-level `U` opcode. The
+                    // boundary helper above proves the body against the same
+                    // door/placeable generic update reader shape and the same
+                    // object id before this transactional insertion. The
+                    // focused update-record rewrite and final exact validator
+                    // still own the emitted EE bytes and fragment cursor.
+                    if live_bytes.get(offset).copied() == Some(0)
+                        && live_bytes.get(offset + 1).copied() == Some(add_object_type)
+                    {
+                        live_bytes[offset] = b'U';
+                    } else {
+                        live_bytes.insert(offset, b'U');
+                        summary.bytes_inserted = summary.bytes_inserted.saturating_add(1);
+                    }
+                    changed = true;
+                    summary.live_object_missing_update_opcodes_repaired = summary
+                        .live_object_missing_update_opcodes_repaired
+                        .saturating_add(1);
+                    last_verified_add_record = None;
+                    continue;
+                }
+            }
+        }
         if proven_gui_record_end.is_none()
             && !legacy_gui_rewrite_boundary
             && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, offset)
@@ -2459,6 +2511,7 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_record_allows_trailing_fragment_promotion = false;
             last_verified_creature_4408_record_end = None;
             last_verified_creature_0047_fragment_prefix_record_end = None;
+            last_verified_add_record = None;
             last_verified_door_add_fragment_span_record = None;
             offset += 1;
             continue;
@@ -2661,6 +2714,28 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
+                let exact_add_start_bit_cursor = bit_cursor;
+                if add::advance_verified_add_record(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    &mut bit_cursor,
+                ) {
+                    last_verified_record_end = record_end;
+                    last_verified_record_allows_trailing_fragment_promotion = false;
+                    last_verified_add_record =
+                        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+                            read_u32_le(&live_bytes, offset + 2)
+                                .map(|object_id| (record_end, object_type, object_id))
+                        } else {
+                            None
+                        };
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
+                bit_cursor = exact_add_start_bit_cursor;
+
                 if let Some(placeable_guard_changed) =
                     add_guard::repair_verified_ee_placeable_add_guard_bits(
                         &live_bytes,
@@ -2673,6 +2748,13 @@ pub fn rewrite_update_records_payload_if_possible(
                     changed |= placeable_guard_changed;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = false;
+                    last_verified_add_record =
+                        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+                            read_u32_le(&live_bytes, offset + 2)
+                                .map(|object_id| (record_end, object_type, object_id))
+                        } else {
+                            None
+                        };
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -2782,6 +2864,14 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_record_end = record_end;
             let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                 && creature::looks_like_ee_creature_add_record(&live_bytes, offset, record_end);
+            last_verified_add_record = if bit_cursor_reliable
+                && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+            {
+                read_u32_le(&live_bytes, offset + 2)
+                    .map(|object_id| (record_end, object_type, object_id))
+            } else {
+                None
+            };
             last_verified_door_add_fragment_span_record =
                 if bit_cursor_reliable && object_type == DOOR_OBJECT_TYPE {
                     read_u32_le(&live_bytes, offset + 2).map(|object_id| (record_end, object_id))
@@ -2983,6 +3073,15 @@ pub fn rewrite_update_records_payload_if_possible(
                     );
                     appearance_tail_fragment_bits_adjusted = true;
                 }
+            } else if creature::advance_verified_noop_creature_appearance_record(
+                &live_bytes,
+                offset,
+                record_end,
+                &fragment_bits,
+                &mut advanced_appearance_cursor,
+            ) {
+                bit_cursor = advanced_appearance_cursor;
+                bit_cursor_reliable = true;
             } else if bit_cursor_reliable {
                 let mut repaired_tail = false;
                 if let Some(ee_shape_end) =
@@ -3325,6 +3424,38 @@ pub fn rewrite_update_records_payload_if_possible(
                     );
                     summary.bits_inserted = summary.bits_inserted.saturating_add(
                         u32::try_from(action0_rewrite.bits_inserted).unwrap_or(u32::MAX),
+                    );
+                }
+                if let Some(action0_damage_rewrite) =
+                    creature::insert_3967_action0_missing_damage_byte_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(action0_damage_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                    );
+                }
+                if let Some(action0_associate_rewrite) =
+                    creature::insert_3967_action0_short_associate_suffix_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
+                    changed = true;
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(action0_associate_rewrite.bytes_inserted).unwrap_or(u32::MAX),
                     );
                 }
                 if creature::repair_3967_action2_optional_float_bool_for_ee(

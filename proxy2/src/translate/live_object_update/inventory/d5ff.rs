@@ -1,13 +1,13 @@
 use super::*;
 
-// Focused D5FF inventory-family parser.
+// Focused D5FF inventory-family parsers.
 //
-// This module intentionally does not widen the generic mask walker.  The HG
-// Starcore5 area-entry creature capture carries an `I/0xD5FF` record for the
-// same small object id (`0x000000FE`) that the immediately preceding `A/P/U`
-// live-object records already proved.  The older self-inventory D5FF packets
-// still use the generic path; this helper owns only the creature equipment/UI
-// state shape exposed by that capture.
+// This module intentionally does not widen the generic mask walker. The HG
+// Starcore5 area-entry creature capture and the local Winds/Eremor capture both
+// carry `I/0xD5FF` creature equipment/UI-state bodies for the same compact
+// object id (`0x000000FE`) proved by adjacent live-object records. The older
+// self-inventory D5FF packets still use the generic path; these helpers own
+// only the byte-exact creature equipment/UI-state shapes exposed by captures.
 //
 // Reader-order evidence:
 //
@@ -28,10 +28,15 @@ use super::*;
 // shape, it should become a typed sibling here with its own fixture.
 
 const D5FF_MASK: u16 = 0xD5FF;
+const D500_MISSING_LOW_D5FF_MASK: u16 = 0xD500;
+const D5FF_LOCAL_WINDS_OBJECT_ID: u32 = 0x0000_00FE;
 const D5FF_CREATURE_STATE_RICH_CATEGORY_COUNT: usize = 3;
 const D5FF_CREATURE_STATE_RICH_FIRST_ENTRY_BYTES: usize = 8;
 const D5FF_CREATURE_STATE_RICH_SECOND_ENTRY_BYTES: usize = 7;
 const D5FF_CREATURE_STATE_EXPECTED_RICH_EQUIPMENT_ROWS: u16 = 33;
+const D5FF_LOCAL_WINDS_RICH_SECOND_ENTRIES: u16 = 38;
+const D5FF_LOCAL_WINDS_ICON_FIRST_COUNT: u16 = 30;
+const D5FF_LOCAL_WINDS_ICON_SECOND_COUNT: u16 = 6;
 
 pub(super) fn d5ff_small_live_stream_object_id_is_allowed(object_id: u32) -> bool {
     // CNWSMessage/CNWMessage read this field as an OBJECTID; the stricter
@@ -43,6 +48,60 @@ pub(super) fn d5ff_small_live_stream_object_id_is_allowed(object_id: u32) -> boo
 }
 
 pub(super) fn try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<GenericInventoryCandidate> {
+    try_parse_inventory_d5ff_hg_creature_equipment_state_shape_inner(
+        bytes,
+        record_offset,
+        record_end,
+    )
+    .or_else(|| {
+        try_parse_inventory_d5ff_local_winds_creature_equipment_state_shape(
+            bytes,
+            record_offset,
+            record_end,
+        )
+    })
+}
+
+pub(super) fn repair_d500_missing_low_d5ff_mask_for_ee(
+    bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<()> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+        || read_u16_le(bytes, record_offset + 5)? != D500_MISSING_LOW_D5FF_MASK
+    {
+        return None;
+    }
+
+    // Local Winds/Eremor seq22 exposes a legacy header with the low mask byte
+    // cleared (`0xD500`) while the following byte body is the decompile-owned
+    // D5FF creature inventory state: compact 0x0001, 0x0002, 0x0008, 0x8000,
+    // 0x0080, 0x0010, 0x0020, 0x0040, 0x0400, 0x0004, 0x0100, and 0x4000.
+    // Mutate only after the exact D5FF sibling parser proves that full cursor.
+    let original = *bytes.get(record_offset + 5)?;
+    bytes[record_offset + 5] = 0xFF;
+    let accepted = try_parse_inventory_d5ff_local_winds_creature_equipment_state_shape(
+        bytes,
+        record_offset,
+        record_end,
+    )
+    .is_some();
+    if !accepted {
+        bytes[record_offset + 5] = original;
+        return None;
+    }
+    Some(())
+}
+
+fn try_parse_inventory_d5ff_hg_creature_equipment_state_shape_inner(
     bytes: &[u8],
     record_offset: usize,
     record_end: usize,
@@ -109,6 +168,77 @@ pub(super) fn try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
         return None;
     }
     cursor = cursor.checked_add(2)?;
+
+    if cursor != record_end {
+        return None;
+    }
+
+    GenericInventoryCandidate::new(record_end, fragment_bits).require_fragment_bit(0, false)
+}
+
+fn try_parse_inventory_d5ff_local_winds_creature_equipment_state_shape(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<GenericInventoryCandidate> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    if object_id != D5FF_LOCAL_WINDS_OBJECT_ID || mask != D5FF_MASK {
+        return None;
+    }
+
+    let mut cursor = record_offset.checked_add(7)?;
+    let mut fragment_bits = 0usize;
+
+    cursor = cursor.checked_add(10)?; // 0x0001: SHORT, DWORD, INT, BOOL=false
+    fragment_bits = fragment_bits.checked_add(1)?;
+    cursor = cursor.checked_add(4)?; // 0x0002 DWORD
+    cursor = cursor.checked_add(4)?; // 0x0008 DWORD
+    cursor = cursor.checked_add(12)?; // 0x8000 three INTs
+    if cursor > record_end {
+        return None;
+    }
+
+    cursor = advance_local_winds_d5ff_0080_group(bytes, cursor, record_end)?;
+    cursor = advance_zero_count_category_block(bytes, cursor, record_end)?;
+    let (next_cursor, second_entries) =
+        advance_local_winds_d5ff_rich_state_table(bytes, cursor, record_end)?;
+    cursor = next_cursor;
+    fragment_bits = fragment_bits.checked_add(usize::from(second_entries).checked_mul(2)?)?;
+
+    if cursor >= record_end || bytes.get(cursor).copied() != Some(0) {
+        return None;
+    }
+    cursor = cursor.checked_add(1)?; // 0x0040: zero ten-bit group count
+
+    if cursor.checked_add(2)? > record_end
+        || bytes.get(cursor).copied() != Some(0)
+        || bytes.get(cursor + 1).copied() != Some(0)
+    {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?; // 0x0400: byte clear/set counts are both zero
+
+    cursor = advance_local_winds_d5ff_icon_list(bytes, cursor, record_end)?;
+
+    if cursor >= record_end || bytes.get(cursor).copied() != Some(0) {
+        return None;
+    }
+    cursor = cursor.checked_add(1)?; // 0x0100: empty opcode stream
+
+    if read_u16_le(bytes, cursor)? != 0 {
+        return None;
+    }
+    cursor = cursor.checked_add(2)?; // 0x4000: empty state stream
 
     if cursor != record_end {
         return None;
@@ -266,5 +396,90 @@ fn advance_d5ff_legacy_icon_list(
         return None;
     }
     cursor = cursor.checked_add(usize::from(second_count).checked_mul(3)?)?;
+    (cursor <= record_end).then_some(cursor)
+}
+
+fn advance_local_winds_d5ff_0080_group(
+    bytes: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+) -> Option<usize> {
+    if cursor.checked_add(4)? > record_end
+        || bytes.get(cursor).copied() != Some(1)
+        || bytes.get(cursor + 1).copied() != Some(0)
+        || read_u16_le(bytes, cursor + 2)? != 0x01FF
+    {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+    cursor = cursor.checked_add(9)?;
+    (cursor <= record_end).then_some(cursor)
+}
+
+fn advance_zero_count_category_block(
+    bytes: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+) -> Option<usize> {
+    for _ in 0..D5FF_CREATURE_STATE_RICH_CATEGORY_COUNT {
+        if cursor.checked_add(4)? > record_end
+            || read_u16_le(bytes, cursor)? != 0
+            || read_u16_le(bytes, cursor + 2)? != 0
+        {
+            return None;
+        }
+        cursor = cursor.checked_add(4)?;
+    }
+    Some(cursor)
+}
+
+fn advance_local_winds_d5ff_rich_state_table(
+    bytes: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+) -> Option<(usize, u16)> {
+    let first_count = read_u16_le(bytes, cursor)?;
+    let second_count = read_u16_le(bytes, cursor.checked_add(2)?)?;
+    if first_count != 0 || second_count != D5FF_LOCAL_WINDS_RICH_SECOND_ENTRIES {
+        return None;
+    }
+    cursor = cursor
+        .checked_add(4)?
+        .checked_add(usize::from(second_count).checked_mul(7)?)?;
+    if cursor > record_end {
+        return None;
+    }
+
+    for _ in 1..D5FF_CREATURE_STATE_RICH_CATEGORY_COUNT {
+        if cursor.checked_add(4)? > record_end
+            || read_u16_le(bytes, cursor)? != 0
+            || read_u16_le(bytes, cursor + 2)? != 0
+        {
+            return None;
+        }
+        cursor = cursor.checked_add(4)?;
+    }
+    Some((cursor, second_count))
+}
+
+fn advance_local_winds_d5ff_icon_list(
+    bytes: &[u8],
+    mut cursor: usize,
+    record_end: usize,
+) -> Option<usize> {
+    if read_u16_le(bytes, cursor)? != D5FF_LOCAL_WINDS_ICON_FIRST_COUNT {
+        return None;
+    }
+    cursor = cursor
+        .checked_add(2)?
+        .checked_add(usize::from(D5FF_LOCAL_WINDS_ICON_FIRST_COUNT).checked_mul(3)?)?;
+    if cursor.checked_add(2)? > record_end
+        || read_u16_le(bytes, cursor)? != D5FF_LOCAL_WINDS_ICON_SECOND_COUNT
+    {
+        return None;
+    }
+    cursor = cursor
+        .checked_add(2)?
+        .checked_add(usize::from(D5FF_LOCAL_WINDS_ICON_SECOND_COUNT).checked_mul(3)?)?;
     (cursor <= record_end).then_some(cursor)
 }

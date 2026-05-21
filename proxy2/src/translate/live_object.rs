@@ -1021,6 +1021,16 @@ fn rewrite_creature_add_visual_transform_maps_inner(
             live_bytes.len(),
         )
         .min(live_bytes.len());
+        if let Some(compact_placeable_end) =
+            compact_placeable_add_end_before_same_object_update_like_tail(
+                &live_bytes,
+                offset,
+                live_bytes.len(),
+            )
+            .filter(|compact_end| *compact_end < record_end)
+        {
+            record_end = compact_placeable_end;
+        }
         if fragment_bits_reliable
             && live_bytes.get(offset).copied() == Some(b'P')
             && live_bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
@@ -1616,6 +1626,17 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
             // legacy add repair a second time.
             return record_end;
         }
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            // Diamond compact placeable adds can carry a four-byte legacy
+            // name/token slot before the BYTE/WORD/WORD tail. Splitting at the
+            // decompiled tail cursor lets the focused add translator repair the
+            // bytes and fragment BOOLs before the following `U/9` update.
+            return record_end;
+        }
     }
 
     if bytes.get(offset).copied() == Some(b'P')
@@ -1771,6 +1792,55 @@ fn try_get_ee_door_placeable_update_record_end(
     } else {
         None
     }
+}
+
+fn compact_placeable_add_end_before_same_object_update_like_tail(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    if offset + 15 > scan_end
+        || bytes.get(offset).copied()? != b'A'
+        || bytes.get(offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+        || read_u32_le(bytes, offset + 6).is_none()
+        || read_u16_le(bytes, offset + 11).is_none()
+        || read_u16_le(bytes, offset + 13).is_none()
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, offset + 2)?;
+    if !looks_like_legacy_live_object_id_value(object_id) {
+        return None;
+    }
+
+    let compact_end = offset.checked_add(15)?;
+    if compact_end >= scan_end {
+        return Some(compact_end);
+    }
+    if looks_like_legacy_live_object_sub_message_boundary(bytes, compact_end) {
+        return Some(compact_end);
+    }
+
+    let update_body_start = if bytes.get(compact_end).copied()? == PLACEABLE_OBJECT_TYPE {
+        compact_end
+    } else if bytes.get(compact_end).copied()? == 0
+        && bytes.get(compact_end + 1).copied()? == PLACEABLE_OBJECT_TYPE
+    {
+        compact_end.checked_add(1)?
+    } else {
+        return None;
+    };
+
+    if update_body_start + 9 > scan_end
+        || read_u32_le(bytes, update_body_start + 1)? != object_id
+        || read_u32_le(bytes, update_body_start + 5).is_none_or(|mask| mask == 0)
+    {
+        return None;
+    }
+
+    Some(compact_end)
 }
 
 fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> usize {
@@ -2455,10 +2525,23 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     } else {
         None
     };
-    if remaining_source_bits < required_source_bits && compact_empty_inline_name.is_none() {
+    let compact_short_name_token_tail_end = if short_name
+        && compact_empty_inline_name.is_none()
+        && (remaining_source_bits == 0
+            || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS)
+    {
+        legacy_placeable_add_tail_end(bytes, name_offset + CNW_LENGTH_BYTES, *record_end, false)
+    } else {
+        None
+    };
+    if remaining_source_bits < required_source_bits
+        && compact_empty_inline_name.is_none()
+        && compact_short_name_token_tail_end.is_none()
+    {
         return None;
     }
-    let compact_empty_inline_name_source_bits = if compact_empty_inline_name.is_some()
+    let compact_source_bits = if (compact_empty_inline_name.is_some()
+        || compact_short_name_token_tail_end.is_some())
         && remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
     {
         LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
@@ -2467,6 +2550,8 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     };
     let source_post_name_bit = *bit_cursor + 1 + source_name_inner_bits;
     let source_optional_object_bit = if compact_empty_inline_name.is_some() {
+        false
+    } else if compact_short_name_token_tail_end.is_some() {
         false
     } else {
         before_bits
@@ -2479,6 +2564,9 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             apply_legacy_placeable_empty_inline_fallback_name(bytes, record_end, recovered)?;
         tail_offset = recovered_tail_offset;
         recovered_legacy_tail_end
+    } else if let Some(legacy_tail_end) = compact_short_name_token_tail_end {
+        tail_offset = name_offset + CNW_LENGTH_BYTES;
+        legacy_tail_end
     } else if let Some(legacy_tail_end) =
         legacy_placeable_add_tail_end(bytes, tail_offset, *record_end, false)
     {
@@ -2599,7 +2687,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         direct_name_mode_repair,
         inline_locstring_name,
         compact_empty_inline_name = compact_empty_inline_name.is_some(),
-        compact_empty_inline_name_source_bits,
+        compact_source_bits,
         source_name_inner_bits,
         destination_name_inner_bits,
         source_bits = required_source_bits,
@@ -2747,18 +2835,19 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         summary.bytes_inserted = summary.bytes_inserted.saturating_add(1);
     }
 
-    if compact_empty_inline_name.is_some() {
-        // Local Diamond captures can carry an exact compact placeable add with a
-        // repaired inline name and either no remaining shared fragment BOOLs or
-        // the four compact tail BOOLs left at the stream cursor. The EE client
-        // reader (`sub_1407A7800`) still requires the full direct-name BOOL run:
-        // outer-name=false, post-type=false, optional-object=false, seven
-        // Diamond-compatible state BOOLs=false, and EE's extra final
-        // visual-transform guard=false. This branch is deliberately gated on the
-        // bounded compact byte recovery above plus one of those exact source-bit
-        // counts; it is not a generic "missing bits are false" fallback.
-        if compact_empty_inline_name_source_bits != 0 {
-            let drain_end = bit_cursor.checked_add(compact_empty_inline_name_source_bits)?;
+    if compact_empty_inline_name.is_some() || compact_short_name_token_tail_end.is_some() {
+        // Local Diamond captures can carry exact compact placeable adds with a
+        // recovered inline name, or a four-byte legacy short-name/token slot
+        // immediately before the BYTE/WORD/WORD placeable tail. Both forms own
+        // only the four Diamond compact tail BOOLs at the source cursor. EE's
+        // `sub_1407A7800` still needs the full direct-name guard run before the
+        // visual-transform map, so emit false guards after the bounded byte
+        // parser proves one of these compact shapes.
+        if compact_short_name_token_tail_end.is_some() {
+            write_u32_le(bytes, name_offset, 0)?;
+        }
+        if compact_source_bits != 0 {
+            let drain_end = bit_cursor.checked_add(compact_source_bits)?;
             bits.drain(*bit_cursor..drain_end);
         }
         for delta in 0..11 {
@@ -2925,6 +3014,17 @@ fn advance_known_live_record_fragment_cursor_for_ee(
             .then_some(true)
         }
         (b'A', TRIGGER_OBJECT_TYPE | DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) => {
+            let original_bit_cursor = *bit_cursor;
+            if crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                bytes,
+                record_offset,
+                record_end,
+                bits,
+                bit_cursor,
+            ) {
+                return Some(true);
+            }
+            *bit_cursor = original_bit_cursor;
             advance_live_add_record_bit_cursor(bytes, bits, record_offset, record_end, bit_cursor)
                 .then_some(true)
         }

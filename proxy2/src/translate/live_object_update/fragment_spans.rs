@@ -45,6 +45,7 @@ const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
+const LEGACY_CREATURE_UPDATE_8047_MASK: u32 = 0x0000_8047;
 
 #[derive(Debug, Clone, Copy)]
 enum CreatureUpdateFragmentSpanCursorPolicy {
@@ -511,7 +512,27 @@ fn find_appearance_following_creature_update_span(
             })
             .is_some()
         };
-        if !owner_ok && !trailing_span_ok {
+        let action0_bridge_followup_rewrite_ok = if owner_ok || trailing_span_ok {
+            false
+        } else {
+            // This appearance-adjacent span is only promoted when the following
+            // creature update proves ownership. Some local Diamond captures
+            // carry the decompile-owned action0 bridge WORD that EE does not
+            // read; reuse the narrow action0 removal proof so the span is not
+            // treated as arbitrary fragment storage.
+            let mut proof_live_bytes = live_bytes.to_vec();
+            let mut proof_record_end = following_end;
+            let mut proof_rewrite_bits = proof_bits.clone();
+            creature::remove_3967_action0_legacy_bridge_followup_for_ee(
+                &mut proof_live_bytes,
+                span_end,
+                &mut proof_record_end,
+                &mut proof_rewrite_bits,
+                bit_cursor,
+            )
+            .is_some()
+        };
+        if !owner_ok && !trailing_span_ok && !action0_bridge_followup_rewrite_ok {
             continue;
         }
         return Some((span_end, promoted_bits, following_end));
@@ -972,6 +993,7 @@ fn find_creature_update_3967_interleaved_fragment_span(
             | LEGACY_CREATURE_UPDATE_3967_MASK
             | LEGACY_CREATURE_UPDATE_C40F_MASK
             | LEGACY_CREATURE_UPDATE_C44F_MASK
+            | LEGACY_CREATURE_UPDATE_8047_MASK
     ) {
         return None;
     }
@@ -988,6 +1010,9 @@ fn find_creature_update_3967_interleaved_fragment_span(
     // Local Dark Ranger adds a narrower `0x0008` effect-only family: row
     // `0x00F3` is a no-target LowLightVision visualeffects.2da row, and the
     // feature-0x0E-false reader ends before the adjacent CNW storage span.
+    // Local Winds/Eremor seq24 adds the `0x8047` sibling: the shared creature
+    // cursor simulator proves the movement/action/state read body, then the
+    // capture carries four zero CNW storage bytes before the live-object tail.
     // In all families, bytes after the exact creature cursor are promoted only
     // after the shortened record validates from the current fragment cursor.
     let min_read_end = offset.checked_add(10)?;

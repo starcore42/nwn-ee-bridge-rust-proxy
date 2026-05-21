@@ -495,6 +495,44 @@ fn low_bits_placeable_update_drops_cexo_tail_before_ee_claim() {
 }
 
 #[test]
+fn low_bits_placeable_update_drops_word_zero_control_tail_before_ee_claim() {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x09, 0x7C, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
+    live.extend_from_slice(&[
+        0xDB, 0x33, 0xC0, 0x11, 0x41, 0x0F, // position
+        0x5B, // scalar orientation high byte
+        0x00, 0x00, // appearance word
+        0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, // scale/state
+        0x3B, 0x16, 0x00, 0x00, // legacy low-bit control WORD + zero WORD
+    ]);
+
+    let fragment_bits = vec![
+        false, false, false, // CNW fragment length header, rewritten by pack.
+        false, false, // position low bits retained.
+        false, false, false, false, false, // scalar orientation selector + low bits.
+        false, false, false, false, false, // five Diamond placeable state bits.
+    ];
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (7 + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        fragment_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("low-bit placeable WORD/zero control-tail rewrite");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.bytes_removed, 4);
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(super::read_u32_le(&payload, 7 + 6), Some(0x37));
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("WORD/zero-tail placeable update should become exact EE");
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
 fn low_bits_placeable_update_drops_absent_appearance_bit_when_prefix_is_exact() {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x09, 0x19, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
@@ -1184,28 +1222,28 @@ fn captured_creature_pair_3967_short_stream_rewrites_to_exact_ee_shape() {
 }
 
 #[test]
-fn hg_starc5_sooty_3967_action0_bridge_followup_rewrites_to_ee_shape() {
+fn hg_starc5_sooty_3967_action0_post_state_count_preserves_ee_shape() {
     let raw = include_bytes!(
         "../../../fixtures/live_object/hg_starc5_sooty_transition_3967_action0_bridge_followup_20260514.bin"
     );
     assert!(
         super::claim_payload_if_verified(raw).is_none(),
-        "legacy bridge action-state/follow-up bytes must not be accepted as EE-readable"
+        "raw stream still needs the surrounding A/P/tail rewrite before exact EE validation"
     );
 
     let mut payload = raw.to_vec();
     let old_declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
         .expect("legacy declared length");
     let summary = super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("0x3967 action-0 bridge follow-up rewrite");
-    assert_eq!(summary.update_records_rewritten, 1);
+        .expect("0x3967 action-0 stream rewrite");
+    assert_eq!(summary.update_records_rewritten, 0);
     assert_eq!(summary.bytes_inserted, 29);
-    assert_eq!(summary.bytes_removed, 46);
+    assert_eq!(summary.bytes_removed, 44);
 
     let new_declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
         .expect("rewritten declared length");
-    assert_eq!(new_declared, old_declared - 17);
-    assert_eq!(payload.len(), raw.len() - 17);
+    assert_eq!(new_declared, old_declared - 15);
+    assert_eq!(payload.len(), raw.len() - 15);
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten 0x3967 action-0 stream should validate exactly");

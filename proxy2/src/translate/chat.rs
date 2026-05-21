@@ -25,9 +25,10 @@
 //!   and one final OBJECTID before sending family `0x09` with minor `0x0B` or
 //!   `0x0C` (`CNWSMessage::SendServerToPlayerChatMultiLangMessage`,
 //!   `nwn ee decompile.txt:1838566..1838626`). HG's 1.69 compact captures use
-//!   the same read-buffer envelope with the localized text encoded as a bounded
-//!   CNW string and the BOOL/localized-string selector bits in the fragment
-//!   tail.
+//!   the same read-buffer envelope with the localized text encoded either as a
+//!   bounded CNW string, or as an empty primary token string followed by a
+//!   bounded localized line plus a fixed token-control suffix. The
+//!   BOOL/localized-string selector bits stay in the fragment tail.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -50,6 +51,7 @@ const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const CRESREF_BYTES: usize = 16;
 const TOKEN_TALK_FRAGMENT_BYTES: usize = 1;
 const TOKEN_TALK_FRAGMENT_DATA_BITS: usize = 2;
+const TOKEN_TALK_LOCALIZED_SUFFIX: [u8; 6] = [0, 0, 0, 0, 0, 0x21];
 const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
 
 #[derive(Debug, Clone, Copy)]
@@ -199,9 +201,8 @@ fn claim_token_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
     }
     cursor = cursor.checked_add(OBJECT_ID_BYTES)?;
 
-    let (text_end, text_len) =
-        read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_TEXT_BYTES)?;
-    cursor = text_end;
+    let (body_end, text_len) = read_token_talk_body_end(payload, cursor, declared)?;
+    cursor = body_end;
 
     let resref_end = cursor.checked_add(CRESREF_BYTES)?;
     let resref = payload.get(cursor..resref_end)?;
@@ -229,6 +230,35 @@ fn claim_token_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
         text_len,
         fragment_bytes,
     })
+}
+
+fn read_token_talk_body_end(
+    payload: &[u8],
+    offset: usize,
+    declared: usize,
+) -> Option<(usize, usize)> {
+    let (first_end, first_len) =
+        read_bounded_cexo_string_end(payload, offset, declared, MAX_CHAT_TEXT_BYTES)?;
+    if first_len != 0 {
+        return Some((first_end, first_len));
+    }
+
+    let fixed_tail = CRESREF_BYTES.checked_add(OBJECT_ID_BYTES)?;
+    let max_body_end = declared.checked_sub(fixed_tail)?;
+    let Some((second_end, second_len)) =
+        read_bounded_cexo_string_end(payload, first_end, max_body_end, MAX_CHAT_TEXT_BYTES)
+    else {
+        return Some((first_end, first_len));
+    };
+    let suffix_end = second_end.checked_add(TOKEN_TALK_LOCALIZED_SUFFIX.len())?;
+    if second_len > 0
+        && suffix_end <= max_body_end
+        && payload.get(second_end..suffix_end) == Some(TOKEN_TALK_LOCALIZED_SUFFIX.as_slice())
+    {
+        return Some((suffix_end, second_len));
+    }
+
+    Some((first_end, first_len))
 }
 
 fn read_bounded_cexo_string_end(
@@ -311,6 +341,18 @@ mod tests {
         assert_eq!(summary.minor, TOKEN_TALK_MINOR);
         assert_eq!(summary.declared, 39);
         assert_eq!(summary.text_len, 0);
+        assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
+    }
+
+    #[test]
+    fn token_talk_no_bubble_localized_line_fixture_matches_decompile_shape() {
+        let fixture = include_bytes!("../../fixtures/chat/token_talk_no_bubble_winds_eremor.bin");
+        let summary =
+            claim_payload_if_verified(fixture).expect("localized token talk should be claimed");
+
+        assert_eq!(summary.minor, TOKEN_TALK_NO_BUBBLE_MINOR);
+        assert_eq!(summary.declared, 133);
+        assert_eq!(summary.text_len, 84);
         assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
     }
 
