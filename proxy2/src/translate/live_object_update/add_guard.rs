@@ -16,20 +16,22 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
     live_bytes: &[u8],
     offset: usize,
     record_end: usize,
-    fragment_bits: &mut [bool],
+    fragment_bits: &mut Vec<bool>,
     bit_cursor: &mut usize,
 ) -> Option<bool> {
     if offset + 6 > record_end
         || record_end > live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
-        || *bit_cursor >= fragment_bits.len()
+        || *bit_cursor > fragment_bits.len()
     {
         return None;
     }
 
     let name_offset = offset + 6;
     let inline_name_end = locstring::inline_cexo_string_end(live_bytes, name_offset);
+    let direct_empty_name =
+        inline_name_end == Some(name_offset.checked_add(super::CNW_LENGTH_BYTES)?);
     let direct_inline_name =
         inline_name_end.is_some_and(|end| end > name_offset + super::CNW_LENGTH_BYTES);
     let tail_offset = inline_name_end.unwrap_or(name_offset.checked_add(4)?);
@@ -72,6 +74,23 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
                 return None;
             }
         };
+
+    if *bit_cursor == fragment_bits.len() {
+        if !direct_empty_name || optional_object_bytes_present {
+            return None;
+        }
+
+        // Winds local Diamond captures can reach this pass after earlier
+        // scalar update repairs have consumed every source fragment bit. The
+        // read buffer is already the exact EE empty-direct-name placeable add
+        // shape (`sub_1407A7800`): outer name BOOL false, optional-object BOOL
+        // false, eight neutral trailing state BOOLs, then the bridge-emitted
+        // identity visual-transform map. Materialize only that decompiled
+        // neutral guard run and let the exact add validator advance it.
+        fragment_bits.extend(std::iter::repeat(false).take(11));
+        *bit_cursor = bit_cursor.saturating_add(11);
+        return Some(true);
+    }
 
     let mut changed = false;
     let outer_locstring = fragment_bits.get(*bit_cursor).copied()?;

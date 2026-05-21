@@ -2530,17 +2530,17 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     let destination_name_inner_bits = usize::from(short_name || inline_locstring_name);
     let required_source_bits = 10 + source_name_inner_bits;
     let remaining_source_bits = before_bits.len().saturating_sub(*bit_cursor);
-    let compact_empty_inline_name = if remaining_source_bits == 0
-        || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
-    {
+    let compact_source_bit_count_available = remaining_source_bits == 0
+        || remaining_source_bits == 1
+        || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS;
+    let compact_empty_inline_name = if compact_source_bit_count_available {
         try_find_legacy_placeable_empty_inline_fallback_name(bytes, name_offset, *record_end, false)
     } else {
         None
     };
     let compact_short_name_token_tail_end = if short_name
         && compact_empty_inline_name.is_none()
-        && (remaining_source_bits == 0
-            || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS)
+        && compact_source_bit_count_available
     {
         legacy_placeable_add_tail_end(bytes, name_offset + CNW_LENGTH_BYTES, *record_end, false)
     } else {
@@ -2554,9 +2554,13 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     }
     let compact_source_bits = if (compact_empty_inline_name.is_some()
         || compact_short_name_token_tail_end.is_some())
-        && remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+        && compact_source_bit_count_available
     {
-        LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+        if remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
+            LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+        } else {
+            remaining_source_bits
+        }
     } else {
         0
     };
@@ -2851,10 +2855,13 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         // Local Diamond captures can carry exact compact placeable adds with a
         // recovered inline name, or a four-byte legacy short-name/token slot
         // immediately before the BYTE/WORD/WORD placeable tail. Both forms own
-        // only the four Diamond compact tail BOOLs at the source cursor. EE's
-        // `sub_1407A7800` still needs the full direct-name guard run before the
-        // visual-transform map, so emit false guards after the bounded byte
-        // parser proves one of these compact shapes.
+        // only the four Diamond compact tail BOOLs at the source cursor. Late
+        // Winds streams can have all but one of those compact source bits
+        // consumed by prior decompile-backed update repairs; drain that bounded
+        // residue as part of the same compact add shape. EE's `sub_1407A7800`
+        // still needs the full direct-name guard run before the visual-
+        // transform map, so emit false guards after the bounded byte parser
+        // proves one of these compact shapes.
         if compact_short_name_token_tail_end.is_some() {
             write_u32_le(bytes, name_offset, 0)?;
         }
@@ -2862,8 +2869,19 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             let drain_end = bit_cursor.checked_add(compact_source_bits)?;
             bits.drain(*bit_cursor..drain_end);
         }
-        for delta in 0..11 {
+        let emitted_name_inner_bits = usize::from(compact_short_name_token_tail_end.is_some());
+        for delta in 0..11 + emitted_name_inner_bits {
             insert_cnw_msb_bit(bits, *bit_cursor + delta, false)?;
+        }
+        if compact_short_name_token_tail_end.is_some() {
+            // The four-byte legacy short-name/token slot has already been
+            // canonicalized to an empty CExoString at the byte cursor. Emit the
+            // exact EE helper branch for that shape: `sub_1407A7800` sees
+            // outer=true and `sub_1409735F0` then sees inner=false before
+            // reading the same zero-length `CExoString(32)`. Keeping this
+            // branch length aligned with the decompiled reader prevents the
+            // following placeable update from borrowing the inner selector bit.
+            summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, true)?;
         }
         summary.fragment_bits_changed = true;
     } else {
@@ -4415,6 +4433,29 @@ mod tests {
             .expect("compact placeable add rewrite");
         assert_eq!(summary.maps_inserted, 1);
         assert_eq!(summary.bytes_inserted, 9);
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
+        );
+    }
+
+    #[test]
+    fn compact_placeable_add_with_one_residue_bit_rewrites_to_exact_ee_shape() {
+        let mut live = Vec::new();
+        live.push(b'A');
+        live.push(PLACEABLE_OBJECT_TYPE);
+        live.extend_from_slice(&0x8000_00B6u32.to_le_bytes());
+        live.extend_from_slice(&[0x18, 0x16, 0x00, 0x00]);
+        live.extend_from_slice(&[0x05, 0x11, 0x00, 0x00, 0x00]);
+
+        let fragment_bits = vec![
+            false, false, false, // CNW fragment length header, rewritten by pack.
+            false, // stale compact add source residue drained before EE guards.
+        ];
+        let mut payload = live_object_payload(live, fragment_bits);
+
+        let summary = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None)
+            .expect("one-residue compact placeable add rewrite");
+        assert_eq!(summary.maps_inserted, 1);
         assert!(
             crate::translate::live_object_update::claim_payload_if_verified(&payload).is_some()
         );

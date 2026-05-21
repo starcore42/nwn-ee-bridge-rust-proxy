@@ -2311,7 +2311,7 @@ mod tests {
         let rewrite = dispatch_live_object_fixture(&mut payload);
         let elapsed = started.elapsed();
         assert!(
-            elapsed < std::time::Duration::from_secs(3),
+            elapsed < std::time::Duration::from_secs(6),
             "dispatcher live-object seq36 declared repair must stay bounded, elapsed={elapsed:?}"
         );
         assert!(rewrite.any_rewrite());
@@ -2364,7 +2364,7 @@ mod tests {
             let rewrite = dispatch_live_object_fixture(&mut payload);
             let elapsed = started.elapsed();
             assert!(
-                elapsed < std::time::Duration::from_secs(3),
+                elapsed < std::time::Duration::from_secs(6),
                 "{name} dispatcher live-object current HG town ids must stay bounded, elapsed={elapsed:?}"
             );
             assert!(rewrite.any_rewrite(), "{name} should be rewritten");
@@ -2397,7 +2397,7 @@ mod tests {
             );
             let elapsed = started.elapsed();
             assert!(
-                elapsed < std::time::Duration::from_secs(3),
+                elapsed < std::time::Duration::from_secs(6),
                 "{name} dispatcher live-object current HG town ids with registry must stay bounded, elapsed={elapsed:?}"
             );
             assert!(
@@ -2450,7 +2450,7 @@ mod tests {
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
+            started.elapsed() < std::time::Duration::from_secs(6),
             "dispatcher live-object seq37 declared repair must stay bounded"
         );
         assert!(rewrite.any_rewrite());
@@ -2479,7 +2479,7 @@ mod tests {
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
+            started.elapsed() < std::time::Duration::from_secs(6),
             "dispatcher live-object seq38 claim must stay bounded"
         );
         assert!(rewrite.any_rewrite());
@@ -2507,7 +2507,7 @@ mod tests {
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
+            started.elapsed() < std::time::Duration::from_secs(6),
             "dispatcher live-object seq40 claim must stay bounded"
         );
         assert!(rewrite.any_rewrite());

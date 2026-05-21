@@ -401,18 +401,78 @@ pub(super) fn rewrite_update_record_for_ee(
             // In that exact case, the only valid EE shape is the same shared
             // prefix with the absent appearance field removed.
             let without_appearance = translated_mask & !LEGACY_UPDATE_APPEARANCE_MASK;
-            if let Some(prefix_end) = door_placeable_update_read_end_for_current_orientation_branch(
+            if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
                 live_bytes,
                 record_offset,
                 *record_end,
                 without_appearance,
-                bits,
-                *bit_cursor,
+                false,
             )
             .filter(|prefix_end| {
-                *prefix_end == *record_end
-                    || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+                reader::legacy_low_bit_control_tail_ready(live_bytes, *prefix_end, *record_end)
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        *prefix_end,
+                        without_appearance,
+                        true,
+                    ) != Some(*prefix_end)
             }) {
+                // Prelude's local `U/9 0xF7` shape combines the same absent
+                // appearance bit with the bounded low 0x40/0x80 suffix. The
+                // source fragment stream resumes at state bits where EE would
+                // read the orientation selector; the vector branch can leave a
+                // one-byte zero suffix that also resembles a packed-name tail,
+                // but the raw mask has no name bit and the scalar byte cursor
+                // owns the complete low-bit suffix.
+                low_tail_candidate_mask = without_appearance;
+                low_tail_prefix_end = Some(prefix_end);
+            } else if let Some(prefix_end) =
+                door_placeable_update_read_end_for_current_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    without_appearance,
+                    bits,
+                    *bit_cursor,
+                )
+                .filter(|prefix_end| {
+                    *prefix_end == *record_end
+                        || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+                })
+            {
+                low_tail_candidate_mask = without_appearance;
+                low_tail_prefix_end = Some(prefix_end);
+            } else if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
+                live_bytes,
+                record_offset,
+                *record_end,
+                without_appearance,
+                false,
+            )
+            .filter(|prefix_end| {
+                (*prefix_end == *record_end
+                    || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+                    || reader::legacy_low_bit_control_tail_ready(
+                        live_bytes,
+                        *prefix_end,
+                        *record_end,
+                    ))
+                    && door_placeable_update_read_end_for_orientation_branch(
+                        live_bytes,
+                        record_offset,
+                        *prefix_end,
+                        without_appearance,
+                        true,
+                    ) != Some(*prefix_end)
+            }) {
+                // Prelude's local `U/9 0xF7` shape combines the same absent
+                // appearance bit with the bounded low 0x40/0x80 suffix, but the
+                // source fragment stream resumes at state bits where EE would
+                // read the orientation selector. The scalar byte cursor is the
+                // only decompile-valid prefix: the vector branch would run into
+                // the low-tail suffix, so let the shared low-tail block below
+                // insert the missing scalar fragment bits.
                 low_tail_candidate_mask = without_appearance;
                 low_tail_prefix_end = Some(prefix_end);
             }
@@ -457,6 +517,39 @@ pub(super) fn rewrite_update_record_for_ee(
             }
         }
         if let Some(prefix_end) = low_tail_prefix_end {
+            let unsupported_low_tail_bits = raw_mask & !low_tail_candidate_mask;
+            if low_tail_zero_fragment_bits_to_insert == 0
+                && bits.len() == *bit_cursor
+                && (unsupported_low_tail_bits & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) != 0
+                && (unsupported_low_tail_bits
+                    & !(placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK | LEGACY_UPDATE_APPEARANCE_MASK))
+                    == 0
+                && prefix_end < *record_end
+                && reader::legacy_low_bit_control_tail_ready(live_bytes, prefix_end, *record_end)
+                && door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    prefix_end,
+                    low_tail_candidate_mask,
+                    false,
+                ) == Some(prefix_end)
+                && door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    prefix_end,
+                    low_tail_candidate_mask,
+                    true,
+                ) != Some(prefix_end)
+            {
+                // Late Winds local Diamond records can have their fragment
+                // cursor exhausted before a scalar placeable low-tail update.
+                // The already-proven read-buffer prefix and bounded low-bit
+                // suffix still identify the same decompile-owned shape; insert
+                // neutral source bits so the normal EE exact validator owns the
+                // final packet instead of trusting the byte rewrite alone.
+                low_tail_zero_fragment_bits_to_insert =
+                    low_prefix_door_placeable_update_source_fragment_bits(low_tail_candidate_mask);
+            }
             // CEP v2.2 local Diamond placeable updates can set low 0x40/0x80
             // mask bits and append a bounded legacy name/control tail after
             // the exact shared generic prefix. EE has no reader for those low
@@ -486,24 +579,32 @@ pub(super) fn rewrite_update_record_for_ee(
                 let legacy_low_tail_bits =
                     (raw_mask & !translated_mask & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK)
                         .count_ones() as usize;
-                if available_after_orientation >= source_tail_bits
-                    && available_after_orientation
-                        < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-                            .saturating_add(source_tail_bits)
-                    && door_placeable_update_read_end_for_orientation_branch(
-                        live_bytes,
-                        record_offset,
-                        prefix_end,
-                        translated_mask,
-                        false,
-                    ) == Some(prefix_end)
+                let scalar_prefix_proven = door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    prefix_end,
+                    translated_mask,
+                    false,
+                ) == Some(prefix_end)
                     && door_placeable_update_read_end_for_orientation_branch(
                         live_bytes,
                         record_offset,
                         prefix_end,
                         translated_mask,
                         true,
-                    ) != Some(prefix_end)
+                    ) != Some(prefix_end);
+                let low_tail_suffix_proven =
+                    reader::legacy_low_bit_control_tail_ready(live_bytes, prefix_end, *record_end);
+                let missing_scalar_bits_at_low_tail = low_tail_suffix_proven
+                    && bits.get(orientation_bit_cursor).copied() == Some(true)
+                    && available_after_orientation
+                        >= source_tail_bits.saturating_add(legacy_low_tail_bits);
+                if available_after_orientation >= source_tail_bits
+                    && (available_after_orientation
+                        < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                            .saturating_add(source_tail_bits)
+                        || missing_scalar_bits_at_low_tail)
+                    && scalar_prefix_proven
                 {
                     // The low 0x40/0x80 placeable-tail captures can have the
                     // same scalar-orientation split as the inline-name legacy
@@ -516,6 +617,7 @@ pub(super) fn rewrite_update_record_for_ee(
                         OrientationFragmentRewrite::InsertLegacyByteScalarPad;
                     if available_after_orientation
                         == source_tail_bits.saturating_add(legacy_low_tail_bits)
+                        || missing_scalar_bits_at_low_tail
                     {
                         // The two low placeable-specific mask bits are
                         // Diamond-only input for this tail form. Once their

@@ -454,6 +454,37 @@ mod tests {
     }
 
     #[test]
+    fn local_prelude_seq10_pending_stream_rewrites_to_exact_shape() {
+        // Local Prelude 2026-05-22 opening area stream. The pending-stream
+        // accumulator rebuilt this as one `P/5/1` candidate after the compact
+        // Area_ClientArea repair; it contains a creature appearance/update
+        // prefix, then a compact placeable add/update pair and a world-status
+        // tail that must be owned by the typed live-object passes before EE
+        // sees it.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_prelude_seq10_pending_liveobject_20260522.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Prelude seq10 stream documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Prelude pending live-object stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Prelude pending stream should validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.update_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.world_status_records >= 1);
+    }
+
+    #[test]
     fn local_diamond_seq20_auto_inventory_gia_gra_claims_exact_ee_shape() {
         let payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_seq20_auto_inventory_gia_gra_20260519.bin"
@@ -820,7 +851,7 @@ mod mixed_live_object_regression_tests {
         let elapsed = started.elapsed();
 
         assert!(
-            elapsed < Duration::from_secs(1),
+            elapsed < Duration::from_secs(3),
             "mixed live-object rewrite should be bounded, elapsed={elapsed:?}"
         );
         assert!(

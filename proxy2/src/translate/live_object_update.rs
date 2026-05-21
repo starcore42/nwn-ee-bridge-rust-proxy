@@ -2458,6 +2458,43 @@ pub fn rewrite_update_records_payload_if_possible(
                     continue;
                 }
             }
+            if let Some((door_record_end, door_object_id)) =
+                last_verified_door_add_fragment_span_record
+            {
+                if door_record_end == offset {
+                    // Diamond door adds can be followed by a chunk-local
+                    // CNW fragment span that begins with `U 00 <same id>`.
+                    // That prefix is boundary-looking, so probe the
+                    // decompile-owned door-add span before the generic live
+                    // boundary scanner treats it as a malformed update.
+                    if let Some(promotion) = fragment_spans::
+                        promote_door_add_following_missing_type_update_fragment_span_for_ee(
+                            &mut live_bytes,
+                            &mut fragment_bits,
+                            offset,
+                            bit_cursor,
+                            door_object_id,
+                        )
+                    {
+                        changed = true;
+                        summary.interleaved_fragment_spans_promoted =
+                            summary.interleaved_fragment_spans_promoted.saturating_add(1);
+                        summary.interleaved_fragment_bytes_promoted =
+                            summary.interleaved_fragment_bytes_promoted.saturating_add(
+                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.interleaved_fragment_bits_promoted =
+                            summary.interleaved_fragment_bits_promoted.saturating_add(
+                                u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
+                            );
+                        summary.bytes_removed = summary.bytes_removed.saturating_add(
+                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
+                        );
+                        last_verified_door_add_fragment_span_record = None;
+                        continue;
+                    }
+                }
+            }
         }
         if proven_gui_record_end.is_none()
             && !legacy_gui_rewrite_boundary
@@ -2741,11 +2778,19 @@ pub fn rewrite_update_records_payload_if_possible(
                         } else {
                             None
                         };
+                    last_verified_door_add_fragment_span_record = if object_type == DOOR_OBJECT_TYPE
+                    {
+                        read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_id))
+                    } else {
+                        None
+                    };
                     offset = record_end.max(offset + 1);
                     continue;
                 }
                 bit_cursor = exact_add_start_bit_cursor;
 
+                let add_guard_bits_before = fragment_bits.len();
                 if let Some(placeable_guard_changed) =
                     add_guard::repair_verified_ee_placeable_add_guard_bits(
                         &live_bytes,
@@ -2756,6 +2801,12 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed |= placeable_guard_changed;
+                    if fragment_bits.len() > add_guard_bits_before {
+                        summary.bits_inserted = summary.bits_inserted.saturating_add(
+                            u32::try_from(fragment_bits.len() - add_guard_bits_before)
+                                .unwrap_or(u32::MAX),
+                        );
+                    }
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = false;
                     last_verified_add_record =
@@ -2765,6 +2816,13 @@ pub fn rewrite_update_records_payload_if_possible(
                         } else {
                             None
                         };
+                    last_verified_door_add_fragment_span_record = if object_type == DOOR_OBJECT_TYPE
+                    {
+                        read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_id))
+                    } else {
+                        None
+                    };
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3543,7 +3601,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     continue;
                 }
                 if let Some(promotion) =
-                    fragment_spans::promote_legacy_creature_update_3967_large_interleaved_fragment_span_for_ee(
+                    fragment_spans::promote_legacy_creature_update_large_interleaved_fragment_span_for_ee(
                         &mut live_bytes,
                         &mut fragment_bits,
                         offset,

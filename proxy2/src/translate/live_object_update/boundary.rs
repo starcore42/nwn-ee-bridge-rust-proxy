@@ -152,6 +152,21 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             }
         }
         if let Some(record_end) = legacy_end {
+            if record_end >= scan_end
+                || looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+            {
+                return record_end;
+            }
+            if read_u16_le(bytes, offset + 6) == Some(0xFFFF) {
+                // Diamond's all-fields creature appearance reader owns a
+                // counted body/equipment substream after the legacy byte-shape
+                // prefix. If that prefix does not land on a live-object
+                // boundary, do not split the following body bytes as orphan
+                // top-level records. The focused appearance translator still
+                // has to parse the full candidate and exact-validate the EE
+                // reader shape before the packet can be emitted.
+                return scan_end;
+            }
             return record_end;
         }
     }
@@ -195,6 +210,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                     | 0x0000_0008
                     | 0x0000_0040
                     | 0x0000_0047
+                    | 0x0000_0067
                     | 0x0000_3967
                     | 0x0000_4408
                     | 0x0000_8000
@@ -228,6 +244,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // is set. The 2026-05-12 Starcore5 driver capture has mode 1
                 // and the next byte is a real `U/5 0x47` boundary at the exact
                 // decompiled read cursor; string suppression must not merge it.
+                // `0x0000_0067` is the same lower movement/action/state family
+                // with the decompiled 0x0020 portrait WORD branch present
+                // before action/state. Local Prelude proves its adjacent CNW
+                // storage can contain `A`-looking bytes before the next real
+                // submessage, so the focused creature parser owns the split.
                 // `0x0000_C40F` is the same self/status family with the
                 // Diamond writer's lower movement bits present. The writer at
                 // 0x4451DC..0x4458B0 emits `0x0001` position, `0x0002`
@@ -1092,6 +1113,15 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // Keep this as a mask-specific boundary floor and let the focused
         // creature cursor validator prove the exact final cursor and bits.
         return 32;
+    }
+
+    if raw_mask == 0x0000_0067 {
+        // Prelude seq10 carries the `0x0047` movement/action/state family plus
+        // mask bit `0x0020`. Diamond/EE read that portrait branch as a WORD
+        // portrait row before the action branch, and only read a CResRef when
+        // the row is >= 0xFFFE. The captured row is a normal 2DA index, so the
+        // read-buffer lower bound is the 0x47 floor plus one WORD.
+        return 34;
     }
 
     if raw_mask == 0x0000_4408 {

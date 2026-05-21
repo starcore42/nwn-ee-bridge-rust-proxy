@@ -189,6 +189,10 @@ enum CreatureAppearanceByteInsert {
         offset: usize,
         legacy_palette: [u8; 6],
     },
+    EmbeddedVisibleEquipmentObjectIdSuffix {
+        offset: usize,
+        suffix: Vec<u8>,
+    },
     LegacyVisualTransformIdentity {
         offset: usize,
     },
@@ -215,6 +219,7 @@ impl CreatureAppearanceByteInsert {
             | Self::EeFeature0eCreatureTailByte { offset }
             | Self::EeFeature23ItemAppearanceHighByte { offset }
             | Self::EeModelType3ArmorAccessoryTable { offset, .. }
+            | Self::EmbeddedVisibleEquipmentObjectIdSuffix { offset, .. }
             | Self::LegacyVisualTransformIdentity { offset }
             | Self::LegacyVisualTransformIdentitySuffix { offset, .. }
             | Self::LegacyScalarVisualTransformIdentityReplacement { offset }
@@ -229,6 +234,7 @@ impl CreatureAppearanceByteInsert {
             | Self::EeFeature0eCreatureTailByte { .. }
             | Self::EeFeature23ItemAppearanceHighByte { .. } => 0,
             Self::EeModelType3ArmorAccessoryTable { .. } => 1,
+            Self::EmbeddedVisibleEquipmentObjectIdSuffix { .. } => 1,
             Self::LegacyVisualTransformIdentity { .. }
             | Self::LegacyVisualTransformIdentitySuffix { .. }
             | Self::LegacyScalarVisualTransformIdentityReplacement { .. } => 2,
@@ -259,6 +265,7 @@ impl CreatureAppearanceByteInsert {
             Self::EeModelType3ArmorAccessoryTable { legacy_palette, .. } => {
                 ee_model_type_3_armor_accessory_table_from_legacy_palette(*legacy_palette)
             }
+            Self::EmbeddedVisibleEquipmentObjectIdSuffix { suffix, .. } => suffix.clone(),
             Self::LegacyVisualTransformIdentity { .. } => {
                 EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.to_vec()
             }
@@ -308,6 +315,21 @@ struct LegacyAppearanceItemAddRecord {
     ee_extra_insert_offsets: Vec<usize>,
     ee_extra_byte_inserts: Vec<CreatureAppearanceByteInsert>,
     name_fragment_proof: LegacyItemNameFragmentProof,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyVisibleEquipmentItemAddHeader {
+    slot: u32,
+    body_start: usize,
+    ee_extra_byte_inserts: Vec<CreatureAppearanceByteInsert>,
+    object_id_shape: LegacyVisibleEquipmentObjectIdShape,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LegacyVisibleEquipmentObjectIdShape {
+    Fixed,
+    FixedCompactLegacy,
+    CompactLegacy,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -867,7 +889,7 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end_and_cursor(
         if candidate_end <= offset || candidate_end > scan_end {
             return None;
         }
-        let verified = parse_verified_creature_appearance_with_optional_preceding_fence(
+        let Some(verified) = parse_verified_creature_appearance_with_optional_preceding_fence(
             bytes,
             offset,
             candidate_end,
@@ -876,18 +898,59 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end_and_cursor(
             Some(candidate_end),
             true,
             false,
-        )?;
-        if verified.record.record_end != candidate_end
-            || verified.record.ee_fragment_bits_consumed
-                > fragment_bits.len().saturating_sub(verified.proof_cursor)
-            || !verified.record.ee_extra_byte_inserts.is_empty()
-            || legacy_full_appearance_extends_past_ee_candidate(
-                bytes,
-                offset,
-                scan_end,
-                &verified.record,
-            )
+        ) else {
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=parse-none bit_cursor={bit_cursor}"
+                );
+            }
+            return None;
+        };
+        if verified.record.record_end != candidate_end {
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=record-end parsed={} proof_cursor={} preceding_fence_bits={}",
+                    verified.record.record_end,
+                    verified.proof_cursor,
+                    verified.preceding_fence_bits
+                );
+            }
+            return None;
+        }
+        if verified.record.ee_fragment_bits_consumed
+            > fragment_bits.len().saturating_sub(verified.proof_cursor)
         {
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=fragment-overflow proof_cursor={} ee_bits={} available={}",
+                    verified.proof_cursor,
+                    verified.record.ee_fragment_bits_consumed,
+                    fragment_bits.len().saturating_sub(verified.proof_cursor)
+                );
+            }
+            return None;
+        }
+        if !verified.record.ee_extra_byte_inserts.is_empty() {
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=remaining-byte-inserts byte_inserts={:?}",
+                    verified.record.ee_extra_byte_inserts
+                );
+            }
+            return None;
+        }
+        if legacy_full_appearance_extends_past_ee_candidate(
+            bytes,
+            offset,
+            scan_end,
+            &verified.record,
+        ) {
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=legacy-full-extends parsed_end={}",
+                    verified.record.record_end
+                );
+            }
             return None;
         }
 
@@ -914,6 +977,11 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end_and_cursor(
             // cannot be proven from bytes alone, so the only non-generic
             // exception is the focused creature-update reader above, using the
             // exact fragment cursor left by this appearance record.
+            if debug_live_claim_enabled_for_offset(offset) {
+                eprintln!(
+                    "live-object EE appearance candidate rejected: offset={offset} candidate_end={candidate_end} reason=not-followed-by-boundary exact_cursor={exact_cursor}"
+                );
+            }
             return None;
         }
         Some((candidate_end, exact_cursor))
@@ -4847,16 +4915,34 @@ fn parse_creature_appearance_record(
                         cursor = candidate.second_name_end;
                         fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
                     }
-                } else if let Some(first) =
+                } else if let Some((first, first_used_plain_token)) =
                     advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
+                        .map(|first| (first, false))
+                        .or_else(|| {
+                            (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
+                                advance_legacy_locstring_token_without_proof_allow_plain_token(
+                                    bytes, cursor, limit,
+                                )
+                                .map(|first| (first, true))
+                            })?
+                        })
                 {
                     cursor = first.end;
                     fragment_bits_consumed =
                         fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
                     let mut name_bits = vec![true, true, false];
-                    if let Some(second) =
-                        advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
-                    {
+                    if let Some(second) = advance_legacy_locstring_token_without_proof(
+                        bytes, cursor, limit,
+                    )
+                    .or_else(|| {
+                        (first_used_plain_token && mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(
+                            || {
+                                advance_legacy_locstring_token_without_proof_allow_plain_token(
+                                    bytes, cursor, limit,
+                                )
+                            },
+                        )?
+                    }) {
                         cursor = second.end;
                         fragment_bits_consumed =
                             fragment_bits_consumed.checked_add(second.fragment_bits_consumed)?;
@@ -5712,17 +5798,40 @@ fn advance_legacy_locstring_token_without_proof(
     cursor: usize,
     limit: usize,
 ) -> Option<LegacyLocStringComponentAdvance> {
+    advance_legacy_locstring_token_without_proof_impl(bytes, cursor, limit, true)
+}
+
+fn advance_legacy_locstring_token_without_proof_allow_plain_token(
+    bytes: &[u8],
+    cursor: usize,
+    limit: usize,
+) -> Option<LegacyLocStringComponentAdvance> {
+    advance_legacy_locstring_token_without_proof_impl(bytes, cursor, limit, false)
+}
+
+fn advance_legacy_locstring_token_without_proof_impl(
+    bytes: &[u8],
+    cursor: usize,
+    limit: usize,
+    require_token_marker: bool,
+) -> Option<LegacyLocStringComponentAdvance> {
     let end = cursor.checked_add(LEGACY_LOCSTRING_TOKEN_READ_BYTES)?;
     if end > limit || end > bytes.len() {
         return None;
     }
-    if bytes.get(cursor).copied()? & 0x80 == 0 {
+    if require_token_marker && bytes.get(cursor).copied()? & 0x80 == 0 {
         return None;
     }
     // Diamond `sub_53E700` reads the locstring inner selector and language
     // selector from the fragment stream, then reads the 32-bit TLK/custom-token
-    // reference at the current read-buffer cursor.
+    // reference at the current read-buffer cursor. The marker check above is a
+    // no-proof ambiguity guard, not a decompiled token constraint; full
+    // appearance parsing can retry without it when the counted equipment list
+    // proves the surrounding shape.
     let token_ref = read_u32_le(bytes, cursor)?;
+    if !require_token_marker && token_ref == 0 {
+        return None;
+    }
     if token_ref == u32::MAX {
         return None;
     }
@@ -5976,6 +6085,13 @@ fn parse_legacy_visible_equipment_records(
                                 {
                                     return !candidate_has_missing_inline_item_name;
                                 }
+                                let candidate_rank =
+                                    visible_equipment_parse_subobject_proof_rank(&candidate);
+                                let current_rank =
+                                    visible_equipment_parse_subobject_proof_rank(current);
+                                if candidate_rank != current_rank {
+                                    return candidate_rank > current_rank;
+                                }
                                 if fixed_token_tail {
                                     return candidate.end < current.end;
                                 }
@@ -6087,14 +6203,16 @@ fn parse_legacy_visible_equipment_records(
                         // The decompiled all-fields appearance record carries
                         // an explicit visible-equipment count. When more than
                         // one byte-plausible split satisfies the remaining
-                        // count, prefer the split that proves the furthest
-                        // equipment-list boundary. This prevents an `A` or `D`
-                        // byte inside an item name/properties blob from
-                        // becoming the next embedded equipment record while a
-                        // later exact split consumes the full counted list.
+                        // count, prefer the split with stronger item subobject
+                        // proof before falling back to the furthest byte
+                        // boundary. Local Prelude shows why this matters:
+                        // compact zero-looking rows can satisfy the count after
+                        // a too-short `A` item, while the real slot-0 body
+                        // visual item is proven by its locstring-token name and
+                        // model-type-3 EE table repair.
                         if accepted
                             .as_ref()
-                            .map(|current| candidate.end > current.end)
+                            .map(|current| visible_equipment_parse_is_better(&candidate, current))
                             .unwrap_or(true)
                         {
                             accepted = Some(candidate);
@@ -6290,6 +6408,13 @@ fn parse_legacy_compact_visible_equipment_records(
                                 {
                                     return !candidate_has_missing_inline_item_name;
                                 }
+                                let candidate_rank =
+                                    visible_equipment_parse_subobject_proof_rank(&candidate);
+                                let current_rank =
+                                    visible_equipment_parse_subobject_proof_rank(current);
+                                if candidate_rank != current_rank {
+                                    return candidate_rank > current_rank;
+                                }
                                 if fixed_token_tail {
                                     return candidate.end < current.end;
                                 }
@@ -6397,7 +6522,7 @@ fn parse_legacy_compact_visible_equipment_records(
                         };
                         if accepted
                             .as_ref()
-                            .map(|current| candidate.end > current.end)
+                            .map(|current| visible_equipment_parse_is_better(&candidate, current))
                             .unwrap_or(true)
                         {
                             accepted = Some(candidate);
@@ -6409,6 +6534,87 @@ fn parse_legacy_compact_visible_equipment_records(
         }
         _ => None,
     }
+}
+
+fn visible_equipment_parse_is_better(
+    candidate: &LegacyVisibleEquipmentParse,
+    current: &LegacyVisibleEquipmentParse,
+) -> bool {
+    let candidate_rank = visible_equipment_parse_subobject_proof_rank(candidate);
+    let current_rank = visible_equipment_parse_subobject_proof_rank(current);
+    let candidate_compact_id_suffix = candidate_rank.1;
+    let current_compact_id_suffix = current_rank.1;
+    if candidate_compact_id_suffix != current_compact_id_suffix {
+        return candidate_compact_id_suffix > current_compact_id_suffix;
+    }
+    if candidate.end != current.end {
+        return candidate.end > current.end;
+    }
+    if candidate_rank != current_rank {
+        return candidate_rank > current_rank;
+    }
+    false
+}
+
+fn visible_equipment_parse_subobject_proof_rank(
+    parse: &LegacyVisibleEquipmentParse,
+) -> (u16, u16, u16, u16, u16, u16) {
+    let mut locstring_name_proofs =
+        u16::try_from(parse.ee_name_bit_rewrites.len()).unwrap_or(u16::MAX);
+    let mut model_type3_tables = 0u16;
+    let mut compact_object_id_suffix_bytes = 0u16;
+    let mut item_high_bytes = 0u16;
+    let mut visual_transform_repairs = 0u16;
+    let mut inline_name_length_repairs = 0u16;
+
+    for insert in parse.ee_extra_byte_inserts.iter() {
+        match insert {
+            CreatureAppearanceByteInsert::EeModelType3ArmorAccessoryTable { .. } => {
+                model_type3_tables = model_type3_tables.saturating_add(1);
+            }
+            CreatureAppearanceByteInsert::EmbeddedVisibleEquipmentObjectIdSuffix {
+                suffix, ..
+            } => {
+                compact_object_id_suffix_bytes = compact_object_id_suffix_bytes
+                    .saturating_add(u16::try_from(suffix.len()).unwrap_or(u16::MAX));
+            }
+            CreatureAppearanceByteInsert::EeFeature23ItemAppearanceHighByte { .. } => {
+                item_high_bytes = item_high_bytes.saturating_add(1);
+            }
+            CreatureAppearanceByteInsert::LegacyVisualTransformIdentity { .. }
+            | CreatureAppearanceByteInsert::LegacyVisualTransformIdentitySuffix { .. }
+            | CreatureAppearanceByteInsert::LegacyScalarVisualTransformIdentityReplacement {
+                ..
+            } => {
+                visual_transform_repairs = visual_transform_repairs.saturating_add(1);
+            }
+            CreatureAppearanceByteInsert::MissingFirstInlineNameLengthLowByte { .. }
+            | CreatureAppearanceByteInsert::MissingSecondInlineNameLength { .. } => {
+                inline_name_length_repairs = inline_name_length_repairs.saturating_add(1);
+            }
+            CreatureAppearanceByteInsert::EeFeature23CreatureScalarHighByte { .. }
+            | CreatureAppearanceByteInsert::EeFeature23CreatureBodyPartHighByte { .. }
+            | CreatureAppearanceByteInsert::EeFeature0eCreatureTailByte { .. }
+            | CreatureAppearanceByteInsert::LegacyFullPartTablePrefixRemoval { .. } => {}
+        }
+    }
+
+    // These fields are deliberately decompile-owned subobject proof, not a
+    // generic "more bytes is better" rule. The embedded object-id width is the
+    // first item-add field Diamond reads, so a proven compact-id suffix outranks
+    // later body-level table repairs that can be faked by an overlong split.
+    // Compact dummy rows do not produce these anchors.
+    locstring_name_proofs = locstring_name_proofs.saturating_add(u16::from(
+        parse.first_positive_name_selector_relative_start.is_some(),
+    ));
+    (
+        locstring_name_proofs,
+        compact_object_id_suffix_bytes,
+        model_type3_tables,
+        item_high_bytes,
+        visual_transform_repairs,
+        inline_name_length_repairs,
+    )
 }
 
 fn item_add_record_matches_bit_proof(
@@ -6654,10 +6860,12 @@ fn visible_equipment_item_candidate_spans_live_object_boundary(
     // bytes of the next live-object record. Do not accept any item candidate
     // that crosses a boundary the focused live-object boundary classifier can
     // prove from the EE/Diamond dispatch shape.
-    let scan_start = item_offset
-        .checked_add(1 + 4 + 4)
+    let fixed_body_start = item_offset.checked_add(1 + 4 + 4).unwrap_or(candidate_end);
+    let compact_body_start = item_offset
+        .checked_add(1 + 1 + 4)
         .unwrap_or(candidate_end)
         .min(candidate_end);
+    let scan_start = fixed_body_start.min(compact_body_start).min(candidate_end);
     (scan_start..candidate_end.saturating_sub(1)).any(|candidate| {
         looks_like_top_level_live_object_boundary_inside_visible_equipment_item(bytes, candidate)
     })
@@ -6766,7 +6974,7 @@ fn parse_legacy_item_add_record_candidates(
     offset: usize,
     record_end: usize,
 ) -> Vec<LegacyAppearanceItemAddRecord> {
-    if offset.checked_add(1 + 4 + 4).unwrap_or(usize::MAX) >= record_end
+    if offset.checked_add(1 + 1 + 4).unwrap_or(usize::MAX) >= record_end
         || record_end > bytes.len()
         || record_end.saturating_sub(offset) > LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES
         || bytes.get(offset).copied() != Some(b'A')
@@ -6774,22 +6982,135 @@ fn parse_legacy_item_add_record_candidates(
         return Vec::new();
     }
 
-    let Some(object_id) = read_u32_le(bytes, offset + 1) else {
-        return Vec::new();
-    };
-    if !looks_like_creature_or_legacy_sentinel_id(object_id) {
-        return Vec::new();
+    let mut candidates = Vec::new();
+    let mut fixed_compact_candidates = Vec::new();
+    let mut compact_candidates = Vec::new();
+    for header in legacy_visible_equipment_item_add_header_candidates(bytes, offset, record_end) {
+        for mut item in parse_legacy_item_object_body_candidates(
+            bytes,
+            header.body_start,
+            record_end,
+            header.slot,
+        ) {
+            if !header.ee_extra_byte_inserts.is_empty() {
+                let mut inserts = header.ee_extra_byte_inserts.clone();
+                inserts.extend(item.ee_extra_byte_inserts);
+                item.ee_extra_byte_inserts = inserts;
+            }
+            match header.object_id_shape {
+                LegacyVisibleEquipmentObjectIdShape::Fixed => candidates.push(item),
+                LegacyVisibleEquipmentObjectIdShape::FixedCompactLegacy => {
+                    fixed_compact_candidates.push(item);
+                }
+                LegacyVisibleEquipmentObjectIdShape::CompactLegacy => {
+                    compact_candidates.push(item);
+                }
+            }
+        }
+    }
+    if compact_candidates.is_empty() {
+        candidates.extend(fixed_compact_candidates);
+    }
+    candidates.extend(compact_candidates);
+    candidates
+}
+
+fn legacy_visible_equipment_item_add_header_candidates(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Vec<LegacyVisibleEquipmentItemAddHeader> {
+    let mut candidates = Vec::new();
+    let fixed_header_end = offset.checked_add(1 + 4 + 4).unwrap_or(usize::MAX);
+    if fixed_header_end < record_end {
+        if let (Some(object_id), Some(slot)) = (
+            read_u32_le(bytes, offset + 1),
+            read_u32_le(bytes, offset + 5),
+        ) {
+            if looks_like_fixed_visible_equipment_object_id(object_id)
+                && is_legacy_visible_equipment_slot(slot)
+            {
+                candidates.push(LegacyVisibleEquipmentItemAddHeader {
+                    slot,
+                    body_start: fixed_header_end,
+                    ee_extra_byte_inserts: Vec::new(),
+                    object_id_shape: if looks_like_fixed_width_compact_visible_equipment_object_id(
+                        object_id,
+                    ) {
+                        LegacyVisibleEquipmentObjectIdShape::FixedCompactLegacy
+                    } else {
+                        LegacyVisibleEquipmentObjectIdShape::Fixed
+                    },
+                });
+            }
+        }
     }
 
-    let Some(slot) = read_u32_le(bytes, offset + 5) else {
-        return Vec::new();
-    };
-    if !is_legacy_visible_equipment_slot(slot) {
-        return Vec::new();
+    // Diamond visible-equipment item adds reach `ReadOBJECTIDServer` before
+    // the slot DWORD and item body. Local Prelude shows that helper can carry a
+    // compact legacy id in this embedded position, while EE's
+    // `WriteInventorySlotAdd` emits the fixed `WriteOBJECTIDServer` DWORD with
+    // the high bit set. Try only the bounded 1..3 byte compact forms, and let
+    // the decompile-owned item appearance + active-property parser below prove
+    // the resulting body boundary.
+    for object_id_bytes in 1usize..4 {
+        let Some(object_id_offset) = offset.checked_add(1) else {
+            continue;
+        };
+        let Some(slot_offset) = object_id_offset.checked_add(object_id_bytes) else {
+            continue;
+        };
+        let Some(body_start) = slot_offset.checked_add(4) else {
+            continue;
+        };
+        if body_start >= record_end || body_start > bytes.len() {
+            continue;
+        }
+        let Some(object_id) =
+            read_compact_little_endian_object_id(bytes, object_id_offset, object_id_bytes)
+        else {
+            continue;
+        };
+        if !(MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
+            .contains(&object_id)
+        {
+            continue;
+        }
+        let Some(slot) = read_u32_le(bytes, slot_offset) else {
+            continue;
+        };
+        if !is_legacy_visible_equipment_slot(slot) {
+            continue;
+        }
+        let fixed_object_id = object_id | 0x8000_0000;
+        let fixed_bytes = fixed_object_id.to_le_bytes();
+        candidates.push(LegacyVisibleEquipmentItemAddHeader {
+            slot,
+            body_start,
+            ee_extra_byte_inserts: vec![
+                CreatureAppearanceByteInsert::EmbeddedVisibleEquipmentObjectIdSuffix {
+                    offset: slot_offset,
+                    suffix: fixed_bytes[object_id_bytes..].to_vec(),
+                },
+            ],
+            object_id_shape: LegacyVisibleEquipmentObjectIdShape::CompactLegacy,
+        });
     }
 
-    let body_start = offset + 1 + 4 + 4;
-    parse_legacy_item_object_body_candidates(bytes, body_start, record_end, slot)
+    candidates
+}
+
+fn read_compact_little_endian_object_id(bytes: &[u8], offset: usize, width: usize) -> Option<u32> {
+    if width == 0 || width > 3 {
+        return None;
+    }
+    let end = offset.checked_add(width)?;
+    let source = bytes.get(offset..end)?;
+    let mut value = 0u32;
+    for (shift, byte) in source.iter().copied().enumerate() {
+        value |= u32::from(byte) << (shift * 8);
+    }
+    Some(value)
 }
 
 fn parse_legacy_item_create_record(
@@ -7876,6 +8197,30 @@ fn is_legacy_visible_equipment_slot(slot: u32) -> bool {
     matches!(slot, 0 | 1 | 2 | 0x10 | 0x20 | 0x40)
 }
 
+fn looks_like_fixed_visible_equipment_object_id(object_id: u32) -> bool {
+    if object_id == 0 || object_id == u32::MAX {
+        return false;
+    }
+    if object_id == LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID
+        || object_id == 0xFFFF_FFF7
+        || object_id == 0xFFFF_FFFD
+    {
+        return true;
+    }
+    matches!(
+        object_id & 0xFF00_0000,
+        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
+    ) || looks_like_fixed_width_compact_visible_equipment_object_id(object_id)
+}
+
+fn looks_like_fixed_width_compact_visible_equipment_object_id(object_id: u32) -> bool {
+    // Some CEP v2.2 visible-equipment rows carry a low legacy object id in the
+    // fixed four-byte field. Values below 0x80 are byte-identical to Diamond's
+    // one-byte compact OBJECTIDServer form followed by a zero slot byte, so the
+    // compact header candidate owns those ambiguous bodies.
+    (0x80..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID).contains(&object_id)
+}
+
 fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
     if object_id == 0 || object_id == u32::MAX {
         return false;
@@ -8037,6 +8382,33 @@ mod tests {
             record.appearance_name_bits.as_deref(),
             Some(&[true, true, false, false][..])
         );
+    }
+
+    #[test]
+    fn local_prelude_full_appearance_owns_compact_equipment_object_id() {
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/local_prelude_seq10_pending_liveobject_20260522.bin"
+        );
+        let declared = usize::try_from(read_u32_le(payload, 3).expect("declared")).unwrap();
+        let live = &payload[7..declared];
+        let record = parse_creature_appearance_record(
+            live,
+            0x20,
+            live.len(),
+            AppearanceNameShape::LocStringPair,
+            CreatureAppearanceWireDialect::LegacyDiamond,
+            None,
+        )
+        .expect("Prelude full appearance parse");
+        assert_eq!(record.record_end, 0xC7);
+        assert_eq!(record.equipment_records, 7);
+        assert!(record.ee_extra_byte_inserts.iter().any(|insert| matches!(
+            insert,
+            CreatureAppearanceByteInsert::EmbeddedVisibleEquipmentObjectIdSuffix { .. }
+        )));
+        let record_end = try_get_legacy_creature_appearance_record_end(live, 0x20, live.len())
+            .expect("Prelude full appearance record end");
+        assert_eq!(record_end, 0xC7);
     }
 
     #[test]

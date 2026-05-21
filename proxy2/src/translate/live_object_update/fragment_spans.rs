@@ -7,7 +7,9 @@
 //! perform only that bounded transport normalization; family parsers still own
 //! the exact byte/bit proof.
 
-use super::{DOOR_OBJECT_TYPE, appearance, bits, boundary, creature, gui, inventory, read_u32_le};
+use super::{
+    DOOR_OBJECT_TYPE, add, appearance, bits, boundary, creature, gui, inventory, read_u32_le,
+};
 
 const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
 // HG short-declared creature updates can leave the chunk-local CNW fragment
@@ -19,11 +21,13 @@ const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
 const MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES: usize = 32;
 const MAX_LEGACY_CREATURE_UPDATE_3967_LARGE_FRAGMENT_SPAN_BYTES: usize = 512;
 // Appearance-owned fragment storage can be much larger than the compact spans
-// observed after creature updates.  Local Diamond seq15 places item-looking
-// bytes inside the span before the real following `U/5 0x3967` creature update;
-// the helper below therefore scans past false `A` item boundaries, but accepts
-// only when that following creature update validates from the promoted bits.
-const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 256;
+// observed after creature updates. Local Diamond captures place item-looking
+// bytes inside the span before the real following `U/5` creature update; HG
+// seq31 proves the same decompile-owned shape with a 284-byte span after the
+// short Northern Trader `P/5` appearance. Keep a small margin over that capture
+// so mixed live-object probes remain bounded while the following creature
+// update still has to validate from the promoted bits.
+const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 320;
 const MAX_APPEARANCE_FOLLOWING_CREATURE_UPDATE_TRAILING_SPAN_BYTES: usize = 512;
 // Local Diamond seq15 carries a creature `P/5` appearance whose exact EE cursor
 // ends before a chunk-local CNW fragment-storage span, then a top-level item
@@ -42,6 +46,7 @@ const MAX_TRAILING_FRAGMENT_PREFIX_BYTES: usize = MAX_CREATURE_UPDATE_FRAGMENT_S
 const MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES: usize = 96;
 const MAX_EFFECT_ONLY_FOLLOWING_GUI_FRAGMENT_SPAN_BYTES: usize = 128;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
+const LEGACY_CREATURE_UPDATE_0067_MASK: u32 = 0x0000_0067;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
@@ -339,7 +344,7 @@ pub(super) fn promote_effect_only_creature_update_following_gui_fragment_span_fo
     })
 }
 
-pub(super) fn promote_legacy_creature_update_3967_large_interleaved_fragment_span_for_ee(
+pub(super) fn promote_legacy_creature_update_large_interleaved_fragment_span_for_ee(
     live_bytes: &mut Vec<u8>,
     fragment_bits: &mut Vec<bool>,
     offset: usize,
@@ -348,7 +353,7 @@ pub(super) fn promote_legacy_creature_update_3967_large_interleaved_fragment_spa
 ) -> Option<PromotedCreatureUpdateFragmentSpan> {
     let old_record_end = *record_end;
     let (read_end, end_bit_cursor) =
-        creature::legacy_creature_update_3967_read_end_before_fragment_span(
+        creature::legacy_creature_update_read_end_before_fragment_span_for_span_owner(
             live_bytes,
             offset,
             old_record_end,
@@ -360,7 +365,17 @@ pub(super) fn promote_legacy_creature_update_3967_large_interleaved_fragment_spa
         return None;
     }
     let span_bytes = old_record_end.saturating_sub(read_end);
-    if span_bytes <= MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES {
+    let raw_mask = read_u32_le(live_bytes, offset + 6)?;
+    let minimum_large_span = if raw_mask == LEGACY_CREATURE_UPDATE_0067_MASK {
+        // Prelude seq10 proves a larger 0x67 suffix after the appearance-owned
+        // fragment span has been moved. The same typed cursor proof above owns
+        // the shortened update; this guard only keeps small, already covered
+        // adjacent spans on their older path.
+        0
+    } else {
+        MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES
+    };
+    if span_bytes <= minimum_large_span {
         return None;
     }
     let promoted_bits =
@@ -403,9 +418,38 @@ pub(super) fn promote_appearance_following_creature_update_span_for_ee(
     span_start: usize,
     bit_cursor: usize,
 ) -> Option<PromotedAppearanceFollowingCreatureSpan> {
-    if span_start >= live_bytes.len()
-        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
-    {
+    if span_start >= live_bytes.len() {
+        return None;
+    }
+    if boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start) {
+        if live_bytes.get(span_start).copied() != Some(b'A') {
+            return None;
+        }
+        let candidate_add_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            live_bytes,
+            span_start,
+            live_bytes.len(),
+        )
+        .min(live_bytes.len());
+        let mut add_cursor = bit_cursor;
+        if add::advance_verified_add_record(
+            live_bytes,
+            span_start,
+            candidate_add_end,
+            fragment_bits,
+            &mut add_cursor,
+        ) {
+            return None;
+        }
+        // Local Prelude puts an item-add-shaped byte sequence inside the CNW
+        // fragment storage between the full appearance and the real following
+        // `U/5` creature update. If that apparent `A` record validates as a
+        // typed add, it remains a record boundary. Otherwise the scan below may
+        // cross it, but still promotes only when the decompile-owned update
+        // consumes from the promoted fragment bits.
+    }
+
+    if span_start >= live_bytes.len() {
         return None;
     }
 
@@ -418,7 +462,10 @@ pub(super) fn promote_appearance_following_creature_update_span_for_ee(
     if span_end <= span_start
         || live_bytes.get(span_end).copied()? != b'U'
         || live_bytes.get(span_end + 1).copied()? != 0x05
-        || read_u32_le(live_bytes, span_end + 6)? != LEGACY_CREATURE_UPDATE_3967_MASK
+        || !creature::is_appearance_following_creature_span_owner_mask(read_u32_le(
+            live_bytes,
+            span_end + 6,
+        )?)
     {
         return None;
     }
@@ -444,8 +491,8 @@ pub(super) fn verified_appearance_following_creature_update_span_offset_for_ee(
 ) -> Option<usize> {
     // Immutable companion to the promotion helper above.  Creature appearance
     // boundary repair uses this to prove that the bytes after an exact EE
-    // `P/5` record are CNW fragment storage owned by the following `U/5 0x3967`
-    // update; the caller still leaves mutation to
+    // `P/5` record are CNW fragment storage owned by the following typed
+    // creature update; the caller still leaves mutation to
     // `promote_appearance_following_creature_update_span_for_ee`.
     find_appearance_following_creature_update_span(
         live_bytes,
@@ -472,7 +519,9 @@ fn find_appearance_following_creature_update_span(
         }
         if live_bytes.get(span_end).copied() != Some(b'U')
             || live_bytes.get(span_end + 1).copied() != Some(0x05)
-            || read_u32_le(live_bytes, span_end + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+            || read_u32_le(live_bytes, span_end + 6).is_none_or(|raw_mask| {
+                !creature::is_appearance_following_creature_span_owner_mask(raw_mask)
+            })
         {
             continue;
         }
@@ -498,7 +547,7 @@ fn find_appearance_following_creature_update_span(
         let trailing_span_ok = if owner_ok {
             false
         } else {
-            creature::legacy_creature_update_3967_read_end_before_fragment_span(
+            creature::legacy_creature_update_read_end_before_fragment_span_for_span_owner(
                 live_bytes,
                 span_end,
                 following_end,
@@ -990,6 +1039,7 @@ fn find_creature_update_3967_interleaved_fragment_span(
     if !matches!(
         raw_mask,
         LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK
+            | LEGACY_CREATURE_UPDATE_0067_MASK
             | LEGACY_CREATURE_UPDATE_3967_MASK
             | LEGACY_CREATURE_UPDATE_C40F_MASK
             | LEGACY_CREATURE_UPDATE_C44F_MASK
@@ -1001,11 +1051,13 @@ fn find_creature_update_3967_interleaved_fragment_span(
     // Decompile/capture-backed short-declared repair for creature `U/5`
     // update masks whose reader shape is exact, but whose legacy stream window
     // can leave a bounded CNW fragment-storage suffix in the read buffer.
-    // `0x3967` was the original HG capture family. `0xC40F` and `0xC44F` are
-    // Starcore5 Sooty Crow transition families: Diamond writes lower movement /
-    // action fields, optional low `0x0040` creature-state fields, then the
-    // C408-style self/status suffix. Diamond `0x4463B0..0x44649B` proves the
-    // low `0x0040` branch is `WORD, BYTE, WORD, BYTE, BOOL[, OBJECTID]`.
+    // `0x3967` was the original HG capture family. Prelude seq10 adds
+    // `0x0067`, the lower movement/action/state family plus the decompiled
+    // `0x0020` portrait WORD branch. `0xC40F` and `0xC44F` are Starcore5 Sooty
+    // Crow transition families: Diamond writes lower movement / action fields,
+    // optional low `0x0040` creature-state fields, then the C408-style
+    // self/status suffix. Diamond `0x4463B0..0x44649B` proves the low `0x0040`
+    // branch is `WORD, BYTE, WORD, BYTE, BOOL[, OBJECTID]`.
     //
     // Local Dark Ranger adds a narrower `0x0008` effect-only family: row
     // `0x00F3` is a no-target LowLightVision visualeffects.2da row, and the

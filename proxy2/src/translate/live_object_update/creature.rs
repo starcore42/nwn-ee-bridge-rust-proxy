@@ -7,6 +7,7 @@
 use super::{bits, class_rows, read_f32_le, read_u16_le, read_u32_le};
 
 const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
+const LEGACY_CREATURE_UPDATE_0067_MASK: u32 = 0x0000_0067;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
@@ -242,19 +243,22 @@ pub(super) fn advance_verified_legacy_creature_update_record_for_span_owner(
     let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
         return false;
     };
-    if raw_mask != LEGACY_CREATURE_UPDATE_3967_MASK
+    if !is_appearance_following_creature_span_owner_mask(raw_mask)
         || !looks_like_legacy_creature_object_id(object_id)
     {
         return false;
     }
 
     // This is not a final EE-shape validator. It is a narrow transport proof
-    // for interleaved CNW fragment-span ownership: Local Diamond seq15 carries a
-    // chunk-local fragment-storage span immediately before a legacy
-    // `U/5 mask=0x3967` creature update. The span must be promoted before the
-    // normal `U` translator can see and rewrite that record, so this helper
-    // proves only the Diamond writer cursor shape. The post-rewrite exact claim
-    // still owns the EE reader proof before the packet can be emitted.
+    // for interleaved CNW fragment-span ownership. Local Diamond captures carry
+    // chunk-local fragment-storage spans immediately before creature updates:
+    // the older HG path used `U/5 mask=0x3967`, while Prelude seq10 proves the
+    // same transport shape before `U/5 mask=0x67` (position/orientation/action,
+    // portrait WORD, and low 0x0040 creature-state branch). The span must be
+    // promoted before the normal `U` translator can see and rewrite that record,
+    // so this helper proves only the Diamond writer cursor shape. The
+    // post-rewrite exact claim still owns the EE reader proof before the packet
+    // can be emitted.
     let original_bit_cursor = *bit_cursor;
     let advanced = simulate_legacy_live_creature_update_cursors(
         bytes,
@@ -280,7 +284,14 @@ pub(super) fn advance_verified_legacy_creature_update_record_for_span_owner(
     advanced
 }
 
-pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(
+pub(super) fn is_appearance_following_creature_span_owner_mask(raw_mask: u32) -> bool {
+    matches!(
+        raw_mask,
+        LEGACY_CREATURE_UPDATE_0067_MASK | LEGACY_CREATURE_UPDATE_3967_MASK
+    )
+}
+
+pub(super) fn legacy_creature_update_read_end_before_fragment_span_for_span_owner(
     bytes: &[u8],
     offset: usize,
     old_record_end: usize,
@@ -292,7 +303,7 @@ pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(
         || old_record_end > bytes.len()
         || bytes.get(offset).copied()? != b'U'
         || bytes.get(offset + 1).copied()? != 0x05
-        || read_u32_le(bytes, offset + 6)? != LEGACY_CREATURE_UPDATE_3967_MASK
+        || !is_appearance_following_creature_span_owner_mask(read_u32_le(bytes, offset + 6)?)
     {
         return None;
     }
@@ -314,6 +325,33 @@ pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(
         }
     }
     None
+}
+
+pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(
+    bytes: &[u8],
+    offset: usize,
+    old_record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    max_span_bytes: usize,
+) -> Option<(usize, usize)> {
+    if offset + 10 >= old_record_end
+        || old_record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(bytes, offset + 6)? != LEGACY_CREATURE_UPDATE_3967_MASK
+    {
+        return None;
+    }
+
+    legacy_creature_update_read_end_before_fragment_span_for_span_owner(
+        bytes,
+        offset,
+        old_record_end,
+        fragment_bits,
+        bit_cursor,
+        max_span_bytes,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
