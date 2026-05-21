@@ -1637,6 +1637,18 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
             // bytes and fragment BOOLs before the following `U/9` update.
             return record_end;
         }
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_legacy_placeable_bare_name_add_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            // Contest local Diamond captures use the related compact
+            // placeable-add form: an empty CExoString slot, a bare printable
+            // name, then the BYTE/WORD/WORD placeable tail. Split before the
+            // same-object update so the focused add translator can insert the
+            // EE visual-transform map and rewrite the fragment guards.
+            return record_end;
+        }
     }
 
     if bytes.get(offset).copied() == Some(b'P')

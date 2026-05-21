@@ -403,6 +403,57 @@ mod tests {
     }
 
     #[test]
+    fn local_contest_seq13_creature_placeable_stream_rewrites_to_exact_shape() {
+        // Local Contest Of Champions 0492 harness capture from 2026-05-21.
+        // The opening inventory probe emits a mixed creature/placeable stream
+        // with Diamond compact placeable add/update tails.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_contest_seq13_creature_placeable_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Contest seq13 stream documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Contest seq13 live-object stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Contest seq13 stream should validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.update_records >= 1);
+    }
+
+    #[test]
+    fn local_contest_seq14_placeable_stream_rewrites_to_exact_shape() {
+        // Same local module pass as seq13. This packet is a dense placeable
+        // add/update burst, useful because it repeats the compact low-tail
+        // placeable family without any creature records in front.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_contest_seq14_placeable_liveobject_20260521.bin"
+        )
+        .to_vec();
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "raw Contest seq14 stream documents the pre-rewrite Diamond shape"
+        );
+
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Contest seq14 live-object stream should rewrite to exact EE shape");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Contest seq14 stream should validate exactly");
+        assert!(claim.add_records >= 3);
+        assert!(claim.update_records >= 3);
+    }
+
+    #[test]
     fn local_diamond_seq20_auto_inventory_gia_gra_claims_exact_ee_shape() {
         let payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_seq20_auto_inventory_gia_gra_20260519.bin"
