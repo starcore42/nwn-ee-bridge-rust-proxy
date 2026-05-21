@@ -772,7 +772,15 @@ fn rewrite_declared_zero_area_client_area_payload(
             continue;
         }
         let fragment = payload.get(fragment_offset..)?;
-        if cnw_fragment_consumable_bits(fragment) != Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS) {
+        let Some(fragment_bits) = cnw_fragment_consumable_bits(fragment) else {
+            continue;
+        };
+        // Declared-zero Diamond packets are observed both with the minimal
+        // pre-tile tail and with additional decompile-owned post-tile list
+        // selector bits. Keep this as a bounded tail-size probe; the staged
+        // legacy source proof and exact EE LoadArea proof below remain the
+        // acceptance criteria.
+        if fragment_bits < LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS {
             continue;
         }
 
@@ -1547,6 +1555,53 @@ fn module_resource_tile_scan_matches(
         && scan.width == info.width
         && scan.packet_height == info.height
         && scan.tile_count == info.width.saturating_mul(info.height)
+}
+
+fn unique_no_name_area_resource_for_truncated_packet_resref(
+    payload: &[u8],
+    fragment_offset: usize,
+    table: &ModuleAreaResourceTable,
+    packet_area_resref: &str,
+) -> Option<ModuleAreaResourceInfo> {
+    let packet_resref = packet_area_resref.to_ascii_lowercase();
+    if packet_resref.len() < 6 {
+        return None;
+    }
+    let layout = area_static_layout(payload, fragment_offset)?;
+    if layout.dialect != AreaStaticDialect::Legacy169
+        || layout.area_name_encoding != AreaNameEncoding::DiamondNoAreaName
+    {
+        return None;
+    }
+    let scan = scan_area_tile_stream(payload, fragment_offset);
+    if !scan.valid || scan.width == 0 || scan.inferred_height == 0 {
+        return None;
+    }
+    let packet_height = if scan.packet_height == 0 {
+        scan.inferred_height
+    } else {
+        scan.packet_height
+    };
+    let packet_tileset = fixed_resref_preview(
+        payload,
+        HIGH_LEVEL_HEADER_BYTES.checked_add(layout.tileset_read_offset)?,
+    )?;
+
+    let mut matches = table
+        .areas
+        .iter()
+        .filter(|info| {
+            let info_resref = info.resref.to_ascii_lowercase();
+            info_resref.len() > packet_resref.len()
+                && info_resref.starts_with(&packet_resref)
+                && info.width == scan.width
+                && info.height == packet_height
+                && scan.tile_count == info.width.saturating_mul(info.height)
+                && info.tileset.eq_ignore_ascii_case(&packet_tileset)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches.remove(0))
 }
 
 fn write_module_resource_tiles(
@@ -3669,20 +3724,39 @@ fn module_area_resource_info_for_compact_packet(
         if !module_path_proven_by_direct_area_resref && !table_matches_observed_context {
             return None;
         }
-        let info = table
+        if let Some(info) = table
             .areas
             .iter()
-            .find(|area| area.resref.eq_ignore_ascii_case(&packet_area_resref))?
-            .clone();
-        tracing::info!(
-            legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
-            packet_area_resref = packet_area_resref.as_str(),
-            area_resref = info.resref.as_str(),
-            area_name = info.name.as_str(),
-            module_path = %module_path.display(),
-            "Area_ClientArea compact resource repair resolved no-name packet by exact local area resref"
-        );
-        return Some(info);
+            .find(|area| area.resref.eq_ignore_ascii_case(&packet_area_resref))
+            .cloned()
+        {
+            tracing::info!(
+                legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                packet_area_resref = packet_area_resref.as_str(),
+                area_resref = info.resref.as_str(),
+                area_name = info.name.as_str(),
+                module_path = %module_path.display(),
+                "Area_ClientArea compact resource repair resolved no-name packet by exact local area resref"
+            );
+            return Some(info);
+        }
+        if let Some(info) = unique_no_name_area_resource_for_truncated_packet_resref(
+            payload,
+            fragment_offset,
+            &table,
+            &packet_area_resref,
+        ) {
+            tracing::info!(
+                legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                packet_area_resref = packet_area_resref.as_str(),
+                area_resref = info.resref.as_str(),
+                area_name = info.name.as_str(),
+                module_path = %module_path.display(),
+                "Area_ClientArea compact resource repair resolved no-name packet by unique local area resref prefix and exact dimensions/tileset"
+            );
+            return Some(info);
+        }
+        return None;
     }
     let compact_fragments = compact_fragments?;
 
@@ -5191,6 +5265,38 @@ mod tests {
             .expect("module context test lock poisoned")
     }
 
+    struct EnvVarTestGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarTestGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests that mutate module-resource environment are
+            // serialized by MODULE_CONTEXT_TEST_LOCK, and no other test in
+            // this crate mutates NWN_BRIDGE_MODULE_PATH.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarTestGuard {
+        fn drop(&mut self) {
+            // SAFETY: see EnvVarTestGuard::set; this guard restores the same
+            // serialized test-only environment variable.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
     const DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT: &[u8] = include_bytes!(
         "../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
     );
@@ -5225,6 +5331,10 @@ mod tests {
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_PRELUDE_M0Q1A_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_prelude_m0q1a_client_area_20260522.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CHAPTER1_MAP_M1Q1_DECLARED_ZERO: &[u8] = include_bytes!(
+        "../../fixtures/area/local_chapter1_map_m1q1_declared_zero_area_20260522.bin"
+    );
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -6489,6 +6599,142 @@ mod tests {
                 .rewrite_kinds
                 .contains(&AreaRewriteKind::LegacyDiamondIgnoredTrailingStaticPlaceableRowsDropped)
         );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_chapter1_declared_zero_no_name_area_accepts_post_tile_fragment_tail() {
+        let _context_guard = module_context_test_guard();
+        let chapter1_module_path = r"C:\NWN\NWN Diamond\nwm\Chapter1.nwm";
+        assert!(std::path::Path::new(chapter1_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", chapter1_module_path);
+        // The live compact Module_Info table has 130 entries and resolves this
+        // module by area-table evidence. Keep the unit context small by using
+        // the same local module table identity plus enough exact ARE names to
+        // prove the resource table without embedding the full Module_Info dump.
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            localized_name: "Chapter One".to_string(),
+            module_resref: "map_m1q1k".to_string(),
+            areas: vec![
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0000,
+                    name: "Map_M1Q2K".to_string(),
+                },
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0467,
+                    name: "Map_M1Q4A".to_string(),
+                },
+                crate::translate::module::ObservedModuleArea {
+                    object_id: 0x8000_0001,
+                    name: "Map_M1Q2E".to_string(),
+                },
+            ],
+        };
+        crate::translate::module::remember_observed_module_context_for_tests(
+            observed_context.clone(),
+        );
+
+        let mut payload = LOCAL_CHAPTER1_MAP_M1Q1_DECLARED_ZERO.to_vec();
+        assert_eq!(read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES), Some(0));
+
+        let mut staged = payload.clone();
+        let inferred_declared = staged.len() - 8;
+        write_u32_le(
+            &mut staged,
+            HIGH_LEVEL_HEADER_BYTES,
+            inferred_declared as u32,
+        )
+        .expect("stage declared-zero read window");
+        let (_, _, fragment_offset, fragment_size) =
+            area_client_area_read_window(&staged).expect("staged read window");
+        assert_eq!(fragment_size, 8);
+        assert_eq!(
+            cnw_fragment_consumable_bits(&staged[fragment_offset..]),
+            Some(57)
+        );
+        let source_layout =
+            area_static_layout(&staged, fragment_offset).expect("staged static layout");
+        assert_eq!(
+            source_layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &staged,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("map_m1q1")
+        );
+        let source_scan = scan_area_tile_stream(&staged, fragment_offset);
+        assert!(source_scan.valid);
+        assert_eq!(source_scan.width, 3);
+        assert_eq!(source_scan.packet_height, 0);
+        assert_eq!(source_scan.inferred_height, 5);
+        assert_eq!(source_scan.tile_count, 15);
+
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &staged,
+            fragment_offset,
+            0x8000_18B2,
+            Some(&observed_context),
+        )
+        .expect(
+            "Chapter1 no-name area packet resolves by exact dimensions/tileset resource prefix",
+        );
+        assert_eq!(compact_info.resref, "map_m1q1k");
+        assert_eq!(compact_info.name, "MAP_M1Q1K");
+        assert_eq!(compact_info.width, 3);
+        assert_eq!(compact_info.height, 5);
+        assert_eq!(compact_info.tileset, "tic01");
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("declared-zero Chapter1 map_m1q1 area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten Chapter1 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.old_declared, 0);
+        assert_eq!(summary.area_resref, "map_m1q1k");
+        assert_eq!(summary.tileset_resref, "tic01");
+        assert_eq!(summary.width, 3);
+        assert_eq!(summary.packet_height, 5);
+        assert_eq!(summary.inferred_height, 5);
+        assert_eq!(summary.tile_count, 15);
+        assert_eq!(summary.sound_count_zero_one_repairs, 0);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondCompactPostTileTailRepair)
+        );
+        assert_eq!(proof.transition_count, 0);
+        assert_eq!(proof.map_pin_count, 0);
+        assert_eq!(proof.sound_count, 7);
+        assert_eq!(proof.light_count, 1);
+        assert_eq!(proof.static_count, 31);
+        assert_eq!(proof.first_post_static_count, 0);
+        assert_eq!(proof.second_post_static_count, 0);
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
