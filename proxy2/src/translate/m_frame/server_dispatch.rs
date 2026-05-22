@@ -2512,6 +2512,34 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_claims_local_chapter2_area_entry_coalesced_live_object() {
+        // Local Diamond Chapter2 after the `a08_barracks` area load: the
+        // coalesced live-object stream carries placeable/object updates and
+        // must be owned by the focused live-object translators before strict
+        // EE validation accepts it.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_chapter2_seq20_coalesced_liveobject_20260523_unclaimed.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "dispatcher Chapter2 coalesced live-object claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Chapter2 coalesced live-object payload must exact-claim");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+    }
+
+    #[test]
     fn dispatcher_claims_current_hg_town_npc_ids_without_retry_storm() {
         for (name, fixture) in current_hg_town_npc_fixtures() {
             let mut payload = fixture.to_vec();

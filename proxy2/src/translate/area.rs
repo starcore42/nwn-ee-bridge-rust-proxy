@@ -151,6 +151,7 @@ pub enum AreaRewriteKind {
     LegacyDiamondFixedAreaName,
     LegacyDiamondShortFixedAreaName,
     LegacyDiamondNoAreaName,
+    LegacyDiamondFragmentedAreaResrefRepair,
     LegacyDiamondDeclaredZeroReadWindow,
     LegacyDiamondCompactAreaName,
     LegacyDiamondFragmentedCExoAreaName,
@@ -451,6 +452,10 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         &static_layout,
         area_resref_was_plausible,
     );
+    let fragmented_area_resref_resource_repair_required = static_layout.area_name_encoding
+        == AreaNameEncoding::DiamondNoAreaName
+        && compact_packet_area_resref_fragments(&working_payload, fragment_offset)
+            .is_some_and(|fragments| fragments.len() >= 2);
     let module_resource_area_repair = repair_compact_area_from_module_resource(
         &mut working_payload,
         fragment_offset,
@@ -597,6 +602,9 @@ fn rewrite_declared_area_client_area_payload_with_mode(
             rewrite_kinds.push(AreaRewriteKind::LegacyDiamondNoAreaName);
         }
         _ => {}
+    }
+    if module_resource_area_repair.is_some() && fragmented_area_resref_resource_repair_required {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondFragmentedAreaResrefRepair);
     }
     if module_resource_area_repair.is_some() {
         match static_layout.area_name_encoding {
@@ -1670,6 +1678,62 @@ fn unique_no_name_area_resource_for_truncated_packet_resref(
         .cloned()
         .collect::<Vec<_>>();
     (matches.len() == 1).then(|| matches.remove(0))
+}
+
+fn unique_no_name_area_resource_for_fragmented_packet_resref(
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    table: &ModuleAreaResourceTable,
+    packet_area_resref_fragments: Option<&[String]>,
+) -> Option<ModuleAreaResourceInfo> {
+    if layout.dialect != AreaStaticDialect::Legacy169
+        || layout.area_name_encoding != AreaNameEncoding::DiamondNoAreaName
+    {
+        return None;
+    }
+    let fragments = packet_area_resref_fragments?;
+    if fragments.len() < 2 {
+        return None;
+    }
+
+    let packet_width = read_area_u32(payload, fragment_offset, layout.width_read_offset)?;
+    let packet_height = read_area_u32(payload, fragment_offset, layout.height_read_offset)?;
+    let packet_tileset = fixed_resref_preview(
+        payload,
+        HIGH_LEVEL_HEADER_BYTES.checked_add(layout.tileset_read_offset)?,
+    )?;
+    if !area_resref_plausible(&packet_tileset) {
+        return None;
+    }
+
+    let mut matches = table
+        .areas
+        .iter()
+        .filter(|info| {
+            (packet_width == 0 || packet_width == info.width)
+                && (packet_height == 0 || packet_height == info.height)
+                && info.tileset.eq_ignore_ascii_case(&packet_tileset)
+                && compact_fragments_match_allowing_singletons(&info.resref, fragments)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches.remove(0))
+}
+
+fn compact_packet_area_resref_fragments(
+    payload: &[u8],
+    fragment_offset: usize,
+) -> Option<Vec<String>> {
+    let start = LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET.checked_add(LEGACY_AREA_OBJECT_ID_BYTES)?;
+    let end = start.checked_add(CRESREF_TEXT_BYTES)?;
+    if end > fragment_offset || end > payload.len() {
+        return None;
+    }
+    let fragments = compact_ascii_runs_allowing_singletons(payload.get(start..end)?, |byte| {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    })?;
+    (fragments.len() >= 2).then_some(fragments)
 }
 
 fn write_module_resource_tiles(
@@ -3935,12 +3999,21 @@ fn module_area_resource_info_for_compact_packet(
         }
         AreaNameEncoding::DiamondNoAreaName => None,
     };
+    let packet_area_resref_fragments =
+        if layout.area_name_encoding == AreaNameEncoding::DiamondNoAreaName {
+            compact_packet_area_resref_fragments(payload, fragment_offset)
+        } else {
+            None
+        };
     let packet_area_resref = fixed_resref_preview(
         payload,
         LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES,
     )
     .filter(|resref| area_resref_plausible(resref));
-    if compact_fragments.is_none() && packet_area_resref.is_none() {
+    if compact_fragments.is_none()
+        && packet_area_resref.is_none()
+        && packet_area_resref_fragments.is_none()
+    {
         tracing::debug!(
             legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
             area_indices = ?area_indices,
@@ -3948,17 +4021,28 @@ fn module_area_resource_info_for_compact_packet(
         );
         return None;
     }
-    let primary_module_path = observed_module_file_path(context);
-    let direct_resref_module_path = primary_module_path
-        .is_none()
-        .then(|| {
-            packet_area_resref
-                .as_deref()
-                .and_then(|resref| observed_module_file_path_for_area_resref(context, resref))
-        })
-        .flatten();
+    let direct_resref_module_path = packet_area_resref
+        .as_deref()
+        .and_then(|resref| observed_module_file_path_for_area_resref(context, resref));
     let module_path_proven_by_direct_area_resref = direct_resref_module_path.is_some();
-    let Some(module_path) = primary_module_path.or(direct_resref_module_path) else {
+    let fragmented_resref_module_path =
+        packet_area_resref_fragments
+            .as_deref()
+            .and_then(|fragments| {
+                observed_module_file_path_for_fragmented_area_resref(
+                    context,
+                    payload,
+                    fragment_offset,
+                    layout,
+                    fragments,
+                )
+            });
+    let module_path_proven_by_fragmented_area_resref = fragmented_resref_module_path.is_some();
+    let primary_module_path = observed_module_file_path(context);
+    let Some(module_path) = direct_resref_module_path
+        .or(fragmented_resref_module_path)
+        .or(primary_module_path)
+    else {
         tracing::debug!(
             legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
             module_name = context.localized_name.as_str(),
@@ -3975,7 +4059,10 @@ fn module_area_resource_info_for_compact_packet(
     };
     let table = read_module_area_resource_table(&module_path)?;
     let table_matches_observed_context = module_table_matches_observed_context(&table, context);
-    if !table_matches_observed_context && !module_path_proven_by_direct_area_resref {
+    if !table_matches_observed_context
+        && !module_path_proven_by_direct_area_resref
+        && !module_path_proven_by_fragmented_area_resref
+    {
         tracing::debug!(
             module_path = %module_path.display(),
             module_name = table.module_name.as_deref().unwrap_or(""),
@@ -3994,40 +4081,63 @@ fn module_area_resource_info_for_compact_packet(
     }
 
     if compact_fragments.is_none() {
-        let packet_area_resref = packet_area_resref?;
-        if !module_path_proven_by_direct_area_resref && !table_matches_observed_context {
+        if !module_path_proven_by_direct_area_resref
+            && !module_path_proven_by_fragmented_area_resref
+            && !table_matches_observed_context
+        {
             return None;
         }
-        if let Some(info) = table
-            .areas
-            .iter()
-            .find(|area| area.resref.eq_ignore_ascii_case(&packet_area_resref))
-            .cloned()
-        {
-            tracing::info!(
-                legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
-                packet_area_resref = packet_area_resref.as_str(),
-                area_resref = info.resref.as_str(),
-                area_name = info.name.as_str(),
-                module_path = %module_path.display(),
-                "Area_ClientArea compact resource repair resolved no-name packet by exact local area resref"
-            );
-            return Some(info);
+
+        if let Some(packet_area_resref) = packet_area_resref.as_ref() {
+            if let Some(info) = table
+                .areas
+                .iter()
+                .find(|area| area.resref.eq_ignore_ascii_case(packet_area_resref))
+                .cloned()
+            {
+                tracing::info!(
+                    legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                    packet_area_resref = packet_area_resref.as_str(),
+                    area_resref = info.resref.as_str(),
+                    area_name = info.name.as_str(),
+                    module_path = %module_path.display(),
+                    "Area_ClientArea compact resource repair resolved no-name packet by exact local area resref"
+                );
+                return Some(info);
+            }
+            if let Some(info) = unique_no_name_area_resource_for_truncated_packet_resref(
+                payload,
+                fragment_offset,
+                layout,
+                &table,
+                packet_area_resref,
+            ) {
+                tracing::info!(
+                    legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                    packet_area_resref = packet_area_resref.as_str(),
+                    area_resref = info.resref.as_str(),
+                    area_name = info.name.as_str(),
+                    module_path = %module_path.display(),
+                    "Area_ClientArea compact resource repair resolved no-name packet by unique local area resref prefix and exact dimensions/tileset"
+                );
+                return Some(info);
+            }
         }
-        if let Some(info) = unique_no_name_area_resource_for_truncated_packet_resref(
+
+        if let Some(info) = unique_no_name_area_resource_for_fragmented_packet_resref(
             payload,
             fragment_offset,
             layout,
             &table,
-            &packet_area_resref,
+            packet_area_resref_fragments.as_deref(),
         ) {
             tracing::info!(
                 legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
-                packet_area_resref = packet_area_resref.as_str(),
+                packet_area_resref_fragments = ?packet_area_resref_fragments,
                 area_resref = info.resref.as_str(),
                 area_name = info.name.as_str(),
                 module_path = %module_path.display(),
-                "Area_ClientArea compact resource repair resolved no-name packet by unique local area resref prefix and exact dimensions/tileset"
+                "Area_ClientArea compact resource repair resolved no-name packet by fragmented local area resref and exact tileset proof"
             );
             return Some(info);
         }
@@ -4339,6 +4449,56 @@ fn observed_module_file_path_for_area_resref(
                 .areas
                 .iter()
                 .any(|area| area.resref.eq_ignore_ascii_case(area_resref))
+        {
+            continue;
+        }
+        let table_key = module_area_resource_table_match_key(&table);
+        if fallback_keys.insert(table_key) {
+            fallback_count = fallback_count.saturating_add(1);
+            if fallback.is_none() {
+                fallback = Some(candidate);
+            }
+        }
+    }
+
+    if fallback_count == 1 { fallback } else { None }
+}
+
+fn observed_module_file_path_for_fragmented_area_resref(
+    context: &crate::translate::module::ObservedModuleContext,
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    fragments: &[String],
+) -> Option<PathBuf> {
+    // Compact 1.69 Module_Info can lose enough area-table alignment that the
+    // observed module context no longer proves the local module file by name.
+    // For no-name Area_ClientArea packets, the decompiled CResRef slot still
+    // gives bounded module-local evidence: fragmented area-resref ASCII plus
+    // the exact tileset field. Accept only a single matching local module table.
+    if fragments.len() < 2 {
+        return None;
+    }
+
+    let mut seen = HashSet::new();
+    let mut fallback = None;
+    let mut fallback_count = 0usize;
+    let mut fallback_keys = HashSet::new();
+    for candidate in observed_module_file_candidates(context) {
+        if !seen.insert(path_key(&candidate)) || !candidate.is_file() {
+            continue;
+        }
+        let Some(table) = read_module_area_resource_table(&candidate) else {
+            continue;
+        };
+        if unique_no_name_area_resource_for_fragmented_packet_resref(
+            payload,
+            fragment_offset,
+            layout,
+            &table,
+            Some(fragments),
+        )
+        .is_none()
         {
             continue;
         }
@@ -5613,6 +5773,9 @@ mod tests {
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CHAPTER2E_M2Q4A_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter2e_m2q4a_client_area_20260522.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CHAPTER2_A08_BARRACKS_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_chapter2_a08_barracks_area_20260523.bin");
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_xp1_q1a2drogonfloor2_area_20260522.bin");
@@ -7188,6 +7351,108 @@ mod tests {
         assert_eq!(
             summary.tile_count,
             compact_info.width.saturating_mul(compact_info.height)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_chapter2_no_name_area_resolves_fragmented_area_resref() {
+        let _context_guard = module_context_test_guard();
+        let chapter2_module_path = r"C:\NWN\NWN Diamond\nwm\Chapter2.nwm";
+        assert!(std::path::Path::new(chapter2_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", chapter2_module_path);
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            // This mirrors the current local Chapter2 compact Module_Info
+            // failure mode: the area packet itself has the better resource
+            // proof than the observed module table names.
+            localized_name: "chap1_chap".to_string(),
+            module_resref: "chap1_chap".to_string(),
+            areas: Vec::new(),
+        };
+
+        let mut payload = LOCAL_CHAPTER2_A08_BARRACKS_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("Chapter2 area read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("Chapter2 static layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("a08_bar")
+        );
+        assert_eq!(
+            compact_packet_area_resref_fragments(&payload, fragment_offset)
+                .expect("fragmented packet area resref"),
+            vec!["a08_bar".to_string(), "ks".to_string()]
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                HIGH_LEVEL_HEADER_BYTES + layout.tileset_read_offset
+            )
+            .as_deref(),
+            Some("tin01")
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
+            Some(0)
+        );
+
+        let info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0000,
+            &layout,
+            Some(&observed_context),
+        )
+        .expect("fragmented no-name area packet resolves through the local ARE table");
+        assert_eq!(info.resref, "a08_barracks");
+        assert_eq!(info.width, 5);
+        assert_eq!(info.height, 3);
+        assert_eq!(info.tileset, "tin01");
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("Chapter2 a08_barracks area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten Chapter2 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "a08_barracks");
+        assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, 5);
+        assert_eq!(summary.packet_height, 3);
+        assert_eq!(summary.inferred_height, 3);
+        assert_eq!(summary.tile_count, 15);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondFragmentedAreaResrefRepair)
         );
         assert!(
             summary
