@@ -662,7 +662,10 @@ fn rewrite_coalesced_record_for_ee(
         return consume_coalesced_record(record, offset, "payload-overflow");
     };
 
-    if let Some(high) = high {
+    let prefer_deflated = deflated
+        .map(|deflated| deflated.plausible && payload_length >= CNW_LENGTH_BYTES)
+        .unwrap_or(false);
+    if !prefer_deflated && let Some(high) = high {
         let mut payload = payload.to_vec();
         if high.major == 0x01 && high.minor == 0x03 {
             if let Some(shape) = deferred_module_resources::capture_early_status_payload_if_needed(
@@ -1677,6 +1680,88 @@ mod tests {
             VerifiedProof::family(VerifiedFamily::ClientSideMessage),
             VerifiedProof::family(VerifiedFamily::Login),
         ]));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn chapter4_module_info_stream_span_prefers_deflate_over_false_module_zero() {
+        // Local Diamond Chapter4 startup sends a packetized coalesced record
+        // whose deflated payload length prefix starts `50 03 00 00`. That is
+        // `P 03/00` only if the transport deflate flag is ignored; after the
+        // preceding zlib stream seed it inflates to the real `Module_Info`
+        // payload.
+        let seed = include_bytes!(
+            "../../../fixtures/module_info/local_chapter4_charlist_zlib_stream_seed_20260523.bin"
+        );
+        let mut state = SessionState::default();
+        let seed_inflated = reassembly::inflate_gameplay_payload(
+            seed,
+            20531,
+            true,
+            &mut state.deflate.server_zlib_inflater,
+        )
+        .expect("Chapter4 charlist zlib stream seed should inflate");
+        assert!(seed_inflated.used_server_stream);
+        assert!(state.deflate.server_zlib_inflater.is_some());
+
+        let packet = include_bytes!(
+            "../../../fixtures/module_info/local_chapter4_module_info_coalesced_20260523.bin"
+        );
+        let view = MFrameView::parse(packet).expect("Chapter4 coalesced packet should parse");
+        let primary_len = LEGACY_GAMEPLAY_PAYLOAD_OFFSET + view.payload_length;
+        let spans = parse_packetized_spans(packet, primary_len)
+            .expect("Chapter4 coalesced packet should have packetized spans");
+        let span = spans
+            .iter()
+            .find(|span| {
+                span.high
+                    .map(|high| high.major == 0x03 && high.minor == 0x00)
+                    .unwrap_or(false)
+                    && span
+                        .deflated
+                        .as_ref()
+                        .map(|deflated| deflated.plausible)
+                        .unwrap_or(false)
+            })
+            .expect("Chapter4 fixture should contain the false Module 3/0 deflated span");
+        let record = &packet[span.offset..span.offset + span.record_length];
+
+        let rewritten = rewrite_coalesced_record_for_ee(
+            record,
+            span.flags,
+            span.high,
+            span.deflated.as_ref(),
+            span.payload_length,
+            &mut state,
+            view.sequence,
+            view.ack_sequence,
+            span.offset,
+        )
+        .expect("Chapter4 deflated Module_Info span should rewrite");
+
+        assert!(!rewritten.dropped);
+        assert!(rewritten.rewritten_deflated);
+        assert!(
+            proof_contains_module_info_family(&rewritten.proof),
+            "the false 3/0 span must be owned by Module_Info after inflation"
+        );
+        let context = state
+            .module_resources
+            .observed_module_context()
+            .expect("Chapter4 Module_Info should record runtime module context");
+        assert_eq!(context.localized_name, "Chapter Four");
+        assert_eq!(context.module_resref, "chap3_chap4");
+        let observed_rows = context
+            .areas
+            .iter()
+            .map(|area| format!("0x{:08X}:{}", area.object_id, area.name))
+            .collect::<Vec<_>>();
+        assert!(
+            context.areas.iter().any(|area| {
+                area.object_id == 0x8000_0368 && area.name.eq_ignore_ascii_case("Castle Never")
+            }),
+            "runtime context should preserve the Chapter4 area-table row for object 0x80000368; observed {observed_rows:?}"
+        );
     }
 
     #[test]

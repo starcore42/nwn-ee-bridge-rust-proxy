@@ -882,15 +882,18 @@ pub(super) fn inflate_gameplay_payload(
         anyhow::bail!("inflated gameplay length is unreasonable: {inflated_length}");
     }
 
-    if zlib_stream && !looks_like_zlib_wrapped_deflate(compressed) {
+    if zlib_stream {
         // Diamond's M-frame stream bit maps to a persistent raw-deflate reader
-        // in the client transport layer. A self-contained raw-deflate inflate
-        // can also succeed for the first record in such a stream, but accepting
-        // that one-shot candidate discards the inflater history needed by the
-        // next semantic record. Prefer the decompile-owned stream contract when
-        // the stream bit is present; replay caches above this helper prevent
-        // retransmitted records from advancing the inflater twice.
-        match inflate_with_server_stream(compressed, inflated_length, server_stream)? {
+        // in the client transport layer. The first record can carry a zlib
+        // header, while later coalesced records continue the same stream
+        // without another header. A self-contained inflate can succeed for the
+        // first record, but accepting that one-shot candidate discards the
+        // inflater history needed by the next semantic record. Prefer the
+        // decompile-owned stream contract when the stream bit is present;
+        // replay caches above this helper prevent retransmitted records from
+        // advancing the inflater twice.
+        let zlib_header = looks_like_zlib_wrapped_deflate(compressed);
+        match inflate_with_server_stream(compressed, inflated_length, zlib_header, server_stream)? {
             Some(bytes) => {
                 return Ok(InflatedGameplayPayload {
                     bytes,

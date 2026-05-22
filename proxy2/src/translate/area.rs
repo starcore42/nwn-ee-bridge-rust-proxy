@@ -5916,6 +5916,9 @@ mod tests {
     const LOCAL_CHAPTER3_M3Q1A10_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter3_m3q1a10_area_20260523.bin");
     #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CHAPTER4_MAP_M1Q6A_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_chapter4_map_m1q6a_area_20260523.bin");
+    #[cfg(hgbridge_private_fixtures)]
     const LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_xp1_q1a2drogonfloor2_area_20260522.bin");
 
@@ -7665,6 +7668,78 @@ mod tests {
 
         assert_eq!(summary.area_resref, "m3q1a10");
         assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, info.width);
+        assert_eq!(summary.packet_height, info.height);
+        assert_eq!(summary.inferred_height, info.height);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_chapter4_no_name_area_rebuilds_resource_tiles_with_tail() {
+        let _context_guard = module_context_test_guard();
+        let chapter4_module_path = r"C:\NWN\NWN Diamond\nwm\Chapter4.nwm";
+        assert!(std::path::Path::new(chapter4_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", chapter4_module_path);
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            // Local Chapter4 Module_Info has already been proven separately;
+            // this area packet carries the direct compact area CResRef and the
+            // local ARE table must prove the tile/static tail shape exactly.
+            localized_name: "Chapter Four".to_string(),
+            module_resref: "chap3_chap4".to_string(),
+            areas: Vec::new(),
+        };
+
+        let mut payload = LOCAL_CHAPTER4_MAP_M1Q6A_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("Chapter4 area read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("Chapter4 static layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("map_m1q6a")
+        );
+
+        let info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0368,
+            &layout,
+            Some(&observed_context),
+        )
+        .expect("Chapter4 no-name area packet resolves through the local ARE table");
+        assert_eq!(info.resref, "map_m1q6a");
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("Chapter4 map_m1q6a area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten Chapter4 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "map_m1q6a");
+        assert_eq!(summary.tileset_resref, info.tileset);
         assert_eq!(summary.width, info.width);
         assert_eq!(summary.packet_height, info.height);
         assert_eq!(summary.inferred_height, info.height);

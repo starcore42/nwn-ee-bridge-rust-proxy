@@ -268,6 +268,8 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
     let area_count_offset = replacement_start.checked_add(RESREF_BYTES)?;
     let table_rewrite = rewrite_load_module_resource_name_table_tail(payload, area_count_offset);
     let final_declared = read_le_u32(payload, 3)?;
+    let observed_context =
+        observed_context_from_ee_module_info_payload(payload).map(remember_observed_module_context);
 
     Some(RewriteSummary {
         offset: 0,
@@ -297,7 +299,7 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
             .map(|rewrite| rewrite.zero_length_name_terminator)
             .unwrap_or(false),
         compact_legacy_no_resource: false,
-        observed_context: None,
+        observed_context,
     })
 }
 
@@ -452,19 +454,7 @@ pub(crate) fn remember_observed_module_context_for_tests(context: ObservedModule
     }
 }
 
-fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) -> ObservedModuleContext {
-    let context = ObservedModuleContext {
-        localized_name: compact.localized_name.clone(),
-        module_resref: compact.module_resref.clone(),
-        areas: compact
-            .areas
-            .iter()
-            .map(|area| ObservedModuleArea {
-                object_id: area.object_id,
-                name: area.name.clone(),
-            })
-            .collect(),
-    };
+fn remember_observed_module_context(context: ObservedModuleContext) -> ObservedModuleContext {
     let area_count = context.areas.len();
     let lock = OBSERVED_MODULE_CONTEXT.get_or_init(|| RwLock::new(None));
     if let Ok(mut guard) = lock.write() {
@@ -480,9 +470,81 @@ fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) -> Observe
         module_resref = context.module_resref.as_str(),
         area_count,
         areas = ?area_summaries,
-        "observed compact Module_Info context for later resource-backed packet translation"
+        "observed Module_Info context for later resource-backed packet translation"
     );
     context
+}
+
+fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) -> ObservedModuleContext {
+    let context = ObservedModuleContext {
+        localized_name: compact.localized_name.clone(),
+        module_resref: compact.module_resref.clone(),
+        areas: compact
+            .areas
+            .iter()
+            .map(|area| ObservedModuleArea {
+                object_id: area.object_id,
+                name: area.name.clone(),
+            })
+            .collect(),
+    };
+    remember_observed_module_context(context)
+}
+
+fn observed_context_from_ee_module_info_payload(payload: &[u8]) -> Option<ObservedModuleContext> {
+    // Parse the same EE `CNWCModule::LoadModule` read-window shape this module
+    // just emitted: two strings, one module byte, module CResRef, then
+    // OBJECTID/CExoString area rows. This keeps later resource-backed
+    // translators tied to actual Module_Info subobjects.
+    if payload.len() < 32
+        || !is_high_level_envelope(*payload.first()?)
+        || payload.get(1).copied()? != MODULE_MAJOR
+        || payload.get(2).copied()? != 0x01
+    {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES || declared > payload.len() {
+        return None;
+    }
+
+    let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let module_name = read_raw_string_bounded_value(payload, &mut cursor, declared)?;
+    let localized_name = read_raw_string_bounded_value(payload, &mut cursor, declared)?;
+    skip_exact(payload, &mut cursor, 1, declared)?;
+    let module_resref = fixed_resref16_to_string(payload, cursor)?;
+    cursor = cursor.checked_add(RESREF_BYTES)?;
+    let area_count = read_le_u32(payload, cursor)?;
+    if area_count == 0 || area_count > MAX_MODULE_RESOURCE_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+
+    let mut areas = Vec::with_capacity(area_count as usize);
+    for _ in 0..area_count {
+        if cursor.checked_add(4)? > declared {
+            return None;
+        }
+        let object_id = read_le_u32(payload, cursor)?;
+        if !is_likely_area_resource_id(object_id) {
+            return None;
+        }
+        cursor = cursor.checked_add(4)?;
+        let name = read_raw_string_bounded_value(payload, &mut cursor, declared)?;
+        let name = name.filter(|name| !name.trim().is_empty())?;
+        areas.push(ObservedModuleArea { object_id, name });
+    }
+
+    let localized_name = localized_name
+        .or(module_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| module_resref.clone());
+    Some(ObservedModuleContext {
+        localized_name,
+        module_resref,
+        areas,
+    })
 }
 
 fn parse_compact_legacy_no_resource_module_info(payload: &[u8]) -> Option<CompactLegacyModuleInfo> {

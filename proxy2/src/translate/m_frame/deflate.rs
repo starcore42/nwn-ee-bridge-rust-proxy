@@ -13,6 +13,7 @@ use crate::packet::m::MAX_REASONABLE_GAMEPLAY_PAYLOAD;
 pub(super) fn inflate_with_server_stream(
     compressed: &[u8],
     inflated_length: usize,
+    zlib_header: bool,
     server_stream: &mut Option<Decompress>,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     if inflated_length > MAX_REASONABLE_GAMEPLAY_PAYLOAD {
@@ -20,7 +21,7 @@ pub(super) fn inflate_with_server_stream(
     }
 
     if server_stream.is_none() {
-        *server_stream = Some(Decompress::new(false));
+        *server_stream = Some(Decompress::new(zlib_header));
     }
     let Some(decompressor) = server_stream.as_mut() else {
         return Ok(None);
