@@ -2736,6 +2736,34 @@ fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_chapter1_seq19_placeable_door_stream_rewrites_to_exact_shape() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_chapter1_seq19_placeable_door_stream_20260523_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Chapter1 stream documents the unclaimed Diamond door/placeable shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.add_records >= 1);
+    assert!(claim.update_records >= 1);
+    assert!(
+        claim.mentions.iter().any(|mention| {
+            mention.opcode == b'A'
+                && matches!(
+                    mention.object_type,
+                    super::PLACEABLE_OBJECT_TYPE | super::DOOR_OBJECT_TYPE
+                )
+        }),
+        "rewritten Chapter1 stream should retain materializing door/placeable adds"
+    );
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     for (name, fixture) in [
         (
@@ -2756,6 +2784,13 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
             "seq16",
             include_bytes!(
                 "../../../fixtures/live_object/local_xp2_chapter2_seq16_liveobject_20260522_unclaimed.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq38",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter2_seq38_inventory_creature_stream_20260522_unclaimed.bin"
             )
             .as_slice(),
         ),
@@ -2781,7 +2816,53 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
             claim.add_records >= 1,
             "{name} should retain at least one materializing live-object add"
         );
+        if name == "seq38" {
+            assert_eq!(
+                claim.inventory_records, 1,
+                "seq38 should retain the compact current-player I/0x2000 Feature-25 row"
+            );
+            assert!(
+                claim.creature_appearance_records >= 1,
+                "seq38 should retain the following creature appearance record"
+            );
+        }
     }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_chapter2_u5_8008_effect_visibility_rewrites_to_exact_shape() {
+    // Local Diamond XP2 Chapter 2 strict capture from 2026-05-22. The packet is
+    // a single creature `U/5 0x00008008`: two compact visual-effect rows in the
+    // read buffer and the 0x8000 visibility booleans in the CNW fragment byte.
+    // EE build 8193 reads ObjectVisualTransformData after each effect row, so
+    // the focused creature update translator must insert exactly those maps
+    // while leaving the visibility bits in fragment storage.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter2_seq38_u5_8008_effect_visibility_20260522_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw local XP2 0x8008 status/visibility update is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("local XP2 0x8008 status/visibility update should rewrite");
+    assert_eq!(
+        rewrite.bytes_inserted, 16,
+        "two visual-effect rows should receive EE identity transform maps"
+    );
+    assert!(
+        rewrite.update_records_rewritten >= 1,
+        "0x8008 stream should be owned by the typed creature update path"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten local XP2 0x8008 stream should validate exactly");
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.fragment_bytes, 1);
 }
 
 #[cfg(hgbridge_private_fixtures)]

@@ -369,6 +369,48 @@ pub(super) struct CreatureC408CountRepair {
     pub bytes_rewritten: usize,
 }
 
+pub(super) fn repair_legacy_effect_only_visual_effect_count_for_ee(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<CreatureC408CountRepair> {
+    // Local Chapter1 Diamond captures prove the standalone effect-only sibling
+    // of the existing malformed count-zero families:
+    //
+    //   U/5 mask=0x0000_0008
+    //   WORD count written as zero
+    //   one encoded `A/F3` LowLightVision effect row
+    //
+    // EE `sub_140781E80` reaches `sub_1407B1F00` only behind mask bit
+    // `0x0008`; that helper reads the count before the row triplets. A zero
+    // count would leave the `A/F3` triplet as the next live-object opcode and
+    // shift the following update. Repair only this exact no-target row already
+    // used by the legacy feature-0x0E-false validator, then let the normal
+    // creature update cursor proof own the final record.
+    const CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_ENTRY: [u8; 3] = [b'A', 0xF3, 0x00];
+    const CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT: u16 = 1;
+    const LEGACY_EFFECT_ONLY_ZERO_COUNT_RECORD_BYTES: usize = 15;
+
+    if offset + LEGACY_EFFECT_ONLY_ZERO_COUNT_RECORD_BYTES != record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK)
+        || read_u16_le(bytes, offset + 10) != Some(0)
+        || bytes.get(offset + 12..offset + 15)? != CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_ENTRY
+    {
+        return None;
+    }
+
+    let count_bytes = CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT.to_le_bytes();
+    bytes[offset + 10] = count_bytes[0];
+    bytes[offset + 11] = count_bytes[1];
+    Some(CreatureC408CountRepair {
+        entries: CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT,
+        bytes_rewritten: 2,
+    })
+}
+
 pub(super) fn repair_legacy_4408_visual_effect_count_for_ee(
     bytes: &mut [u8],
     offset: usize,

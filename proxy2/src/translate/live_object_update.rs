@@ -2444,6 +2444,62 @@ pub fn rewrite_update_records_payload_if_possible(
         if bit_cursor_reliable {
             if let Some((add_record_end, add_object_type, add_object_id)) = last_verified_add_record
             {
+                if add_record_end == offset {
+                    if let Some(span) = boundary::
+                        try_get_legacy_missing_opcode_door_placeable_low_tail_fragment_span_after_add(
+                            &live_bytes,
+                            offset,
+                            live_bytes.len(),
+                            add_object_type,
+                            add_object_id,
+                        )
+                    {
+                        let Some(span_bytes) = live_bytes.get(span.span_start..span.span_end)
+                        else {
+                            return None;
+                        };
+                        let Some(mut decoded_bits) = bits::decode_msb_valid_bits(
+                            span_bytes,
+                            CNW_FRAGMENT_HEADER_BITS.saturating_add(span.low_tail_bits),
+                        )
+                        else {
+                            return None;
+                        };
+                        if decoded_bits.len()
+                            == CNW_FRAGMENT_HEADER_BITS.saturating_add(span.low_tail_bits)
+                        {
+                            decoded_bits.drain(0..CNW_FRAGMENT_HEADER_BITS);
+                            if decoded_bits.len() == span.low_tail_bits {
+                                // Local Chapter1 Diamond can place the legacy
+                                // door/placeable low 0x40/0x80 BOOLs in a
+                                // one-byte CNW fragment-storage span between a
+                                // compact `A` record and that same object's
+                                // missing-opcode update body. The preceding
+                                // verified add pins the object id/type, the
+                                // boundary helper proves the decompiled shared
+                                // update prefix, and these low bits have no EE
+                                // reader. Drop only the proven storage byte;
+                                // the next loop repairs the missing `U` and the
+                                // typed update writer emits the EE mask.
+                                let bytes_removed = span.span_end.saturating_sub(span.span_start);
+                                live_bytes.drain(span.span_start..span.span_end);
+                                changed = true;
+                                summary.interleaved_fragment_spans_promoted = summary
+                                    .interleaved_fragment_spans_promoted
+                                    .saturating_add(1);
+                                summary.interleaved_fragment_bytes_promoted = summary
+                                    .interleaved_fragment_bytes_promoted
+                                    .saturating_add(
+                                        u32::try_from(bytes_removed).unwrap_or(u32::MAX),
+                                    );
+                                summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                    u32::try_from(bytes_removed).unwrap_or(u32::MAX),
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
                 if add_record_end == offset
                     && boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
                         &live_bytes,
@@ -3589,6 +3645,13 @@ pub fn rewrite_update_records_payload_if_possible(
                 )
                 .or_else(|| {
                     creature::repair_legacy_4408_visual_effect_count_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        record_end,
+                    )
+                })
+                .or_else(|| {
+                    creature::repair_legacy_effect_only_visual_effect_count_for_ee(
                         &mut live_bytes,
                         offset,
                         record_end,

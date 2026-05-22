@@ -498,6 +498,91 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingOpcodeLowTailFragmentSpan {
+    pub span_start: usize,
+    pub span_end: usize,
+    pub low_tail_bits: usize,
+}
+
+pub(super) fn try_get_legacy_missing_opcode_door_placeable_low_tail_fragment_span_after_add(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    expected_object_type: u8,
+    expected_object_id: u32,
+) -> Option<MissingOpcodeLowTailFragmentSpan> {
+    let scan_end = scan_end.min(bytes.len());
+    if !matches!(
+        expected_object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) {
+        return None;
+    }
+
+    let body_offset = if bytes.get(offset).copied()? == expected_object_type {
+        offset
+    } else if bytes.get(offset).copied()? == 0
+        && bytes.get(offset + 1).copied()? == expected_object_type
+    {
+        offset.checked_add(1)?
+    } else {
+        return None;
+    };
+
+    if body_offset + LEGACY_UPDATE_HEADER_BYTES - 1 > scan_end
+        || read_u32_le(bytes, body_offset + 1)? != expected_object_id
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, body_offset + 5)?;
+    let translated_mask = match expected_object_type {
+        PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
+        DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
+        _ => return None,
+    };
+    let unsupported_low_tail = raw_mask & !translated_mask;
+    if translated_mask == 0
+        || unsupported_low_tail == 0
+        || (unsupported_low_tail & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
+    {
+        return None;
+    }
+
+    let low_tail_bits = unsupported_low_tail.count_ones() as usize;
+    let mut accepted: Option<MissingOpcodeLowTailFragmentSpan> = None;
+    for vector_orientation in [false, true] {
+        let Some(prefix_end) = missing_opcode_update_body_read_end(
+            bytes,
+            body_offset,
+            scan_end,
+            translated_mask,
+            vector_orientation,
+        ) else {
+            continue;
+        };
+        let span_end = prefix_end.checked_add(1)?;
+        if span_end > scan_end || !record_end_lands_on_boundary(bytes, span_end, scan_end) {
+            continue;
+        }
+
+        let span = MissingOpcodeLowTailFragmentSpan {
+            span_start: prefix_end,
+            span_end,
+            low_tail_bits,
+        };
+        if accepted
+            .replace(span)
+            .is_some_and(|previous| previous != span)
+        {
+            return None;
+        }
+    }
+
+    accepted
+}
+
 pub(super) fn try_get_legacy_missing_type_door_placeable_update_end_after_add(
     bytes: &[u8],
     offset: usize,
@@ -1496,6 +1581,30 @@ mod tests {
                 0x8000_0084,
             ),
             Some(42)
+        );
+    }
+
+    #[test]
+    fn missing_opcode_low_tail_fragment_span_proves_same_object_update() {
+        let live = [
+            0x00, 0x09, 0xCA, 0x18, 0x00, 0x00, 0xF7, 0x00, 0x00, 0x00, 0xA0, 0x05, 0xF6, 0x04,
+            0x0F, 0x0F, 0xA1, 0xD4, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0xA9, b'A', 0x09,
+            0xC1, 0x18, 0x00, 0x00,
+        ];
+
+        assert_eq!(
+            try_get_legacy_missing_opcode_door_placeable_low_tail_fragment_span_after_add(
+                &live,
+                0,
+                live.len(),
+                PLACEABLE_OBJECT_TYPE,
+                0x0000_18CA,
+            ),
+            Some(MissingOpcodeLowTailFragmentSpan {
+                span_start: 25,
+                span_end: 26,
+                low_tail_bits: 2,
+            })
         );
     }
 
