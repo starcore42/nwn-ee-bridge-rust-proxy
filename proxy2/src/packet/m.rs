@@ -349,6 +349,17 @@ impl HighLevel {
             (0x14, 0x03) => "Dialog_Reply",
             (0x14, 0x04) => "Dialog_ReplyChosen",
             (0x14, 0x05) => "Dialog_Close",
+            // Sound-object family verified from EE packet names and
+            // `CNWSMessage::SendServerToPlayerSoundObject_*` senders. The
+            // semantic translators own exact per-minor CNW cursor validation
+            // before strict mode treats these names as safe.
+            (0x17, 0x01) => "Sound_Play3D",
+            (0x17, 0x02) => "Sound_Object_Play",
+            (0x17, 0x03) => "Sound_Object_Stop",
+            (0x17, 0x04) => "Sound_Object_ChangeVolume",
+            (0x17, 0x05) => "Sound_Object_ChangePosition",
+            (0x17, 0x06) => "Sound_Object_Create",
+            (0x17, 0x07) => "Sound_Object_Destroy",
             // Journal family verified from EE `CNWSMessage::SendServerToPlayerJournal*`
             // senders and Diamond's Journal client dispatcher. These payloads are
             // accepted unchanged when their high-level shape is otherwise valid.

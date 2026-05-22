@@ -613,9 +613,12 @@ pub(super) fn repair_current_player_2a00_selector_bits_after_compact_effect_for_
         || record_end <= record_offset
         || record_end - record_offset < 7
         || bytes.get(record_offset).copied() != Some(b'I')
-        || read_u32_le(bytes, record_offset + 1)? != 0x0000_00FE
         || read_u16_le(bytes, record_offset + 5)? != 0x2A00
     {
+        return None;
+    }
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    if !matches!(object_id, 0x0000_00FE | 0xFFFF_FFFE) {
         return None;
     }
 
@@ -626,12 +629,15 @@ pub(super) fn repair_current_player_2a00_selector_bits_after_compact_effect_for_
 
     // Local Dark Ranger's compact effect stream carries an already-present
     // `I/0x2A00` current-player inventory row after the `U/5 0x0008`
-    // LowLightVision record.  The read-buffer body proves the EE/Diamond
-    // decompile-owned branch shape: 0x0200 byte-mask list, 0x2000 Feature-25
-    // object lists, then a true 0x0800 twelve-byte tail.  The legacy fragment
-    // span has the same cursor length but leaves those true selector BOOLs as
-    // zeroes, so materialize only true requirements from that exact parser
-    // claim.  Required false bits still have to be false on the wire.
+    // LowLightVision record. Local XP1 Chapter 1 adds the same selector-bit
+    // omission after a compact `U/5 0x4408` status update, using the legacy
+    // current-player sentinel owner `0xFFFFFFFE` and the shortest observed
+    // WORD-list 0x0200 body. The read-buffer body proves the EE/Diamond
+    // decompile-owned branch shape: 0x0200, 0x2000 Feature-25 object lists,
+    // then a true 0x0800 twelve-byte tail. The legacy fragment span has the
+    // same cursor length but leaves true selector BOOLs as zeroes, so
+    // materialize only true requirements from that exact parser claim.
+    // Required false bits still have to be false on the wire.
     let mut proof_bits = fragment_bits.clone();
     if !claim.materialize_missing_true_fragment_requirements(&mut proof_bits, bit_cursor) {
         return None;

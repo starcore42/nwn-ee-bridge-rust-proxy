@@ -52,6 +52,7 @@ mod profiles;
 pub(crate) mod quickbar;
 pub(crate) mod resource_config;
 pub(crate) mod semantic;
+pub(crate) mod sound;
 
 use crate::{
     config::{Config, StrictProfile},
@@ -153,6 +154,7 @@ pub enum VerifiedFamily {
         compressed_length: usize,
     },
     ServerStatusModuleResources,
+    Sound,
 }
 
 impl VerifiedFamily {
@@ -195,6 +197,7 @@ impl VerifiedFamily {
             Self::ServerZlibStreamContinuation { .. } => "ServerZlibStreamContinuation",
             Self::ServerZlibZeroFillWindow { .. } => "ServerZlibZeroFillWindow",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
+            Self::Sound => "Sound",
         }
     }
 }

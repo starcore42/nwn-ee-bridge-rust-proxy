@@ -12,7 +12,7 @@ use crate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, area, char_list, chat, client_side_message,
         cnw_message, custom_token, dialog, game_obj_update, gameplay_stream, inventory, journal,
         live_object, loadbar, login, module, module_resources, module_time, party,
-        play_module_character_list, player_list, quickbar, semantic,
+        play_module_character_list, player_list, quickbar, semantic, sound,
     },
 };
 
@@ -156,6 +156,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "Chat",
         verified_family: Some(VerifiedFamily::Chat),
         translate: translate_chat,
+    },
+    ServerToClientTranslator {
+        family_name: "Sound",
+        verified_family: Some(VerifiedFamily::Sound),
+        translate: translate_sound,
     },
     ServerToClientTranslator {
         family_name: "Dialog",
@@ -797,6 +802,19 @@ fn translate_chat(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if chat::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_sound(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if sound::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

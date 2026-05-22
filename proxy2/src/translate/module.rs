@@ -1579,6 +1579,36 @@ fn find_compact_sanitized_module_resref(
             best = Some(offset);
         }
     }
+    best.or_else(|| find_compact_decompile_shaped_module_resref(payload, start, declared))
+}
+
+fn find_compact_decompile_shaped_module_resref(
+    payload: &[u8],
+    start: usize,
+    declared: usize,
+) -> Option<usize> {
+    // XP1 compact Module_Info uses Diamond's fixed-width CResRef copy path:
+    // bytes after the first NUL are not guaranteed to be zero. Only use this
+    // looser decompile-shaped scan after the sanitized scan fails.
+    let mut best = None;
+    let mut best_len = 0usize;
+    let end = declared.saturating_sub(RESREF_BYTES);
+    for offset in start..=end {
+        let Some(bytes) = payload.get(offset..offset + RESREF_BYTES) else {
+            continue;
+        };
+        if !compact_resref_slot_has_decompile_shape(bytes, false) {
+            continue;
+        }
+        let Some(Some(value)) = fixed_resref16_value(payload, offset, false) else {
+            continue;
+        };
+        let length = value.len();
+        if length > best_len || (length == best_len && best.is_some()) {
+            best_len = length;
+            best = Some(offset);
+        }
+    }
     best
 }
 
@@ -2344,6 +2374,24 @@ mod tests {
         assert_eq!(summary.module_resref.as_deref(), Some("bw167demo"));
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.resource_name_count, 3);
+        assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn rewrites_xp1_compact_module_info_with_unsanitized_resref_slot() {
+        let mut payload = include_bytes!(
+            "../../fixtures/module_info/local_xp1_chapter1_module_info_20260522.bin"
+        )
+        .to_vec();
+
+        let summary = rewrite_module_info_payload(&mut payload)
+            .expect("XP1 compact Module_Info should be rewritten");
+
+        assert!(summary.compact_legacy_no_resource);
+        assert_eq!(summary.module_resref.as_deref(), Some("XP1-Chapt"));
+        assert_eq!(summary.hak_count, 0);
+        assert!(summary.resource_name_count >= 10);
         assert!(crate::strict::module_info_shape_valid(&payload));
     }
 

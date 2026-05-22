@@ -18,7 +18,7 @@ use crate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat, client_gui_event,
         client_gui_inventory, client_input, client_login, client_quickbar, client_server_admin,
         dialog, gameplay_stream, inventory, journal, live_object_update, login, module,
-        play_module_character_list, player_list, quickbar,
+        play_module_character_list, player_list, quickbar, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1411,6 +1411,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x03
                 && server_status_module_resources_shape_valid(payload)
         }
+        VerifiedFamily::Sound => {
+            high.major == 0x17 && high.minor == 0x03 && sound_shape_valid(payload)
+        }
         VerifiedFamily::CoalescedWindow
         | VerifiedFamily::ConsumedEmptyMFrame
         | VerifiedFamily::SemanticDeflated
@@ -1442,6 +1445,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::PlayModuleCharacterList
             | VerifiedFamily::PlayerList
             | VerifiedFamily::SetCustomToken
+            | VerifiedFamily::Sound
             | VerifiedFamily::ServerStatusModuleResources
     )
 }
@@ -1614,6 +1618,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x14, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
         }
+        (0x17, 0x03) => HighPayloadValidation::Exact(sound_shape_valid(payload)),
         (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0C) => {
             HighPayloadValidation::Exact(journal::claim_payload_if_verified(payload).is_some())
         }
@@ -2194,6 +2199,10 @@ fn loadbar_shape_valid(payload: &[u8]) -> bool {
     declared == expected_declared
         && declared <= payload.len()
         && payload.len().saturating_sub(declared) <= MAX_FRAGMENT_BYTES
+}
+
+fn sound_shape_valid(payload: &[u8]) -> bool {
+    sound::claim_payload_if_verified(payload).is_some()
 }
 
 fn char_list_request_update_char_shape_valid(payload: &[u8]) -> bool {

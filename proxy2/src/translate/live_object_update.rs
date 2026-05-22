@@ -2398,6 +2398,27 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_creature_4408_record_end = None;
             continue;
         }
+        if bit_cursor_reliable && last_verified_creature_4408_record_end == Some(offset) {
+            if let Some(selector_repair) =
+                inventory::repair_current_player_2a00_selector_bits_after_compact_effect_for_ee(
+                    &live_bytes,
+                    offset,
+                    boundary::find_next_legacy_live_object_sub_message_boundary_after(
+                        &live_bytes,
+                        offset,
+                        live_bytes.len(),
+                    )
+                    .min(live_bytes.len()),
+                    &mut fragment_bits,
+                    bit_cursor,
+                )
+            {
+                let _bits_materialized = selector_repair.bits_materialized;
+                changed = true;
+                last_verified_creature_4408_record_end = None;
+                continue;
+            }
+        }
         if bit_cursor_reliable && last_verified_creature_effect_only_record_end == Some(offset) {
             if let Some(selector_repair) =
                 inventory::repair_current_player_2a00_selector_bits_after_compact_effect_for_ee(

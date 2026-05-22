@@ -1502,12 +1502,28 @@ fn repair_compact_area_from_module_resource(
 
     let mut repaired_scan = scan_area_tile_stream(payload, effective_fragment_offset);
     if !module_resource_tile_scan_matches(&repaired_scan, &info) {
-        write_module_resource_tiles(
+        if let Some(new_fragment_offset) = rewrite_module_resource_tiles_with_tail_compaction(
             payload,
             effective_fragment_offset,
-            effective_layout.first_tile_read_offset,
+            &effective_layout,
             &info,
-        )?;
+        ) {
+            effective_fragment_offset = new_fragment_offset;
+        } else if let Some(new_fragment_offset) = rewrite_module_resource_tiles_with_empty_tail(
+            payload,
+            effective_fragment_offset,
+            &effective_layout,
+            &info,
+        ) {
+            effective_fragment_offset = new_fragment_offset;
+        } else {
+            write_module_resource_tiles(
+                payload,
+                effective_fragment_offset,
+                effective_layout.first_tile_read_offset,
+                &info,
+            )?;
+        }
         repaired_scan = scan_area_tile_stream(payload, effective_fragment_offset);
     }
     if !module_resource_tile_scan_matches(&repaired_scan, &info) {
@@ -1625,15 +1641,7 @@ fn write_module_resource_tiles(
     first_tile_read_offset: usize,
     info: &ModuleAreaResourceInfo,
 ) -> Option<()> {
-    if info.tiles.is_empty()
-        || info.tiles.len() != usize::try_from(info.width.checked_mul(info.height)?).ok()?
-    {
-        return None;
-    }
-    let mut tile_bytes = Vec::new();
-    for tile in &info.tiles {
-        write_module_resource_tile_record(&mut tile_bytes, tile)?;
-    }
+    let tile_bytes = module_resource_tile_bytes(info)?;
     let payload_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(first_tile_read_offset)?;
     let end = payload_offset.checked_add(tile_bytes.len())?;
     if end > fragment_offset || end > payload.len() {
@@ -1643,6 +1651,157 @@ fn write_module_resource_tiles(
         .get_mut(payload_offset..end)?
         .copy_from_slice(&tile_bytes);
     Some(())
+}
+
+fn rewrite_module_resource_tiles_with_tail_compaction(
+    payload: &mut Vec<u8>,
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    info: &ModuleAreaResourceInfo,
+) -> Option<usize> {
+    let tile_bytes = module_resource_tile_bytes(info)?;
+    let old_tail_start = find_unique_legacy_tail_start_for_module_resource_tiles(
+        payload,
+        fragment_offset,
+        layout,
+        info,
+    )?;
+    let tile_start_payload = HIGH_LEVEL_HEADER_BYTES.checked_add(layout.first_tile_read_offset)?;
+    let old_tail_payload = HIGH_LEVEL_HEADER_BYTES.checked_add(old_tail_start)?;
+    if tile_start_payload > old_tail_payload || old_tail_payload > fragment_offset {
+        return None;
+    }
+
+    let old_tile_bytes = old_tail_payload.checked_sub(tile_start_payload)?;
+    let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    let new_tile_bytes = tile_bytes.len();
+    let new_declared = adjust_declared_by_len_delta(declared, old_tile_bytes, new_tile_bytes)?;
+    payload.splice(tile_start_payload..old_tail_payload, tile_bytes);
+    write_u32_le(payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+
+    if new_tile_bytes >= old_tile_bytes {
+        fragment_offset.checked_add(new_tile_bytes.checked_sub(old_tile_bytes)?)
+    } else {
+        fragment_offset.checked_sub(old_tile_bytes.checked_sub(new_tile_bytes)?)
+    }
+}
+
+fn rewrite_module_resource_tiles_with_empty_tail(
+    payload: &mut Vec<u8>,
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    info: &ModuleAreaResourceInfo,
+) -> Option<usize> {
+    // Resource-backed compact packets can carry a tile/body section that is not
+    // the EE/Diamond tile-record reader shape. When local ARE/GIT evidence
+    // proves there are no map pins or sound objects, emit the exact empty
+    // post-tile list branch instead of preserving unclaimed compact bytes.
+    if !info.map_notes.is_empty() || !info.sounds.is_empty() {
+        return None;
+    }
+
+    let tile_bytes = module_resource_tile_bytes(info)?;
+    let tile_start_payload = HIGH_LEVEL_HEADER_BYTES.checked_add(layout.first_tile_read_offset)?;
+    if tile_start_payload > fragment_offset || fragment_offset > payload.len() {
+        return None;
+    }
+
+    let mut replacement = Vec::with_capacity(tile_bytes.len().checked_add(14)?);
+    replacement.extend_from_slice(&tile_bytes);
+    replacement.extend_from_slice(&0u32.to_le_bytes());
+    replacement.extend_from_slice(&0u32.to_le_bytes());
+    replacement.extend_from_slice(&0u16.to_le_bytes());
+    replacement.extend_from_slice(&0u16.to_le_bytes());
+    replacement.extend_from_slice(&0u16.to_le_bytes());
+
+    let old_len = fragment_offset.checked_sub(tile_start_payload)?;
+    let new_len = replacement.len();
+    let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    let new_declared = adjust_declared_by_len_delta(declared, old_len, new_len)?;
+    payload.splice(tile_start_payload..fragment_offset, replacement);
+    write_u32_le(payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+
+    let new_fragment_offset = if new_len >= old_len {
+        fragment_offset.checked_add(new_len.checked_sub(old_len)?)?
+    } else {
+        fragment_offset.checked_sub(old_len.checked_sub(new_len)?)?
+    };
+    truncate_area_fragment_to_pre_tile_bits(payload, new_fragment_offset)?;
+    Some(new_fragment_offset)
+}
+
+fn module_resource_tile_bytes(info: &ModuleAreaResourceInfo) -> Option<Vec<u8>> {
+    if info.tiles.is_empty()
+        || info.tiles.len() != usize::try_from(info.width.checked_mul(info.height)?).ok()?
+    {
+        return None;
+    }
+    let mut tile_bytes = Vec::new();
+    for tile in &info.tiles {
+        write_module_resource_tile_record(&mut tile_bytes, tile)?;
+    }
+    Some(tile_bytes)
+}
+
+fn find_unique_legacy_tail_start_for_module_resource_tiles(
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    info: &ModuleAreaResourceInfo,
+) -> Option<usize> {
+    let (_, read_size, _, fragment_size) = area_client_area_read_window(payload)?;
+    if fragment_size == 0 {
+        return None;
+    }
+    let expected_tile_count = info.width.checked_mul(info.height)?;
+    if expected_tile_count == 0 || expected_tile_count > MAX_REASONABLE_AREA_TILE_COUNT {
+        return None;
+    }
+    if layout.first_tile_read_offset > read_size {
+        return None;
+    }
+
+    let mut found = None;
+    for candidate in layout.first_tile_read_offset..=read_size {
+        let scan = AreaTileStreamScan {
+            valid: true,
+            layout: layout.clone(),
+            width: info.width,
+            packet_height: info.height,
+            inferred_height: info.height,
+            tile_count: expected_tile_count,
+            tile_end_read_offset: candidate,
+        };
+        if legacy_area_source_tail_exact_read_proof(payload, fragment_offset, &scan).is_some() {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
+    }
+    found
+}
+
+fn truncate_area_fragment_to_pre_tile_bits(
+    payload: &mut Vec<u8>,
+    fragment_offset: usize,
+) -> Option<()> {
+    let fragment = payload.get(fragment_offset..)?;
+    let bits = decode_cnw_msb_valid_bits(fragment, LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)?;
+    let payload_bits = bits
+        .get(CNW_FRAGMENT_HEADER_BITS..LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)?
+        .to_vec();
+    let rewritten_fragment = encode_cnw_msb_payload_bits(&payload_bits)?;
+    payload.splice(fragment_offset.., rewritten_fragment);
+    Some(())
+}
+
+fn adjust_declared_by_len_delta(declared: u32, old_len: usize, new_len: usize) -> Option<u32> {
+    if new_len >= old_len {
+        declared.checked_add(u32::try_from(new_len.checked_sub(old_len)?).ok()?)
+    } else {
+        declared.checked_sub(u32::try_from(old_len.checked_sub(new_len)?).ok()?)
+    }
 }
 
 fn write_module_resource_tile_record(out: &mut Vec<u8>, tile: &ModuleAreaTile) -> Option<()> {
@@ -5417,6 +5576,9 @@ mod tests {
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CHAPTER2E_M2Q4A_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter2e_m2q4a_client_area_20260522.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_xp1_q1a2drogonfloor2_area_20260522.bin");
 
     #[test]
     fn docksofascension_uses_decompile_backed_tile_dimension_offsets() {
@@ -6827,6 +6989,69 @@ mod tests {
         assert_eq!(proof.first_post_static_count, 0);
         assert_eq!(proof.second_post_static_count, 0);
         assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_xp1_no_name_area_rebuilds_resource_tiles_with_empty_tail() {
+        let _context_guard = module_context_test_guard();
+        let xp1_module_path = r"C:\NWN\NWN Diamond\nwm\XP1-Chapter 1.nwm";
+        assert!(std::path::Path::new(xp1_module_path).is_file());
+        let _module_path_guard = EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", xp1_module_path);
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            localized_name: "XP1-Chapter 1".to_string(),
+            module_resref: "XP1-Chapt".to_string(),
+            areas: Vec::new(),
+        };
+
+        let mut payload = LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT.to_vec();
+        let (_, _, fragment_offset, fragment_size) =
+            area_client_area_read_window(&payload).expect("XP1 read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("XP1 static layout");
+        assert_eq!(fragment_size, 8);
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        let info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_00A1,
+            &layout,
+            Some(&observed_context),
+        )
+        .expect("XP1 resource info");
+        assert_eq!(info.resref, "q1a2drogonfloor2");
+        assert_eq!(info.width, 6);
+        assert_eq!(info.height, 6);
+        assert_eq!(info.tileset, "tin01");
+        assert!(info.map_notes.is_empty());
+        assert!(info.sounds.is_empty());
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("XP1 area should rewrite from local resource evidence");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten XP1 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "q1a2drogonfloor2");
+        assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, 6);
+        assert_eq!(summary.packet_height, 6);
+        assert_eq!(summary.inferred_height, 6);
+        assert_eq!(summary.tile_count, 36);
+        assert!(summary.new_read_size < summary.old_read_size);
+        assert_eq!(proof.transition_count, 0);
+        assert_eq!(proof.map_pin_count, 0);
+        assert_eq!(proof.sound_count, 0);
+        assert_eq!(proof.light_count, 0);
+        assert_eq!(proof.static_count, 0);
+        assert_eq!(proof.first_post_static_count, 0);
+        assert_eq!(proof.second_post_static_count, 0);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
