@@ -1553,6 +1553,37 @@ fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
+    // Local XP1-Chapter 1 harness capture from 2026-05-22. The stream starts
+    // with compact `U/5 0x00004408`, then current-player `I/0x2A00` where the
+    // 0x0200 branch uses a single WORD list entry before Feature-25 and the
+    // 0x0800 true tail. This is the same decompiled reader order as the wider
+    // To Heir fixture, but with the shortest observed nonzero WORD-list body.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp1_current_player_4408_live_object_20260522.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP1 0x4408 + 0x2A00 stream is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("XP1 0x4408 + inventory stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
+        "XP1 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten XP1 current-player inventory stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
+}
+
+#[test]
 fn local_dark_ranger_u5_effect_inventory_gui_stream_rewrites_to_exact_shape() {
     // Local Dark Ranger harness capture from 2026-05-19 after Module_Info and
     // Area_ClientArea were repaired. The live stream starts with a compact
@@ -2558,6 +2589,96 @@ fn local_diamond_seq17_sentinel_inventory_owner_is_removed_with_missing_update()
     assert_eq!(claim.inventory_records, 0);
     assert_eq!(claim.live_gui_read_buffer_records, 1);
     assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_seq34_zero_mask_creature_updates_rewrite_and_lifecycle_clean() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_seq34_zero_mask_creature_updates_20260522.bin"
+    )
+    .to_vec();
+    let live = live_object_read_window(&payload);
+    assert!(
+        super::inventory::try_get_legacy_live_inventory_fragment_bit_count(live, 15, 28).is_some(),
+        "I/0x0100 D-entry inventory row should prove the following U/5 boundary"
+    );
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            live,
+            15,
+            live.len(),
+        ),
+        28
+    );
+
+    let pre_canonical = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(pre_canonical.inventory_records, 1);
+    assert_eq!(pre_canonical.creature_visual_transform_update_records, 1);
+    assert!(
+        pre_canonical.creature_update_records >= 1,
+        "captured XP2 stream should carry exact zero-mask creature no-op updates before cleanup"
+    );
+
+    let session_creature_id = 0xFFFF_FFFE;
+    let canonical = super::canonicalize_player_session_creature_ids_payload_for_ee(
+        &mut payload,
+        |compact_id| (compact_id == 0xFE).then_some(session_creature_id),
+    )
+    .expect("PlayerList-proven compact creature owner should canonicalize for EE");
+    assert!(
+        canonical.reference_ids_rewritten >= 2,
+        "the visual-transform U/5 and inventory owner should both use the session id"
+    );
+
+    let cleanup =
+        super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, id| {
+            id == session_creature_id
+        })
+        .expect("zero-mask missing creature updates should be removable after exact proof");
+    assert!(cleanup.diamond_missing_object_update_records >= 1);
+
+    let claim = super::claim_payload_if_verified_with_lifecycle(&payload, |_, id| {
+        id == session_creature_id
+    })
+    .expect("XP2 zero-mask creature burst should be lifecycle-safe after cleanup");
+    assert!(
+        claim
+            .mentions
+            .iter()
+            .any(|mention| { mention.opcode == b'I' && mention.object_id == session_creature_id })
+    );
+    assert!(claim.mentions.iter().any(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == super::CREATURE_OBJECT_TYPE
+            && mention.object_id == session_creature_id
+    }));
+    assert_eq!(claim.creature_update_records, 0);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_seq26_current_player_d5ff_inventory_consumes_terminal_fragment_tail() {
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_seq26_lifecycle_unverified_combined_20260522.bin"
+    );
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("current-player D5FF inventory should own the terminal fragment tail");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.creature_appearance_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.inventory_records, 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+    assert!(
+        claim
+            .mentions
+            .iter()
+            .any(|mention| mention.opcode == b'I' && mention.object_id == 0xFFFF_FFFE)
+    );
+
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+        .expect("preceding A/5 materializes current player before D5FF inventory");
+    assert_eq!(lifecycle_claim.inventory_records, 1);
 }
 
 #[cfg(hgbridge_private_fixtures)]

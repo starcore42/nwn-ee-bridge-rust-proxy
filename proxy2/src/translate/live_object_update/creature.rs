@@ -144,6 +144,15 @@ pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
         return false;
     }
 
+    if raw_mask == 0 {
+        // Diamond and EE both read the creature update mask before walking the
+        // ordered optional branches. A zero mask consumes no read-buffer body
+        // and no CNW fragment bits, so it is an exact no-op record once the
+        // ten-byte `U/5` header+mask boundary is proven. Lifecycle cleanup may
+        // still remove it when the target object is absent on the EE side.
+        return record_end == offset + 10;
+    }
+
     if raw_mask == LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK {
         return advance_verified_legacy_feature0e_false_effect_only_update_record(
             bytes, offset, record_end,
@@ -358,6 +367,49 @@ pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(
 pub(super) struct CreatureC408CountRepair {
     pub entries: u16,
     pub bytes_rewritten: usize,
+}
+
+pub(super) fn repair_legacy_4408_visual_effect_count_for_ee(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<CreatureC408CountRepair> {
+    // Local XP2 Chapter 1 capture, verified against the same EE/Diamond
+    // `WriteGameObjUpdate_UpdateObject` reader order as the existing 0x4408
+    // fixtures:
+    //
+    //   0x0008: WORD looping-visual-effect delta count, then count entries.
+    //   0x0400: four signed SHORT scalar/status values.
+    //   0x4000: fragment BOOL status suffix.
+    //
+    // The source record carries the single `A/F3` effect entry already proven
+    // in prior 0x4408 fixtures, but leaves the preceding count as zero. A zero
+    // count shifts that effect entry into the 0x0400 scalar reader and strands
+    // the following inventory row. Repair only this exact one-entry shape; the
+    // caller still has to insert EE's per-effect identity map and prove the
+    // final live-object cursor exactly.
+    const XP2_4408_SINGLE_EFFECT_ENTRY: [u8; 3] = [b'A', 0xF3, 0x00];
+    const XP2_4408_SINGLE_EFFECT_COUNT: u16 = 1;
+    const LEGACY_4408_ZERO_COUNT_RECORD_BYTES: usize = 23;
+
+    if offset + LEGACY_4408_ZERO_COUNT_RECORD_BYTES != record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(0x0000_4408)
+        || read_u16_le(bytes, offset + 10) != Some(0)
+        || bytes.get(offset + 12..offset + 15)? != XP2_4408_SINGLE_EFFECT_ENTRY
+    {
+        return None;
+    }
+
+    let count_bytes = XP2_4408_SINGLE_EFFECT_COUNT.to_le_bytes();
+    bytes[offset + 10] = count_bytes[0];
+    bytes[offset + 11] = count_bytes[1];
+    Some(CreatureC408CountRepair {
+        entries: XP2_4408_SINGLE_EFFECT_COUNT,
+        bytes_rewritten: 2,
+    })
 }
 
 pub(super) fn repair_legacy_c408_visual_effect_count_for_ee(

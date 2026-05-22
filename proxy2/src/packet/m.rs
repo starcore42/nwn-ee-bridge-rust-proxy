@@ -275,6 +275,12 @@ impl HighLevel {
             // minor 2. Strict validation still checks that exact shape before
             // allowing this packet through.
             (0x05, 0x02) => "GameObjUpdate_ObjControl",
+            // EE packet-name table maps 0x0503 to GameObjUpdate_VisEffect.
+            // `CNWSMessage::SendServerToPlayerGameObjUpdateVisEffect`
+            // writes object id, visual-effect WORD, Vector floats, and
+            // optional source/transform fields. The semantic translator owns
+            // exact shape validation for each claimed branch.
+            (0x05, 0x03) => "GameObjUpdate_VisEffect",
             (0x06, 0x01) => "Input_WalkToWaypoint",
             (0x06, 0x02) => "Input_Attack",
             (0x06, 0x03) => "Input_ChangeDoorState",
@@ -294,13 +300,18 @@ impl HighLevel {
             (0x06, 0x11) => "Input_UnMemorizeSpell",
             (0x06, 0x12) => "Input_CastSpell",
             // Chat family confirmed from EE's packet-name table:
-            // 0x0904 = Chat_Tell, 0x0905 = Chat_ServerTell, and
-            // 0x090B/0x090C = Chat_TokenTalk variants. These are normal
+            // 0x0904 = Chat_Tell, 0x0905 = Chat_ServerTell, 0x0907 =
+            // Chat_AIAction_PlaySound, 0x0908..0x090A are Chat_StrRef
+            // variants, and 0x090B/0x090C = Chat_TokenTalk variants. These are normal
             // CNWMessage-backed server-to-player payloads in the decompiled
             // chat senders, so strict mode may classify them as known only
             // when the focused chat translator proves the exact byte shape.
             (0x09, 0x04) => "Chat_Tell",
             (0x09, 0x05) => "Chat_ServerTell",
+            (0x09, 0x07) => "Chat_AIAction_PlaySound",
+            (0x09, 0x08) => "Chat_TalkRef",
+            (0x09, 0x09) => "Chat_ShoutRef",
+            (0x09, 0x0A) => "Chat_WhisperRef",
             (0x09, 0x0B) => "Chat_TokenTalk",
             (0x09, 0x0C) => "Chat_TokenTalkNoBubble",
             (0x0A, 0x01) => "PlayerList_All",
@@ -395,6 +406,11 @@ impl HighLevel {
             // a single slot after obtaining a CNWMessage write buffer.
             (0x1E, 0x01) => "GuiQuickbar_SetAllButtons",
             (0x1E, 0x02) => "GuiQuickbar_SetButton",
+            // SafeProjectile family confirmed from EE packet-name table and
+            // `CNWSMessage::SendServerToPlayerSafeProjectile`; the focused
+            // translator validates the typed spawn branch before strict mode
+            // treats the packet as safe.
+            (0x22, 0x01) => "SafeProjectile_Spawn",
             (0x2C, 0x01) => "LoadBar_Start",
             (0x2C, 0x02) => "LoadBar_Update",
             (0x2C, 0x03) => "LoadBar_End",
@@ -403,6 +419,17 @@ impl HighLevel {
             (0x31, 0x03) => "PlayModuleCharacterList_Response",
             (0x32, 0x01) => "SetCustomToken",
             (0x32, 0x02) => "SetCustomTokenList",
+            // Cutscene family confirmed from EE's packet-name table and the
+            // exported `CNWSMessage::SendServerToPlayerCutscene_*` senders.
+            // The semantic cutscene translator owns exact per-minor shape
+            // validation before strict mode treats these names as safe.
+            (0x33, 0x01) => "Cutscene_Status",
+            (0x33, 0x02) => "Cutscene_Cancel",
+            (0x33, 0x03) => "Cutscene_FadeToBlack",
+            (0x33, 0x04) => "Cutscene_FadeFromBlack",
+            (0x33, 0x05) => "Cutscene_StopFade",
+            (0x33, 0x06) => "Cutscene_BlackScreen",
+            (0x33, 0x07) => "Cutscene_HideGui",
             (0x35, 0x01) => "GuiEvent_Notify",
             _ => "<unknown>",
         }

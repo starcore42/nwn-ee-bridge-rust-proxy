@@ -30,9 +30,10 @@ mod client_server_status;
 pub(crate) mod client_side_message;
 mod cnw_message;
 mod custom_token;
+pub(crate) mod cutscene;
 pub(crate) mod diagnostics;
 pub(crate) mod dialog;
-mod game_obj_update;
+pub(crate) mod game_obj_update;
 pub(crate) mod gameplay_stream;
 pub(crate) mod genericdoors;
 pub(crate) mod inventory;
@@ -52,6 +53,7 @@ pub(crate) mod player_list;
 mod profiles;
 pub(crate) mod quickbar;
 pub(crate) mod resource_config;
+pub(crate) mod safe_projectile;
 pub(crate) mod semantic;
 pub(crate) mod sound;
 
@@ -114,6 +116,7 @@ pub enum VerifiedFamily {
     CharList,
     Chat,
     Camera,
+    Cutscene,
     ClientArea,
     ClientCharList,
     ClientGuiEvent,
@@ -131,6 +134,7 @@ pub enum VerifiedFamily {
     Dialog,
     GameObjUpdateLiveObject,
     GameObjUpdateObjectControl,
+    GameObjUpdateVisEffect,
     GuiQuickbar,
     GuiQuickbarPlaceholder,
     Inventory,
@@ -156,6 +160,7 @@ pub enum VerifiedFamily {
         compressed_length: usize,
     },
     ServerStatusModuleResources,
+    SafeProjectile,
     Sound,
 }
 
@@ -166,6 +171,7 @@ impl VerifiedFamily {
             Self::CharList => "CharList",
             Self::Chat => "Chat",
             Self::Camera => "Camera",
+            Self::Cutscene => "Cutscene",
             Self::ClientArea => "ClientArea",
             Self::ClientCharList => "ClientCharList",
             Self::ClientGuiEvent => "ClientGuiEvent",
@@ -183,6 +189,7 @@ impl VerifiedFamily {
             Self::Dialog => "Dialog",
             Self::GameObjUpdateLiveObject => "GameObjUpdate_LiveObject",
             Self::GameObjUpdateObjectControl => "GameObjUpdate_ObjectControl",
+            Self::GameObjUpdateVisEffect => "GameObjUpdate_VisEffect",
             Self::GuiQuickbar => "GuiQuickbar",
             Self::GuiQuickbarPlaceholder => "GuiQuickbarPlaceholder",
             Self::Inventory => "Inventory",
@@ -200,6 +207,7 @@ impl VerifiedFamily {
             Self::ServerZlibStreamContinuation { .. } => "ServerZlibStreamContinuation",
             Self::ServerZlibZeroFillWindow { .. } => "ServerZlibZeroFillWindow",
             Self::ServerStatusModuleResources => "ServerStatus_ModuleResources",
+            Self::SafeProjectile => "SafeProjectile",
             Self::Sound => "Sound",
         }
     }

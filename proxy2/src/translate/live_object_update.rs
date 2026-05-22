@@ -3563,6 +3563,13 @@ pub fn rewrite_update_records_payload_if_possible(
                     offset,
                     record_end,
                 )
+                .or_else(|| {
+                    creature::repair_legacy_4408_visual_effect_count_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        record_end,
+                    )
+                })
                 .is_some()
                 {
                     changed = true;

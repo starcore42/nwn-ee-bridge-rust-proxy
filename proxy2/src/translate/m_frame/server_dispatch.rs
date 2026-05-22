@@ -10,9 +10,10 @@ use crate::{
     packet::m::{HighLevel, MFrameView},
     translate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, area, camera, char_list, chat,
-        client_side_message, cnw_message, custom_token, dialog, game_obj_update, gameplay_stream,
-        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
-        party, play_module_character_list, player_list, quickbar, semantic, sound,
+        client_side_message, cnw_message, custom_token, cutscene, dialog, game_obj_update,
+        gameplay_stream, inventory, journal, live_object, loadbar, login, module, module_resources,
+        module_time, party, play_module_character_list, player_list, quickbar, safe_projectile,
+        semantic, sound,
     },
 };
 
@@ -138,6 +139,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_camera,
     },
     ServerToClientTranslator {
+        family_name: "Cutscene",
+        verified_family: Some(VerifiedFamily::Cutscene),
+        translate: translate_cutscene,
+    },
+    ServerToClientTranslator {
         family_name: "ServerStatus_ModuleResources",
         verified_family: Some(VerifiedFamily::ServerStatusModuleResources),
         translate: translate_server_status_module_resources,
@@ -178,9 +184,19 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_inventory,
     },
     ServerToClientTranslator {
-        family_name: "GameObjUpdate",
+        family_name: "GameObjUpdate_ObjControl",
         verified_family: Some(VerifiedFamily::GameObjUpdateObjectControl),
-        translate: translate_game_obj_update,
+        translate: translate_game_obj_update_obj_control,
+    },
+    ServerToClientTranslator {
+        family_name: "GameObjUpdate_VisEffect",
+        verified_family: Some(VerifiedFamily::GameObjUpdateVisEffect),
+        translate: translate_game_obj_update_vis_effect,
+    },
+    ServerToClientTranslator {
+        family_name: "SafeProjectile",
+        verified_family: Some(VerifiedFamily::SafeProjectile),
+        translate: translate_safe_projectile,
     },
     ServerToClientTranslator {
         family_name: "Party",
@@ -753,6 +769,19 @@ fn translate_camera(
     }
 }
 
+fn translate_cutscene(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if cutscene::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
 fn translate_server_status_module_resources(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
@@ -865,13 +894,39 @@ fn translate_inventory(
     }
 }
 
-fn translate_game_obj_update(
+fn translate_game_obj_update_obj_control(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if game_obj_update::claim_payload_if_verified(payload).is_some() {
+    if game_obj_update::claim_obj_control_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_game_obj_update_vis_effect(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_safe_projectile(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if safe_projectile::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -1999,6 +2054,35 @@ mod live_object_dispatch_tests {
                     .expect("seq13 should be exact and lifecycle-safe after paired cleanup");
             }
         }
+    }
+
+    #[test]
+    fn declared_length_repair_claims_xp2_4408_inventory_stream() {
+        // Local XP2 Chapter 1 harness capture from 2026-05-22.  The packet has
+        // a stale declared window in a compact `U/5 0x4408` current-player
+        // inventory burst; the repair must prove the full read-window/tail
+        // split instead of accepting a short prefix that strands later `U/5`
+        // records as fragment storage.
+        let original = include_bytes!(
+            "../../../fixtures/live_object/local_xp2_seq27_4408_live_object_20260522_unclaimed.bin"
+        )
+        .to_vec();
+        let mut payload = original.clone();
+
+        let outcome = translate_live_object_declared_length_repair(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            None,
+        );
+
+        assert!(matches!(outcome, ServerTranslatorOutcome::Claim(_)));
+        assert_ne!(payload, original);
+        let claim = live_update::claim_payload_if_verified(&payload)
+            .expect("XP2 0x4408 inventory burst should rewrite to exact EE live-object shape");
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.inventory_records >= 1);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
     #[test]

@@ -1337,6 +1337,18 @@ pub(super) fn rewrite_creature_visual_transform_update_for_ee(
     }
 
     if let Some(raw_mask) = read_u32_le(bytes, offset + 6) {
+        if raw_mask == 0
+            && offset
+                .checked_add(super::LEGACY_UPDATE_HEADER_BYTES)
+                .is_some_and(|header_end| *record_end == header_end)
+        {
+            // Diamond and EE creature updates both read a four-byte mask and
+            // then stop when it is zero. The legacy visual-transform selector
+            // branch reads only one byte after the object id, so a proven
+            // ten-byte `U/5 + mask(0)` record belongs to the creature-update
+            // reader instead of the selector bridge.
+            return None;
+        }
         if super::creature::is_supported_legacy_creature_update_cursor_mask(raw_mask) {
             // EE/Diamond creature update records (`sub_140781E80` /
             // `sub_44ADD0`) read a four-byte update mask immediately after

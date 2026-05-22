@@ -152,17 +152,15 @@ where
     let mut summary = LiveObjectExternalObjectIdCanonicalizeSummary::default();
 
     for mention in &claim.mentions {
-        if mention.opcode != b'A' || mention.object_type != CREATURE_OBJECT_TYPE {
-            continue;
-        }
-        let Some(compact_id) = compact_creature_id_from_live_object_wire(mention.object_id) else {
+        let Some(compact_id) = player_session_compact_id_from_mention(mention) else {
             continue;
         };
         let Some(session_id) = session_creature_id_for_compact(compact_id) else {
             continue;
         };
-        compact_to_session.insert(compact_id, session_id);
-        summary.compact_add_ids_observed = summary.compact_add_ids_observed.saturating_add(1);
+        if compact_to_session.insert(compact_id, session_id).is_none() {
+            summary.compact_add_ids_observed = summary.compact_add_ids_observed.saturating_add(1);
+        }
     }
 
     if compact_to_session.is_empty() {
@@ -171,12 +169,7 @@ where
 
     let live_bytes_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
     for mention in &claim.mentions {
-        if mention.object_type != CREATURE_OBJECT_TYPE
-            || !matches!(mention.opcode, b'A' | b'U' | b'P' | b'D')
-        {
-            continue;
-        }
-        let Some(compact_id) = compact_creature_id_from_live_object_wire(mention.object_id) else {
+        let Some(compact_id) = player_session_compact_id_from_mention(mention) else {
             continue;
         };
         let Some(session_id) = compact_to_session.get(&compact_id).copied() else {
@@ -184,7 +177,11 @@ where
         };
         let object_id_offset = live_bytes_start
             .checked_add(mention.record_offset)?
-            .checked_add(2)?;
+            .checked_add(match mention.opcode {
+                b'I' => 1,
+                b'A' | b'U' | b'P' | b'D' => 2,
+                _ => continue,
+            })?;
         if object_id_offset + 4 > declared || object_id_offset + 4 > payload.len() {
             return None;
         }
@@ -205,6 +202,16 @@ where
 
     claim_payload_if_verified(payload)?;
     Some(summary)
+}
+
+fn player_session_compact_id_from_mention(mention: &super::LiveObjectRecordMention) -> Option<u32> {
+    match mention.opcode {
+        b'I' => compact_creature_id_from_live_object_wire(mention.object_id),
+        b'A' | b'U' | b'P' | b'D' if mention.object_type == CREATURE_OBJECT_TYPE => {
+            compact_creature_id_from_live_object_wire(mention.object_id)
+        }
+        _ => None,
+    }
 }
 
 fn is_supported_external_object_type(object_type: u8) -> bool {

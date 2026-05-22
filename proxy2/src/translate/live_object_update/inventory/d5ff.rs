@@ -30,13 +30,15 @@ const D5FF_CREATURE_STATE_RICH_FIRST_ENTRY_BYTES: usize = 8;
 const D5FF_CREATURE_STATE_RICH_SECOND_ENTRY_BYTES: usize = 7;
 const D5FF_CREATURE_STATE_EXPECTED_RICH_EQUIPMENT_ROWS: u16 = 33;
 
-pub(super) fn d5ff_small_live_stream_object_id_is_allowed(object_id: u32) -> bool {
+pub(super) fn d5ff_live_stream_object_id_is_allowed(object_id: u32) -> bool {
     // CNWSMessage/CNWMessage read this field as an OBJECTID; the stricter
     // high-byte heuristic used by the generic path was a proxy guardrail, not
     // a decompiled reader rule.  Keep this exception narrow to the captured
-    // live-stream-local creature ids so random sentinel/zero values cannot
-    // claim a D5FF record.
-    (1..0x0001_0000).contains(&object_id)
+    // live-stream-local creature ids plus Diamond's current-player inventory
+    // owner.  The current-player sentinel is still only accepted after the
+    // byte-exact D5FF reader-order proof below, so random sentinel/zero values
+    // cannot claim a D5FF record.
+    (1..0x0001_0000).contains(&object_id) || object_id == LEGACY_INVENTORY_CURRENT_PLAYER_OWNER
 }
 
 pub(super) fn try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
@@ -103,7 +105,7 @@ fn try_parse_inventory_d5ff_hg_creature_equipment_state_shape_inner(
 
     let object_id = read_u32_le(bytes, record_offset + 1)?;
     let mask = read_u16_le(bytes, record_offset + 5)?;
-    if mask != D5FF_MASK || !d5ff_small_live_stream_object_id_is_allowed(object_id) {
+    if mask != D5FF_MASK || !d5ff_live_stream_object_id_is_allowed(object_id) {
         return None;
     }
 
@@ -178,7 +180,7 @@ fn try_parse_inventory_d5ff_standard_reader_order_shape(
 
     let object_id = read_u32_le(bytes, record_offset + 1)?;
     let mask = read_u16_le(bytes, record_offset + 5)?;
-    if mask != D5FF_MASK || !d5ff_small_live_stream_object_id_is_allowed(object_id) {
+    if mask != D5FF_MASK || !d5ff_live_stream_object_id_is_allowed(object_id) {
         return None;
     }
 
@@ -192,6 +194,15 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> Option<InventoryRecordClaim> {
+    let object_id = read_u32_le(bytes, record_offset.checked_add(1)?)?;
+    if object_id == LEGACY_INVENTORY_CURRENT_PLAYER_OWNER && record_end != bytes.len() {
+        // The current-player sentinel also appears in self-inventory streams
+        // followed by GUI rows in the same `P 05 01` read window.  Those rows
+        // own later fragment storage, so the current-player D5FF terminal-tail
+        // claim is valid only when this inventory row reaches the end of the
+        // live-object byte window.
+        return None;
+    }
     let candidate = try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
         bytes,
         record_offset,

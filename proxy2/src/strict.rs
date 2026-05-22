@@ -17,8 +17,9 @@ use crate::{
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, area, camera, char_list, chat,
         client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
-        client_server_admin, dialog, gameplay_stream, inventory, journal, live_object_update,
-        login, module, play_module_character_list, player_list, quickbar, sound,
+        client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, inventory,
+        journal, live_object_update, login, module, play_module_character_list, player_list,
+        quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1300,6 +1301,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::Camera => {
             high.major == 0x10 && camera::claim_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::Cutscene => {
+            high.major == 0x33 && cutscene::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientArea => {
             high.major == 0x04 && high.minor == 0x03 && empty_high_level_shape_valid(payload)
         }
@@ -1354,7 +1358,12 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::GameObjUpdateObjectControl => {
             high.major == 0x05
                 && high.minor == 0x02
-                && game_obj_update_obj_control_shape_valid(payload)
+                && game_obj_update::claim_obj_control_payload_if_verified(payload).is_some()
+        }
+        VerifiedFamily::GameObjUpdateVisEffect => {
+            high.major == 0x05
+                && high.minor == 0x03
+                && game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::GameObjUpdateLiveObject => {
             high.major == 0x05 && high.minor == 0x01 && live_object_shape_valid(payload)
@@ -1414,6 +1423,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x03
                 && server_status_module_resources_shape_valid(payload)
         }
+        VerifiedFamily::SafeProjectile => {
+            high.major == 0x22
+                && high.minor == 0x01
+                && safe_projectile::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::Sound => {
             high.major == 0x17 && high.minor == 0x03 && sound_shape_valid(payload)
         }
@@ -1432,10 +1446,12 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::Camera
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
+            | VerifiedFamily::Cutscene
             | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientSideMessage
             | VerifiedFamily::Dialog
             | VerifiedFamily::GameObjUpdateObjectControl
+            | VerifiedFamily::GameObjUpdateVisEffect
             | VerifiedFamily::GameObjUpdateLiveObject
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
@@ -1449,6 +1465,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::PlayModuleCharacterList
             | VerifiedFamily::PlayerList
             | VerifiedFamily::SetCustomToken
+            | VerifiedFamily::SafeProjectile
             | VerifiedFamily::Sound
             | VerifiedFamily::ServerStatusModuleResources
     )
@@ -1587,9 +1604,12 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
         (0x04, 0x03) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
-        (0x05, 0x02) => {
-            HighPayloadValidation::Exact(game_obj_update_obj_control_shape_valid(payload))
-        }
+        (0x05, 0x02) => HighPayloadValidation::Exact(
+            game_obj_update::claim_obj_control_payload_if_verified(payload).is_some(),
+        ),
+        (0x05, 0x03) => HighPayloadValidation::Exact(
+            game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some(),
+        ),
         (
             0x06,
             0x01 | 0x02 | 0x03 | 0x05 | 0x06 | 0x07 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E
@@ -1597,7 +1617,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         ) => {
             HighPayloadValidation::Exact(client_input::claim_payload_if_verified(payload).is_some())
         }
-        (0x09, 0x04 | 0x05 | 0x0B | 0x0C) => {
+        (0x09, 0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C) => {
             HighPayloadValidation::Exact(chat_shape_valid(payload, high))
         }
         (0x0A, 0x01 | 0x02 | 0x03) => {
@@ -1613,7 +1633,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
         }
-        (0x10, 0x01 | 0x02) => {
+        (0x10, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(camera::claim_payload_if_verified(payload).is_some())
         }
         (0x11, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
@@ -1633,12 +1653,18 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x1E, 0x02) => {
             HighPayloadValidation::Exact(client_quickbar::set_button_payload_shape_valid(payload))
         }
+        (0x22, 0x01) => HighPayloadValidation::Exact(
+            safe_projectile::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x31, 0x01 | 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x31, 0x03) => HighPayloadValidation::Exact(
             play_module_character_list::claim_payload_if_verified(payload).is_some(),
         ),
         (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
         (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
+        (0x33, 0x01 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07) => {
+            HighPayloadValidation::Exact(cutscene::claim_payload_if_verified(payload).is_some())
+        }
         (0x2C, 0x01..=0x03) => HighPayloadValidation::Exact(loadbar_shape_valid(payload)),
         _ => HighPayloadValidation::Missing,
     }
@@ -1748,10 +1774,6 @@ fn coalesced_payload_shape_valid(
     exact_high_payload_shape_valid(&inflated)
 }
 
-fn bare_or_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
-    payload.len() == 3 || cnw_wrapped_payload_shape_valid(payload, 3 + 4, 64)
-}
-
 fn module_time_shape_valid(payload: &[u8]) -> bool {
     // Decompile-backed shape:
     // EE `CNWSMessage::SendServerToPlayerModuleUpdate_Time` emits server
@@ -1831,128 +1853,11 @@ fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     // so the same decompile-backed cursor proof gates direct and verified
     // frames.
     match high.minor {
-        0x04 => chat_tell_shape_valid(payload),
-        0x05 => chat_server_tell_shape_valid(payload),
-        0x0B | 0x0C => chat::claim_payload_if_verified(payload).is_some(),
+        0x04 | 0x05 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C => {
+            chat::claim_payload_if_verified(payload).is_some()
+        }
         _ => false,
     }
-}
-
-fn chat_server_tell_shape_valid(payload: &[u8]) -> bool {
-    const READ_START: usize = 3 + 4;
-    const STRING_LENGTH_BYTES: usize = 4;
-    const MAX_CHAT_TEXT_BYTES: usize = 8192;
-    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 16;
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < READ_START + STRING_LENGTH_BYTES
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_OBSERVED_FRAGMENT_BYTES
-    {
-        return false;
-    }
-
-    let Some(text_len) =
-        read_le_u32(payload, READ_START).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if text_len > MAX_CHAT_TEXT_BYTES {
-        return false;
-    }
-
-    READ_START
-        .checked_add(STRING_LENGTH_BYTES)
-        .and_then(|text_start| text_start.checked_add(text_len))
-        == Some(declared)
-}
-
-fn chat_tell_shape_valid(payload: &[u8]) -> bool {
-    const READ_START: usize = 3 + 4;
-    const OBJECT_ID_BYTES: usize = 4;
-    const STRING_LENGTH_BYTES: usize = 4;
-    const FLOAT_BYTES: usize = 4;
-    const POSITION_FLOATS: usize = 3;
-    const MAX_CHAT_TEXT_BYTES: usize = 8192;
-    const MAX_CHAT_SPEAKER_BYTES: usize = 512;
-    const REQUIRED_BOOL_FRAGMENT_BYTES: usize = 1;
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < READ_START + OBJECT_ID_BYTES + STRING_LENGTH_BYTES
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) != REQUIRED_BOOL_FRAGMENT_BYTES
-        || !cnw_fragment_tail_can_hold_one_bool(&payload[declared..])
-    {
-        return false;
-    }
-
-    let mut cursor = READ_START;
-    let Some(object_id) = read_le_u32(payload, cursor) else {
-        return false;
-    };
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
-    }
-    cursor += OBJECT_ID_BYTES;
-
-    let Some((message_end, _)) =
-        read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_TEXT_BYTES)
-    else {
-        return false;
-    };
-    cursor = message_end;
-
-    for _ in 0..POSITION_FLOATS {
-        let Some(value) = read_le_f32(payload, cursor) else {
-            return false;
-        };
-        if !value.is_finite() || value.abs() > 1_000_000.0 {
-            return false;
-        }
-        cursor += FLOAT_BYTES;
-    }
-
-    if let Some((speaker_end, _)) =
-        read_bounded_cexo_string_end(payload, cursor, declared, MAX_CHAT_SPEAKER_BYTES)
-    {
-        speaker_end == declared
-            || read_bounded_cexo_string_end(payload, speaker_end, declared, MAX_CHAT_SPEAKER_BYTES)
-                .is_some_and(|(second_end, _)| second_end == declared)
-    } else {
-        false
-    }
-}
-
-fn read_bounded_cexo_string_end(
-    payload: &[u8],
-    offset: usize,
-    declared: usize,
-    max_bytes: usize,
-) -> Option<(usize, usize)> {
-    let length = usize::try_from(read_le_u32(payload, offset)?).ok()?;
-    if length > max_bytes {
-        return None;
-    }
-    let end = offset.checked_add(4)?.checked_add(length)?;
-    if end > declared {
-        return None;
-    }
-    Some((end, length))
-}
-
-fn read_le_f32(payload: &[u8], offset: usize) -> Option<f32> {
-    let bytes = payload.get(offset..offset + 4)?;
-    Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
-    cnw_fragment_tail_can_hold_bools(fragment, 1)
 }
 
 fn cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize) -> bool {
@@ -2396,28 +2301,6 @@ fn custom_token_c_exo_string_end(
         .filter(|end| *end <= declared)
 }
 
-fn leading_cnw_string_consumes_inside_declared(payload: &[u8]) -> bool {
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < 3 + 4 || declared > payload.len() {
-        return false;
-    }
-    let read_start = 3;
-    let string_len_offset = read_start + 4;
-    let Some(length) =
-        read_le_u32(payload, string_len_offset).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    string_len_offset
-        .checked_add(4)
-        .and_then(|start| start.checked_add(length))
-        .map(|end| end <= declared)
-        .unwrap_or(false)
-}
-
 fn server_status_module_resources_shape_valid(payload: &[u8]) -> bool {
     const READ_START: usize = 3 + 4;
     const MAX_SERVER_STATUS_STRING: usize = 4096;
@@ -2525,24 +2408,6 @@ fn cnw_fragment_bool(payload: &[u8], declared: usize, semantic_bit_index: usize)
     let bit_index = 3usize.checked_add(semantic_bit_index)?;
     let byte = *fragment.get(bit_index / 8)?;
     Some((byte & (0x80 >> (bit_index % 8))) != 0)
-}
-
-fn game_obj_update_obj_control_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // - SendServerToPlayerGameObjUpdate_ObjControl creates an 8-byte
-    //   CNWMessage write buffer.
-    // - The read window therefore contains the 4-byte declared length plus
-    //   DWORD player id plus WriteOBJECTIDServer object id.
-    // - Observed/Diamond-compatible CNW wrapping is `declared = 15`, which
-    //   places one fragment byte after the 12-byte read buffer.
-    const OBJ_CONTROL_DECLARED: u32 = 15;
-    const OBJ_CONTROL_PAYLOAD_BYTES: usize = 16;
-
-    payload.len() == OBJ_CONTROL_PAYLOAD_BYTES
-        && HighLevel::parse(payload)
-            .map(|high| high.major == 0x05 && high.minor == 0x02)
-            .unwrap_or(false)
-        && read_le_u32(payload, 3) == Some(OBJ_CONTROL_DECLARED)
 }
 
 fn party_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
@@ -2928,6 +2793,122 @@ mod tests {
         assert!(verified_family_inflated_payload_valid(
             VerifiedFamily::Login,
             &login_confirm,
+        ));
+    }
+
+    #[test]
+    fn coalesced_chat_strref_and_ai_sound_records_revalidate_exact_proofs() {
+        let chat_talk_ref = [
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x62,
+        ];
+        let chat_ai_action_play_sound = [
+            0x50, 0x09, 0x07, 0x1D, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0x0E, 0x00, 0x00,
+            0x00, b'v', b's', b'_', b'n', b'x', b'2', b'm', b'a', b't', b'r', b'f', b'_', b'5',
+            b'0', 0x62,
+        ];
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Chat,
+            &chat_talk_ref,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Chat,
+            &chat_ai_action_play_sound,
+        ));
+
+        let mut frame = vec![
+            b'M', 0x00, 0x00, 0x00, 0x3C, 0x00, 0x4D, 0x0A, 0x00, 0x01, 0x00, 0x10,
+        ];
+        frame.extend_from_slice(&chat_talk_ref);
+        frame.extend_from_slice(&[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x01, 0x00, 0x1E,
+        ]);
+        frame.extend_from_slice(&chat_ai_action_play_sound);
+        assert!(encode_legacy_m_crc(&mut frame));
+
+        let decision = decide_verified_coalesced_window_translated(
+            Direction::ServerToClient,
+            &[
+                VerifiedProof::family(VerifiedFamily::Chat),
+                VerifiedProof::family(VerifiedFamily::Chat),
+            ],
+            &frame,
+        );
+
+        assert!(decision.allowed(), "{decision:?}");
+    }
+
+    #[test]
+    fn verified_cutscene_accepts_only_claimed_shapes() {
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[0x50, 0x33, 0x06],
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[
+                0x50, 0x33, 0x04, 0x0B, 0x00, 0x00, 0x00, 0x0A, 0xD7, 0x23, 0x3C, 0x78,
+            ],
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[0x50, 0x33, 0x01, 0x07, 0x00, 0x00, 0x00, 0xB0],
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[0x50, 0x33, 0x07, 0x07, 0x00, 0x00, 0x00, 0x98],
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[0x50, 0x33, 0x05],
+        ));
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[0x50, 0x33, 0x02],
+        ));
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::Cutscene,
+            &[
+                0x50, 0x33, 0x04, 0x0A, 0x00, 0x00, 0x00, 0x0A, 0xD7, 0x23, 0x3C, 0x60
+            ],
+        ));
+    }
+
+    #[test]
+    fn verified_projectile_and_vis_effect_accept_only_claimed_shapes() {
+        let vis_effect = [
+            0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00, 0xD8,
+            0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x61,
+        ];
+        let projectile = [
+            0x50, 0x22, 0x01, 0x30, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x34, 0x12, 0x00,
+            0x80, 0xD8, 0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0xD8,
+            0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x06, 0x39, 0x00, 0x00, 0x00, 0x61,
+        ];
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::GameObjUpdateVisEffect,
+            &vis_effect,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::SafeProjectile,
+            &projectile,
+        ));
+
+        let mut stale_vis_effect = vis_effect;
+        stale_vis_effect[3] = 0x18;
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::GameObjUpdateVisEffect,
+            &stale_vis_effect,
+        ));
+
+        let mut stale_projectile = projectile;
+        stale_projectile[3] = 0x2F;
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::SafeProjectile,
+            &stale_projectile,
         ));
     }
 

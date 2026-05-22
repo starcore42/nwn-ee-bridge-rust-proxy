@@ -266,11 +266,12 @@ fn try_get_legacy_live_inventory_claim_candidate(
     let mask = read_u16_le(bytes, record_offset + 5)?;
     let object_id_is_legacy_shaped = matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
         || looks_like_legacy_live_object_id_value(object_id)
+        || (mask == 0x0100 && inventory_0100_compact_session_owner_id_is_allowed(object_id))
         || (matches!(mask, 0x2E00 | 0x2E01)
             && inventory_gui_quickbar_link_owner_id_is_allowed(object_id))
         || (mask == 0x2A00 && inventory_2a00_object_id_is_allowed(object_id));
     if !object_id_is_legacy_shaped
-        && !(mask == 0xD5FF && d5ff_small_live_stream_object_id_is_allowed(object_id))
+        && !(mask == 0xD5FF && d5ff_live_stream_object_id_is_allowed(object_id))
     {
         return None;
     }
@@ -394,6 +395,7 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
     }
     if !matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
         && !looks_like_legacy_live_object_id_value(object_id)
+        && !(mask == 0x0100 && inventory_0100_compact_session_owner_id_is_allowed(object_id))
         && !(matches!(mask, 0x2E00 | 0x2E01)
             && inventory_gui_quickbar_link_owner_id_is_allowed(object_id))
     {
@@ -525,6 +527,15 @@ fn try_get_missing_current_player_2a00_candidate(
         }
     }
     None
+}
+
+fn inventory_0100_compact_session_owner_id_is_allowed(object_id: u32) -> bool {
+    // Local Diamond XP2 Chapter 1 emits the current player creature through
+    // PlayerList as session id 0xffff_fffe, then uses compact owner id 0xfe for
+    // a bounded `I/0x0100` opcode-stream inventory row. Keep the low-id
+    // exception on this exact deterministic mask; broader low compact
+    // inventory owners still need their own decompile/capture proof.
+    object_id == 0x0000_00FE
 }
 
 pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(

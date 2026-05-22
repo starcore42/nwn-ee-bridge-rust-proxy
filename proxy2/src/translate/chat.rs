@@ -12,6 +12,12 @@
 //!   writes a raw object id, a `CExoString` chat body, three floats, then one
 //!   `BOOL` selecting the speaker-name branch before sending high-level family
 //!   `0x09`, minor `0x04`.
+//! - EE `CNWSMessage::SendServerToPlayerChat_StrRef` creates a fixed eight-byte
+//!   write message, writes one server OBJECTID and one DWORD string reference,
+//!   then sends high-level family `0x09` with minors `0x08`, `0x09`, or `0x0A`.
+//! - EE `CNWSMessage::SendServerToPlayerAIActionPlaySound` creates a
+//!   `sound_len + 8` write message, writes one server OBJECTID, then writes the
+//!   play-sound `CExoString` before sending family `0x09`, minor `0x07`.
 //! - The EE chat client handler dispatches cases `4` and `20` through the Tell
 //!   display path, consuming the same object/name/sound-position fields before
 //!   formatting the local chat line.
@@ -35,6 +41,10 @@ use crate::{crc::read_le_u32, packet::m::HighLevel};
 const CHAT_MAJOR: u8 = 0x09;
 const CHAT_TELL_MINOR: u8 = 0x04;
 const SERVER_TELL_MINOR: u8 = 0x05;
+const AI_ACTION_PLAY_SOUND_MINOR: u8 = 0x07;
+const TALK_REF_MINOR: u8 = 0x08;
+const SHOUT_REF_MINOR: u8 = 0x09;
+const WHISPER_REF_MINOR: u8 = 0x0A;
 const TOKEN_TALK_MINOR: u8 = 0x0B;
 const TOKEN_TALK_NO_BUBBLE_MINOR: u8 = 0x0C;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
@@ -42,6 +52,7 @@ const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const MAX_CHAT_TEXT_BYTES: usize = 8192;
 const MAX_CHAT_SPEAKER_BYTES: usize = 512;
+const MAX_SOUND_RESREF_BYTES: usize = 16;
 const MAX_FRAGMENT_BYTES: usize = 16;
 const OBJECT_ID_BYTES: usize = 4;
 const FLOAT_BYTES: usize = 4;
@@ -51,6 +62,8 @@ const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const CRESREF_BYTES: usize = 16;
 const TOKEN_TALK_FRAGMENT_BYTES: usize = 1;
 const TOKEN_TALK_FRAGMENT_DATA_BITS: usize = 2;
+const SINGLE_FRAGMENT_BYTE: usize = 1;
+const CHAT_STRREF_DECLARED: usize = READ_START + OBJECT_ID_BYTES + 4;
 const TOKEN_TALK_LOCALIZED_SUFFIX: [u8; 6] = [0, 0, 0, 0, 0, 0x21];
 const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
 
@@ -67,6 +80,10 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ChatClaimSummary> {
     match (high.major, high.minor) {
         (CHAT_MAJOR, CHAT_TELL_MINOR) => claim_chat_tell(payload, high.minor),
         (CHAT_MAJOR, SERVER_TELL_MINOR) => claim_server_tell(payload, high.minor),
+        (CHAT_MAJOR, AI_ACTION_PLAY_SOUND_MINOR) => claim_ai_action_play_sound(payload, high.minor),
+        (CHAT_MAJOR, TALK_REF_MINOR | SHOUT_REF_MINOR | WHISPER_REF_MINOR) => {
+            claim_chat_strref(payload, high.minor)
+        }
         (CHAT_MAJOR, TOKEN_TALK_MINOR | TOKEN_TALK_NO_BUBBLE_MINOR) => {
             claim_token_talk(payload, high.minor)
         }
@@ -161,6 +178,63 @@ fn claim_server_tell(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
         declared,
         text_len,
         fragment_bytes: payload.len() - declared,
+    })
+}
+
+fn claim_ai_action_play_sound(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
+    if payload.len() < READ_START + OBJECT_ID_BYTES + CNW_LENGTH_BYTES + SINGLE_FRAGMENT_BYTE {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared > payload.len()
+        || payload.len() != declared.checked_add(SINGLE_FRAGMENT_BYTE)?
+        || !cnw_fragment_tail_has_exact_data_bits(&payload[declared..], 0)
+    {
+        return None;
+    }
+
+    let mut cursor = READ_START;
+    let object_id = read_le_u32(payload, cursor)?;
+    if !looks_like_chat_object_id(object_id) {
+        return None;
+    }
+    cursor = cursor.checked_add(OBJECT_ID_BYTES)?;
+
+    let (sound_end, sound_len) =
+        read_bounded_cexo_string_end(payload, cursor, declared, MAX_SOUND_RESREF_BYTES)?;
+    if sound_end != declared || !variable_resref_bytes_valid(&payload[cursor + 4..sound_end]) {
+        return None;
+    }
+
+    Some(ChatClaimSummary {
+        minor,
+        declared,
+        text_len: sound_len,
+        fragment_bytes: SINGLE_FRAGMENT_BYTE,
+    })
+}
+
+fn claim_chat_strref(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared != CHAT_STRREF_DECLARED
+        || payload.len() != declared.checked_add(SINGLE_FRAGMENT_BYTE)?
+        || !cnw_fragment_tail_has_exact_data_bits(&payload[declared..], 0)
+    {
+        return None;
+    }
+
+    let object_id = read_le_u32(payload, READ_START)?;
+    if !looks_like_chat_object_id(object_id) {
+        return None;
+    }
+    read_le_u32(payload, READ_START + OBJECT_ID_BYTES)?;
+
+    Some(ChatClaimSummary {
+        minor,
+        declared,
+        text_len: 0,
+        fragment_bytes: SINGLE_FRAGMENT_BYTE,
     })
 }
 
@@ -290,6 +364,12 @@ fn looks_like_chat_object_id(object_id: u32) -> bool {
     object_id != 0 && object_id != u32::MAX
 }
 
+fn variable_resref_bytes_valid(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|byte| matches!(*byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+}
+
 fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
     let Some(first) = fragment.first().copied() else {
         return false;
@@ -311,16 +391,103 @@ fn cnw_fragment_tail_has_exact_data_bits(fragment: &[u8], data_bits: usize) -> b
     let Some(first) = fragment.first().copied() else {
         return false;
     };
-    if fragment.len() != TOKEN_TALK_FRAGMENT_BYTES {
+    if fragment.len() != SINGLE_FRAGMENT_BYTE {
         return false;
     }
     usize::from((first & 0xE0) >> 5) == CNW_FRAGMENT_HEADER_BITS + data_bits
 }
 
-#[cfg(all(test, hgbridge_private_fixtures))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn chat_talk_ref_capture_matches_decompile_shape() {
+        let payload = [
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x62,
+        ];
+
+        let summary = claim_payload_if_verified(&payload).expect("chat talk-ref should claim");
+
+        assert_eq!(summary.minor, TALK_REF_MINOR);
+        assert_eq!(summary.declared, CHAT_STRREF_DECLARED);
+        assert_eq!(summary.text_len, 0);
+        assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn chat_ai_action_play_sound_capture_matches_decompile_shape() {
+        let payload = [
+            0x50, 0x09, 0x07, 0x1D, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0x0E, 0x00, 0x00,
+            0x00, b'v', b's', b'_', b'n', b'x', b'2', b'm', b'a', b't', b'r', b'f', b'_', b'5',
+            b'0', 0x60,
+        ];
+
+        let summary = claim_payload_if_verified(&payload).expect("AI play-sound chat should claim");
+
+        assert_eq!(summary.minor, AI_ACTION_PLAY_SOUND_MINOR);
+        assert_eq!(summary.declared, 0x1D);
+        assert_eq!(summary.text_len, 14);
+        assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn chat_ai_action_play_sound_rejects_non_resref_name_bytes() {
+        let payload = [
+            0x50, 0x09, 0x07, 0x1D, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0x0E, 0x00, 0x00,
+            0x00, b'v', b's', b'_', b'n', b'x', b'2', b'm', b'a', b't', b'r', b'f', b'_', b'-',
+            b'0', 0x60,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn chat_talk_ref_accepts_canonical_empty_fragment_tail() {
+        let payload = [
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0xEF, 0x47, 0x01,
+            0x00, 0x60,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
+
+    #[test]
+    fn chat_strref_rejects_wrong_fragment_final_bits() {
+        let payload = [
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x80,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn chat_strref_rejects_stale_declared_length() {
+        let payload = [
+            0x50, 0x09, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x62,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_xp2_ai_action_play_sound_fixture_matches_decompile_shape() {
+        let fixture =
+            include_bytes!("../../fixtures/chat/local_xp2_ai_action_play_sound_20260522.bin");
+        let summary =
+            claim_payload_if_verified(fixture).expect("AI play-sound fixture should claim");
+
+        assert_eq!(summary.minor, AI_ACTION_PLAY_SOUND_MINOR);
+        assert_eq!(summary.declared, 0x1D);
+        assert_eq!(summary.text_len, 14);
+        assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn token_talk_examine_sign_fixture_matches_decompile_shape() {
         let fixture = include_bytes!("../../fixtures/chat/token_talk_examine_sign.bin");
@@ -332,6 +499,7 @@ mod tests {
         assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn token_talk_empty_fixture_matches_decompile_shape() {
         let fixture = include_bytes!("../../fixtures/chat/token_talk_empty.bin");
@@ -344,6 +512,7 @@ mod tests {
         assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn token_talk_no_bubble_localized_line_fixture_matches_decompile_shape() {
         let fixture = include_bytes!("../../fixtures/chat/token_talk_no_bubble_winds_eremor.bin");
@@ -356,6 +525,7 @@ mod tests {
         assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn token_talk_rejects_wrong_fragment_bit_count() {
         let mut fixture =
