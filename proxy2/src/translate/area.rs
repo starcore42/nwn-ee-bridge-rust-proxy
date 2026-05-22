@@ -4032,13 +4032,30 @@ fn module_area_resource_info_for_compact_packet(
     } else {
         None
     };
-    let Some(context) = module_context.or(owned_context.as_ref()) else {
+    let observed_context = module_context.or(owned_context.as_ref());
+    let fallback_context = if observed_context.is_none() {
+        if layout.area_name_encoding != AreaNameEncoding::DiamondNoAreaName {
+            tracing::debug!(
+                legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
+                "Area_ClientArea compact resource repair skipped: no observed Module_Info context"
+            );
+            return None;
+        }
         tracing::debug!(
             legacy_area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
-            "Area_ClientArea compact resource repair skipped: no observed Module_Info context"
+            "Area_ClientArea compact resource repair using packet-local no-name CResRef without observed Module_Info context"
         );
-        return None;
+        Some(crate::translate::module::ObservedModuleContext {
+            localized_name: String::new(),
+            module_resref: String::new(),
+            areas: Vec::new(),
+        })
+    } else {
+        None
     };
+    let context = observed_context
+        .or(fallback_context.as_ref())
+        .expect("observed or fallback Module_Info context should be available");
     let area_indices = context
         .areas
         .iter()
@@ -5919,6 +5936,9 @@ mod tests {
     const LOCAL_CHAPTER4_MAP_M1Q6A_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter4_map_m1q6a_area_20260523.bin");
     #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_XP2_CHAPTER3_GATESOFCANIA_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_xp2_chapter3_gatesofcania_area_20260523.bin");
+    #[cfg(hgbridge_private_fixtures)]
     const LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_xp1_q1a2drogonfloor2_area_20260522.bin");
 
@@ -7739,6 +7759,68 @@ mod tests {
             .expect("rewritten Chapter4 area should satisfy EE LoadArea cursor proof");
 
         assert_eq!(summary.area_resref, "map_m1q6a");
+        assert_eq!(summary.tileset_resref, info.tileset);
+        assert_eq!(summary.width, info.width);
+        assert_eq!(summary.packet_height, info.height);
+        assert_eq!(summary.inferred_height, info.height);
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_xp2_chapter3_no_name_area_resolves_from_packet_resref_without_module_context() {
+        let _context_guard = module_context_test_guard();
+        let xp2_chapter3_module_path = r"C:\NWN\NWN Diamond\nwm\XP2_Chapter3.nwm";
+        assert!(std::path::Path::new(xp2_chapter3_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", xp2_chapter3_module_path);
+
+        let mut payload = LOCAL_XP2_CHAPTER3_GATESOFCANIA_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("XP2 Chapter3 area read window");
+        let layout =
+            area_static_layout(&payload, fragment_offset).expect("XP2 Chapter3 static layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("gatesofcania")
+        );
+
+        let info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_08F5,
+            &layout,
+            None,
+        )
+        .expect("packet-local no-name area CResRef should resolve through the local XP2 ARE table");
+        assert_eq!(info.resref, "gatesofcania");
+
+        let summary = rewrite_area_client_area_payload(&mut payload)
+            .expect("XP2 Chapter3 gatesofcania area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten XP2 Chapter3 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "gatesofcania");
         assert_eq!(summary.tileset_resref, info.tileset);
         assert_eq!(summary.width, info.width);
         assert_eq!(summary.packet_height, info.height);

@@ -1764,6 +1764,55 @@ mod tests {
         );
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn xp2_chapter3_module_info_split_record_remains_strict_valid_when_released() {
+        // Local Diamond XP2 Chapter 3 startup uses the same server zlib stream
+        // seed as the Chapter4 fixture, then emits Module_Info inside a mixed
+        // coalesced window. The module-resource ACK gate splits and delays that
+        // deflated Module_Info record, so the released standalone record still
+        // needs an exact strict proof.
+        let seed = include_bytes!(
+            "../../../fixtures/module_info/local_chapter4_charlist_zlib_stream_seed_20260523.bin"
+        );
+        let mut state = SessionState::default();
+        let seed_inflated = reassembly::inflate_gameplay_payload(
+            seed,
+            20531,
+            true,
+            &mut state.deflate.server_zlib_inflater,
+        )
+        .expect("shared local charlist zlib stream seed should inflate");
+        assert!(seed_inflated.used_server_stream);
+
+        let packet = include_bytes!(
+            "../../../fixtures/module_info/local_xp2_chapter3_module_info_coalesced_20260523.bin"
+        );
+        let view = MFrameView::parse(packet).expect("XP2 Chapter3 coalesced packet should parse");
+        let rewrite = rewrite_server_window_spans_if_needed(packet, &view, &mut state)
+            .expect("XP2 Chapter3 coalesced packet should rewrite")
+            .expect("XP2 Chapter3 coalesced packet should split for module resources");
+
+        let CoalescedRewrite::SplitPreShifted { packets } = rewrite else {
+            panic!("XP2 Chapter3 module-resource window should split into verified records");
+        };
+        let (proof, module_packet) = packets
+            .iter()
+            .find(|(proof, _)| proof_contains_module_info_family(proof))
+            .expect("split window should contain a Module_Info proof");
+
+        let decision = crate::strict::decide_verified_proof_translated(
+            crate::packet::Direction::ServerToClientSynthetic,
+            proof,
+            module_packet,
+        );
+        assert_eq!(
+            decision.verdict,
+            crate::strict::Verdict::Allow,
+            "released split Module_Info must remain strict-valid: {decision:?}"
+        );
+    }
+
     #[test]
     fn coalesced_module_info_queues_exact_module_resources_with_sequence_shift() {
         let mut state = SessionState::default();

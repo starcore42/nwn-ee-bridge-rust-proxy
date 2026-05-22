@@ -1687,13 +1687,14 @@ pub(super) fn try_get_legacy_gui_item_create_record_end_with_fragment_proof(
         return None;
     }
 
+    let mut best: Option<(usize, u8)> = None;
     for record_end in min_end..=scan_end {
         if !gui_item_create_record_end_lands_on_stream_boundary(bytes, record_end, search_end, true)
         {
             continue;
         }
         let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
-        let mut matching_records =
+        let matching_records =
             parse_legacy_item_create_record_candidates(bytes, item_object_offset, record_end)
                 .into_iter()
                 .filter(|record| {
@@ -1711,16 +1712,48 @@ pub(super) fn try_get_legacy_gui_item_create_record_end_with_fragment_proof(
                         );
                     }
                     matches
-                });
-        let Some(_record) = matching_records.next() else {
-            continue;
-        };
-        if matching_records.next().is_some() {
+                })
+                .collect::<Vec<_>>();
+        if matching_records.is_empty() {
             continue;
         }
-        return Some(record_end);
+
+        // GUI item bodies are not length-prefixed. When a shorter byte-only
+        // no-name endpoint and a later endpoint whose item-name branch is
+        // proven by the CNW fragment stream both land on GUI sibling
+        // boundaries, the fragment-proven endpoint is the decompiled semantic
+        // match. Equal-rank ambiguity remains unclaimed.
+        let best_rank = matching_records
+            .iter()
+            .map(|record| gui_item_name_proof_rank(record.name_fragment_proof))
+            .max()
+            .unwrap_or(0);
+        if matching_records
+            .iter()
+            .filter(|record| gui_item_name_proof_rank(record.name_fragment_proof) == best_rank)
+            .count()
+            != 1
+        {
+            continue;
+        }
+        if best
+            .map(|(_, current_rank)| best_rank > current_rank)
+            .unwrap_or(true)
+        {
+            best = Some((record_end, best_rank));
+        }
     }
-    None
+    best.map(|(record_end, _)| record_end)
+}
+
+fn gui_item_name_proof_rank(proof: LegacyItemNameFragmentProof) -> u8 {
+    match proof {
+        LegacyItemNameFragmentProof::None => 0,
+        LegacyItemNameFragmentProof::InlineCExoString => 1,
+        LegacyItemNameFragmentProof::LocStringToken
+        | LegacyItemNameFragmentProof::LocStringInlineCExoString
+        | LegacyItemNameFragmentProof::BareInlineLocString => 2,
+    }
 }
 
 pub(super) fn advance_legacy_gui_item_create_record(

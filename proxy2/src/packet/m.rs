@@ -271,6 +271,10 @@ impl HighLevel {
             // rewrite and exact validation.
             (0x04, 0x02) => "Area_VisualEffect",
             (0x04, 0x03) => "Area_AreaLoaded",
+            // EE packet-name table maps 0x0406 to Area_ChangeDayNight.
+            // The semantic translator exact-validates the shared BOOL+FLOAT
+            // CNW reader shape before allowing this area control packet.
+            (0x04, 0x06) => "Area_ChangeDayNight",
             (0x05, 0x01) => "GameObjUpdate_LiveObject",
             // EE packet-name table maps 0x0502 to GameObjUpdate_ObjControl.
             // `CNWSMessage::SendServerToPlayerGameObjUpdate_ObjControl`
@@ -420,6 +424,18 @@ impl HighLevel {
             // translator validates the typed spawn branch before strict mode
             // treats the packet as safe.
             (0x22, 0x01) => "SafeProjectile_Spawn",
+            // Ambient family confirmed from EE's packet-name table and the
+            // exported `CNWSMessage::SendServerToPlayerAmbient*` senders. The
+            // semantic ambient translator owns exact CNW cursor validation for
+            // each claimed music/sound minor.
+            (0x28, 0x01) => "Ambient_AmbientMusicPlay",
+            (0x28, 0x02) => "Ambient_AmbientMusicSetDelay",
+            (0x28, 0x03) => "Ambient_AmbientMusicChange",
+            (0x28, 0x04) => "Ambient_AmbientBattleMusicPlay",
+            (0x28, 0x05) => "Ambient_AmbientBattleMusicChange",
+            (0x28, 0x06) => "Ambient_AmbientSoundPlay",
+            (0x28, 0x07) => "Ambient_AmbientSoundChange",
+            (0x28, 0x08) => "Ambient_AmbientSoundVolume",
             (0x2C, 0x01) => "LoadBar_Start",
             (0x2C, 0x02) => "LoadBar_Update",
             (0x2C, 0x03) => "LoadBar_End",

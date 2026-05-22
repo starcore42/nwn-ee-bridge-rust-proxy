@@ -267,6 +267,7 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
 
     let area_count_offset = replacement_start.checked_add(RESREF_BYTES)?;
     let table_rewrite = rewrite_load_module_resource_name_table_tail(payload, area_count_offset);
+    let _ = normalize_ee_module_info_official_campaign_byte(payload);
     let final_declared = read_le_u32(payload, 3)?;
     let observed_context =
         observed_context_from_ee_module_info_payload(payload).map(remember_observed_module_context);
@@ -401,7 +402,7 @@ fn rewrite_compact_legacy_no_resource_module_info_payload_at_zero(
         rewritten.extend_from_slice(&area.object_id.to_le_bytes());
         write_string(&mut rewritten, &area.name);
     }
-    rewritten.push(compact.official_campaign);
+    rewritten.push(ee_official_campaign_byte(compact.official_campaign));
 
     let new_declared = u32::try_from(rewritten.len()).ok()?;
     rewritten[3..7].copy_from_slice(&new_declared.to_le_bytes());
@@ -2117,6 +2118,65 @@ fn read_raw_string_bounded(payload: &[u8], cursor: &mut usize, bound: usize) -> 
 fn write_string(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(&(value.len() as u32).to_le_bytes());
     out.extend_from_slice(value.as_bytes());
+}
+
+fn ee_official_campaign_byte(value: u8) -> u8 {
+    u8::from(value != 0)
+}
+
+fn normalize_ee_module_info_official_campaign_byte(payload: &mut [u8]) -> Option<bool> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || !is_high_level_envelope(*payload.first()?)
+        || payload.get(1).copied()? != MODULE_MAJOR
+        || payload.get(2).copied()? != 0x01
+    {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES || declared > payload.len() {
+        return None;
+    }
+
+    let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_MODULE_INFO_STRING)?;
+    cursor = next;
+    let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_MODULE_INFO_STRING)?;
+    cursor = next;
+    skip_exact(payload, &mut cursor, 1, declared)?;
+    fixed_resref16_value(payload, cursor, true)?;
+    cursor = cursor.checked_add(RESREF_BYTES)?;
+
+    if cursor.checked_add(CNW_LENGTH_BYTES)? > declared {
+        return None;
+    }
+    let area_count = read_le_u32(payload, cursor)?;
+    if area_count > MAX_MODULE_RESOURCE_COUNT {
+        return None;
+    }
+    cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+
+    for _ in 0..area_count {
+        if cursor.checked_add(CNW_LENGTH_BYTES)? > declared {
+            return None;
+        }
+        let object_id = read_le_u32(payload, cursor)?;
+        if !is_likely_area_resource_id(object_id) {
+            return None;
+        }
+        cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+        let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_AREA_NAME_LENGTH)?;
+        cursor = next;
+    }
+
+    if cursor.checked_add(1)? != declared {
+        return None;
+    }
+
+    let old = payload[cursor];
+    let normalized = ee_official_campaign_byte(old);
+    payload[cursor] = normalized;
+    Some(old != normalized)
 }
 
 fn write_resref16(out: &mut Vec<u8>, value: &str) -> Option<()> {

@@ -12,8 +12,8 @@ use super::{
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
     MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
     MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
-    creature, door, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le, reader,
-    trigger,
+    creature, door, effects, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le,
+    reader, trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -1223,6 +1223,24 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
             let Some(raw_mask) = read_u32_le(bytes, offset + 6) else {
                 return LEGACY_UPDATE_HEADER_BYTES;
             };
+            if raw_mask == effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK {
+                // EE and Diamond share the looping visual-effect update body for
+                // creatures, doors, and placeables: WORD count followed by
+                // short A/D effect rows before returning to the live-object
+                // dispatcher. Local XP2 Chapter 3 placeables prove that the
+                // first row opcode byte can be `A`, so the generic scanner must
+                // not split it as a top-level placeable add. This remains only a
+                // count-derived floor; the typed effect translator still inserts
+                // EE visual-transform maps and the exact validator owns the
+                // final record boundary.
+                let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
+                    return LEGACY_UPDATE_HEADER_BYTES;
+                };
+                if count > 256 {
+                    return LEGACY_UPDATE_HEADER_BYTES;
+                }
+                return LEGACY_UPDATE_HEADER_BYTES + 2 + usize::from(count) * 3;
+            }
             let mut minimum = LEGACY_UPDATE_HEADER_BYTES;
             if (raw_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
                 minimum += LEGACY_UPDATE_POSITION_READ_BYTES;

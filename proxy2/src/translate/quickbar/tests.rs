@@ -527,6 +527,52 @@ fn starcore5_compact_quickbar_with_valid_declared_offset_claims_spells() {
 }
 
 #[test]
+fn local_xp2_chapter3_compact_declared_quickbar_claims_spells() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/quickbar/local_xp2_chapter3_seq16_set_all_buttons_20260523.bin"
+    )
+    .to_vec();
+
+    assert_eq!(
+        read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES),
+        Some(0xFD),
+        "fixture documents a compact local XP2 Chapter 3 packet with a valid declared offset"
+    );
+
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("local XP2 Chapter 3 compact quickbar source should parse before rewriting");
+    assert_eq!(parsed.read_size, 246);
+    assert_eq!(parsed.fragment_size, 2);
+    assert_eq!(parsed.final_cursor, 246);
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("local XP2 Chapter 3 compact quickbar should be semantically owned");
+
+    println!("{summary:?}");
+    assert_eq!(summary.old_payload_length, 255);
+    assert_eq!(summary.old_declared, 0xFD);
+    assert_eq!(summary.read_size, 246);
+    assert_eq!(summary.fragment_size, 2);
+    assert_eq!(summary.spells_preserved, 22);
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten local XP2 Chapter 3 quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten local XP2 Chapter 3 quickbar should expose validated EE slot types");
+    assert!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 2)
+            .count()
+            >= 20,
+        "XP2 Chapter 3 quickbar should keep its proven spell slots visible"
+    );
+}
+
+#[test]
 fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_items() {
     let mut payload =
         include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")

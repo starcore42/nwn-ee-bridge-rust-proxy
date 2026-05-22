@@ -246,10 +246,13 @@ fn parse_quickbar_split(
     } else {
         0
     };
-    let (buttons, final_cursor) = (if fragment_size != 0 {
+    let parsed = if fragment_size != 0 {
         parse_quickbar_read_buffer_with_fragments(read_buffer, fragments, cursor)
     } else {
         parse_quickbar_read_buffer(read_buffer, cursor)
+    };
+    let (buttons, final_cursor) = parsed.or_else(|| {
+        parse_quickbar_split_with_one_unused_fragment_storage_byte(read_buffer, fragments, cursor)
     })?;
     Some(QuickbarParse {
         envelope: high.envelope,
@@ -260,6 +263,48 @@ fn parse_quickbar_split(
         buttons,
         direct_opcode_stream: false,
     })
+}
+
+fn parse_quickbar_split_with_one_unused_fragment_storage_byte(
+    read_buffer: &[u8],
+    fragments: &[u8],
+    cursor: usize,
+) -> Option<(Vec<QuickbarButton>, usize)> {
+    if fragments.len() != 2 {
+        return None;
+    }
+    let trimmed = fragments.get(..1)?;
+    let (buttons, final_cursor) =
+        parse_quickbar_read_buffer_with_fragments(read_buffer, trimmed, cursor)?;
+    if final_cursor != read_buffer.len() {
+        return None;
+    }
+    let has_owned_item_or_spell = buttons.iter().any(|button| {
+        matches!(
+            button.kind,
+            QuickbarButtonKind::Item { .. } | QuickbarButtonKind::Spell { .. }
+        )
+    });
+    let has_unsupported = buttons
+        .iter()
+        .any(|button| matches!(button.kind, QuickbarButtonKind::Unsupported));
+    if !has_owned_item_or_spell || has_unsupported {
+        return None;
+    }
+
+    // Local Diamond XP2 Chapter 3 proves this narrow storage form: the source
+    // carries two bytes after the declared quickbar read window, but the first
+    // byte's final-bit cursor and the decompiled 36-slot reader already consume
+    // the complete fragment stream. The second byte is accepted only as
+    // boundary proof; the writer emits a fresh EE fragment tail from the typed
+    // model and never forwards either source byte raw.
+    tracing::info!(
+        source_fragment_bytes = fragments.len(),
+        consumed_fragment_bytes = trimmed.len(),
+        read_buffer_len = read_buffer.len(),
+        "server GuiQuickbar_SetAllButtons accepted one unused source fragment storage byte after exact slot proof"
+    );
+    Some((buttons, final_cursor))
 }
 
 fn quickbar_read_window_parses(read_buffer: &[u8], fragments: &[u8]) -> bool {

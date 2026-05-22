@@ -9,11 +9,11 @@ use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        VerifiedFamily, VerifiedPacket, VerifiedProof, area, area_visual_effect, camera, char_list,
-        chat, client_side_message, cnw_message, custom_token, cutscene, dialog, game_obj_update,
-        gameplay_stream, inventory, journal, live_object, loadbar, login, module, module_resources,
-        module_time, party, play_module_character_list, player_list, quickbar, safe_projectile,
-        semantic, sound,
+        VerifiedFamily, VerifiedPacket, VerifiedProof, ambient, area, area_change_day_night,
+        area_visual_effect, camera, char_list, chat, client_side_message, cnw_message,
+        custom_token, cutscene, dialog, game_obj_update, gameplay_stream, inventory, journal,
+        live_object, loadbar, login, module, module_resources, module_time, party,
+        play_module_character_list, player_list, quickbar, safe_projectile, semantic, sound,
     },
 };
 
@@ -174,6 +174,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_sound,
     },
     ServerToClientTranslator {
+        family_name: "Ambient",
+        verified_family: Some(VerifiedFamily::Ambient),
+        translate: translate_ambient,
+    },
+    ServerToClientTranslator {
         family_name: "Dialog",
         verified_family: Some(VerifiedFamily::Dialog),
         translate: translate_dialog,
@@ -202,6 +207,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "Area_VisualEffect",
         verified_family: Some(VerifiedFamily::AreaVisualEffect),
         translate: translate_area_visual_effect,
+    },
+    ServerToClientTranslator {
+        family_name: "Area_ChangeDayNight",
+        verified_family: Some(VerifiedFamily::AreaChangeDayNight),
+        translate: translate_area_change_day_night,
     },
     ServerToClientTranslator {
         family_name: "SafeProjectile",
@@ -878,6 +888,19 @@ fn translate_sound(
     }
 }
 
+fn translate_ambient(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if ambient::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
 fn translate_dialog(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
@@ -950,6 +973,19 @@ fn translate_area_visual_effect(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if area_visual_effect::claim_or_rewrite_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_area_change_day_night(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if area_change_day_night::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

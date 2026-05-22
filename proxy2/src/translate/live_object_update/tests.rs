@@ -2889,7 +2889,6 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     }
 }
 
-#[cfg(hgbridge_private_fixtures)]
 #[test]
 fn local_xp2_chapter2_u5_8008_effect_visibility_rewrites_to_exact_shape() {
     // Local Diamond XP2 Chapter 2 strict capture from 2026-05-22. The packet is
@@ -2923,6 +2922,74 @@ fn local_xp2_chapter2_u5_8008_effect_visibility_rewrites_to_exact_shape() {
         .expect("rewritten local XP2 0x8008 stream should validate exactly");
     assert_eq!(claim.creature_update_records, 1);
     assert_eq!(claim.fragment_bytes, 1);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_chapter3_gatesofcania_live_object_stream_rewrites_to_exact_shape() {
+    // Local Diamond XP2 Chapter 3 gatesofcania startup strict capture from
+    // 2026-05-23. The stream starts with a compact U/5 row and then alternates
+    // placeable U/A records; every mutation must be owned by the focused
+    // live-object rewriter before the exact EE reader validator accepts it.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter3_seq13_live_object_20260523_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw local XP2 Chapter3 live-object stream should document the unclaimed Diamond shape"
+    );
+
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "local XP2 Chapter3 live-object stream should rewrite through the bounded exact adapter"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten local XP2 Chapter3 live-object stream should validate exactly");
+    assert!(
+        claim.update_records >= 6,
+        "fixture should retain the U/5 and U/9 update records after exact rewrite"
+    );
+    assert!(claim.add_records >= 1);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_chapter3_inventory_gui_stream_rewrites_to_exact_shape() {
+    // Same local XP2 Chapter 3 run after quickbar release. This post-inventory
+    // stream contains compact GUI inventory appearance rows (`GIA`/`GRA`) and
+    // must be owned by the typed live-object item adapter before strict release.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter3_seq22_live_object_20260523_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw local XP2 Chapter3 inventory GUI stream should document the unclaimed Diamond shape"
+    );
+
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "local XP2 Chapter3 inventory GUI stream should rewrite through the bounded exact adapter"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten local XP2 Chapter3 inventory GUI stream should validate exactly");
+    assert!(
+        claim.live_gui_item_create_records >= 8,
+        "fixture should retain the five inventory and three repository GUI item-create rows"
+    );
+    assert!(
+        claim.materialized_item_object_ids.len() >= 8,
+        "GUI item-create rows should materialize the compact inventory item ids"
+    );
 }
 
 #[cfg(hgbridge_private_fixtures)]
