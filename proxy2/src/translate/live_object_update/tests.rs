@@ -1584,6 +1584,37 @@ fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn local_xp2_chapter2_current_player_4408_inventory_2a00_compact_rewrites_to_exact_shape() {
+    // Local XP2 Chapter 2 harness capture from 2026-05-22 after the inventory
+    // panel was opened in the starting cutscene. It uses the same compact
+    // `U/5 0x00004408` current-player status record as earlier local captures,
+    // but the following `I/0x2A00` row takes the byte-mask branch with five
+    // mask bytes before a compact Feature-25/current-player body.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter2_current_player_4408_inventory_2a00_compact_20260522.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP2 Chapter 2 compact 0x4408 + 0x2A00 stream is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("XP2 Chapter 2 compact 0x4408 + 0x2A00 stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
+        "XP2 Chapter 2 compact 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten XP2 Chapter 2 compact inventory stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
+}
+
+#[test]
 fn local_dark_ranger_u5_effect_inventory_gui_stream_rewrites_to_exact_shape() {
     // Local Dark Ranger harness capture from 2026-05-19 after Module_Info and
     // Area_ClientArea were repaired. The live stream starts with a compact
@@ -2751,6 +2782,35 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
             "{name} should retain at least one materializing live-object add"
         );
     }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_chapter2_cutscene_invisibility_000f_rewrites_to_exact_shape() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter2_cutscene_invisibility_u5_000f_20260522.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP2 cutscene-invisibility stream should document the unclaimed 0x000F Diamond shape"
+    );
+
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "0x000F status/action stream should rewrite through the bounded creature adapter"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten 0x000F status/action stream should exact-claim");
+    assert!(
+        claim.creature_update_records >= 2,
+        "fixture should retain the 0x000F update plus following visibility update"
+    );
+    assert_eq!(claim.inventory_records, 1);
 }
 
 #[cfg(hgbridge_private_fixtures)]

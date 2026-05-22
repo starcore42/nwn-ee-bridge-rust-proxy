@@ -266,6 +266,10 @@ impl HighLevel {
             (0x03, 0x03) => "Module_Time",
             (0x03, 0x0E) => "Module_EndGame",
             (0x04, 0x01) => "Area_ClientArea",
+            // EE packet-name table maps 0x0402 to Area_VisualEffect. The
+            // semantic translator owns the legacy-simple to EE identity-map
+            // rewrite and exact validation.
+            (0x04, 0x02) => "Area_VisualEffect",
             (0x04, 0x03) => "Area_AreaLoaded",
             (0x05, 0x01) => "GameObjUpdate_LiveObject",
             // EE packet-name table maps 0x0502 to GameObjUpdate_ObjControl.

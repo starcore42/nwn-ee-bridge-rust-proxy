@@ -11,6 +11,7 @@
 //! packet, while HG/1.69 expects Diamond's shorter two-string form.
 
 pub(crate) mod area;
+pub(crate) mod area_visual_effect;
 pub(crate) mod baseitems;
 mod bn;
 pub(crate) mod camera;
@@ -113,6 +114,7 @@ impl ContinuationOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifiedFamily {
     AreaClientArea,
+    AreaVisualEffect,
     CharList,
     Chat,
     Camera,
@@ -169,6 +171,7 @@ impl VerifiedFamily {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AreaClientArea => "Area_ClientArea",
+            Self::AreaVisualEffect => "Area_VisualEffect",
             Self::CharList => "CharList",
             Self::Chat => "Chat",
             Self::Camera => "Camera",

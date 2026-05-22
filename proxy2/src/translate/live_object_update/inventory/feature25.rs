@@ -267,6 +267,7 @@ pub(super) fn try_parse_inventory_2a00_shape(
 struct Inventory2a00ZeroFeature25Prefix {
     read_end: usize,
     missing_second_count: bool,
+    second_count_offset: usize,
 }
 
 pub(super) fn inventory_2a00_object_id_is_allowed(object_id: u32) -> bool {
@@ -303,6 +304,12 @@ pub(super) fn insert_missing_inventory_2a00_feature25_second_count_zero_for_ee(
     record_offset: usize,
     record_end: &mut usize,
 ) -> Option<usize> {
+    if rewrite_inventory_2a00_zero_second_count_from_tail_for_ee(bytes, record_offset, *record_end)
+        .is_some()
+    {
+        return Some(0);
+    }
+
     let prefix = try_parse_inventory_2a00_zero_feature25_prefix(bytes, record_offset, *record_end)?;
     if !prefix.missing_second_count {
         return None;
@@ -311,6 +318,57 @@ pub(super) fn insert_missing_inventory_2a00_feature25_second_count_zero_for_ee(
     bytes.splice(prefix.read_end..prefix.read_end, [0, 0, 0, 0]);
     *record_end = record_end.checked_add(4)?;
     Some(4)
+}
+
+fn rewrite_inventory_2a00_zero_second_count_from_tail_for_ee(
+    bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<u32> {
+    // Local XP2 Chapter 2 emits the decompiled `I/0x2A00` reader family with
+    // the `0x0200` byte-mask branch, then `0x2000` Feature-25 first_count=0,
+    // second_count=0, eight second-list OBJECTIDs, and the fixed 12-byte
+    // `0x0800` true tail. EE/Diamond both read the second Feature-25 count
+    // before the object ids, so a zero count strands the object list and makes
+    // the following `GQ` row look like inventory body. Repair only when a
+    // unique nonzero count makes the object list and true tail consume the
+    // caller-proven inventory record exactly.
+    const INVENTORY_0800_TRUE_TAIL_BYTES: usize = 12;
+
+    let prefix = try_parse_inventory_2a00_zero_feature25_prefix(bytes, record_offset, record_end)?;
+    if prefix.missing_second_count {
+        return None;
+    }
+    if read_u32_le(bytes, prefix.second_count_offset)? != 0 {
+        return None;
+    }
+
+    let second_objects = prefix.second_count_offset.checked_add(4)?;
+    let mut accepted_count = None;
+    for count in 1..=MAX_REASONABLE_FEATURE25_OBJECTS {
+        let second_end =
+            second_objects.checked_add(usize::try_from(count).ok()?.checked_mul(4)?)?;
+        let tail_end = second_end.checked_add(INVENTORY_0800_TRUE_TAIL_BYTES)?;
+        if tail_end != record_end {
+            continue;
+        }
+        if !looks_like_inventory_2a00_feature25_object_list(
+            bytes,
+            second_objects,
+            count,
+            second_end,
+        ) {
+            continue;
+        }
+        if accepted_count.replace(count).is_some() {
+            return None;
+        }
+    }
+
+    let count = accepted_count?;
+    bytes[prefix.second_count_offset..prefix.second_count_offset + 4]
+        .copy_from_slice(&count.to_le_bytes());
+    Some(count)
 }
 
 fn try_parse_inventory_2a00_zero_feature25_prefix(
@@ -334,13 +392,47 @@ fn try_parse_inventory_2a00_zero_feature25_prefix(
     }
 
     let branch_cursor = record_offset.checked_add(7)?;
-    let word_count = usize::try_from(read_u32_le(bytes, branch_cursor)?).ok()?;
-    if word_count > usize::from(MAX_REASONABLE_VALUE_GROUPS) {
-        return None;
+    let mut feature25_cursors = Vec::with_capacity(2);
+    if let Some(word_count) =
+        read_u32_le(bytes, branch_cursor).and_then(|count| usize::try_from(count).ok())
+    {
+        if word_count <= usize::from(MAX_REASONABLE_VALUE_GROUPS) {
+            if let Some(feature25_cursor) = branch_cursor
+                .checked_add(4)
+                .and_then(|cursor| cursor.checked_add(word_count.checked_mul(2)?))
+            {
+                feature25_cursors.push(feature25_cursor);
+            }
+        }
     }
-    let feature25_cursor = branch_cursor
-        .checked_add(4)?
-        .checked_add(word_count.checked_mul(2)?)?;
+    if branch_cursor < scan_end {
+        let byte_mask_count = usize::from(bytes[branch_cursor]);
+        let masks_offset = branch_cursor.checked_add(1)?;
+        if byte_mask_count <= usize::from(MAX_REASONABLE_VALUE_GROUPS)
+            && masks_offset <= scan_end
+            && byte_mask_count <= scan_end - masks_offset
+        {
+            feature25_cursors.push(masks_offset + byte_mask_count);
+        }
+    }
+
+    for feature25_cursor in feature25_cursors {
+        let Some(prefix) =
+            try_parse_inventory_2a00_zero_feature25_prefix_at(bytes, feature25_cursor, scan_end)
+        else {
+            continue;
+        };
+        return Some(prefix);
+    }
+
+    None
+}
+
+fn try_parse_inventory_2a00_zero_feature25_prefix_at(
+    bytes: &[u8],
+    feature25_cursor: usize,
+    scan_end: usize,
+) -> Option<Inventory2a00ZeroFeature25Prefix> {
     if feature25_cursor > scan_end {
         return None;
     }
@@ -366,6 +458,7 @@ fn try_parse_inventory_2a00_zero_feature25_prefix(
         return Some(Inventory2a00ZeroFeature25Prefix {
             read_end: first_end,
             missing_second_count: true,
+            second_count_offset: first_end,
         });
     }
 
@@ -374,6 +467,7 @@ fn try_parse_inventory_2a00_zero_feature25_prefix(
         return Some(Inventory2a00ZeroFeature25Prefix {
             read_end: first_end,
             missing_second_count: true,
+            second_count_offset: first_end,
         });
     }
     let second_objects = first_end.checked_add(4)?;
@@ -390,12 +484,14 @@ fn try_parse_inventory_2a00_zero_feature25_prefix(
         return Some(Inventory2a00ZeroFeature25Prefix {
             read_end: first_end,
             missing_second_count: true,
+            second_count_offset: first_end,
         });
     }
 
     Some(Inventory2a00ZeroFeature25Prefix {
         read_end: second_end,
         missing_second_count: false,
+        second_count_offset: first_end,
     })
 }
 

@@ -208,6 +208,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             if matches!(
                 raw_mask,
                 0x0000_0007
+                    | 0x0000_000F
                     | 0x0000_0008
                     | 0x0000_0040
                     | 0x0000_0047
@@ -250,6 +251,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // before action/state. Local Prelude proves its adjacent CNW
                 // storage can contain `A`-looking bytes before the next real
                 // submessage, so the focused creature parser owns the split.
+                // `0x0000_000F` is the XP2 cutscene-invisibility lower
+                // position/orientation/action/status family. Its
+                // status-effect row starts with `A 63 01`, and the next real
+                // `I` boundary follows the action post-state bytes, so generic
+                // inline-string suppression must not hide that split.
                 // `0x0000_C40F` is the same self/status family with the
                 // Diamond writer's lower movement bits present. The writer at
                 // 0x4451DC..0x4458B0 emits `0x0001` position, `0x0002`
@@ -1193,6 +1199,32 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // Keep this as a mask-specific boundary floor and let the focused
         // creature cursor validator prove the exact final cursor and bits.
         return 32;
+    }
+
+    if raw_mask == 0x0000_000F {
+        // Local XP2 Chapter 2 cutscene-invisibility heartbeat proves the
+        // lower movement/status family:
+        //
+        //   header + mask
+        //   0x0001 position: WORD, WORD, WORD plus two fragment bits
+        //   0x0002 orientation: scalar form is one read byte plus fragment bits
+        //   0x0004 action: FLOAT + WORD action code
+        //   0x0008 status-effect delta: WORD count, count * 3 legacy bytes
+        //   0x0004 post-state tail: BYTE state, WORD movement follow-up count
+        //
+        // The status row starts with `A` (`VFX_DUR_CUTSCENE_INVISIBILITY`,
+        // row 0x0163), so the generic scanner must not treat it as a top-level
+        // add record. The focused creature parser still proves the fragment
+        // cursor and inserts EE's ObjectVisualTransformData identity map before
+        // final strict emission.
+        let scalar_status_start = offset + LEGACY_UPDATE_HEADER_BYTES + 6 + 1 + 6;
+        let Some(count) = read_u16_le(bytes, scalar_status_start) else {
+            return LEGACY_UPDATE_HEADER_BYTES + 6 + 1 + 6;
+        };
+        if count > 256 {
+            return LEGACY_UPDATE_HEADER_BYTES + 6 + 1 + 6;
+        }
+        return LEGACY_UPDATE_HEADER_BYTES + 6 + 1 + 6 + 2 + usize::from(count) * 3 + 3;
     }
 
     if raw_mask == 0x0000_0067 {

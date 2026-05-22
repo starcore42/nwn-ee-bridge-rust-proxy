@@ -15,11 +15,11 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, area, camera, char_list, chat,
-        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
-        client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, inventory,
-        journal, live_object_update, login, module, play_module_character_list, player_list,
-        quickbar, safe_projectile, sound,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, area, area_visual_effect, camera,
+        char_list, chat, client_gui_event, client_gui_inventory, client_input, client_login,
+        client_quickbar, client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream,
+        inventory, journal, live_object_update, login, module, play_module_character_list,
+        player_list, quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1296,6 +1296,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::AreaClientArea => {
             high.major == 0x04 && high.minor == 0x01 && area_client_area_shape_valid(payload)
         }
+        VerifiedFamily::AreaVisualEffect => {
+            high.major == 0x04
+                && high.minor == 0x02
+                && area_visual_effect::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::CharList => high.major == 0x11 && char_list_shape_valid(payload),
         VerifiedFamily::Chat => high.major == 0x09 && chat_shape_valid(payload, high),
         VerifiedFamily::Camera => {
@@ -1448,6 +1453,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
     matches!(
         family,
         VerifiedFamily::AreaClientArea
+            | VerifiedFamily::AreaVisualEffect
             | VerifiedFamily::Camera
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
@@ -1608,6 +1614,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x03, 0x03) => HighPayloadValidation::Exact(module_time_shape_valid(payload)),
         (0x03, 0x0E) => HighPayloadValidation::Exact(module::module_end_game_shape_valid(payload)),
         (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
+        (0x04, 0x02) => HighPayloadValidation::Exact(
+            area_visual_effect::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x04, 0x03) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
         (0x05, 0x02) => HighPayloadValidation::Exact(

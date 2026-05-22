@@ -32,9 +32,10 @@
 //!   `0x0C` (`CNWSMessage::SendServerToPlayerChatMultiLangMessage`,
 //!   `nwn ee decompile.txt:1838566..1838626`). HG's 1.69 compact captures use
 //!   the same read-buffer envelope with the localized text encoded either as a
-//!   bounded CNW string, or as an empty primary token string followed by a
-//!   bounded localized line plus a fixed token-control suffix. The
-//!   BOOL/localized-string selector bits stay in the fragment tail.
+//!   bounded CNW string, as an empty primary token string followed by a bounded
+//!   localized line plus a fixed token-control suffix, or as the decompiled
+//!   `CExoLocString` strref branch: BOOL true, one language/source bit, then a
+//!   DWORD strref. The selector bits stay in the fragment tail.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -61,7 +62,8 @@ const CHAT_TELL_BOOL_FRAGMENT_BYTES: usize = 1;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const CRESREF_BYTES: usize = 16;
 const TOKEN_TALK_FRAGMENT_BYTES: usize = 1;
-const TOKEN_TALK_FRAGMENT_DATA_BITS: usize = 2;
+const TOKEN_TALK_TEXT_FRAGMENT_DATA_BITS: usize = 2;
+const TOKEN_TALK_STRREF_FRAGMENT_DATA_BITS: usize = 3;
 const SINGLE_FRAGMENT_BYTE: usize = 1;
 const CHAT_STRREF_DECLARED: usize = READ_START + OBJECT_ID_BYTES + 4;
 const TOKEN_TALK_LOCALIZED_SUFFIX: [u8; 6] = [0, 0, 0, 0, 0, 0x21];
@@ -252,15 +254,10 @@ fn claim_token_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
 
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     let fragment_bytes = payload.len().checked_sub(declared)?;
-    if declared > payload.len()
-        || fragment_bytes != TOKEN_TALK_FRAGMENT_BYTES
-        || !cnw_fragment_tail_has_exact_data_bits(
-            &payload[declared..],
-            TOKEN_TALK_FRAGMENT_DATA_BITS,
-        )
-    {
+    if declared > payload.len() || fragment_bytes != TOKEN_TALK_FRAGMENT_BYTES {
         return None;
     }
+    let fragment_data_bits = cnw_fragment_tail_data_bits(&payload[declared..])?;
 
     let mut cursor = READ_START;
     let speaker_object_id = read_le_u32(payload, cursor)?;
@@ -275,7 +272,8 @@ fn claim_token_talk(payload: &[u8], minor: u8) -> Option<ChatClaimSummary> {
     }
     cursor = cursor.checked_add(OBJECT_ID_BYTES)?;
 
-    let (body_end, text_len) = read_token_talk_body_end(payload, cursor, declared)?;
+    let (body_end, text_len) =
+        read_token_talk_body_end(payload, cursor, declared, fragment_data_bits)?;
     cursor = body_end;
 
     let resref_end = cursor.checked_add(CRESREF_BYTES)?;
@@ -310,15 +308,31 @@ fn read_token_talk_body_end(
     payload: &[u8],
     offset: usize,
     declared: usize,
+    fragment_data_bits: usize,
 ) -> Option<(usize, usize)> {
+    let fixed_tail = CRESREF_BYTES.checked_add(OBJECT_ID_BYTES)?;
+    let max_body_end = declared.checked_sub(fixed_tail)?;
+
+    if fragment_data_bits == TOKEN_TALK_STRREF_FRAGMENT_DATA_BITS
+        && offset.checked_add(4)? == max_body_end
+    {
+        let strref = read_le_u32(payload, offset)?;
+        if strref != u32::MAX {
+            return Some((max_body_end, 0));
+        }
+        return None;
+    }
+
+    if fragment_data_bits != TOKEN_TALK_TEXT_FRAGMENT_DATA_BITS {
+        return None;
+    }
+
     let (first_end, first_len) =
-        read_bounded_cexo_string_end(payload, offset, declared, MAX_CHAT_TEXT_BYTES)?;
+        read_bounded_cexo_string_end(payload, offset, max_body_end, MAX_CHAT_TEXT_BYTES)?;
     if first_len != 0 {
         return Some((first_end, first_len));
     }
 
-    let fixed_tail = CRESREF_BYTES.checked_add(OBJECT_ID_BYTES)?;
-    let max_body_end = declared.checked_sub(fixed_tail)?;
     let Some((second_end, second_len)) =
         read_bounded_cexo_string_end(payload, first_end, max_body_end, MAX_CHAT_TEXT_BYTES)
     else {
@@ -388,13 +402,18 @@ fn cnw_fragment_tail_can_hold_one_bool(fragment: &[u8]) -> bool {
 }
 
 fn cnw_fragment_tail_has_exact_data_bits(fragment: &[u8], data_bits: usize) -> bool {
+    cnw_fragment_tail_data_bits(fragment).is_some_and(|actual| actual == data_bits)
+}
+
+fn cnw_fragment_tail_data_bits(fragment: &[u8]) -> Option<usize> {
     let Some(first) = fragment.first().copied() else {
-        return false;
+        return None;
     };
     if fragment.len() != SINGLE_FRAGMENT_BYTE {
-        return false;
+        return None;
     }
-    usize::from((first & 0xE0) >> 5) == CNW_FRAGMENT_HEADER_BITS + data_bits
+    let final_bits = usize::from((first & 0xE0) >> 5);
+    final_bits.checked_sub(CNW_FRAGMENT_HEADER_BITS)
 }
 
 #[cfg(test)]
@@ -523,6 +542,38 @@ mod tests {
         assert_eq!(summary.declared, 133);
         assert_eq!(summary.text_len, 84);
         assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_xp2_token_talk_strref_fixtures_match_decompile_shape() {
+        for fixture in [
+            include_bytes!("../../fixtures/chat/local_xp2_token_talk_strref_seerf_20260522.bin")
+                .as_slice(),
+            include_bytes!("../../fixtures/chat/local_xp2_token_talk_strref_imlom_20260522.bin")
+                .as_slice(),
+        ] {
+            let summary =
+                claim_payload_if_verified(fixture).expect("strref token talk should be claimed");
+
+            assert_eq!(summary.minor, TOKEN_TALK_MINOR);
+            assert_eq!(summary.declared, 39);
+            assert_eq!(summary.text_len, 0);
+            assert_eq!(summary.fragment_bytes, TOKEN_TALK_FRAGMENT_BYTES);
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_xp2_token_talk_strref_rejects_text_fragment_bits() {
+        let mut fixture =
+            include_bytes!("../../fixtures/chat/local_xp2_token_talk_strref_seerf_20260522.bin")
+                .to_vec();
+        let declared = usize::try_from(read_le_u32(&fixture, HIGH_LEVEL_HEADER_BYTES).unwrap())
+            .expect("declared should fit");
+        fixture[declared] = 0xB0;
+
+        assert!(claim_payload_if_verified(&fixture).is_none());
     }
 
     #[cfg(hgbridge_private_fixtures)]

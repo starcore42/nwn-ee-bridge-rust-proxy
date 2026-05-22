@@ -3065,6 +3065,10 @@ fn legacy_creature_update_status_effect_start_states<'a>(
     for mut candidate in candidate_cursors {
         if (raw_mask & 0x0000_0004) != 0 {
             let action_code = simulate_legacy_creature_update_action_branch(&mut candidate)?;
+            if legacy_creature_update_status_precedes_action_followup(raw_mask) {
+                states.push(candidate);
+                continue;
+            }
             if !legacy_creature_update_action_branch_omits_bridge_followup(raw_mask) {
                 if candidate.read_u8().is_none()
                     || !simulate_legacy_creature_update_action_post_state_followup(
@@ -3168,6 +3172,8 @@ fn simulate_legacy_live_creature_update_tail_cursor(
     mut cursor: LegacyCreatureUpdateCursor<'_>,
 ) -> Option<LegacyCreatureUpdateCursor<'_>> {
     let record_end = cursor.record_end;
+    let status_precedes_action_followup =
+        legacy_creature_update_status_precedes_action_followup(raw_mask);
 
     if (raw_mask & 0x0000_0020) != 0 {
         let Some(portrait_row) = cursor.read_u16() else {
@@ -3203,6 +3209,19 @@ fn simulate_legacy_live_creature_update_tail_cursor(
             );
             return None;
         };
+        if status_precedes_action_followup
+            && (raw_mask & 0x0000_0008) != 0
+            && !simulate_ee_creature_update_status_effect_helper_cursor(&mut cursor)
+        {
+            trace_creature_update_cursor_reject(
+                "status-effects-before-action-followup",
+                raw_mask,
+                cursor.read_cursor,
+                cursor.bit_cursor,
+                record_end,
+            );
+            return None;
+        }
         // Starcore5 Sooty Crow `0xC40F` and `0xC44F` self/status captures
         // match EE `CNWSMessage::WriteGameObjUpdate_UpdateObject` at
         // `loc_1404EBD88`: mask bit `0x0004` writes only the 32-bit action
@@ -3241,7 +3260,8 @@ fn simulate_legacy_live_creature_update_tail_cursor(
         }
     }
 
-    if (raw_mask & 0x0000_0008) != 0
+    if !status_precedes_action_followup
+        && (raw_mask & 0x0000_0008) != 0
         && !simulate_ee_creature_update_status_effect_helper_cursor(&mut cursor)
     {
         trace_creature_update_cursor_reject(
@@ -3397,6 +3417,10 @@ fn simulate_legacy_live_creature_update_tail_cursor(
         return None;
     }
     Some(cursor)
+}
+
+fn legacy_creature_update_status_precedes_action_followup(raw_mask: u32) -> bool {
+    matches!(raw_mask, 0x0000_000F)
 }
 
 fn legacy_creature_update_action_branch_omits_bridge_followup(raw_mask: u32) -> bool {

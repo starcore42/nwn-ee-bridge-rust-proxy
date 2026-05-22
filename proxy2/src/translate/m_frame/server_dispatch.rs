@@ -9,8 +9,8 @@ use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        VerifiedFamily, VerifiedPacket, VerifiedProof, area, camera, char_list, chat,
-        client_side_message, cnw_message, custom_token, cutscene, dialog, game_obj_update,
+        VerifiedFamily, VerifiedPacket, VerifiedProof, area, area_visual_effect, camera, char_list,
+        chat, client_side_message, cnw_message, custom_token, cutscene, dialog, game_obj_update,
         gameplay_stream, inventory, journal, live_object, loadbar, login, module, module_resources,
         module_time, party, play_module_character_list, player_list, quickbar, safe_projectile,
         semantic, sound,
@@ -197,6 +197,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "GameObjUpdate_DestroyItem",
         verified_family: Some(VerifiedFamily::GameObjUpdateDestroyItem),
         translate: translate_game_obj_update_destroy_item,
+    },
+    ServerToClientTranslator {
+        family_name: "Area_VisualEffect",
+        verified_family: Some(VerifiedFamily::AreaVisualEffect),
+        translate: translate_area_visual_effect,
     },
     ServerToClientTranslator {
         family_name: "SafeProjectile",
@@ -932,6 +937,19 @@ fn translate_game_obj_update_destroy_item(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_area_visual_effect(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if area_visual_effect::claim_or_rewrite_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
