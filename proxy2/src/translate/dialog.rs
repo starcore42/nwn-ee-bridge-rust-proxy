@@ -9,9 +9,13 @@
 //! - Diamond's server-to-client high-level dispatcher routes major `0x14` to
 //!   the Dialog handler (`sub_443C70` in the local Diamond decompile).
 //! - The `0x14/0x01` branch reads three server OBJECTIDs with `sub_53E690`
-//!   (a bounded four-byte read), then a bounded direct text/locstring payload,
-//!   then two fragment BOOLs.  The observed local Diamond server payload uses a
-//!   direct `CExoString`: DWORD byte length followed by UTF-8/ANSI bytes.
+//!   (a bounded four-byte read), then a bounded locstring payload through
+//!   `sub_53E700`.  That helper first reads a fragment BOOL selector: false
+//!   means a direct `CExoString` follows on the byte side, true means it reads
+//!   one more 1-bit selector and a 32-bit TLK strref.  EE
+//!   `CNWSMessage::SendServerToPlayerDialogEntry` calls
+//!   `WriteCExoLocStringServer`, whose writer emits the same false/direct-string
+//!   or true/1-bit-selector/strref branch.
 //! - The `0x14/0x02` branch reads a bounded DWORD window, a server OBJECTID,
 //!   two DWORD reply-list counts, then one direct string plus DWORD reply id per
 //!   entry, followed by the same compact fragment BOOL tail.  The local Diamond
@@ -52,6 +56,9 @@ const MAX_DIALOG_TEXT_BYTES: usize = 8192;
 const MAX_DIALOG_REPLY_TEXT_BYTES: usize = 512;
 const MAX_DIALOG_REPLIES: usize = 64;
 const DIALOG_BOOL_FRAGMENT_BYTES: usize = 1;
+const MAX_FRAGMENT_DATA_BITS: usize = 4;
+const DIALOG_LOCSTRING_DIRECT_BITS: usize = 1;
+const DIALOG_LOCSTRING_STRREF_BITS: usize = 2;
 const DIALOG_REPLY_READ_BYTES: usize = OBJECT_ID_BYTES + DWORD_BYTES + BYTE_BYTES + DWORD_BYTES;
 const DIALOG_REPLY_DECLARED_BYTES: usize = READ_START + DIALOG_REPLY_READ_BYTES;
 const INVALID_OBJECT_ID: u32 = 0x7F00_0000;
@@ -107,7 +114,8 @@ fn claim_dialog_entry(payload: &[u8], minor: u8) -> Option<DialogClaimSummary> {
         cursor = cursor.checked_add(OBJECT_ID_BYTES)?;
     }
 
-    let (cursor, text_bytes) = read_c_exo_string(payload, cursor, declared, MAX_DIALOG_TEXT_BYTES)?;
+    let (cursor, text_bytes) =
+        read_dialog_entry_loc_string(payload, cursor, declared, MAX_DIALOG_TEXT_BYTES)?;
     if cursor != declared {
         return None;
     }
@@ -255,16 +263,68 @@ fn declared_with_dialog_fragment_tail(payload: &[u8]) -> Option<usize> {
 
 fn declared_with_exact_fragment_bits(payload: &[u8], data_bits: usize) -> Option<usize> {
     let declared = declared_with_dialog_fragment_tail(payload)?;
-    let fragment = *payload.get(declared)?;
-    let final_fragment_bits = usize::from((fragment & 0x80) != 0) << 2
-        | usize::from((fragment & 0x40) != 0) << 1
-        | usize::from((fragment & 0x20) != 0);
+    let final_fragment_bits = final_fragment_bits(payload, declared)?;
     (final_fragment_bits == FRAGMENT_HEADER_BITS.checked_add(data_bits)?).then_some(declared)
+}
+
+fn final_fragment_bits(payload: &[u8], declared: usize) -> Option<usize> {
+    let fragment = *payload.get(declared)?;
+    Some(
+        usize::from((fragment & 0x80) != 0) << 2
+            | usize::from((fragment & 0x40) != 0) << 1
+            | usize::from((fragment & 0x20) != 0),
+    )
+}
+
+fn fragment_data_bits(payload: &[u8], declared: usize) -> Option<Vec<bool>> {
+    let final_fragment_bits = final_fragment_bits(payload, declared)?;
+    if final_fragment_bits < FRAGMENT_HEADER_BITS {
+        return None;
+    }
+
+    let data_bits = final_fragment_bits.checked_sub(FRAGMENT_HEADER_BITS)?;
+    if data_bits > MAX_FRAGMENT_DATA_BITS {
+        return None;
+    }
+
+    let fragment = *payload.get(declared)?;
+    let mut bits = Vec::with_capacity(data_bits);
+    for bit_index in 0..data_bits {
+        let shift = 4usize.checked_sub(bit_index)?;
+        bits.push((fragment & (1u8 << shift)) != 0);
+    }
+    Some(bits)
 }
 
 fn read_count(payload: &[u8], offset: usize) -> Option<usize> {
     let value = usize::try_from(read_le_u32(payload, offset)?).ok()?;
     (value <= MAX_DIALOG_REPLIES).then_some(value)
+}
+
+fn read_dialog_entry_loc_string(
+    payload: &[u8],
+    cursor: usize,
+    declared: usize,
+    max_len: usize,
+) -> Option<(usize, usize)> {
+    let fragment_bits = fragment_data_bits(payload, declared)?;
+    let strref_selected = *fragment_bits.first()?;
+
+    if !strref_selected {
+        if fragment_bits.len() != DIALOG_LOCSTRING_DIRECT_BITS {
+            return None;
+        }
+        return read_c_exo_string(payload, cursor, declared, max_len);
+    }
+
+    if fragment_bits.len() != DIALOG_LOCSTRING_STRREF_BITS {
+        return None;
+    }
+
+    let _tlk_gender_selector = fragment_bits[1];
+    let _strref = read_le_u32(payload, cursor)?;
+    let next = cursor.checked_add(DWORD_BYTES)?;
+    (next == declared).then_some((next, 0))
 }
 
 fn read_c_exo_string(
@@ -302,6 +362,47 @@ mod tests {
         assert_eq!(claim.text_bytes, 70);
         assert_eq!(claim.reply_count, 0);
         assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn claims_server_dialog_entry_strref_locstring_shape() {
+        let payload = server_dialog_entry_strref_payload(0x0001_2907, true, 0x03);
+        let claim = claim_payload_if_verified(&payload).expect("dialog entry strref should claim");
+        assert_eq!(claim.kind, DialogKind::Entry);
+        assert_eq!(claim.minor, DIALOG_ENTRY_MINOR);
+        assert_eq!(
+            claim.declared,
+            READ_START + (3 * OBJECT_ID_BYTES) + DWORD_BYTES
+        );
+        assert_eq!(claim.text_bytes, 0);
+        assert_eq!(claim.reply_count, 0);
+        assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn rejects_dialog_entry_strref_without_gender_selector_bit() {
+        let mut payload = server_dialog_entry_strref_payload(0x0001_2907, true, 0);
+        let declared = usize::try_from(read_le_u32(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap())
+            .expect("declared length fits");
+        payload[declared] = 0x90;
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn claims_local_xp1_dialog_entry_strref_fixture() {
+        let payload = include_bytes!(
+            "../../fixtures/dialog/local_xp1_interlude_dialog_entry_strref_20260523.bin"
+        );
+        let claim =
+            claim_payload_if_verified(payload).expect("captured dialog entry strref should claim");
+
+        assert_eq!(claim.kind, DialogKind::Entry);
+        assert_eq!(claim.minor, DIALOG_ENTRY_MINOR);
+        assert_eq!(claim.declared, 0x17);
+        assert_eq!(claim.text_bytes, 0);
+        assert_eq!(payload.last().copied(), Some(0xBB));
     }
 
     #[test]
@@ -395,6 +496,57 @@ mod tests {
         payload.extend_from_slice(text);
         payload.push(0x87);
         payload
+    }
+
+    fn server_dialog_entry_strref_payload(
+        strref: u32,
+        tlk_gender_selector: bool,
+        tail_padding: u8,
+    ) -> Vec<u8> {
+        let declared = READ_START + (3 * OBJECT_ID_BYTES) + DWORD_BYTES;
+        let mut payload = vec![0x50, DIALOG_MAJOR, DIALOG_ENTRY_MINOR];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x8000_005Fu32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_005Fu32.to_le_bytes());
+        payload.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        payload.extend_from_slice(&strref.to_le_bytes());
+        payload.push(dialog_fragment_tail(
+            &[true, tlk_gender_selector],
+            tail_padding,
+        ));
+        payload
+    }
+
+    fn dialog_fragment_tail(data_bits: &[bool], padding: u8) -> u8 {
+        assert!(data_bits.len() <= MAX_FRAGMENT_DATA_BITS);
+        let final_fragment_bits = FRAGMENT_HEADER_BITS + data_bits.len();
+        let mut fragment = match final_fragment_bits {
+            0 => 0,
+            1 => 0x20,
+            2 => 0x40,
+            3 => 0x60,
+            4 => 0x80,
+            5 => 0xA0,
+            6 => 0xC0,
+            7 => 0xE0,
+            _ => unreachable!("fragment tail has only a three-bit count"),
+        };
+
+        for (bit_index, bit) in data_bits.iter().copied().enumerate() {
+            if bit {
+                fragment |= 1u8 << (4 - bit_index);
+            }
+        }
+
+        let invalid_padding_bits = MAX_FRAGMENT_DATA_BITS
+            .checked_sub(data_bits.len())
+            .expect("data bit length already bounded");
+        let padding_mask = if invalid_padding_bits == 0 {
+            0
+        } else {
+            (1u8 << invalid_padding_bits) - 1
+        };
+        fragment | (padding & padding_mask)
     }
 
     fn local_diamond_dialog_replies_payload() -> Vec<u8> {
