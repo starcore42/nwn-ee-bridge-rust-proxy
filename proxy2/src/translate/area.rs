@@ -345,9 +345,27 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context(
     rewrite_declared_area_client_area_payload(payload, module_context)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AreaRewriteDiagnosticMode {
+    Normal,
+    DeclaredZeroProbe,
+}
+
 fn rewrite_declared_area_client_area_payload(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<AreaRewriteSummary> {
+    rewrite_declared_area_client_area_payload_with_mode(
+        payload,
+        module_context,
+        AreaRewriteDiagnosticMode::Normal,
+    )
+}
+
+fn rewrite_declared_area_client_area_payload_with_mode(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    diagnostic_mode: AreaRewriteDiagnosticMode,
 ) -> Option<AreaRewriteSummary> {
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared < (HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES) as u32 {
@@ -672,17 +690,34 @@ fn rewrite_declared_area_client_area_payload(
         return None;
     }
     let Some(exact_proof) = ee_area_client_area_exact_read_proof(&rewritten_payload) else {
-        tracing::warn!(
-            area_resref = %area_resref,
-            tileset_resref = %tileset_resref,
-            old_declared = declared,
-            new_declared,
-            old_read_size = read_size,
-            new_read_size,
-            old_fragment_offset = fragment_offset,
-            new_fragment_offset,
-            "Area_ClientArea rewrite skipped: rewritten packet does not satisfy exact EE LoadArea cursor proof"
-        );
+        match diagnostic_mode {
+            AreaRewriteDiagnosticMode::Normal => {
+                tracing::warn!(
+                    area_resref = %area_resref,
+                    tileset_resref = %tileset_resref,
+                    old_declared = declared,
+                    new_declared,
+                    old_read_size = read_size,
+                    new_read_size,
+                    old_fragment_offset = fragment_offset,
+                    new_fragment_offset,
+                    "Area_ClientArea rewrite skipped: rewritten packet does not satisfy exact EE LoadArea cursor proof"
+                );
+            }
+            AreaRewriteDiagnosticMode::DeclaredZeroProbe => {
+                tracing::debug!(
+                    area_resref = %area_resref,
+                    tileset_resref = %tileset_resref,
+                    old_declared = declared,
+                    new_declared,
+                    old_read_size = read_size,
+                    new_read_size,
+                    old_fragment_offset = fragment_offset,
+                    new_fragment_offset,
+                    "Area_ClientArea declared-zero read-window candidate rejected by exact EE LoadArea cursor proof"
+                );
+            }
+        }
         return None;
     };
     *payload = rewritten_payload;
@@ -793,9 +828,11 @@ fn rewrite_declared_zero_area_client_area_payload(
 
         let mut staged = payload.clone();
         write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
-        let Some(mut summary) =
-            rewrite_declared_area_client_area_payload(&mut staged, module_context)
-        else {
+        let Some(mut summary) = rewrite_declared_area_client_area_payload_with_mode(
+            &mut staged,
+            module_context,
+            AreaRewriteDiagnosticMode::DeclaredZeroProbe,
+        ) else {
             continue;
         };
         summary.old_declared = 0;

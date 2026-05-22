@@ -2764,6 +2764,42 @@ fn local_chapter1_seq19_placeable_door_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_chapter1_seq19_transition_pending_chunk_waits_for_continuation() {
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_chapter1_seq19_transition_pending_chunk1_20260523_unclaimed.bin"
+    );
+
+    assert!(
+        super::claim_payload_if_verified(payload).is_none(),
+        "first Chapter1 transition pending chunk must not claim before its continuation provides the owned fragment tail"
+    );
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_chapter1_seq19_transition_pending_claimed_stream_stays_exact() {
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_chapter1_seq19_transition_pending_chunks2_20260523_claimed.bin"
+    );
+
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("two-chunk Chapter1 transition pending stream should exact-claim after rewrite");
+    assert!(claim.add_records >= 1);
+    assert!(claim.update_records >= 1);
+    assert!(
+        claim.mentions.iter().any(|mention| {
+            mention.opcode == b'A'
+                && matches!(
+                    mention.object_type,
+                    super::PLACEABLE_OBJECT_TYPE | super::DOOR_OBJECT_TYPE
+                )
+        }),
+        "claimed Chapter1 transition stream should retain materializing door/placeable adds"
+    );
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_chapter1_seq20_transition_placeable_stream_20260523_unclaimed.bin"
