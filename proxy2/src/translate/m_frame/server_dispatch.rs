@@ -194,6 +194,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_game_obj_update_vis_effect,
     },
     ServerToClientTranslator {
+        family_name: "GameObjUpdate_DestroyItem",
+        verified_family: Some(VerifiedFamily::GameObjUpdateDestroyItem),
+        translate: translate_game_obj_update_destroy_item,
+    },
+    ServerToClientTranslator {
         family_name: "SafeProjectile",
         verified_family: Some(VerifiedFamily::SafeProjectile),
         translate: translate_safe_projectile,
@@ -914,6 +919,19 @@ fn translate_game_obj_update_vis_effect(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_game_obj_update_destroy_item(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

@@ -2479,6 +2479,29 @@ pub fn rewrite_update_records_payload_if_possible(
                     last_verified_add_record = None;
                     continue;
                 }
+                if add_record_end == offset
+                    && boundary::try_get_legacy_missing_type_door_placeable_update_end_after_add(
+                        &live_bytes,
+                        offset,
+                        live_bytes.len(),
+                        add_object_type,
+                        add_object_id,
+                    )
+                    .is_some()
+                {
+                    // Local XP2 Chapter 2 emits the same decompile-shaped
+                    // door/placeable update body as the missing-opcode path,
+                    // but keeps the top-level `U` and leaves the object-type
+                    // byte as zero. The preceding verified `A` record pins the
+                    // object type and id before this one-byte repair.
+                    live_bytes[offset + 1] = add_object_type;
+                    changed = true;
+                    summary.live_object_missing_update_opcodes_repaired = summary
+                        .live_object_missing_update_opcodes_repaired
+                        .saturating_add(1);
+                    last_verified_add_record = None;
+                    continue;
+                }
             }
             if let Some((door_record_end, door_object_id)) =
                 last_verified_door_add_fragment_span_record

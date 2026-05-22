@@ -24,12 +24,23 @@
 //!   caller-provided Vector floats before sending family `0x05`, minor `0x03`.
 //!   The local XP2 captures hit the no-target compact branch: object id, WORD,
 //!   three FLOATs, and one CNW fragment byte.
+//! - EE's message-name table identifies `0x05/0x07` as
+//!   `GameObjUpdate_DestroyItem` (`nwn ee decompile.txt:1099752`).
+//! - EE sender `CNWSMessage::SendServerPlayerItemUpdate_DestroyItem`
+//!   (`nwn ee decompile.txt:1830113`) creates a 4-byte CNW write buffer, writes
+//!   only `WriteOBJECTIDServer(item)`, then sends family `0x05`, minor `0x07`.
+//!   EE client `HandleServerToPlayerItemUpdate_DestroyItem` reads the matching
+//!   raw 4-byte object id (`nwn ee decompile.txt:2897413`,
+//!   `sub_1409737C0` at `nwn ee decompile.txt:3561098`). The local XP2
+//!   Diamond-compatible captures match that one-object-id read window plus one
+//!   CNW fragment byte.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
 const GAME_OBJECT_UPDATE_MAJOR: u8 = 0x05;
 const OBJ_CONTROL_MINOR: u8 = 0x02;
 const VIS_EFFECT_MINOR: u8 = 0x03;
+const DESTROY_ITEM_MINOR: u8 = 0x07;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
@@ -41,6 +52,9 @@ const OBJ_CONTROL_PAYLOAD_BYTES: usize = OBJ_CONTROL_DECLARED_BYTES + SINGLE_FRA
 const VIS_EFFECT_READ_BYTES: usize = 4 + 2 + (3 * 4);
 const VIS_EFFECT_DECLARED_BYTES: usize = READ_START + VIS_EFFECT_READ_BYTES;
 const VIS_EFFECT_PAYLOAD_BYTES: usize = VIS_EFFECT_DECLARED_BYTES + SINGLE_FRAGMENT_BYTE;
+const DESTROY_ITEM_READ_BYTES: usize = 4;
+const DESTROY_ITEM_DECLARED_BYTES: usize = READ_START + DESTROY_ITEM_READ_BYTES;
+const DESTROY_ITEM_PAYLOAD_BYTES: usize = DESTROY_ITEM_DECLARED_BYTES + SINGLE_FRAGMENT_BYTE;
 
 #[derive(Debug, Clone, Copy)]
 pub struct GameObjUpdateClaimSummary {
@@ -60,6 +74,9 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<GameObjUpdateClaimSum
         (GAME_OBJECT_UPDATE_MAJOR, VIS_EFFECT_MINOR) => {
             claim_vis_effect_payload_if_verified(payload)
         }
+        (GAME_OBJECT_UPDATE_MAJOR, DESTROY_ITEM_MINOR) => {
+            claim_destroy_item_payload_if_verified(payload)
+        }
         _ => None,
     }
 }
@@ -72,6 +89,12 @@ pub fn claim_obj_control_payload_if_verified(payload: &[u8]) -> Option<GameObjUp
 
 pub fn claim_vis_effect_payload_if_verified(payload: &[u8]) -> Option<GameObjUpdateClaimSummary> {
     let message = parse_game_obj_update_message(payload, VIS_EFFECT_MINOR)?;
+    let rewritten = message.to_ee_payload();
+    (rewritten == payload).then(|| message.summary())
+}
+
+pub fn claim_destroy_item_payload_if_verified(payload: &[u8]) -> Option<GameObjUpdateClaimSummary> {
+    let message = parse_game_obj_update_message(payload, DESTROY_ITEM_MINOR)?;
     let rewritten = message.to_ee_payload();
     (rewritten == payload).then(|| message.summary())
 }
@@ -89,6 +112,10 @@ enum GameObjUpdateMessage {
         position_bits: [u32; 3],
         fragment_tail: u8,
     },
+    DestroyItem {
+        object_id: u32,
+        fragment_tail: u8,
+    },
 }
 
 fn parse_game_obj_update_message(payload: &[u8], minor: u8) -> Option<GameObjUpdateMessage> {
@@ -100,6 +127,7 @@ fn parse_game_obj_update_message(payload: &[u8], minor: u8) -> Option<GameObjUpd
     match minor {
         OBJ_CONTROL_MINOR => parse_obj_control_payload(payload),
         VIS_EFFECT_MINOR => parse_vis_effect_simple_payload(payload),
+        DESTROY_ITEM_MINOR => parse_destroy_item_payload(payload),
         _ => None,
     }
 }
@@ -130,6 +158,15 @@ fn parse_vis_effect_simple_payload(payload: &[u8]) -> Option<GameObjUpdateMessag
     })
 }
 
+fn parse_destroy_item_payload(payload: &[u8]) -> Option<GameObjUpdateMessage> {
+    let declared = exact_declared(payload, DESTROY_ITEM_DECLARED_BYTES)?;
+    let fragment_tail = exact_single_empty_fragment_tail(payload, declared)?;
+    Some(GameObjUpdateMessage::DestroyItem {
+        object_id: read_le_u32(payload, READ_START)?,
+        fragment_tail,
+    })
+}
+
 fn exact_declared(payload: &[u8], expected_declared: usize) -> Option<usize> {
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     (declared == expected_declared).then_some(declared)
@@ -154,6 +191,7 @@ impl GameObjUpdateMessage {
         match self {
             Self::ObjControl { .. } => "GameObjUpdate_ObjControl",
             Self::VisEffectSimple { .. } => "GameObjUpdate_VisEffect",
+            Self::DestroyItem { .. } => "GameObjUpdate_DestroyItem",
         }
     }
 
@@ -161,6 +199,7 @@ impl GameObjUpdateMessage {
         match self {
             Self::ObjControl { .. } => OBJ_CONTROL_DECLARED_BYTES,
             Self::VisEffectSimple { .. } => VIS_EFFECT_DECLARED_BYTES,
+            Self::DestroyItem { .. } => DESTROY_ITEM_DECLARED_BYTES,
         }
     }
 
@@ -168,6 +207,7 @@ impl GameObjUpdateMessage {
         match self {
             Self::ObjControl { .. } => OBJ_CONTROL_READ_BYTES,
             Self::VisEffectSimple { .. } => VIS_EFFECT_READ_BYTES,
+            Self::DestroyItem { .. } => DESTROY_ITEM_READ_BYTES,
         }
     }
 
@@ -175,13 +215,15 @@ impl GameObjUpdateMessage {
         match self {
             Self::ObjControl { .. } => OBJ_CONTROL_MINOR,
             Self::VisEffectSimple { .. } => VIS_EFFECT_MINOR,
+            Self::DestroyItem { .. } => DESTROY_ITEM_MINOR,
         }
     }
 
     fn fragment_tail(self) -> u8 {
         match self {
             Self::ObjControl { fragment_tail, .. }
-            | Self::VisEffectSimple { fragment_tail, .. } => fragment_tail,
+            | Self::VisEffectSimple { fragment_tail, .. }
+            | Self::DestroyItem { fragment_tail, .. } => fragment_tail,
         }
     }
 
@@ -220,6 +262,9 @@ impl GameObjUpdateMessage {
                     payload.extend_from_slice(&bits.to_le_bytes());
                 }
             }
+            Self::DestroyItem { object_id, .. } => {
+                payload.extend_from_slice(&object_id.to_le_bytes());
+            }
         }
         payload.push(self.fragment_tail());
         payload
@@ -237,6 +282,12 @@ mod tests {
     const LOCAL_XP2_VIS_EFFECT_PAYLOAD: [u8; VIS_EFFECT_PAYLOAD_BYTES] = [
         0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00, 0xD8, 0x49,
         0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x61,
+    ];
+    const LOCAL_XP2_DESTROY_ITEM_PAYLOAD_A: [u8; DESTROY_ITEM_PAYLOAD_BYTES] = [
+        0x50, 0x05, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x67, 0x2C, 0x00, 0x80, 0x7C,
+    ];
+    const LOCAL_XP2_DESTROY_ITEM_PAYLOAD_B: [u8; DESTROY_ITEM_PAYLOAD_BYTES] = [
+        0x50, 0x05, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x68, 0x2C, 0x00, 0x80, 0x7C,
     ];
 
     #[test]
@@ -261,6 +312,23 @@ mod tests {
         assert_eq!(summary.declared, VIS_EFFECT_DECLARED_BYTES);
         assert_eq!(summary.read_bytes, VIS_EFFECT_READ_BYTES);
         assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+    }
+
+    #[test]
+    fn destroy_item_fixtures_match_decompile_cursor_shape() {
+        for payload in [
+            LOCAL_XP2_DESTROY_ITEM_PAYLOAD_A,
+            LOCAL_XP2_DESTROY_ITEM_PAYLOAD_B,
+        ] {
+            let summary =
+                claim_payload_if_verified(&payload).expect("DestroyItem fixture should be claimed");
+
+            assert_eq!(summary.minor, DESTROY_ITEM_MINOR);
+            assert_eq!(summary.packet_name, "GameObjUpdate_DestroyItem");
+            assert_eq!(summary.declared, DESTROY_ITEM_DECLARED_BYTES);
+            assert_eq!(summary.read_bytes, DESTROY_ITEM_READ_BYTES);
+            assert_eq!(summary.fragment_bytes, SINGLE_FRAGMENT_BYTE);
+        }
     }
 
     #[test]
@@ -291,6 +359,22 @@ mod tests {
     fn vis_effect_rejects_wrong_fragment_final_bits() {
         let mut payload = LOCAL_XP2_VIS_EFFECT_PAYLOAD;
         payload[VIS_EFFECT_DECLARED_BYTES] = 0x41;
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn destroy_item_rejects_stale_declared_boundary() {
+        let mut payload = LOCAL_XP2_DESTROY_ITEM_PAYLOAD_A;
+        payload[HIGH_LEVEL_HEADER_BYTES] = 0x0C;
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn destroy_item_rejects_wrong_fragment_final_bits() {
+        let mut payload = LOCAL_XP2_DESTROY_ITEM_PAYLOAD_A;
+        payload[DESTROY_ITEM_DECLARED_BYTES] = 0x1C;
 
         assert!(claim_payload_if_verified(&payload).is_none());
     }

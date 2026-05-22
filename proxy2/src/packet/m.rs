@@ -281,6 +281,11 @@ impl HighLevel {
             // optional source/transform fields. The semantic translator owns
             // exact shape validation for each claimed branch.
             (0x05, 0x03) => "GameObjUpdate_VisEffect",
+            // EE packet-name table maps 0x0507 to GameObjUpdate_DestroyItem.
+            // `CNWSMessage::SendServerPlayerItemUpdate_DestroyItem` writes
+            // exactly one object id, and the EE client reader consumes only
+            // that 4-byte object id before the CNW fragment tail.
+            (0x05, 0x07) => "GameObjUpdate_DestroyItem",
             (0x06, 0x01) => "Input_WalkToWaypoint",
             (0x06, 0x02) => "Input_Attack",
             (0x06, 0x03) => "Input_ChangeDoorState",

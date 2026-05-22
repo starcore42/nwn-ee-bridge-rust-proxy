@@ -84,6 +84,18 @@ pub(super) fn is_verified_ee_looping_visual_effect_update_record(
         .is_some_and(|shape| shape.already_ee_shaped)
 }
 
+pub(super) fn has_legacy_looping_visual_effect_body_without_mask(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> bool {
+    if read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES).is_none_or(|count| count == 0) {
+        return false;
+    }
+    parse_looping_visual_effect_body(bytes, offset, record_end)
+        .is_some_and(|shape| !shape.already_ee_shaped)
+}
+
 pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
     bytes: &[u8],
     offset: usize,
@@ -141,6 +153,19 @@ fn parse_looping_visual_effect_update(
         return None;
     }
 
+    let count = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES)?;
+    if count > MAX_REASONABLE_LOOPING_EFFECT_CHANGES {
+        return None;
+    }
+
+    parse_looping_visual_effect_body(bytes, offset, record_end)
+}
+
+fn parse_looping_visual_effect_body(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<LoopingVisualEffectList> {
     let count = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES)?;
     if count > MAX_REASONABLE_LOOPING_EFFECT_CHANGES {
         return None;
@@ -242,4 +267,48 @@ fn has_identity_transform_at(bytes: &[u8], offset: usize, record_end: usize) -> 
     end <= record_end
         && end <= bytes.len()
         && bytes[offset..end] == LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creature_effect_body_without_mask_rewrites_to_exact_ee_shape() {
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x02,
+            0x00,
+            b'A',
+            0xB6,
+            0x00,
+            b'A',
+            0xF3,
+            0x00,
+        ];
+        let mut record_end = record.len();
+        assert!(has_legacy_looping_visual_effect_body_without_mask(
+            &record, 0, record_end
+        ));
+
+        record[6..10].copy_from_slice(&LOOPING_VISUAL_EFFECT_UPDATE_MASK.to_le_bytes());
+        let rewrite =
+            rewrite_legacy_looping_visual_effect_update_for_ee(&mut record, 0, &mut record_end)
+                .expect("legacy short effect rows should expand");
+
+        assert_eq!(rewrite.bytes_inserted, 16);
+        assert_eq!(record_end, record.len());
+        assert!(is_verified_ee_looping_visual_effect_update_record(
+            &record, 0, record_end
+        ));
+    }
 }

@@ -2705,6 +2705,56 @@ fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
+    for (name, fixture) in [
+        (
+            "seq13",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter2_seq13_liveobject_20260522_unclaimed.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq14",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter2_seq14_liveobject_20260522_unclaimed.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq16",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter2_seq16_liveobject_20260522_unclaimed.bin"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let mut payload = fixture.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw XP2 Chapter 2 inventory stream should document the unclaimed Diamond shape"
+        );
+
+        assert!(
+            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                &mut payload,
+                None
+            ),
+            "{name} should rewrite through the bounded exact adapter"
+        );
+        let claim = super::claim_payload_if_verified(&payload).unwrap_or_else(|| {
+            panic!("{name} rewritten live-object payload should exact-claim")
+        });
+        assert!(
+            claim.add_records >= 1,
+            "{name} should retain at least one materializing live-object add"
+        );
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_cepv22_missing_creature_appearance_is_lifecycle_safe() {
     // Local CEP v2.2 startup capture from 2026-05-20. The packet is already an
     // exact EE `P 05 01` read-window, but the `P/5` creature-appearance record

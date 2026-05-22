@@ -1365,6 +1365,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x03
                 && game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::GameObjUpdateDestroyItem => {
+            high.major == 0x05
+                && high.minor == 0x07
+                && game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::GameObjUpdateLiveObject => {
             high.major == 0x05 && high.minor == 0x01 && live_object_shape_valid(payload)
         }
@@ -1452,6 +1457,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::Dialog
             | VerifiedFamily::GameObjUpdateObjectControl
             | VerifiedFamily::GameObjUpdateVisEffect
+            | VerifiedFamily::GameObjUpdateDestroyItem
             | VerifiedFamily::GameObjUpdateLiveObject
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
@@ -1609,6 +1615,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         ),
         (0x05, 0x03) => HighPayloadValidation::Exact(
             game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some(),
+        ),
+        (0x05, 0x07) => HighPayloadValidation::Exact(
+            game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some(),
         ),
         (
             0x06,

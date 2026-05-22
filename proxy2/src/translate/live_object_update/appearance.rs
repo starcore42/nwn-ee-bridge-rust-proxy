@@ -169,6 +169,13 @@ enum CreatureAppearanceByteInsert {
         offset: usize,
         length: u8,
     },
+    MissingSecondInlineNameLengthLowByte {
+        offset: usize,
+        length: u8,
+    },
+    MissingSecondLocStringTokenHighByte {
+        offset: usize,
+    },
     MissingSecondInlineNameLength {
         offset: usize,
         length: u32,
@@ -213,6 +220,8 @@ impl CreatureAppearanceByteInsert {
     fn offset(&self) -> usize {
         match self {
             Self::MissingFirstInlineNameLengthLowByte { offset, .. }
+            | Self::MissingSecondInlineNameLengthLowByte { offset, .. }
+            | Self::MissingSecondLocStringTokenHighByte { offset }
             | Self::MissingSecondInlineNameLength { offset, .. }
             | Self::EeFeature23CreatureScalarHighByte { offset }
             | Self::EeFeature23CreatureBodyPartHighByte { offset }
@@ -239,6 +248,8 @@ impl CreatureAppearanceByteInsert {
             | Self::LegacyVisualTransformIdentitySuffix { .. }
             | Self::LegacyScalarVisualTransformIdentityReplacement { .. } => 2,
             Self::MissingFirstInlineNameLengthLowByte { .. }
+            | Self::MissingSecondInlineNameLengthLowByte { .. }
+            | Self::MissingSecondLocStringTokenHighByte { .. }
             | Self::MissingSecondInlineNameLength { .. } => 3,
             Self::LegacyFullPartTablePrefixRemoval { .. } => 0,
         }
@@ -257,6 +268,8 @@ impl CreatureAppearanceByteInsert {
     fn bytes(&self) -> Vec<u8> {
         match self {
             Self::MissingFirstInlineNameLengthLowByte { length, .. } => vec![*length],
+            Self::MissingSecondInlineNameLengthLowByte { length, .. } => vec![*length],
+            Self::MissingSecondLocStringTokenHighByte { .. } => vec![0],
             Self::MissingSecondInlineNameLength { length, .. } => length.to_le_bytes().to_vec(),
             Self::EeFeature23CreatureScalarHighByte { .. }
             | Self::EeFeature23CreatureBodyPartHighByte { .. }
@@ -397,6 +410,21 @@ struct MissingFirstInlineNameLowByteCandidate {
     first_name_end: usize,
     second_name_end: usize,
     first_name_len: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissingSecondInlineNameLowByteCandidate {
+    name_end: usize,
+    name_len: u8,
+    record_end: usize,
+    equipment_records: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissingSecondLocStringTokenHighByteCandidate {
+    name_end: usize,
+    record_end: usize,
+    equipment_records: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -4892,23 +4920,44 @@ fn parse_creature_appearance_record(
                                 .checked_add(first.fragment_bits_consumed)?
                                 .checked_add(second.fragment_bits_consumed)?;
                         } else {
-                            let candidate = select_missing_second_inline_name_candidate(
-                                bytes,
-                                cursor,
-                                limit,
-                                mask,
-                                Some(proof),
-                            )?;
-                            ee_extra_byte_inserts.push(
-                                CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
-                                    offset: cursor,
-                                    length: u32::try_from(candidate.name_len).ok()?,
-                                },
-                            );
-                            cursor = candidate.name_end;
-                            fragment_bits_consumed = fragment_bits_consumed
-                                .checked_add(first.fragment_bits_consumed)?
-                                .checked_add(1)?;
+                            if let Some(candidate) =
+                                select_missing_second_inline_name_low_byte_candidate(
+                                    bytes,
+                                    cursor,
+                                    limit,
+                                    mask,
+                                    Some(proof),
+                                )
+                            {
+                                ee_extra_byte_inserts.push(
+                                    CreatureAppearanceByteInsert::MissingSecondInlineNameLengthLowByte {
+                                        offset: cursor,
+                                        length: candidate.name_len,
+                                    },
+                                );
+                                cursor = candidate.name_end;
+                                fragment_bits_consumed = fragment_bits_consumed
+                                    .checked_add(first.fragment_bits_consumed)?
+                                    .checked_add(1)?;
+                            } else {
+                                let candidate = select_missing_second_inline_name_candidate(
+                                    bytes,
+                                    cursor,
+                                    limit,
+                                    mask,
+                                    Some(proof),
+                                )?;
+                                ee_extra_byte_inserts.push(
+                                    CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
+                                        offset: cursor,
+                                        length: u32::try_from(candidate.name_len).ok()?,
+                                    },
+                                );
+                                cursor = candidate.name_end;
+                                fragment_bits_consumed = fragment_bits_consumed
+                                    .checked_add(first.fragment_bits_consumed)?
+                                    .checked_add(1)?;
+                            }
                         }
                     } else {
                         let candidate = select_missing_first_inline_name_low_byte_candidate(
@@ -4943,7 +4992,7 @@ fn parse_creature_appearance_record(
                     fragment_bits_consumed =
                         fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
                     let mut name_bits = vec![true, true, false];
-                    if let Some(second) = advance_legacy_locstring_token_without_proof(
+                    let standard_second_token = advance_legacy_locstring_token_without_proof(
                         bytes, cursor, limit,
                     )
                     .or_else(|| {
@@ -4954,11 +5003,70 @@ fn parse_creature_appearance_record(
                                 )
                             },
                         )?
-                    }) {
+                    });
+                    if let Some(candidate) =
+                        select_missing_second_locstring_token_high_byte_candidate(
+                            bytes, cursor, limit, mask,
+                        )
+                        .filter(|candidate| {
+                            standard_second_token
+                                .as_ref()
+                                .and_then(|second| {
+                                    score_missing_first_inline_name_low_byte_tail(
+                                        bytes, second.end, limit,
+                                    )
+                                })
+                                .map(|(standard_record_end, standard_equipment)| {
+                                    candidate.equipment_records > standard_equipment
+                                        || (candidate.equipment_records == standard_equipment
+                                            && candidate.record_end > standard_record_end)
+                                })
+                                .unwrap_or(true)
+                        })
+                    {
+                        ee_extra_byte_inserts.push(
+                            CreatureAppearanceByteInsert::MissingSecondLocStringTokenHighByte {
+                                offset: candidate.name_end,
+                            },
+                        );
+                        cursor = candidate.name_end;
+                        fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
+                        name_bits.extend([true, false]);
+                    } else if let Some(second) = standard_second_token {
                         cursor = second.end;
                         fragment_bits_consumed =
                             fragment_bits_consumed.checked_add(second.fragment_bits_consumed)?;
                         name_bits.extend([true, false]);
+                    } else if let Some(candidate) =
+                        select_missing_second_inline_name_low_byte_candidate(
+                            bytes, cursor, limit, mask, None,
+                        )
+                        .filter(|candidate| {
+                            advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
+                                .and_then(|standard_second_end| {
+                                    score_missing_first_inline_name_low_byte_tail(
+                                        bytes,
+                                        standard_second_end,
+                                        limit,
+                                    )
+                                })
+                                .map(|(standard_record_end, standard_equipment)| {
+                                    candidate.equipment_records > standard_equipment
+                                        || (candidate.equipment_records == standard_equipment
+                                            && candidate.record_end > standard_record_end)
+                                })
+                                .unwrap_or(true)
+                        })
+                    {
+                        ee_extra_byte_inserts.push(
+                            CreatureAppearanceByteInsert::MissingSecondInlineNameLengthLowByte {
+                                offset: cursor,
+                                length: candidate.name_len,
+                            },
+                        );
+                        cursor = candidate.name_end;
+                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                        name_bits.push(false);
                     } else if let Some(second_end) =
                         advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
                     {
@@ -5268,6 +5376,95 @@ fn select_missing_second_inline_name_candidate(
         }
     }
     accepted
+}
+
+fn select_missing_second_inline_name_low_byte_candidate(
+    bytes: &[u8],
+    second_name_offset: usize,
+    limit: usize,
+    mask: u16,
+    proof: Option<AppearanceBitProof<'_>>,
+) -> Option<MissingSecondInlineNameLowByteCandidate> {
+    if mask != LEGACY_APPEARANCE_ALL_FIELDS_MASK {
+        return None;
+    }
+    if let Some(proof) = proof {
+        let second_inner = proof.bit_cursor.checked_add(2)?;
+        if proof
+            .fragment_bits
+            .get(second_inner)
+            .copied()
+            .unwrap_or(true)
+        {
+            return None;
+        }
+    }
+
+    let inline_name_start = second_name_offset.checked_add(3)?;
+    if bytes.get(second_name_offset..inline_name_start) != Some(&[0, 0, 0][..]) {
+        return None;
+    }
+
+    let scan_limit = limit
+        .min(bytes.len())
+        .min(inline_name_start.checked_add(MAX_LIVE_OBJECT_NAME_BYTES)?);
+    let mut accepted: Option<MissingSecondInlineNameLowByteCandidate> = None;
+    for name_end in inline_name_start..=scan_limit {
+        let name = bytes.get(inline_name_start..name_end)?;
+        if !name.is_empty() && !legacy_missing_second_name_bytes_are_inline_printable(name) {
+            continue;
+        }
+        let name_len = u8::try_from(name.len()).ok()?;
+        let Some((record_end, equipment_records)) =
+            score_missing_first_inline_name_low_byte_tail(bytes, name_end, limit)
+        else {
+            continue;
+        };
+        let candidate = MissingSecondInlineNameLowByteCandidate {
+            name_end,
+            name_len,
+            record_end,
+            equipment_records,
+        };
+        let better = accepted
+            .as_ref()
+            .map(|current| {
+                candidate.equipment_records > current.equipment_records
+                    || (candidate.equipment_records == current.equipment_records
+                        && candidate.record_end > current.record_end)
+            })
+            .unwrap_or(true);
+        if better {
+            accepted = Some(candidate);
+        }
+    }
+    accepted
+}
+
+fn select_missing_second_locstring_token_high_byte_candidate(
+    bytes: &[u8],
+    second_token_offset: usize,
+    limit: usize,
+    mask: u16,
+) -> Option<MissingSecondLocStringTokenHighByteCandidate> {
+    if mask != LEGACY_APPEARANCE_ALL_FIELDS_MASK {
+        return None;
+    }
+    let token_prefix_end = second_token_offset.checked_add(3)?;
+    let token_prefix = bytes.get(second_token_offset..token_prefix_end)?;
+    if token_prefix == [0, 0, 0] || token_prefix.first().copied()? & 0x80 == 0 {
+        return None;
+    }
+    let Some((record_end, equipment_records)) =
+        score_missing_first_inline_name_low_byte_tail(bytes, token_prefix_end, limit)
+    else {
+        return None;
+    };
+    Some(MissingSecondLocStringTokenHighByteCandidate {
+        name_end: token_prefix_end,
+        record_end,
+        equipment_records,
+    })
 }
 
 fn select_missing_first_inline_name_low_byte_candidate(
@@ -6601,6 +6798,8 @@ fn visible_equipment_parse_subobject_proof_rank(
                 visual_transform_repairs = visual_transform_repairs.saturating_add(1);
             }
             CreatureAppearanceByteInsert::MissingFirstInlineNameLengthLowByte { .. }
+            | CreatureAppearanceByteInsert::MissingSecondInlineNameLengthLowByte { .. }
+            | CreatureAppearanceByteInsert::MissingSecondLocStringTokenHighByte { .. }
             | CreatureAppearanceByteInsert::MissingSecondInlineNameLength { .. } => {
                 inline_name_length_repairs = inline_name_length_repairs.saturating_add(1);
             }

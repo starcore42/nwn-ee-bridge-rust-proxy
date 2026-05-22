@@ -485,6 +485,83 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after
     None
 }
 
+pub(super) fn try_get_legacy_missing_type_door_placeable_update_end_after_add(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    expected_object_type: u8,
+    expected_object_id: u32,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    if !matches!(
+        expected_object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0
+        || read_u32_le(bytes, offset + 2)? != expected_object_id
+    {
+        return None;
+    }
+
+    let body_offset = offset.checked_add(1)?;
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    if raw_mask == 0 {
+        return None;
+    }
+    let translated_mask = match expected_object_type {
+        PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
+        DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
+        _ => return None,
+    };
+    if translated_mask == 0 {
+        return None;
+    }
+
+    for vector_orientation in [false, true] {
+        if let Some(record_end) = missing_opcode_update_body_read_end(
+            bytes,
+            body_offset,
+            scan_end,
+            translated_mask,
+            vector_orientation,
+        ) {
+            if record_end_lands_on_boundary(bytes, record_end, scan_end) {
+                return Some(record_end);
+            }
+        }
+    }
+
+    if matches!(
+        expected_object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) && (raw_mask & !translated_mask & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) == 0
+        && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
+    {
+        for vector_orientation in [false, true] {
+            let Some(prefix_end) = missing_opcode_update_body_read_end(
+                bytes,
+                body_offset,
+                scan_end,
+                translated_mask,
+                vector_orientation,
+            ) else {
+                continue;
+            };
+            for suffix_len in [2usize, 4usize, 6usize] {
+                let record_end = prefix_end.checked_add(suffix_len)?;
+                if record_end <= scan_end
+                    && reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
+                    && record_end_lands_on_boundary(bytes, record_end, scan_end)
+                {
+                    return Some(record_end);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn missing_opcode_update_body_read_end(
     bytes: &[u8],
     offset: usize,
@@ -1357,6 +1434,49 @@ mod tests {
                 0x8000_0084,
             ),
             Some(42)
+        );
+    }
+
+    #[test]
+    fn door_add_boundary_precedes_missing_type_same_object_update() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[
+            b'U', 0x00, 0x04, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00, 0x80, 0x0C, 0x91, 0x13,
+            0x02, 0x11, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x16, 0x00, 0xE5, 0x14, 0x00,
+            0x00,
+        ]);
+        live.extend_from_slice(&[
+            b'A',
+            DOOR_OBJECT_TYPE,
+            0x03,
+            0x00,
+            0x00,
+            0x80,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            try_get_legacy_missing_type_door_placeable_update_end_after_add(
+                &live,
+                0,
+                live.len(),
+                DOOR_OBJECT_TYPE,
+                0x8000_0004,
+            ),
+            Some(29)
+        );
+        assert!(
+            try_get_legacy_missing_type_door_placeable_update_end_after_add(
+                &live,
+                0,
+                live.len(),
+                DOOR_OBJECT_TYPE,
+                0x8000_0005,
+            )
+            .is_none()
         );
     }
 

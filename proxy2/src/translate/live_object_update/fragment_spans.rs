@@ -214,6 +214,18 @@ pub(super) fn promote_creature_update_interleaved_fragment_span_for_ee(
     let read_end = proof.read_end;
     let promoted_bits = proof.promoted_bits;
     let insertion_cursor = proof.insertion_cursor;
+    if proof.rewrite_bare_second_identity_string {
+        let identity_rewrite = creature::rewrite_3967_bare_second_identity_string_for_ee(
+            live_bytes,
+            offset,
+            read_end,
+            fragment_bits,
+            proof.start_bit_cursor,
+        )?;
+        if identity_rewrite.advanced_bit_cursor != proof.end_bit_cursor {
+            return None;
+        }
+    }
     bits::insert_msb_bits(fragment_bits, insertion_cursor, &promoted_bits)?;
     live_bytes.drain(read_end..old_record_end);
     *record_end = read_end;
@@ -1018,6 +1030,7 @@ struct CreatureUpdateFragmentSpanProof {
     insertion_cursor: usize,
     start_bit_cursor: usize,
     end_bit_cursor: usize,
+    rewrite_bare_second_identity_string: bool,
 }
 
 fn find_creature_update_3967_interleaved_fragment_span(
@@ -1104,7 +1117,31 @@ fn find_creature_update_3967_interleaved_fragment_span(
                     &mut proof_cursor,
                 );
             if !accepted_by_exact_parser {
-                continue;
+                if raw_mask != LEGACY_CREATURE_UPDATE_3967_MASK {
+                    continue;
+                }
+                let mut trial = live_bytes.to_vec();
+                let Some(identity_rewrite) =
+                    creature::rewrite_3967_bare_second_identity_string_for_ee(
+                        &mut trial,
+                        offset,
+                        read_end,
+                        fragment_bits,
+                        candidate_bit_cursor,
+                    )
+                else {
+                    continue;
+                };
+                proof_cursor = identity_rewrite.advanced_bit_cursor;
+                accepted = Some(CreatureUpdateFragmentSpanProof {
+                    read_end,
+                    promoted_bits,
+                    insertion_cursor: proof_cursor,
+                    start_bit_cursor: candidate_bit_cursor,
+                    end_bit_cursor: proof_cursor,
+                    rewrite_bare_second_identity_string: true,
+                });
+                break;
             }
             accepted = Some(CreatureUpdateFragmentSpanProof {
                 read_end,
@@ -1112,6 +1149,7 @@ fn find_creature_update_3967_interleaved_fragment_span(
                 insertion_cursor: proof_cursor,
                 start_bit_cursor: candidate_bit_cursor,
                 end_bit_cursor: proof_cursor,
+                rewrite_bare_second_identity_string: false,
             });
             break;
         }

@@ -75,6 +75,47 @@ pub(super) fn rewrite_update_record_for_ee(
             ..RecordRewrite::default()
         });
     }
+    if object_type == CREATURE_OBJECT_TYPE
+        && raw_mask == 0
+        && effects::has_legacy_looping_visual_effect_body_without_mask(
+            live_bytes,
+            record_offset,
+            *record_end,
+        )
+    {
+        // EE and Diamond only read the looping visual-effect delta body when
+        // update-mask bit `0x0008` is set. Local XP2 Chapter 2 captures can
+        // carry the exact `WORD count` + short effect rows with that bit
+        // omitted. Repair only this bounded creature-body shape, then reuse
+        // the normal EE visual-transform expansion and exact validator.
+        let mut candidate = live_bytes.clone();
+        let mut candidate_record_end = *record_end;
+        write_u32_le(
+            &mut candidate,
+            record_offset + 6,
+            effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK,
+        )?;
+        let effect_rewrite = effects::rewrite_legacy_looping_visual_effect_update_for_ee(
+            &mut candidate,
+            record_offset,
+            &mut candidate_record_end,
+        )?;
+        if !effects::is_verified_ee_looping_visual_effect_update_record(
+            &candidate,
+            record_offset,
+            candidate_record_end,
+        ) {
+            return None;
+        }
+        *live_bytes = candidate;
+        *record_end = candidate_record_end;
+        return Some(RecordRewrite {
+            rewritten: true,
+            mask_changed: true,
+            bytes_inserted: effect_rewrite.bytes_inserted,
+            ..RecordRewrite::default()
+        });
+    }
 
     if object_type == ITEM_OBJECT_TYPE {
         if !*bit_cursor_reliable {
