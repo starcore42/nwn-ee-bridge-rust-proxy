@@ -334,6 +334,22 @@ impl HighLevel {
             (0x0E, 0x0C) => "Party_RejectInvitation",
             (0x0E, 0x0D) => "Party_KickHenchman",
             (0x0E, 0x0E) => "Party_TransferObjectControl",
+            // Camera family confirmed from EE's packet-name table and the
+            // exported `CNWSMessage::SendServerToPlayerCamera_*` senders. The
+            // semantic camera translator owns exact CNW cursor validation for
+            // each claimed minor.
+            (0x10, 0x01) => "Camera_ChangeLocation",
+            (0x10, 0x02) => "Camera_SetMode",
+            (0x10, 0x03) => "Camera_Store",
+            (0x10, 0x04) => "Camera_Restore",
+            (0x10, 0x05) => "Camera_SetHeight",
+            (0x10, 0x06) => "Camera_LockPitch",
+            (0x10, 0x07) => "Camera_LockDist",
+            (0x10, 0x08) => "Camera_LockYaw",
+            (0x10, 0x09) => "Camera_SetLimits",
+            (0x10, 0x0A) => "Camera_Attach",
+            (0x10, 0x0B) => "Camera_AttachRevert",
+            (0x10, 0x0C) => "Camera_SetFlags",
             (0x11, 0x01) => "CharList_Request",
             (0x11, 0x02) => "CharList_ListResponse",
             (0x11, 0x03) => "CharList_RequestUpdateChar",

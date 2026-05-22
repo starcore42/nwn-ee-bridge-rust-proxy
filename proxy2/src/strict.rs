@@ -15,10 +15,10 @@ use crate::{
         m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, parse_packetized_spans},
     },
     translate::{
-        ContinuationOwner, VerifiedFamily, VerifiedProof, area, char_list, chat, client_gui_event,
-        client_gui_inventory, client_input, client_login, client_quickbar, client_server_admin,
-        dialog, gameplay_stream, inventory, journal, live_object_update, login, module,
-        play_module_character_list, player_list, quickbar, sound,
+        ContinuationOwner, VerifiedFamily, VerifiedProof, area, camera, char_list, chat,
+        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
+        client_server_admin, dialog, gameplay_stream, inventory, journal, live_object_update,
+        login, module, play_module_character_list, player_list, quickbar, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1297,6 +1297,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::CharList => high.major == 0x11 && char_list_shape_valid(payload),
         VerifiedFamily::Chat => high.major == 0x09 && chat_shape_valid(payload, high),
+        VerifiedFamily::Camera => {
+            high.major == 0x10 && camera::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientArea => {
             high.major == 0x04 && high.minor == 0x03 && empty_high_level_shape_valid(payload)
         }
@@ -1426,6 +1429,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
     matches!(
         family,
         VerifiedFamily::AreaClientArea
+            | VerifiedFamily::Camera
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
             | VerifiedFamily::ClientGuiEvent
@@ -1608,6 +1612,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
         (0x0E, 0x01 | 0x03..=0x0E) => {
             HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
+        }
+        (0x10, 0x01 | 0x02) => {
+            HighPayloadValidation::Exact(camera::claim_payload_if_verified(payload).is_some())
         }
         (0x11, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x11, 0x02 | 0x04) => HighPayloadValidation::Exact(char_list_shape_valid(payload)),

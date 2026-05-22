@@ -13,6 +13,7 @@
 pub(crate) mod area;
 pub(crate) mod baseitems;
 mod bn;
+pub(crate) mod camera;
 pub(crate) mod char_list;
 pub(crate) mod chat;
 mod client_area;
@@ -112,6 +113,7 @@ pub enum VerifiedFamily {
     AreaClientArea,
     CharList,
     Chat,
+    Camera,
     ClientArea,
     ClientCharList,
     ClientGuiEvent,
@@ -163,6 +165,7 @@ impl VerifiedFamily {
             Self::AreaClientArea => "Area_ClientArea",
             Self::CharList => "CharList",
             Self::Chat => "Chat",
+            Self::Camera => "Camera",
             Self::ClientArea => "ClientArea",
             Self::ClientCharList => "ClientCharList",
             Self::ClientGuiEvent => "ClientGuiEvent",

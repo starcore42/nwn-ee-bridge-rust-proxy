@@ -9,10 +9,10 @@ use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, MFrameView},
     translate::{
-        VerifiedFamily, VerifiedPacket, VerifiedProof, area, char_list, chat, client_side_message,
-        cnw_message, custom_token, dialog, game_obj_update, gameplay_stream, inventory, journal,
-        live_object, loadbar, login, module, module_resources, module_time, party,
-        play_module_character_list, player_list, quickbar, semantic, sound,
+        VerifiedFamily, VerifiedPacket, VerifiedProof, area, camera, char_list, chat,
+        client_side_message, cnw_message, custom_token, dialog, game_obj_update, gameplay_stream,
+        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
+        party, play_module_character_list, player_list, quickbar, semantic, sound,
     },
 };
 
@@ -131,6 +131,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "Module_Time",
         verified_family: Some(VerifiedFamily::ModuleTime),
         translate: translate_module_time,
+    },
+    ServerToClientTranslator {
+        family_name: "Camera",
+        verified_family: Some(VerifiedFamily::Camera),
+        translate: translate_camera,
     },
     ServerToClientTranslator {
         family_name: "ServerStatus_ModuleResources",
@@ -729,6 +734,19 @@ fn translate_module_time(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if module_time::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_camera(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if camera::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
