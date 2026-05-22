@@ -1419,18 +1419,18 @@ fn try_parse_inventory_2e01_large_equipment_quickbar_link_tail(
     branch_0001_extended_bit: Option<usize>,
     set_count: u8,
 ) -> Option<Inventory2e00Or2e01GuiQuickbarLinkShape> {
-    // Focused HG Sooty Crow sibling of the existing 0x2E01 quickbar-link
-    // inventory family. The decompile-backed common prefix is unchanged:
-    // compact 0x0001, then 0x0400 equipment-delta bytes. This capture carries
-    // a large 0x0400 set-list followed by an eleven-byte bounded tail before
-    // the next `GQ` row stream. Keep this intentionally narrow so it cannot
-    // become a general inventory plausibility parser.
+    // Focused sibling of the existing 0x2E01 quickbar-link inventory family.
+    // The decompile-backed common prefix is unchanged: compact 0x0001, then
+    // 0x0400 equipment-delta bytes. The source stream carries a large 0x0400
+    // set-list followed by an eleven-byte bounded tail before the next `GQ`
+    // row stream. Keep this intentionally narrow so it cannot become a
+    // general inventory plausibility parser.
     if mask != 0x2E01 || set_count < 16 {
         return None;
     }
 
-    const SOOTY_CROW_QUICKBAR_LINK_FRAGMENT_TAIL_BYTES: usize = 11;
-    let span_end = cursor.checked_add(SOOTY_CROW_QUICKBAR_LINK_FRAGMENT_TAIL_BYTES)?;
+    const QUICKBAR_LINK_INTERLEAVED_FRAGMENT_TAIL_BYTES: usize = 11;
+    let span_end = cursor.checked_add(QUICKBAR_LINK_INTERLEAVED_FRAGMENT_TAIL_BYTES)?;
     if cursor > scan_end {
         return None;
     }
@@ -1454,7 +1454,7 @@ fn try_parse_inventory_2e01_large_equipment_quickbar_link_tail(
         branch_0800_present_bit,
         branch_0800_present_value: false,
         interleaved_fragment_tail_allowed: true,
-        interleaved_fragment_tail_bytes: SOOTY_CROW_QUICKBAR_LINK_FRAGMENT_TAIL_BYTES,
+        interleaved_fragment_tail_bytes: QUICKBAR_LINK_INTERLEAVED_FRAGMENT_TAIL_BYTES,
     })
 }
 

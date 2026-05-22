@@ -24,7 +24,6 @@ const NWN_BASE_ITEM_ARMOR: usize = 0x10;
 const NWN_BASE_ITEM_MAGIC_STAFF: usize = 0x2D;
 const NWN_BASE_ITEM_SHIELD: usize = 0x38;
 const NWN_BASE_ITEM_CLOAK: usize = 0x50;
-const CEP_HG_FASHION_ACCESSORY: usize = 0x13A;
 
 static BASE_ITEM_MODEL_TYPES: OnceLock<Option<Vec<i8>>> = OnceLock::new();
 static OBSERVED_HAK_ORDER_TOP_FIRST: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
@@ -56,7 +55,10 @@ pub(crate) fn base_item_model_types() -> Option<&'static [i8]> {
 
 pub(crate) fn base_item_model_type(base_item: u32) -> Option<i8> {
     let index = usize::try_from(base_item).ok()?;
-    base_item_model_types()?.get(index).copied()
+    base_item_model_types()?
+        .get(index)
+        .copied()
+        .filter(|model_type| (0..=3).contains(model_type))
 }
 
 pub(crate) fn legacy_item_appearance_read_size_for_model_type(model_type: i8) -> Option<usize> {
@@ -388,11 +390,12 @@ fn parse_baseitems_model_types_2da(text: &str) -> Option<Vec<i8>> {
 }
 
 fn fallback_baseitems_model_types() -> Vec<i8> {
-    let mut model_types = vec![0i8; 512];
-    // These rows are stable stock/CEP rows already proven by the Diamond/EE
-    // item-appearance readers and HG required-file captures. The fallback is
-    // only used when no module resource table is available; live bridge runs
-    // should load the HAK/resource-backed table above.
+    let mut model_types = vec![-1i8; 512];
+    // These are stock rows already proven by the Diamond/EE item-appearance
+    // readers and captured fallback fixtures. Custom rows must come from the
+    // active module resource stack's baseitems.2da, not from per-asset guesses.
+    // The fallback is only used when no module resource table is available;
+    // live bridge runs should load the HAK/resource-backed table above.
     for (row, model_type) in [
         // Stock weapon/projectile/tool rows seen in captured appearance
         // fixtures. These keep public tests deterministic when local 2DA/HAK
@@ -418,11 +421,29 @@ fn fallback_baseitems_model_types() -> Vec<i8> {
         (NWN_BASE_ITEM_MAGIC_STAFF, 2),
         (NWN_BASE_ITEM_SHIELD, 0),
         (NWN_BASE_ITEM_CLOAK, 1),
-        (CEP_HG_FASHION_ACCESSORY, 2),
     ] {
         if let Some(slot) = model_types.get_mut(row) {
             *slot = model_type;
         }
     }
     model_types
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_baseitems_leaves_unlisted_custom_rows_unknown() {
+        let fallback = fallback_baseitems_model_types();
+        assert_eq!(fallback.get(0x13A).copied(), Some(-1));
+    }
+
+    #[test]
+    fn fallback_baseitems_keeps_stock_reader_width_rows_known() {
+        let fallback = fallback_baseitems_model_types();
+        assert_eq!(fallback.get(NWN_BASE_ITEM_ARMOR).copied(), Some(3));
+        assert_eq!(fallback.get(NWN_BASE_ITEM_CLOAK).copied(), Some(1));
+        assert_eq!(fallback.get(NWN_BASE_ITEM_WEAPON).copied(), Some(2));
+    }
 }

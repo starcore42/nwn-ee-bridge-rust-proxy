@@ -9,6 +9,9 @@ mod packet;
 mod strict;
 mod translate;
 
+#[cfg(test)]
+mod architecture_guard;
+
 use anyhow::Context;
 use clap::Parser;
 use config::Config;
