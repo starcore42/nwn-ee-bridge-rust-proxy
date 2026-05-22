@@ -462,6 +462,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         legacy_area_object_id,
         &static_layout,
         !area_resref_was_plausible || fragmented_cexo_resource_repair_required,
+        diagnostic_mode == AreaRewriteDiagnosticMode::Normal,
         module_context,
     );
     if let Some(resource_info) = module_resource_area_repair.as_ref() {
@@ -1417,6 +1418,7 @@ fn repair_compact_area_from_module_resource(
     legacy_area_object_id: u32,
     layout: &AreaStaticLayout,
     allow_fragmented_cexo_name_repair: bool,
+    allow_valid_scan_empty_tail_rewrite: bool,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<ModuleAreaResourceInfo> {
     if layout.dialect != AreaStaticDialect::Legacy169 {
@@ -1574,6 +1576,35 @@ fn repair_compact_area_from_module_resource(
     if !module_resource_tile_scan_matches(&repaired_scan, &info) {
         return None;
     }
+    if allow_valid_scan_empty_tail_rewrite
+        && info.map_notes.is_empty()
+        && info.sounds.is_empty()
+        && legacy_area_source_tail_exact_read_proof(
+            payload,
+            effective_fragment_offset,
+            &repaired_scan,
+        )
+        .is_none()
+    {
+        let new_fragment_offset = rewrite_module_resource_tiles_with_empty_tail(
+            payload,
+            effective_fragment_offset,
+            &effective_layout,
+            &info,
+        )?;
+        effective_fragment_offset = new_fragment_offset;
+        repaired_scan = scan_area_tile_stream(payload, effective_fragment_offset);
+        if !module_resource_tile_scan_matches(&repaired_scan, &info)
+            || legacy_area_source_tail_exact_read_proof(
+                payload,
+                effective_fragment_offset,
+                &repaired_scan,
+            )
+            .is_none()
+        {
+            return None;
+        }
+    }
 
     tracing::info!(
         area_object_id = format_args!("0x{legacy_area_object_id:08X}"),
@@ -1668,8 +1699,9 @@ fn unique_no_name_area_resource_for_truncated_packet_resref(
         .iter()
         .filter(|info| {
             let info_resref = info.resref.to_ascii_lowercase();
-            info_resref.len() > packet_resref.len()
-                && info_resref.starts_with(&packet_resref)
+            (info_resref == packet_resref
+                || (info_resref.len() > packet_resref.len()
+                    && info_resref.starts_with(&packet_resref)))
                 && info.width == scan.width
                 && info.height == packet_height
                 && scan.tile_count == info.width.saturating_mul(info.height)
@@ -2143,28 +2175,33 @@ fn repair_compact_post_tile_tail_for_ee(
     }
 
     let mut candidate = payload.clone();
-    let Some((sound_count_offset, _map_note_count_consumed)) =
+    if let Some((sound_count_offset, _map_note_count_consumed)) =
         repair_compact_map_note_tail_for_ee(&mut candidate, fragment_offset, scan, info)
-    else {
-        return false;
-    };
-    if repair_compact_sound_tail_for_ee(&mut candidate, fragment_offset, sound_count_offset, info)
-        .is_none()
     {
-        return false;
+        if repair_compact_sound_tail_for_ee(
+            &mut candidate,
+            fragment_offset,
+            sound_count_offset,
+            info,
+        )
+        .is_some()
+        {
+            let candidate_scan = scan_area_tile_stream(&candidate, fragment_offset);
+            if candidate_scan.valid
+                && candidate_scan.tile_end_read_offset == scan.tile_end_read_offset
+                && legacy_area_source_tail_exact_read_proof(
+                    &candidate,
+                    fragment_offset,
+                    &candidate_scan,
+                )
+                .is_some()
+            {
+                *payload = candidate;
+                return true;
+            }
+        }
     }
-    let candidate_scan = scan_area_tile_stream(&candidate, fragment_offset);
-    if !candidate_scan.valid || candidate_scan.tile_end_read_offset != scan.tile_end_read_offset {
-        return false;
-    }
-    if legacy_area_source_tail_exact_read_proof(&candidate, fragment_offset, &candidate_scan)
-        .is_none()
-    {
-        return false;
-    }
-
-    *payload = candidate;
-    true
+    false
 }
 
 fn repair_compact_map_note_tail_for_ee(
@@ -3083,11 +3120,9 @@ fn legacy_area_source_tail_exact_read_proof(
         };
     }
 
-    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if map_pin_count != 0 {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
+    let (_map_pin_count, after_map_pins) =
+        advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
+    cursor = after_map_pins;
 
     let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
     if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
@@ -3439,13 +3474,9 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
         };
     }
 
-    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if map_pin_count != 0 {
-        // The Docks-proven EE/Diamond path has no map pins. Keep this strict
-        // until the decompiled non-empty map-pin row is traced and modeled.
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
+    let (map_pin_count, after_map_pins) =
+        advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
+    cursor = after_map_pins;
 
     let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
     if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
@@ -3494,7 +3525,6 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
         }
         cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
     }
-
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
     if u32::from(static_count) > MAX_AREA_POST_TILE_LIST_COUNT {
         return None;
@@ -3543,6 +3573,51 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
         first_post_static_count,
         second_post_static_count,
     })
+}
+
+fn advance_area_map_pin_rows(
+    payload: &[u8],
+    fragment_offset: usize,
+    cursor: usize,
+) -> Option<(u32, usize)> {
+    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if map_pin_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    let mut cursor = cursor.checked_add(4)?;
+    for _ in 0..map_pin_count {
+        // EE/Diamond post-tile map-pin rows are byte-buffer only in the
+        // decompiled Area_ClientArea reader/writer path: DWORD pin id, bounded
+        // CExoString label, then three FLOAT coordinates. They do not consume
+        // CNW fragment bits, unlike transition locstrings and sound rows.
+        let pin_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if pin_id > MAX_AREA_POST_TILE_LIST_COUNT {
+            return None;
+        }
+        let Some((_, after_label)) =
+            read_c_exo_string_shape(payload, fragment_offset, cursor.checked_add(4)?, 4096)
+        else {
+            return None;
+        };
+        for component in 0..3 {
+            let Some(value) = read_area_f32(
+                payload,
+                fragment_offset,
+                after_label.checked_add(component * 4)?,
+            ) else {
+                return None;
+            };
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+        cursor = after_label.checked_add(3 * 4)?;
+        if HIGH_LEVEL_HEADER_BYTES.checked_add(cursor)? > fragment_offset {
+            return None;
+        }
+    }
+
+    Some((map_pin_count, cursor))
 }
 
 fn repair_missing_area_height(
@@ -4021,9 +4096,21 @@ fn module_area_resource_info_for_compact_packet(
         );
         return None;
     }
-    let direct_resref_module_path = packet_area_resref
-        .as_deref()
-        .and_then(|resref| observed_module_file_path_for_area_resref(context, resref));
+    let direct_resref_module_path = packet_area_resref.as_deref().and_then(|resref| {
+        if layout.area_name_encoding == AreaNameEncoding::DiamondNoAreaName {
+            observed_module_file_path_for_area_resref(context, resref).or_else(|| {
+                observed_module_file_path_for_no_name_area_resref(
+                    context,
+                    payload,
+                    fragment_offset,
+                    layout,
+                    resref,
+                )
+            })
+        } else {
+            observed_module_file_path_for_area_resref(context, resref)
+        }
+    });
     let module_path_proven_by_direct_area_resref = direct_resref_module_path.is_some();
     let fragmented_resref_module_path =
         packet_area_resref_fragments
@@ -4449,6 +4536,55 @@ fn observed_module_file_path_for_area_resref(
                 .areas
                 .iter()
                 .any(|area| area.resref.eq_ignore_ascii_case(area_resref))
+        {
+            continue;
+        }
+        let table_key = module_area_resource_table_match_key(&table);
+        if fallback_keys.insert(table_key) {
+            fallback_count = fallback_count.saturating_add(1);
+            if fallback.is_none() {
+                fallback = Some(candidate);
+            }
+        }
+    }
+
+    if fallback_count == 1 { fallback } else { None }
+}
+
+fn observed_module_file_path_for_no_name_area_resref(
+    context: &crate::translate::module::ObservedModuleContext,
+    payload: &[u8],
+    fragment_offset: usize,
+    layout: &AreaStaticLayout,
+    area_resref: &str,
+) -> Option<PathBuf> {
+    // Diamond no-inline-name packets still carry the static area CResRef in
+    // the legacy object-id slot. When compact Module_Info alignment is stale,
+    // the packet-local CResRef plus exact static layout/tile proof can identify
+    // one local ARE without trusting the broken module name/table context.
+    if !area_resref_plausible(area_resref) {
+        return None;
+    }
+
+    let mut seen = HashSet::new();
+    let mut fallback = None;
+    let mut fallback_count = 0usize;
+    let mut fallback_keys = HashSet::new();
+    for candidate in observed_module_file_candidates(context) {
+        if !seen.insert(path_key(&candidate)) || !candidate.is_file() {
+            continue;
+        }
+        let Some(table) = read_module_area_resource_table(&candidate) else {
+            continue;
+        };
+        if unique_no_name_area_resource_for_truncated_packet_resref(
+            payload,
+            fragment_offset,
+            layout,
+            &table,
+            area_resref,
+        )
+        .is_none()
         {
             continue;
         }
@@ -5777,6 +5913,9 @@ mod tests {
     const LOCAL_CHAPTER2_A08_BARRACKS_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter2_a08_barracks_area_20260523.bin");
     #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CHAPTER3_M3Q1A10_COMPACT: &[u8] =
+        include_bytes!("../../fixtures/area/local_chapter3_m3q1a10_area_20260523.bin");
+    #[cfg(hgbridge_private_fixtures)]
     const LOCAL_XP1_Q1A2DROGONFLOOR2_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_xp1_q1a2drogonfloor2_area_20260522.bin");
 
@@ -6214,6 +6353,7 @@ mod tests {
             0x8000_0000,
             &source_layout,
             false,
+            false,
             None,
         )
         .expect("compact area source fields repaired from local ARE resource");
@@ -6526,6 +6666,7 @@ mod tests {
             fragment_offset,
             0x8000_0000,
             &source_layout,
+            false,
             false,
             None,
         )
@@ -7454,6 +7595,79 @@ mod tests {
                 .rewrite_kinds
                 .contains(&AreaRewriteKind::LegacyDiamondFragmentedAreaResrefRepair)
         );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_chapter3_no_name_area_rebuilds_resource_tiles_with_tail() {
+        let _context_guard = module_context_test_guard();
+        let chapter3_module_path = r"C:\NWN\NWN Diamond\nwm\Chapter3.nwm";
+        assert!(std::path::Path::new(chapter3_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", chapter3_module_path);
+        let observed_context = crate::translate::module::ObservedModuleContext {
+            // Local Chapter3 Module_Info can expose a stale compact module
+            // resref/name window, so the packet's direct area CResRef plus the
+            // local module snapshot must prove the ARE identity.
+            localized_name: "chap2_chap".to_string(),
+            module_resref: "chap2_chap".to_string(),
+            areas: Vec::new(),
+        };
+
+        let mut payload = LOCAL_CHAPTER3_M3Q1A10_COMPACT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("Chapter3 area read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("Chapter3 static layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("m3q1a10")
+        );
+
+        let info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_0488,
+            &layout,
+            Some(&observed_context),
+        )
+        .expect("Chapter3 no-name area packet resolves through the local ARE table");
+        assert_eq!(info.resref, "m3q1a10");
+        assert_eq!(info.tileset, "tin01");
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&observed_context),
+        )
+        .expect("Chapter3 m3q1a10 area should rewrite exactly");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten Chapter3 area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "m3q1a10");
+        assert_eq!(summary.tileset_resref, "tin01");
+        assert_eq!(summary.width, info.width);
+        assert_eq!(summary.packet_height, info.height);
+        assert_eq!(summary.inferred_height, info.height);
         assert!(
             summary
                 .rewrite_kinds
