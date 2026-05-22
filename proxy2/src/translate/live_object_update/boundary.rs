@@ -216,6 +216,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                     | 0x0000_3967
                     | 0x0000_4408
                     | 0x0000_8000
+                    | 0x0000_8008
                     | 0x0000_C408
                     | 0x0000_C40F
             ) {
@@ -264,6 +265,12 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // Its adjacent fragment-storage bytes can contain opcode-like
                 // values before the following inventory record, so only the
                 // focused creature parser/span promoter may choose the split.
+                // `0x0000_8008` is the XP2 Chapter 2 status-effect plus
+                // visibility family: the `0x0008` short effect rows are
+                // followed by `0x8000` visibility BOOLs in fragment storage,
+                // and the rewritten EE identity-map zeros can make the first
+                // `A` effect byte resemble an item add unless the typed
+                // creature boundary wins first.
                 suppress_inline_string_boundaries = false;
             }
         }
@@ -760,6 +767,7 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
     // compact numeric update families with decompile-owned byte lengths may
     // claim a boundary here.
     creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end)
+        .or_else(|| creature::try_get_ee_creature_update_8008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
@@ -1288,6 +1296,28 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // floor only; the focused creature translator still inserts EE object
         // visual-transform maps and the exact validator proves the fragment
         // cursor before emission.
+        let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        };
+        if count > 256 {
+            return LEGACY_UPDATE_HEADER_BYTES;
+        }
+        return LEGACY_UPDATE_HEADER_BYTES + 2 + usize::from(count) * 3;
+    }
+
+    if raw_mask == 0x0000_8008 {
+        // Local Diamond XP2 Chapter 2 proves the status-effect/visibility
+        // family:
+        //
+        //   U/5 header + mask
+        //   0x0008 status-effect delta: WORD count, count * 3 legacy bytes
+        //   0x8000 visibility suffix: three fragment BOOLs only
+        //
+        // The first encoded status-effect row starts with `A`, and after EE
+        // identity-map insertion that row is followed by enough zero bytes to
+        // look like a legacy item-add candidate. Keep a count-derived floor for
+        // legacy input; already-EE-shaped packets are split by
+        // `try_get_ee_creature_update_8008_record_end` before this scanner.
         let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
             return LEGACY_UPDATE_HEADER_BYTES;
         };

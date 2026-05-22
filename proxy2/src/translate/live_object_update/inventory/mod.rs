@@ -267,6 +267,7 @@ fn try_get_legacy_live_inventory_claim_candidate(
     let object_id_is_legacy_shaped = matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
         || looks_like_legacy_live_object_id_value(object_id)
         || (mask == 0x0100 && inventory_0100_compact_session_owner_id_is_allowed(object_id))
+        || (mask == 0x2000 && inventory_2000_current_player_owner_id_is_allowed(object_id))
         || (matches!(mask, 0x2E00 | 0x2E01)
             && inventory_gui_quickbar_link_owner_id_is_allowed(object_id))
         || (mask == 0x2A00 && inventory_2a00_object_id_is_allowed(object_id));
@@ -392,6 +393,13 @@ pub(super) fn try_get_legacy_live_inventory_prefix_claim(
     let mask = read_u16_le(bytes, record_offset + 5)?;
     if mask == 0x2A00 {
         return try_parse_inventory_2a00_prefix_shape(bytes, record_offset, search_end);
+    }
+    if mask == 0x2000 {
+        return try_get_inventory_2000_current_player_prefix_claim(
+            bytes,
+            record_offset,
+            search_end,
+        );
     }
     if !matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
         && !looks_like_legacy_live_object_id_value(object_id)
@@ -536,6 +544,112 @@ fn inventory_0100_compact_session_owner_id_is_allowed(object_id: u32) -> bool {
     // exception on this exact deterministic mask; broader low compact
     // inventory owners still need their own decompile/capture proof.
     object_id == 0x0000_00FE
+}
+
+fn inventory_2000_current_player_owner_id_is_allowed(object_id: u32) -> bool {
+    // Local Diamond XP2 Chapter 2 emits a standalone Feature-25 inventory row
+    // for the current player with compact owner id 0xfe. Diamond `sub_455940`
+    // and EE `sub_1407B4F70` both read the owner OBJECTID before walking the
+    // 0x2000 branch; object materialization is a later state lookup, not part
+    // of the byte cursor. Keep the compact allowance scoped to this exact mask.
+    object_id == 0x0000_00FE
+}
+
+fn try_get_inventory_2000_current_player_prefix_claim(
+    bytes: &[u8],
+    record_offset: usize,
+    search_end: usize,
+) -> Option<InventoryRecordPrefixClaim> {
+    if record_offset > bytes.len()
+        || search_end > bytes.len()
+        || search_end <= record_offset
+        || search_end - record_offset < 24
+        || bytes.get(record_offset).copied() != Some(b'I')
+        || read_u32_le(bytes, record_offset + 1)? != 0x0000_00FE
+        || read_u16_le(bytes, record_offset + 5)? != 0x2000
+    {
+        return None;
+    }
+
+    // The local XP2 Chapter 2 stream carries the already-modelled 0x2000
+    // zero/zero legacy tail shape: DWORD first_count=0, DWORD second_count=0,
+    // then two legacy OBJECTIDs before the next creature add. The exact
+    // inventory normalizer removes those two tail OBJECTIDs for EE; this prefix
+    // proof only stops the boundary scanner from swallowing the following A/5
+    // record as part of one huge inventory row.
+    let record_end = record_offset.checked_add(23)?;
+    if record_end >= search_end
+        || bytes.get(record_end).copied() != Some(b'A')
+        || bytes.get(record_end + 1).copied() != Some(super::CREATURE_OBJECT_TYPE)
+    {
+        return None;
+    }
+    let shape = try_parse_inventory_2000_record(bytes, record_offset, record_end)?;
+    if shape.second_count != 0 || shape.block_end != record_end {
+        return None;
+    }
+
+    Some(InventoryRecordPrefixClaim {
+        read_end: record_end,
+        fragment_bits: 0,
+        interleaved_fragment_tail_allowed: false,
+    })
+}
+
+#[cfg(test)]
+mod inventory_2000_current_player_tests {
+    use super::*;
+
+    #[test]
+    fn compact_current_player_feature25_tail_prefix_claim_is_bounded() {
+        let mut stream = vec![
+            b'I',
+            0xFE,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x20, // I/0x2000 owner 0xfe
+            0x00,
+            0x00,
+            0x00,
+            0x00, // first_count = 0
+            0x00,
+            0x00,
+            0x00,
+            0x00, // second_count = 0
+            0x3F,
+            0x00,
+            0x00,
+            0x80, // legacy object tail
+            0xBE,
+            0x2C,
+            0x00,
+            0x80, // legacy object tail
+            b'A',
+            super::super::CREATURE_OBJECT_TYPE,
+        ];
+
+        let prefix = try_get_legacy_live_inventory_prefix_claim(&stream, 0, stream.len())
+            .expect("compact current-player I/0x2000 tail should prove a prefix boundary");
+        assert_eq!(prefix.read_end, 23);
+        assert_eq!(prefix.fragment_bits, 0);
+        assert!(!prefix.interleaved_fragment_tail_allowed);
+
+        let claim = try_get_legacy_live_inventory_claim_candidate(&stream, 0, prefix.read_end)
+            .expect("exact legacy I/0x2000 tail record should claim");
+        assert_eq!(claim.bits, 0);
+
+        let mut record_end = prefix.read_end;
+        let rewrite = rewrite_legacy_inventory_record_for_ee(&mut stream, 0, &mut record_end)
+            .expect("legacy Feature-25 object tail should normalize away for EE");
+        assert_eq!(rewrite.bytes_removed, 8);
+        assert_eq!(record_end, 15);
+        assert_eq!(
+            stream.get(record_end..record_end + 2),
+            Some(&[b'A', 0x05][..])
+        );
+    }
 }
 
 pub(super) fn repair_missing_current_player_2a00_opcode_after_4408_for_ee(

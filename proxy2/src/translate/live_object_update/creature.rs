@@ -572,6 +572,62 @@ pub(super) fn try_get_ee_creature_update_4008_record_end(
     (cursor <= scan_end).then_some(cursor)
 }
 
+pub(super) fn try_get_ee_creature_update_8008_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // Local Diamond XP2 Chapter 2 proves the status-effect/visibility family:
+    //
+    //   0x0008: WORD visual-effect delta count, then compact effect entries.
+    //   0x8000: three visibility BOOLs in the CNW fragment stream.
+    //
+    // EE `sub_140781E80` reaches the same visual-effect helper used by 0x4008
+    // and current builds read ObjectVisualTransformData after each short
+    // effect entry. The visibility suffix has no read-buffer bytes, so this
+    // boundary helper owns only the already-rewritten EE effect list and leaves
+    // the final creature cursor validator to prove the three fragment BOOLs.
+    if offset + 12 > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(bytes, offset + 6)? != 0x0000_8008
+    {
+        return None;
+    }
+
+    let count = usize::from(read_u16_le(bytes, offset + 10)?);
+    if count == 0 || count > 256 {
+        return None;
+    }
+
+    let mut cursor = offset.checked_add(12)?;
+    for _ in 0..count {
+        if scan_end.saturating_sub(cursor)
+            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+        {
+            return None;
+        }
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
+            return None;
+        }
+        cursor = cursor.checked_add(3)?;
+        let after_visual_transform = cursor
+            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
+            bytes,
+            cursor,
+            after_visual_transform,
+        ) {
+            return None;
+        }
+        cursor = after_visual_transform;
+    }
+
+    (cursor <= scan_end).then_some(cursor)
+}
+
 pub(super) fn try_get_ee_creature_update_c40f_record_end(
     bytes: &[u8],
     offset: usize,
