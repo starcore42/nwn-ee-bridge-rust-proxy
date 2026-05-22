@@ -7,12 +7,13 @@ use super::{
     CNW_LENGTH_BYTES, DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
     EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
     EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
-    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
-    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES,
-    LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
-    MAX_LIVE_OBJECT_NAME_BYTES, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, appearance, creature, door, gui, inventory, item, locstring, placeable,
-    read_u16_le, read_u32_le, reader, trigger,
+    LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
+    LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
+    LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
+    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
+    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
+    creature, door, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le, reader,
+    trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -453,9 +454,11 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after
         }
     }
 
-    if expected_object_type == PLACEABLE_OBJECT_TYPE
-        && (raw_mask & !translated_mask & !placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) == 0
-        && (raw_mask & !translated_mask & placeable::LEGACY_PLACEABLE_LOW_TAIL_MASK) != 0
+    if matches!(
+        expected_object_type,
+        PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+    ) && (raw_mask & !translated_mask & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) == 0
+        && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
     {
         for vector_orientation in [false, true] {
             let Some(prefix_end) = missing_opcode_update_body_read_end(

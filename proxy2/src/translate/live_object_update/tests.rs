@@ -2683,6 +2683,28 @@ fn local_xp2_seq26_current_player_d5ff_inventory_consumes_terminal_fragment_tail
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_seq19_door_placeable_gui_stream_20260522_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP2 seq19 stream documents the unclaimed Diamond door/placeable + GUI-row shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.add_records >= 1);
+    assert!(claim.update_records >= 1);
+    assert!(
+        claim.live_gui_item_create_records >= 1,
+        "fixture should retain the GUI-row item-create suffix"
+    );
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_cepv22_missing_creature_appearance_is_lifecycle_safe() {
     // Local CEP v2.2 startup capture from 2026-05-20. The packet is already an
     // exact EE `P 05 01` read-window, but the `P/5` creature-appearance record

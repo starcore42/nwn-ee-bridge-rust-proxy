@@ -539,25 +539,29 @@ pub(super) fn legacy_low_bit_control_tail_ready(
         return false;
     }
 
-    // Winds of Eremor local Diamond captures show placeable `U/9 0xF7`
-    // records whose shared generic prefix is exact, followed by a
-    // legacy-only low 0x40/0x80 control WORD, with some records appending a
-    // zero WORD. EE `sub_14079C050` and `sub_1407A8460` have no consumers for
-    // those low
-    // bits; the bridge may drop this suffix only after the generic prefix has
-    // been proven by the caller's typed read-end check.
+    // Winds of Eremor and XP2 local Diamond captures show door/placeable
+    // `U/0x09|0x0A 0xF7` records whose shared generic prefix is exact, followed
+    // by a legacy-only low 0x40/0x80 control WORD. Older local captures append a
+    // zero WORD; XP2 door/placeable rows carry a second bounded mode WORD
+    // (`0x0000` or `0x0001`). EE `sub_14079C050` plus the door/placeable
+    // specific readers have no consumers for those low bits. The bridge may
+    // drop this suffix only after the caller has proven the typed generic
+    // prefix and the next record boundary.
     match record_end - offset {
         2 => read_u16_le(bytes, offset).is_some(),
-        4 => read_u16_le(bytes, offset).is_some() && read_u16_le(bytes, offset + 2) == Some(0),
+        4 => {
+            read_u16_le(bytes, offset).is_some()
+                && read_u16_le(bytes, offset + 2).is_some_and(|mode| mode <= 1)
+        }
         6 => {
             // The same local family can carry a leading zero WORD before the
-            // control/zero pair when a compact add is followed by a same-object
+            // control/mode pair when a compact add is followed by a same-object
             // update body with the top-level `U` byte omitted. That leading
             // WORD has no EE/Diamond low-bit consumer either, so it is accepted
             // only as part of this bounded suffix shape.
             read_u16_le(bytes, offset) == Some(0)
                 && read_u16_le(bytes, offset + 2).is_some()
-                && read_u16_le(bytes, offset + 4) == Some(0)
+                && read_u16_le(bytes, offset + 4).is_some_and(|mode| mode <= 1)
         }
         _ => false,
     }
@@ -591,8 +595,23 @@ mod tests {
             0,
             6
         ));
+        assert!(legacy_low_bit_control_tail_ready(
+            &[0x00, 0x00, 0x18, 0x16, 0x01, 0x00],
+            0,
+            6
+        ));
         assert!(!legacy_low_bit_control_tail_ready(
+            &[0x00, 0x00, 0x18, 0x16, 0x02, 0x00],
+            0,
+            6
+        ));
+        assert!(legacy_low_bit_control_tail_ready(
             &[0x18, 0x16, 0x01, 0x00],
+            0,
+            4
+        ));
+        assert!(!legacy_low_bit_control_tail_ready(
+            &[0x18, 0x16, 0x02, 0x00],
             0,
             4
         ));
