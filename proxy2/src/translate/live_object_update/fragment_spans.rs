@@ -8,7 +8,8 @@
 //! the exact byte/bit proof.
 
 use super::{
-    DOOR_OBJECT_TYPE, add, appearance, bits, boundary, creature, gui, inventory, read_u32_le,
+    CNW_FRAGMENT_HEADER_BITS, DOOR_OBJECT_TYPE, add, appearance, bits, boundary, creature, gui,
+    inventory, read_u32_le,
 };
 
 const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
@@ -45,6 +46,7 @@ const MAX_TRAILING_ZERO_FRAGMENT_STORAGE_BYTES: usize = 2;
 const MAX_TRAILING_FRAGMENT_PREFIX_BYTES: usize = MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES;
 const MAX_BOUNDARY_COLLISION_TRAILING_FRAGMENT_PREFIX_BYTES: usize = 96;
 const MAX_EFFECT_ONLY_FOLLOWING_GUI_FRAGMENT_SPAN_BYTES: usize = 128;
+const MAX_WORK_REMAINING_TRAILING_FRAGMENT_SPAN_BYTES: usize = 64;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const LEGACY_CREATURE_UPDATE_0067_MASK: u32 = 0x0000_0067;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
@@ -756,6 +758,72 @@ pub(super) fn promote_trailing_fragment_prefix_after_verified_record_for_ee(
 
     Some(PromotedTrailingFragmentPrefix {
         bytes_promoted: prefix.len(),
+        bits_promoted,
+    })
+}
+
+pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
+    live_bytes: &mut Vec<u8>,
+    fragment_bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+) -> Option<PromotedTrailingFragmentPrefix> {
+    if live_bytes.len() <= 3
+        || fragment_bytes.len() > 4
+        || fragment_bits
+            .iter()
+            .skip(CNW_FRAGMENT_HEADER_BITS)
+            .any(|bit| *bit)
+    {
+        return None;
+    }
+
+    let work_offset = (0..=live_bytes.len().saturating_sub(3))
+        .rev()
+        .find(|offset| {
+            live_bytes.get(*offset).copied() == Some(b'W')
+                && live_bytes
+                    .get(offset + 1)
+                    .copied()
+                    .is_some_and(|marker| marker <= 0x0F)
+                && live_bytes.get(offset + 2).copied() == Some(0x0E)
+        })?;
+    let span_start = work_offset.checked_add(3)?;
+    if span_start >= live_bytes.len()
+        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
+    {
+        return None;
+    }
+
+    let span = live_bytes.get(span_start..)?.to_vec();
+    if span.is_empty() || span.len() > MAX_WORK_REMAINING_TRAILING_FRAGMENT_SPAN_BYTES {
+        return None;
+    }
+
+    // `W current total` is the decompiled fragment-neutral work-remaining
+    // record. Local Chapter1 door-transition evidence can put the CNW
+    // fragment-storage byte stream immediately after that record while the
+    // legacy high-level declared slot is all zero. Promote only that bounded
+    // tail as the complete fragment stream; the caller still requires the
+    // rewritten payload to pass the exact EE live-object validator.
+    let promoted_bits = bits::decode_msb_valid_bits(&span, CNW_FRAGMENT_HEADER_BITS)?;
+    if promoted_bits.len() <= CNW_FRAGMENT_HEADER_BITS {
+        return None;
+    }
+    let bits_promoted = promoted_bits.len().saturating_sub(CNW_FRAGMENT_HEADER_BITS);
+
+    live_bytes.truncate(span_start);
+    *fragment_bytes = span;
+    *fragment_bits = promoted_bits;
+
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object work-remaining trailing fragment span promoted: span_start={span_start} bytes_promoted={} bits_promoted={bits_promoted}",
+            fragment_bytes.len()
+        );
+    }
+
+    Some(PromotedTrailingFragmentPrefix {
+        bytes_promoted: fragment_bytes.len(),
         bits_promoted,
     })
 }

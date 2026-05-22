@@ -2267,6 +2267,79 @@ fn trace_claim_reject(
     );
 }
 
+pub fn promote_work_remaining_trailing_fragment_span_payload_if_possible(
+    payload: &mut Vec<u8>,
+) -> Option<LiveObjectUpdateRewriteSummary> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || payload[0] != HIGH_LEVEL_ENVELOPE
+        || payload[1] != GAME_OBJECT_UPDATE_MAJOR
+        || payload[2] != LIVE_OBJECT_MINOR
+        || claim_payload_if_verified(payload).is_some()
+    {
+        return None;
+    }
+
+    let old_declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
+    let declared = usize::try_from(old_declared).ok()?;
+    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || declared > payload.len()
+        || declared > MAX_REASONABLE_LIVE_PAYLOAD_BYTES
+    {
+        return None;
+    }
+
+    let mut live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared].to_vec();
+    if !live_bytes.is_empty()
+        && !boundary::looks_like_legacy_live_object_sub_message_boundary(&live_bytes, 0)
+    {
+        return None;
+    }
+    let mut fragment_bytes = payload[declared..].to_vec();
+    let mut fragment_bits = bits::decode_msb_valid_bits(&fragment_bytes, CNW_FRAGMENT_HEADER_BITS)?;
+    let old_live_bytes_length = live_bytes.len();
+    let old_fragment_bytes = fragment_bytes.len();
+    let promotion = fragment_spans::promote_work_remaining_trailing_fragment_span_for_ee(
+        &mut live_bytes,
+        &mut fragment_bytes,
+        &mut fragment_bits,
+    )?;
+
+    let fragment_bytes = bits::pack_msb_valid_bits(fragment_bits, CNW_FRAGMENT_HEADER_BITS);
+    let new_declared_usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live_bytes.len();
+    let new_declared = u32::try_from(new_declared_usize).ok()?;
+    let new_payload_length = new_declared_usize.checked_add(fragment_bytes.len())?;
+    if new_payload_length > MAX_REASONABLE_LIVE_PAYLOAD_BYTES {
+        return None;
+    }
+
+    let mut rewritten = Vec::with_capacity(new_payload_length);
+    rewritten.extend_from_slice(&payload[..HIGH_LEVEL_HEADER_BYTES]);
+    rewritten.extend_from_slice(&new_declared.to_le_bytes());
+    rewritten.extend_from_slice(&live_bytes);
+    rewritten.extend_from_slice(&fragment_bytes);
+
+    let mut summary = LiveObjectUpdateRewriteSummary {
+        old_declared,
+        new_declared,
+        old_payload_length: payload.len(),
+        new_payload_length: rewritten.len(),
+        old_live_bytes_length,
+        new_live_bytes_length: live_bytes.len(),
+        old_fragment_bytes,
+        new_fragment_bytes: fragment_bytes.len(),
+        ..LiveObjectUpdateRewriteSummary::default()
+    };
+    summary.interleaved_fragment_spans_promoted = 1;
+    summary.interleaved_fragment_bytes_promoted =
+        u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX);
+    summary.interleaved_fragment_bits_promoted =
+        u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX);
+    summary.bytes_removed = u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX);
+
+    *payload = rewritten;
+    Some(summary)
+}
+
 pub fn rewrite_update_records_payload_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
@@ -2333,6 +2406,25 @@ pub fn rewrite_update_records_payload_if_possible(
     };
 
     let mut changed = false;
+    if let Some(promotion) = fragment_spans::promote_work_remaining_trailing_fragment_span_for_ee(
+        &mut live_bytes,
+        &mut fragment_bytes,
+        &mut fragment_bits,
+    ) {
+        changed = true;
+        summary.interleaved_fragment_spans_promoted = summary
+            .interleaved_fragment_spans_promoted
+            .saturating_add(1);
+        summary.interleaved_fragment_bytes_promoted = summary
+            .interleaved_fragment_bytes_promoted
+            .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
+        summary.interleaved_fragment_bits_promoted = summary
+            .interleaved_fragment_bits_promoted
+            .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+        summary.bytes_removed = summary
+            .bytes_removed
+            .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
+    }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut bit_cursor_reliable = true;
     let mut pending_creature_p_tail_repair: Option<

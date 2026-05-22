@@ -2764,6 +2764,30 @@ fn local_chapter1_seq19_placeable_door_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape() {
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_chapter1_seq20_transition_placeable_stream_20260523_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Chapter1 transition stream documents the unclaimed Diamond placeable shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.add_records >= 1);
+    assert!(claim.update_records >= 1);
+    assert!(
+        claim.mentions.iter().any(|mention| {
+            mention.opcode == b'U' && mention.object_type == super::PLACEABLE_OBJECT_TYPE
+        }),
+        "rewritten Chapter1 transition stream should retain placeable updates"
+    );
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     for (name, fixture) in [
         (

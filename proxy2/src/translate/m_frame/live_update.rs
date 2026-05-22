@@ -52,6 +52,12 @@ pub fn rewrite_payload_if_needed(payload: &mut Vec<u8>) -> Option<RewriteSummary
     live_object_update::rewrite_update_records_payload_if_possible(payload)
 }
 
+pub fn promote_work_remaining_trailing_fragment_span_if_needed(
+    payload: &mut Vec<u8>,
+) -> Option<RewriteSummary> {
+    live_object_update::promote_work_remaining_trailing_fragment_span_payload_if_possible(payload)
+}
+
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClaimSummary> {
     live_object_update::claim_payload_if_verified(payload)
 }
@@ -124,6 +130,14 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         .saturating_add(4)
         .min(128)
         .max(16);
+
+    summary.record_update(
+        promote_work_remaining_trailing_fragment_span_if_needed(&mut candidate).is_some(),
+    );
+    if exact_after_changed(&candidate, summary) {
+        *payload = candidate;
+        return Some(summary);
+    }
 
     summary.record_add(
         live_object::rewrite_creature_add_visual_transform_maps_if_possible(
