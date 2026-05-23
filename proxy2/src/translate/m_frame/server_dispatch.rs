@@ -2684,6 +2684,79 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_winds_eremor_live_object_pairs() {
+        // Local The Winds of Eremor run from 2026-05-24 produced new
+        // placeable-heavy streams plus an auto-inventory GUI stream. The
+        // dispatcher must keep them on the bounded live-object path until the
+        // final exact EE payload matches the harness-dumped bytes.
+        for (name, legacy, expected_ee) in [
+            (
+                "initial_placeables",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_initial_placeables_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_initial_placeables_20260524_ee.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "placeable_burst",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_placeable_burst_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_placeable_burst_20260524_ee.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "auto_inventory_gui",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_auto_inventory_gui_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_winds_eremor_seq_auto_inventory_gui_20260524_ee.bin"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw Winds of Eremor stream should document the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = dispatch_live_object_fixture(&mut payload);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher Winds of Eremor {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned Winds of Eremor payload must exact-claim");
+            assert!(claim.records_examined >= 1);
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+        }
+    }
+
     #[test]
     fn dispatcher_claims_local_to_heir_kraegen_thoraulik_live_object_stream() {
         // Local To Heir creature auto-use/dialog harness capture from

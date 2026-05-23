@@ -1754,6 +1754,81 @@ fn local_dark_ranger_seq18_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_winds_eremor_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local The Winds of Eremor harness run from 2026-05-24. These diagnostics
+    // captured both sides of three representative streams: the initial
+    // placeable expansion, a larger placeable add/update burst, and the later
+    // auto-inventory GUI body. Keep all three pinned to the exact EE writer
+    // bytes instead of only proving that the final validator accepts them.
+    for (name, legacy, expected_ee) in [
+        (
+            "initial_placeables",
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_initial_placeables_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_initial_placeables_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "placeable_burst",
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_placeable_burst_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_placeable_burst_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "auto_inventory_gui",
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_auto_inventory_gui_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_winds_eremor_seq_auto_inventory_gui_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw Winds of Eremor stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE byte shape"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain typed live-object records after rewrite"
+        );
+        if name == "auto_inventory_gui" {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain live GUI row ownership"
+            );
+        } else {
+            assert!(
+                claim.add_records + claim.update_records >= 1,
+                "{name} should retain materialized add/update records"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_cepv22_current_player_effect_gui_stream_rewrites_to_exact_shape() {
     // Local CEP v2.2 builder harness capture from 2026-05-20 after the compact
     // area/live-object startup repairs. The stream starts with the same
