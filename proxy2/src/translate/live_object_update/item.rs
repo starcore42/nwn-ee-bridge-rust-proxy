@@ -11,12 +11,19 @@ use super::{
     LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK,
     LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
-    LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, boundary, read_u16_le,
+    LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, boundary, locstring, read_u16_le,
     read_u32_le, write_u32_le,
 };
 
 const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
 const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
+const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
+const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
+    | LEGACY_UPDATE_ORIENTATION_MASK
+    | LEGACY_UPDATE_STATE_MASK
+    | LEGACY_UPDATE_APPEARANCE_MASK
+    | EE_ITEM_UPDATE_HIDDEN_MASK
+    | LEGACY_UPDATE_NAME_MASK;
 const DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES: usize = 6;
 const DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES: usize = 4;
 const MAX_UNOWNED_IGNORED_LOW_80_ZERO_PAD_BYTES: usize = 3;
@@ -41,6 +48,10 @@ pub(super) fn is_legacy_item_sentinel(bytes: &[u8], offset: usize) -> bool {
 }
 
 pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
+    if raw_mask == DIAMOND_ITEM_FULL_UPDATE_MASK {
+        return DIAMOND_ITEM_FULL_UPDATE_EE_MASK;
+    }
+
     raw_mask & !LEGACY_ITEM_IGNORED_LOW_80_MASK
 }
 
@@ -75,6 +86,24 @@ pub(super) fn rewrite_update_record_for_ee(
         raw_mask,
     )?;
 
+    if raw_mask == DIAMOND_ITEM_FULL_UPDATE_MASK {
+        write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
+        let verified_next = advance_verified_ee_item_update_record(
+            live_bytes,
+            record_offset,
+            *record_end,
+            fragment_bits,
+            bit_cursor,
+        )?;
+
+        return Some(ItemUpdateRewrite {
+            rewritten: translated_mask != raw_mask,
+            mask_changed: translated_mask != raw_mask,
+            next_bit_cursor: verified_next,
+            ..ItemUpdateRewrite::default()
+        });
+    }
+
     let mut bytes_removed = 0usize;
     if (raw_mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
         let legacy_tail_end = diamond_item_update_40_tail_end(
@@ -86,6 +115,8 @@ pub(super) fn rewrite_update_record_for_ee(
         bytes_removed = bytes_removed.saturating_add((*record_end).saturating_sub(common.read_end));
         live_bytes.drain(common.read_end..legacy_tail_end);
         *record_end = common.read_end;
+    } else if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        return None;
     } else if common.read_end != *record_end {
         return None;
     }
@@ -127,13 +158,15 @@ pub(super) fn advance_verified_ee_item_update_record(
         bit_cursor,
         mask,
     )?;
-    let next_bit_cursor = if (mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
-        advance_bits(fragment_bits, common.next_bit_cursor, 1)?
-    } else {
-        common.next_bit_cursor
-    };
+    let (read_end, next_bit_cursor) = advance_verified_ee_item_tail(
+        bytes,
+        common.read_end,
+        fragment_bits,
+        common.next_bit_cursor,
+        mask,
+    )?;
 
-    (common.read_end == record_end).then_some(next_bit_cursor)
+    (read_end == record_end).then_some(next_bit_cursor)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -241,23 +274,59 @@ fn ee_item_update_mask_supported(mask: u32) -> bool {
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
         | LEGACY_UPDATE_APPEARANCE_MASK
-        | EE_ITEM_UPDATE_HIDDEN_MASK;
+        | EE_ITEM_UPDATE_HIDDEN_MASK
+        | LEGACY_UPDATE_NAME_MASK;
     mask != 0 && (mask & !allowed) == 0
 }
 
 fn legacy_item_update_mask_supported(mask: u32) -> bool {
+    if mask == DIAMOND_ITEM_FULL_UPDATE_MASK {
+        return true;
+    }
+
     let allowed = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
         | LEGACY_UPDATE_APPEARANCE_MASK
         | EE_ITEM_UPDATE_HIDDEN_MASK
-        | LEGACY_ITEM_IGNORED_LOW_80_MASK;
+        | LEGACY_ITEM_IGNORED_LOW_80_MASK
+        | LEGACY_UPDATE_NAME_MASK;
 
-    // EE's item reader has a decompiled bit-19 display-name branch, but this
-    // bridge does not rewrite that branch yet. Quarantine it until a capture
-    // proves the exact Diamond writer shape for item display-name updates.
-    (mask & LEGACY_UPDATE_NAME_MASK) == 0 && mask != 0 && (mask & !allowed) == 0
+    mask != 0 && (mask & !allowed) == 0
+}
+
+fn advance_verified_ee_item_tail(
+    bytes: &[u8],
+    read_cursor: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    mask: u32,
+) -> Option<(usize, usize)> {
+    let mut read_cursor = read_cursor;
+    let mut fragment_cursor = bit_cursor;
+
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        let uses_locstring = fragment_bits.get(fragment_cursor).copied()?;
+        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        if uses_locstring {
+            let uses_tlk_ref = fragment_bits.get(fragment_cursor).copied()?;
+            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+            read_cursor = if uses_tlk_ref {
+                locstring::tlk_locstring_ref_end(bytes, read_cursor)?
+            } else {
+                locstring::inline_cexo_string_end(bytes, read_cursor)?
+            };
+        } else {
+            read_cursor = locstring::inline_cexo_string_end(bytes, read_cursor)?;
+        }
+    }
+
+    if (mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
+        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+    }
+
+    Some((read_cursor, fragment_cursor))
 }
 
 fn diamond_item_update_40_tail_end(
