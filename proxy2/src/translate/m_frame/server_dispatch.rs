@@ -2697,6 +2697,40 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
+        // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:
+        // the stream starts with live GUI item-create rows followed by current
+        // player update records. Keep this on the typed live-object
+        // path until the final EE validator owns the rewritten GUI body.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_chapter3_seq26_auto_inventory_gui_20260523_unclaimed.bin"
+        )
+        .to_vec();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw Chapter3 auto-inventory stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Chapter3 auto-inventory GUI claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Chapter3 GUI/inventory payload must exact-claim");
+        assert!(claim.live_gui_item_create_records >= 1);
+        assert!(claim.records_examined >= claim.live_gui_item_create_records);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[test]
     fn dispatcher_claims_current_hg_town_npc_ids_without_retry_storm() {
         for (name, fixture) in current_hg_town_npc_fixtures() {
             let mut payload = fixture.to_vec();
