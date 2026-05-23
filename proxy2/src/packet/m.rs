@@ -389,6 +389,8 @@ impl HighLevel {
             (0x14, 0x03) => "Dialog_Reply",
             (0x14, 0x04) => "Dialog_ReplyChosen",
             (0x14, 0x05) => "Dialog_Close",
+            (0x15, 0x01) => "GuiCharacterSheet_Status",
+            (0x15, 0x02) => "GuiCharacterSheet_NotPermitted",
             // Sound-object family verified from EE packet names and
             // `CNWSMessage::SendServerToPlayerSoundObject_*` senders. The
             // semantic translators own exact per-minor CNW cursor validation
@@ -412,7 +414,11 @@ impl HighLevel {
             (0x1C, 0x07) => "Journal_RemoveQuest",
             (0x1C, 0x08) => "Journal_SetQuestPicture",
             (0x1C, 0x09) => "Journal_FullUpdate",
+            (0x1C, 0x0A) => "Journal_QuestScreenOpen",
+            (0x1C, 0x0B) => "Journal_QuestScreenClosed",
             (0x1C, 0x0C) => "Journal_Updated",
+            (0x1C, 0x0D) => "Journal_RequestAdd",
+            (0x1C, 0x0E) => "Journal_RequestDelete",
             // Quickbar family confirmed from EE's packet-name table and
             // `CNWSMessage::SendServerToPlayerGuiQuickbar_SetButton`, which
             // sends family 0x1E with minor 1 for the full bar and minor 2 for
@@ -439,6 +445,7 @@ impl HighLevel {
             (0x2C, 0x01) => "LoadBar_Start",
             (0x2C, 0x02) => "LoadBar_Update",
             (0x2C, 0x03) => "LoadBar_End",
+            (0x30, 0x01) => "GuiTimingEvent_Info",
             (0x31, 0x01) => "PlayModuleCharacterList_Start",
             (0x31, 0x02) => "PlayModuleCharacterList_Stop",
             (0x31, 0x03) => "PlayModuleCharacterList_Response",

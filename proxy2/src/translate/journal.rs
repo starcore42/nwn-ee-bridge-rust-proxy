@@ -16,11 +16,26 @@
 //! - `SendServerToPlayerJournalDeleteWorldAll`: one BYTE value `1`.
 //! - `SendServerToPlayerJournalRemoveQuest`: one CExoString.
 //! - `SendServerToPlayerJournalSetQuestPicture`: CExoString tag, INT picture.
+//! - `SendServerToPlayerJournalFullUpdate`/`FullUpdateNotNeeded`: the
+//!   no-update path writes a zero-length CExoString read-window DWORD followed
+//!   by the two final BOOL bits read by EE `sub_1407A2890`
+//!   (`nwn ee decompile.txt:1850259`, `:1850816`, `:2900575`).
 //!
-//! `Journal_AddQuest` and `Journal_FullUpdate` should each get a typed parser
-//! before being claimed. `Journal_Updated` is currently claimed for the
-//! decompile-backed TLK/string-ref `WriteCExoLocStringServer(..., 0)` branch
-//! followed by the two update BOOLs.
+//! `Journal_AddQuest` and populated `Journal_FullUpdate` quest rows should
+//! each get a typed parser before being claimed. `Journal_Updated` is currently
+//! claimed for the decompile-backed TLK/string-ref
+//! `WriteCExoLocStringServer(..., 0)` branch followed by the two update BOOLs.
+//!
+//! Client-originated quest-screen status is a separate exact shape:
+//! - EE client senders `sub_1407C13D0` and `sub_1407C13B0`
+//!   (`nwn ee decompile.txt:2943724`, `nwn ee decompile.txt:2943702`) send
+//!   family `0x1C`, minors `0x0A`/`0x0B`, with null data pointer and zero
+//!   payload length, so the on-wire payload is only the three-byte high-level
+//!   header.
+//! - EE server reader `CNWSMessage::HandlePlayerToServerJournalMessage`
+//!   (`nwn ee decompile.txt:1661679`, branches at `0x1404570B6` and
+//!   `0x140457061`) reads no CNW fields for those minors before toggling the
+//!   player's journal-open state.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -32,6 +47,9 @@ const JOURNAL_DELETE_WORLD_STRREF_MINOR: u8 = 0x04;
 const JOURNAL_DELETE_WORLD_ALL_MINOR: u8 = 0x05;
 const JOURNAL_REMOVE_QUEST_MINOR: u8 = 0x07;
 const JOURNAL_SET_QUEST_PICTURE_MINOR: u8 = 0x08;
+const JOURNAL_FULL_UPDATE_MINOR: u8 = 0x09;
+const JOURNAL_QUEST_SCREEN_OPEN_MINOR: u8 = 0x0A;
+const JOURNAL_QUEST_SCREEN_CLOSED_MINOR: u8 = 0x0B;
 const JOURNAL_UPDATED_MINOR: u8 = 0x0C;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
@@ -43,6 +61,8 @@ const MAX_JOURNAL_STRING_BYTES: usize = 4096;
 const MAX_JOURNAL_FRAGMENT_BYTES: usize = 8;
 const FINAL_EMPTY_FRAGMENT_BYTE: u8 = 0x60;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const JOURNAL_FULL_UPDATE_NOT_NEEDED_FRAGMENT_BITS: usize = 2;
+const JOURNAL_FULL_UPDATE_NOT_NEEDED_FRAGMENT_BYTE: u8 = 0xBB;
 const JOURNAL_UPDATED_TLK_FRAGMENT_BITS: usize = 4;
 const JOURNAL_UPDATED_INLINE_FRAGMENT_BITS: usize = 3;
 const JOURNAL_UPDATED_LOCSTRING_HAS_TLK_REF_BIT: usize = CNW_FRAGMENT_HEADER_BITS;
@@ -75,7 +95,28 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<JournalClaimSummary> 
         (JOURNAL_MAJOR, JOURNAL_SET_QUEST_PICTURE_MINOR) => {
             claim_journal_set_quest_picture(payload, high.minor)
         }
+        (JOURNAL_MAJOR, JOURNAL_FULL_UPDATE_MINOR) => {
+            claim_journal_full_update(payload, high.minor)
+        }
         (JOURNAL_MAJOR, JOURNAL_UPDATED_MINOR) => claim_journal_updated(payload, high.minor),
+        _ => None,
+    }
+}
+
+pub fn claim_client_payload_if_verified(payload: &[u8]) -> Option<JournalClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    match (high.major, high.minor) {
+        (JOURNAL_MAJOR, JOURNAL_QUEST_SCREEN_OPEN_MINOR | JOURNAL_QUEST_SCREEN_CLOSED_MINOR) => {
+            if payload.len() != HIGH_LEVEL_HEADER_BYTES {
+                return None;
+            }
+            Some(JournalClaimSummary {
+                minor: high.minor,
+                declared: HIGH_LEVEL_HEADER_BYTES,
+                title_len: 0,
+                fragment_bytes: 0,
+            })
+        }
         _ => None,
     }
 }
@@ -154,6 +195,28 @@ fn claim_journal_set_quest_picture(payload: &[u8], minor: u8) -> Option<JournalC
         minor,
         declared,
         title_len: len,
+        fragment_bytes: payload.len() - declared,
+    })
+}
+
+fn claim_journal_full_update(payload: &[u8], minor: u8) -> Option<JournalClaimSummary> {
+    claim_journal_full_update_not_needed(payload, minor)
+}
+
+fn claim_journal_full_update_not_needed(payload: &[u8], minor: u8) -> Option<JournalClaimSummary> {
+    let declared =
+        exact_declared_with_fragment_bits(payload, JOURNAL_FULL_UPDATE_NOT_NEEDED_FRAGMENT_BITS)?;
+    if declared != READ_START.checked_add(DWORD_BYTES)?
+        || read_le_u32(payload, READ_START)? != 0
+        || payload.get(declared) != Some(&JOURNAL_FULL_UPDATE_NOT_NEEDED_FRAGMENT_BYTE)
+    {
+        return None;
+    }
+
+    Some(JournalClaimSummary {
+        minor,
+        declared,
+        title_len: 0,
         fragment_bytes: payload.len() - declared,
     })
 }
@@ -349,6 +412,64 @@ mod tests {
         assert_eq!(claim.declared, READ_START + DWORD_BYTES);
         assert_eq!(claim.title_len, 0);
         assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn claims_decompile_backed_client_quest_screen_status_shapes() {
+        for minor in [
+            JOURNAL_QUEST_SCREEN_OPEN_MINOR,
+            JOURNAL_QUEST_SCREEN_CLOSED_MINOR,
+        ] {
+            let payload = [b'P', JOURNAL_MAJOR, minor];
+            let claim = claim_client_payload_if_verified(&payload).expect("claim");
+            assert_eq!(claim.minor, minor);
+            assert_eq!(claim.declared, HIGH_LEVEL_HEADER_BYTES);
+            assert_eq!(claim.fragment_bytes, 0);
+
+            let mut trailing = payload.to_vec();
+            trailing.push(0);
+            assert!(claim_client_payload_if_verified(&trailing).is_none());
+            assert!(claim_payload_if_verified(&payload).is_none());
+        }
+    }
+
+    #[test]
+    fn claims_decompile_backed_journal_full_update_not_needed_shape() {
+        let payload = [
+            b'P',
+            JOURNAL_MAJOR,
+            JOURNAL_FULL_UPDATE_MINOR,
+            0x0B,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            JOURNAL_FULL_UPDATE_NOT_NEEDED_FRAGMENT_BYTE,
+        ];
+
+        let claim = claim_payload_if_verified(&payload).expect("claim");
+        assert_eq!(claim.minor, JOURNAL_FULL_UPDATE_MINOR);
+        assert_eq!(claim.declared, READ_START + DWORD_BYTES);
+        assert_eq!(claim.title_len, 0);
+        assert_eq!(claim.fragment_bytes, 1);
+
+        let mut wrong_fragment = payload;
+        wrong_fragment[11] ^= 1;
+        assert!(claim_payload_if_verified(&wrong_fragment).is_none());
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_contest_journal_full_update_not_needed_fixture_claims_exactly() {
+        let payload = include_bytes!(
+            "../../fixtures/journal/local_contest_journal_full_update_not_needed_20260523.bin"
+        );
+        let claim = claim_payload_if_verified(payload).expect("claim");
+        assert_eq!(claim.minor, JOURNAL_FULL_UPDATE_MINOR);
+        assert_eq!(claim.declared + claim.fragment_bytes, payload.len());
     }
 
     #[test]

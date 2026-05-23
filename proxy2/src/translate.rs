@@ -21,6 +21,7 @@ pub(crate) mod char_list;
 pub(crate) mod chat;
 mod client_area;
 mod client_char_list;
+pub(crate) mod client_character_sheet;
 pub(crate) mod client_gui_event;
 pub(crate) mod client_gui_inventory;
 mod client_high;
@@ -39,6 +40,7 @@ pub(crate) mod dialog;
 pub(crate) mod game_obj_update;
 pub(crate) mod gameplay_stream;
 pub(crate) mod genericdoors;
+pub(crate) mod gui_timing_event;
 pub(crate) mod inventory;
 pub(crate) mod journal;
 mod live_object;
@@ -125,6 +127,7 @@ pub enum VerifiedFamily {
     Cutscene,
     ClientArea,
     ClientCharList,
+    ClientCharacterSheet,
     ClientGuiEvent,
     ClientGuiInventory,
     ClientInput,
@@ -142,6 +145,7 @@ pub enum VerifiedFamily {
     GameObjUpdateObjectControl,
     GameObjUpdateVisEffect,
     GameObjUpdateDestroyItem,
+    GuiTimingEvent,
     GuiQuickbar,
     GuiQuickbarPlaceholder,
     Inventory,
@@ -185,6 +189,7 @@ impl VerifiedFamily {
             Self::Cutscene => "Cutscene",
             Self::ClientArea => "ClientArea",
             Self::ClientCharList => "ClientCharList",
+            Self::ClientCharacterSheet => "ClientCharacterSheet",
             Self::ClientGuiEvent => "ClientGuiEvent",
             Self::ClientGuiInventory => "ClientGuiInventory",
             Self::ClientInput => "ClientInput",
@@ -202,6 +207,7 @@ impl VerifiedFamily {
             Self::GameObjUpdateObjectControl => "GameObjUpdate_ObjectControl",
             Self::GameObjUpdateVisEffect => "GameObjUpdate_VisEffect",
             Self::GameObjUpdateDestroyItem => "GameObjUpdate_DestroyItem",
+            Self::GuiTimingEvent => "GuiTimingEvent_Info",
             Self::GuiQuickbar => "GuiQuickbar",
             Self::GuiQuickbarPlaceholder => "GuiQuickbarPlaceholder",
             Self::Inventory => "Inventory",

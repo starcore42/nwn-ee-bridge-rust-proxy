@@ -11,9 +11,9 @@ use crate::{
     translate::{
         VerifiedFamily, VerifiedPacket, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_side_message, cnw_message,
-        custom_token, cutscene, dialog, game_obj_update, gameplay_stream, inventory, journal,
-        live_object, loadbar, login, module, module_resources, module_time, party,
-        play_module_character_list, player_list, quickbar, safe_projectile, semantic, sound,
+        custom_token, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
+        inventory, journal, live_object, loadbar, login, module, module_resources, module_time,
+        party, play_module_character_list, player_list, quickbar, safe_projectile, semantic, sound,
     },
 };
 
@@ -157,6 +157,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         family_name: "LoadBar",
         verified_family: Some(VerifiedFamily::LoadBar),
         translate: translate_loadbar,
+    },
+    ServerToClientTranslator {
+        family_name: "GuiTimingEvent_Info",
+        verified_family: Some(VerifiedFamily::GuiTimingEvent),
+        translate: translate_gui_timing_event,
     },
     ServerToClientTranslator {
         family_name: "ClientSideMessage",
@@ -848,6 +853,19 @@ fn translate_loadbar(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if loadbar::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_gui_timing_event(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if gui_timing_event::claim_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None

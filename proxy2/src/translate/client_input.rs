@@ -77,6 +77,10 @@
 //!   (`nwn ee decompile.txt:1658279`, case block at `0x140454244`) reads no
 //!   packet fields before checking creature state and calling
 //!   `CNWSCreature::Rest`.
+//! - EE client sender `sub_1407BFFB0` (`nwn ee decompile.txt:2941899`)
+//!   sets the outgoing high-level data pointer/length to null/zero and sends
+//!   family `0x06`, minor `0x0D`, so the on-wire `Input_Rest` payload is only
+//!   the three-byte high-level header (`70 06 0D`).
 //! - EE server reader case `0x0E` in
 //!   `CNWSMessage::HandlePlayerToServerInputMessage`
 //!   (`nwn ee decompile.txt:1657940`, case block at `0x140453D1E`) reads one
@@ -167,7 +171,7 @@ const USE_SKILL_DECLARED_BYTES: usize = READ_CURSOR_START + USE_SKILL_READ_BODY_
 const USE_ITEM_MIN_DECLARED_BYTES: usize = READ_CURSOR_START + USE_ITEM_BASE_READ_BODY_BYTES;
 const TOGGLE_MODE_MIN_DECLARED_BYTES: usize = READ_CURSOR_START + TOGGLE_MODE_BASE_READ_BODY_BYTES;
 const USE_OBJECT_DECLARED_BYTES: usize = READ_CURSOR_START + USE_OBJECT_READ_BODY_BYTES;
-const EMPTY_INPUT_DECLARED_BYTES: usize = READ_CURSOR_START;
+const HIGH_LEVEL_ONLY_INPUT_BYTES: usize = HIGH_LEVEL_HEADER_BYTES;
 const MEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + MEMORIZE_SPELL_READ_BODY_BYTES;
 const UNMEMORIZE_SPELL_DECLARED_BYTES: usize = READ_CURSOR_START + UNMEMORIZE_SPELL_READ_BODY_BYTES;
 const ONE_FRAGMENT_BYTE: usize = 1;
@@ -498,8 +502,8 @@ fn claim_payload_inner(
             Some(ClientInputClaimSummary {
                 packet_name: "Input_Rest",
                 kind: ClientInputKind::Rest,
-                declared: EMPTY_INPUT_DECLARED_BYTES,
-                fragment_bytes: payload.len() - EMPTY_INPUT_DECLARED_BYTES,
+                declared: HIGH_LEVEL_ONLY_INPUT_BYTES,
+                fragment_bytes: 0,
                 primary_object_id: INVALID_OBJECT_ID,
                 rewritten_self_object_id,
                 rewritten_transition_door_close: false,
@@ -1020,7 +1024,7 @@ pub fn parse_rest(payload: &[u8]) -> Option<()> {
     if high.major != INPUT_MAJOR || high.minor != REST_MINOR {
         return None;
     }
-    require_declared_and_fragment_bits(payload, EMPTY_INPUT_DECLARED_BYTES, 0)
+    (payload.len() == HIGH_LEVEL_ONLY_INPUT_BYTES).then_some(())
 }
 
 pub fn parse_lock_object(payload: &[u8]) -> Option<LockObject> {
@@ -1549,15 +1553,15 @@ mod tests {
     }
 
     #[test]
-    fn rest_empty_shape_matches_decompile_cursor_shape() {
-        let payload = build_empty_input_payload(REST_MINOR);
+    fn rest_high_level_only_shape_matches_decompile_sender_and_reader() {
+        let payload = build_high_level_only_input_payload(REST_MINOR);
         let summary = claim_payload_if_verified(&payload).expect("rest packet should be claimed");
         parse_rest(&payload).expect("rest packet should parse");
 
         assert_eq!(summary.kind, ClientInputKind::Rest);
         assert_eq!(summary.packet_name, "Input_Rest");
-        assert_eq!(summary.declared, EMPTY_INPUT_DECLARED_BYTES);
-        assert_eq!(summary.fragment_bytes, ONE_FRAGMENT_BYTE);
+        assert_eq!(summary.declared, HIGH_LEVEL_ONLY_INPUT_BYTES);
+        assert_eq!(summary.fragment_bytes, 0);
         assert_eq!(summary.primary_object_id, INVALID_OBJECT_ID);
     }
 
@@ -1654,9 +1658,12 @@ mod tests {
         attack[11] = 0x80;
         assert!(claim_payload_if_verified(&attack).is_none());
 
-        let mut rest = build_empty_input_payload(REST_MINOR);
+        let mut rest = build_high_level_only_input_payload(REST_MINOR);
         rest.push(0);
         assert!(claim_payload_if_verified(&rest).is_none());
+
+        let old_wrapped_rest = build_cnw_wrapped_empty_input_payload(REST_MINOR);
+        assert!(claim_payload_if_verified(&old_wrapped_rest).is_none());
 
         let mut memorize = build_memorize_spell_payload(1, 0x1234, 7, 2, 0);
         memorize[15] = 0x80;
@@ -1807,10 +1814,14 @@ mod tests {
         payload
     }
 
-    fn build_empty_input_payload(minor: u8) -> Vec<u8> {
-        let mut payload = Vec::with_capacity(EMPTY_INPUT_DECLARED_BYTES + ONE_FRAGMENT_BYTE);
+    fn build_high_level_only_input_payload(minor: u8) -> Vec<u8> {
+        vec![CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, minor]
+    }
+
+    fn build_cnw_wrapped_empty_input_payload(minor: u8) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(READ_CURSOR_START + ONE_FRAGMENT_BYTE);
         payload.extend_from_slice(&[CLIENT_INPUT_ENVELOPE, INPUT_MAJOR, minor]);
-        payload.extend_from_slice(&(EMPTY_INPUT_DECLARED_BYTES as u32).to_le_bytes());
+        payload.extend_from_slice(&(READ_CURSOR_START as u32).to_le_bytes());
         payload.push(0x60);
         payload
     }

@@ -16,10 +16,11 @@ use crate::{
     },
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
-        area_visual_effect, camera, char_list, chat, client_gui_event, client_gui_inventory,
-        client_input, client_login, client_quickbar, client_server_admin, cutscene, dialog,
-        game_obj_update, gameplay_stream, inventory, journal, live_object_update, login, module,
-        play_module_character_list, player_list, quickbar, safe_projectile, sound,
+        area_visual_effect, camera, char_list, chat, client_character_sheet, client_gui_event,
+        client_gui_inventory, client_input, client_login, client_quickbar, client_server_admin,
+        cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event, inventory, journal,
+        live_object_update, login, module, play_module_character_list, player_list, quickbar,
+        safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1328,6 +1329,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                     _ => false,
                 }
         }
+        VerifiedFamily::ClientCharacterSheet => {
+            high.major == 0x15
+                && high.minor == 0x01
+                && client_character_sheet::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientGuiEvent => {
             high.major == 0x35
                 && high.minor == 0x01
@@ -1383,6 +1389,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x07
                 && game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::GuiTimingEvent => {
+            high.major == 0x30
+                && high.minor == 0x01
+                && gui_timing_event::claim_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::GameObjUpdateLiveObject => {
             high.major == 0x05 && high.minor == 0x01 && live_object_shape_valid(payload)
         }
@@ -1391,9 +1402,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
         VerifiedFamily::Inventory => inventory::claim_payload_if_verified(payload).is_some(),
-        VerifiedFamily::Journal => {
-            high.major == 0x1C && high.minor == 0x0C && journal_shape_valid(payload)
-        }
+        VerifiedFamily::Journal => high.major == 0x1C && journal_shape_valid(payload),
         VerifiedFamily::LoadBar => {
             high.major == 0x2C
                 && (0x01..=0x03).contains(&high.minor)
@@ -1473,6 +1482,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
             | VerifiedFamily::Cutscene
+            | VerifiedFamily::ClientCharacterSheet
             | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientSideMessage
             | VerifiedFamily::Dialog
@@ -1480,6 +1490,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::GameObjUpdateVisEffect
             | VerifiedFamily::GameObjUpdateDestroyItem
             | VerifiedFamily::GameObjUpdateLiveObject
+            | VerifiedFamily::GuiTimingEvent
             | VerifiedFamily::GuiQuickbar
             | VerifiedFamily::GuiQuickbarPlaceholder
             | VerifiedFamily::Inventory
@@ -2082,6 +2093,7 @@ fn journal_shape_valid(payload: &[u8]) -> bool {
     // `translate::journal`, so strict delegates exact cursor validation to
     // that semantic owner instead of allowing the opcode generically.
     journal::claim_payload_if_verified(payload).is_some()
+        || journal::claim_client_payload_if_verified(payload).is_some()
 }
 
 fn quickbar_shape_valid(payload: &[u8]) -> bool {
@@ -2965,7 +2977,7 @@ mod tests {
                 build_client_input_toggle_mode(Some(0x8000_34D2)),
             ),
             ("unlock-object", build_client_input_object_only(0x0C)),
-            ("rest", build_client_input_empty(0x0D)),
+            ("rest", build_client_input_high_level_only(0x0D)),
             ("lock-object", build_client_input_object_only(0x0E)),
             ("memorize-spell", build_client_input_memorize_spell()),
             ("unmemorize-spell", build_client_input_unmemorize_spell()),
@@ -2990,6 +3002,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn verified_journal_accepts_exact_client_quest_screen_status_minors() {
+        for minor in [0x0A, 0x0B] {
+            let payload = vec![0x70, 0x1C, minor];
+            assert!(
+                verified_family_inflated_payload_valid(VerifiedFamily::Journal, &payload),
+                "journal quest-screen minor {minor:#04x} should be accepted through exact parser ownership"
+            );
+
+            let mut trailing = payload;
+            trailing.push(0);
+            assert!(
+                !verified_family_inflated_payload_valid(VerifiedFamily::Journal, &trailing),
+                "journal quest-screen minor {minor:#04x} should reject trailing bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_client_character_sheet_accepts_exact_status_shape() {
+        let payload = [
+            0x70, 0x15, 0x01, 0x0C, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0x7C,
+        ];
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientCharacterSheet,
+            &payload,
+        ));
+
+        let mut trailing = payload.to_vec();
+        trailing.push(0);
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientCharacterSheet,
+            &trailing,
+        ));
+    }
+
+    #[test]
+    fn verified_gui_timing_event_accepts_exact_bool_branches() {
+        let start = [
+            0x50, 0x30, 0x01, 0x0C, 0x00, 0x00, 0x00, 0x5C, 0x44, 0x00, 0x00, 0x06, 0x9B,
+        ];
+        let stop = [0x50, 0x30, 0x01, 0x07, 0x00, 0x00, 0x00, 0x80];
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiTimingEvent,
+            &start,
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiTimingEvent,
+            &stop,
+        ));
+
+        let mut stale_start = start;
+        stale_start[3] = 0x0B;
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiTimingEvent,
+            &stale_start,
+        ));
+    }
+
     fn build_client_input_payload(minor: u8, body: &[u8]) -> Vec<u8> {
         const CLIENT_INPUT_HEADER_BYTES: usize = 7;
 
@@ -3008,6 +3080,10 @@ mod tests {
 
     fn build_client_input_empty(minor: u8) -> Vec<u8> {
         build_client_input_payload(minor, &[])
+    }
+
+    fn build_client_input_high_level_only(minor: u8) -> Vec<u8> {
+        vec![0x70, 0x06, minor]
     }
 
     fn build_client_input_use_feat_target() -> Vec<u8> {

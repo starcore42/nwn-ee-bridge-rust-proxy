@@ -35,13 +35,14 @@
 //! The translator rewrites that byte to `A`; the exact EE validator below never
 //! accepts the zero form.
 
-use super::{appearance, bits, boundary, read_u32_le};
+use super::{appearance, bits, boundary, read_u16_le, read_u32_le};
 
 const LIVE_GUI_OPCODE: u8 = b'G';
 const GUI_INVENTORY_SUBOPCODE: u8 = b'I';
 const GUI_INVENTORY_LOWER_SUBOPCODE: u8 = b'i';
 const GUI_REPOSITORY_SUBOPCODE: u8 = b'R';
 const GUI_REPOSITORY_LOWER_SUBOPCODE: u8 = b'r';
+const GUI_CHARACTER_SHEET_SUBOPCODE: u8 = b'S';
 const GUI_ADD_INNER_OPCODE: u8 = b'A';
 const GUI_DELETE_INNER_OPCODE: u8 = b'D';
 const GUI_UPDATE_INNER_OPCODE: u8 = b'U';
@@ -54,6 +55,115 @@ const QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW: usize = 2;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_GUI_ITEM_FRAGMENT_SPAN_BYTES: usize = 128;
 const MAX_GUI_ZERO_FRAGMENT_STORAGE_BYTES: usize = 8;
+const CHARACTER_SHEET_RECORD_HEADER_BYTES: usize = 10;
+const CHARACTER_SHEET_SUPPORTED_MASK: u32 = 0x0000_FF7F;
+const CHARACTER_SHEET_UNSUPPORTED_SKILLS_MASK: u32 = 0x0000_0080;
+const MAX_CHARACTER_SHEET_COMBAT_LIST_ROWS: usize = 255;
+const MAX_CHARACTER_SHEET_EFFECT_ICON_ROWS: usize = 255;
+const MAX_CHARACTER_SHEET_FEAT_ROWS: usize = 4096;
+const MAX_CHARACTER_SHEET_CLASS_ROWS: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
+struct LiveGuiCharacterSheetClaim {
+    record_end: usize,
+    next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CharacterSheetCombatBuildMode {
+    Legacy,
+    Build8193_35,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CharacterSheetEffectIconMode {
+    LegacyByteIds,
+    Build8193_37WordIds,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CharacterSheetParseMode {
+    combat: CharacterSheetCombatBuildMode,
+    effect_icons: CharacterSheetEffectIconMode,
+}
+
+#[derive(Debug, Clone)]
+struct CharacterSheetCursor<'a> {
+    bytes: &'a [u8],
+    scan_end: usize,
+    cursor: usize,
+    fragment_bits: &'a [bool],
+    bit_cursor: usize,
+}
+
+impl<'a> CharacterSheetCursor<'a> {
+    fn new(
+        bytes: &'a [u8],
+        offset: usize,
+        search_end: usize,
+        fragment_bits: &'a [bool],
+        bit_cursor: usize,
+    ) -> Option<Self> {
+        let scan_end = search_end.min(bytes.len());
+        (offset <= scan_end).then_some(Self {
+            bytes,
+            scan_end,
+            cursor: offset,
+            fragment_bits,
+            bit_cursor,
+        })
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let value = *self.bytes.get(self.cursor)?;
+        self.cursor = self.cursor.checked_add(1)?;
+        (self.cursor <= self.scan_end).then_some(value)
+    }
+
+    fn read_u16(&mut self) -> Option<u16> {
+        let value = read_u16_le(self.bytes, self.cursor)?;
+        self.cursor = self.cursor.checked_add(2)?;
+        (self.cursor <= self.scan_end).then_some(value)
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let value = read_u32_le(self.bytes, self.cursor)?;
+        self.cursor = self.cursor.checked_add(4)?;
+        (self.cursor <= self.scan_end).then_some(value)
+    }
+
+    fn read_bytes(&mut self, count: usize) -> Option<()> {
+        self.cursor = self.cursor.checked_add(count)?;
+        (self.cursor <= self.scan_end).then_some(())
+    }
+
+    fn read_bits(&mut self, count: usize) -> Option<u32> {
+        if count > 32 || self.fragment_bits.len().saturating_sub(self.bit_cursor) < count {
+            return None;
+        }
+
+        let mut value = 0u32;
+        for bit in self.fragment_bits[self.bit_cursor..self.bit_cursor + count]
+            .iter()
+            .copied()
+        {
+            value = (value << 1) | if bit { 1 } else { 0 };
+        }
+        self.bit_cursor += count;
+        Some(value)
+    }
+
+    fn read_bool(&mut self) -> Option<bool> {
+        self.read_bits(1).map(|value| value != 0)
+    }
+
+    fn read_byte_bits(&mut self, bits: usize) -> Option<u8> {
+        if bits == 8 {
+            return self.read_u8();
+        }
+        u8::try_from(self.read_bits(bits)?).ok()
+    }
+}
 
 /// Extract item-object ids from a GUI live-object record that has already been
 /// accepted by `advance_verified_live_gui_record`.
@@ -126,6 +236,280 @@ pub(super) fn verified_item_materialization_object_ids(
 
 fn is_materialized_item_object_id(object_id: u32) -> bool {
     object_id != 0 && object_id != 0x7F00_0000 && object_id != u32::MAX
+}
+
+fn try_get_live_gui_character_sheet_claim(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveGuiCharacterSheetClaim> {
+    let scan_end = search_end.min(bytes.len());
+    if scan_end.saturating_sub(offset) < CHARACTER_SHEET_RECORD_HEADER_BYTES
+        || bytes.get(offset).copied() != Some(LIVE_GUI_OPCODE)
+        || bytes.get(offset + 1).copied() != Some(GUI_CHARACTER_SHEET_SUBOPCODE)
+    {
+        return None;
+    }
+
+    // EE server `CNWSMessage::WriteGameObjUpdate_CharacterSheet`
+    // (`0x1404E6880`) writes `G S`, OBJECTID, then a DWORD stats-update mask.
+    // The EE client reader at `sub_1407B2740` consumes the following mask
+    // branches in the same order.  Local Diamond Contest captures prove the
+    // compatibility build branches use byte-sized effect icon ids and four-bit
+    // combat list ids; newer EE builds have decompiled word/five-bit branches,
+    // so both exact build shapes are modeled here without guessing at record
+    // boundaries.
+    let modes = [
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Legacy,
+            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Build8193_35,
+            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Legacy,
+            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Build8193_35,
+            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
+        },
+    ];
+
+    for mode in modes {
+        let mut cursor = CharacterSheetCursor::new(
+            bytes,
+            offset.checked_add(2)?,
+            scan_end,
+            fragment_bits,
+            bit_cursor,
+        )?;
+        let object_id = cursor.read_u32()?;
+        if !looks_like_character_sheet_object_id(object_id) {
+            continue;
+        }
+
+        let mask = cursor.read_u32()?;
+        if mask & !CHARACTER_SHEET_SUPPORTED_MASK != 0
+            || mask & CHARACTER_SHEET_UNSUPPORTED_SKILLS_MASK != 0
+        {
+            continue;
+        }
+
+        if parse_live_gui_character_sheet_body(&mut cursor, mask, mode).is_some() {
+            return Some(LiveGuiCharacterSheetClaim {
+                record_end: cursor.cursor,
+                next_bit_cursor: cursor.bit_cursor,
+            });
+        }
+    }
+
+    None
+}
+
+fn parse_live_gui_character_sheet_body(
+    cursor: &mut CharacterSheetCursor<'_>,
+    mask: u32,
+    mode: CharacterSheetParseMode,
+) -> Option<()> {
+    if mask & 0x0000_0001 != 0 {
+        cursor.read_bytes(6)?;
+        cursor.read_bytes(13)?;
+    }
+    for bit in [1, 2, 3, 13, 14, 15] {
+        if mask & (1 << bit) != 0 {
+            cursor.read_u8()?;
+        }
+    }
+    if mask & 0x0000_0010 != 0 {
+        cursor.read_u32()?;
+    }
+    if mask & 0x0000_0020 != 0 {
+        cursor.read_u8()?;
+        cursor.read_bool()?;
+    }
+    if mask & 0x0000_0040 != 0 {
+        parse_character_sheet_combat_information(cursor, mode.combat)?;
+    }
+    if mask & 0x0000_0400 != 0 {
+        cursor.read_u16()?;
+    }
+    if mask & 0x0000_0800 != 0 {
+        cursor.read_u16()?;
+        cursor.read_u16()?;
+    }
+    if mask & 0x0000_0100 != 0 {
+        parse_character_sheet_effect_icons(cursor, mode.effect_icons)?;
+    }
+    if mask & 0x0000_0200 != 0 {
+        parse_character_sheet_feat_rows(cursor)?;
+    }
+    if mask & 0x0000_1000 != 0 {
+        parse_character_sheet_class_rows(cursor)?;
+    }
+    Some(())
+}
+
+fn parse_character_sheet_combat_information(
+    cursor: &mut CharacterSheetCursor<'_>,
+    mode: CharacterSheetCombatBuildMode,
+) -> Option<()> {
+    cursor.read_byte_bits(3)?;
+    cursor.read_u8()?;
+    cursor.read_u8()?;
+    cursor.read_u8()?;
+    cursor.read_byte_bits(7)?;
+    cursor.read_byte_bits(5)?;
+    cursor.read_byte_bits(5)?;
+    cursor.read_byte_bits(5)?;
+    for _ in 0..3 {
+        cursor.read_byte_bits(5)?;
+        cursor.read_byte_bits(5)?;
+        cursor.read_u8()?;
+    }
+    cursor.read_byte_bits(4)?;
+    cursor.read_byte_bits(3)?;
+    if cursor.read_bool()? {
+        cursor.read_u8()?;
+        cursor.read_u8()?;
+        cursor.read_byte_bits(4)?;
+        cursor.read_byte_bits(3)?;
+    }
+
+    let first_count = usize::from(cursor.read_u8()?);
+    if first_count > MAX_CHARACTER_SHEET_COMBAT_LIST_ROWS {
+        return None;
+    }
+    for _ in 0..first_count {
+        parse_character_sheet_combat_node(cursor, 3)?;
+    }
+
+    let second_count = usize::from(cursor.read_u8()?);
+    if second_count > MAX_CHARACTER_SHEET_COMBAT_LIST_ROWS {
+        return None;
+    }
+    let second_list_action_bits = match mode {
+        CharacterSheetCombatBuildMode::Legacy => 4,
+        CharacterSheetCombatBuildMode::Build8193_35 => 5,
+    };
+    for _ in 0..second_count {
+        cursor.read_u8()?;
+        cursor.read_byte_bits(second_list_action_bits)?;
+        cursor.read_byte_bits(3)?;
+        parse_character_sheet_combat_node_optionals(cursor)?;
+    }
+    Some(())
+}
+
+fn parse_character_sheet_combat_node(
+    cursor: &mut CharacterSheetCursor<'_>,
+    first_bit_width: usize,
+) -> Option<()> {
+    cursor.read_u8()?;
+    cursor.read_byte_bits(first_bit_width)?;
+    parse_character_sheet_combat_node_optionals(cursor)
+}
+
+fn parse_character_sheet_combat_node_optionals(
+    cursor: &mut CharacterSheetCursor<'_>,
+) -> Option<()> {
+    if cursor.read_bool()? {
+        cursor.read_byte_bits(7)?;
+    }
+    if cursor.read_bool()? {
+        cursor.read_byte_bits(1)?;
+    }
+    if cursor.read_bool()? {
+        cursor.read_byte_bits(2)?;
+    }
+    Some(())
+}
+
+fn parse_character_sheet_effect_icons(
+    cursor: &mut CharacterSheetCursor<'_>,
+    mode: CharacterSheetEffectIconMode,
+) -> Option<()> {
+    let removed_count = read_character_sheet_effect_icon_count(cursor, mode)?;
+    if removed_count > MAX_CHARACTER_SHEET_EFFECT_ICON_ROWS {
+        return None;
+    }
+    for _ in 0..removed_count {
+        read_character_sheet_effect_icon_id(cursor, mode)?;
+    }
+
+    let changed_count = read_character_sheet_effect_icon_count(cursor, mode)?;
+    if changed_count > MAX_CHARACTER_SHEET_EFFECT_ICON_ROWS {
+        return None;
+    }
+    for _ in 0..changed_count {
+        read_character_sheet_effect_icon_id(cursor, mode)?;
+        cursor.read_bool()?;
+    }
+    Some(())
+}
+
+fn read_character_sheet_effect_icon_count(
+    cursor: &mut CharacterSheetCursor<'_>,
+    mode: CharacterSheetEffectIconMode,
+) -> Option<usize> {
+    match mode {
+        CharacterSheetEffectIconMode::LegacyByteIds => cursor.read_u8().map(usize::from),
+        CharacterSheetEffectIconMode::Build8193_37WordIds => cursor.read_u16().map(usize::from),
+    }
+}
+
+fn read_character_sheet_effect_icon_id(
+    cursor: &mut CharacterSheetCursor<'_>,
+    mode: CharacterSheetEffectIconMode,
+) -> Option<()> {
+    match mode {
+        CharacterSheetEffectIconMode::LegacyByteIds => {
+            cursor.read_u8()?;
+        }
+        CharacterSheetEffectIconMode::Build8193_37WordIds => {
+            cursor.read_u16()?;
+        }
+    }
+    Some(())
+}
+
+fn parse_character_sheet_feat_rows(cursor: &mut CharacterSheetCursor<'_>) -> Option<()> {
+    let known_count = usize::from(cursor.read_u16()?);
+    if known_count > MAX_CHARACTER_SHEET_FEAT_ROWS {
+        return None;
+    }
+    for _ in 0..known_count {
+        cursor.read_u16()?;
+    }
+
+    let changed_count = usize::from(cursor.read_u16()?);
+    if changed_count > MAX_CHARACTER_SHEET_FEAT_ROWS {
+        return None;
+    }
+    for _ in 0..changed_count {
+        cursor.read_u16()?;
+        cursor.read_bool()?;
+    }
+    Some(())
+}
+
+fn parse_character_sheet_class_rows(cursor: &mut CharacterSheetCursor<'_>) -> Option<()> {
+    let class_count = usize::from(cursor.read_u8()?);
+    if class_count > MAX_CHARACTER_SHEET_CLASS_ROWS {
+        return None;
+    }
+    cursor.read_bytes(class_count)
+}
+
+fn looks_like_character_sheet_object_id(object_id: u32) -> bool {
+    object_id == 0xFFFF_FFFE
+        || object_id == 0xFFFF_FFFF
+        || object_id == 0x7F00_0000
+        || boundary::looks_like_legacy_live_object_id_value(object_id)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -210,18 +594,29 @@ pub(super) fn try_get_legacy_live_gui_record_end_with_fragment_proof(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end).or_else(|| {
-        let scan_end = search_end.min(bytes.len());
-        let item_object_offset =
-            legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
-        appearance::try_get_legacy_gui_item_create_record_end_with_fragment_proof(
-            bytes,
-            item_object_offset,
-            scan_end,
-            fragment_bits,
-            bit_cursor,
-        )
-    })
+    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end)
+        .or_else(|| {
+            try_get_live_gui_character_sheet_claim(
+                bytes,
+                offset,
+                search_end,
+                fragment_bits,
+                bit_cursor,
+            )
+            .map(|claim| claim.record_end)
+        })
+        .or_else(|| {
+            let scan_end = search_end.min(bytes.len());
+            let item_object_offset =
+                legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
+            appearance::try_get_legacy_gui_item_create_record_end_with_fragment_proof(
+                bytes,
+                item_object_offset,
+                scan_end,
+                fragment_bits,
+                bit_cursor,
+            )
+        })
 }
 
 pub(super) fn try_get_verified_ee_live_gui_record_end(
@@ -231,17 +626,28 @@ pub(super) fn try_get_verified_ee_live_gui_record_end(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end).or_else(|| {
-        let scan_end = search_end.min(bytes.len());
-        let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, scan_end)?;
-        appearance::try_get_verified_ee_gui_item_create_record_end(
-            bytes,
-            item_object_offset,
-            scan_end,
-            fragment_bits,
-            bit_cursor,
-        )
-    })
+    try_get_legacy_live_gui_read_buffer_record_end(bytes, offset, search_end)
+        .or_else(|| {
+            try_get_live_gui_character_sheet_claim(
+                bytes,
+                offset,
+                search_end,
+                fragment_bits,
+                bit_cursor,
+            )
+            .map(|claim| claim.record_end)
+        })
+        .or_else(|| {
+            let scan_end = search_end.min(bytes.len());
+            let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, scan_end)?;
+            appearance::try_get_verified_ee_gui_item_create_record_end(
+                bytes,
+                item_object_offset,
+                scan_end,
+                fragment_bits,
+                bit_cursor,
+            )
+        })
 }
 
 pub(super) fn is_verified_live_gui_read_buffer_record(
@@ -268,6 +674,23 @@ pub(super) fn advance_verified_live_gui_record(
         });
     }
 
+    if let Some(claim) = try_get_live_gui_character_sheet_claim(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) {
+        if claim.record_end == record_end {
+            let before = *bit_cursor;
+            *bit_cursor = claim.next_bit_cursor;
+            return Some(LiveGuiRecordClaim {
+                item_create: false,
+                fragment_bits: (*bit_cursor).saturating_sub(before),
+            });
+        }
+    }
+
     let item_object_offset = legacy_live_gui_item_object_offset(bytes, offset, record_end)?;
     let before = *bit_cursor;
     if !appearance::advance_verified_ee_item_create_record(
@@ -281,7 +704,7 @@ pub(super) fn advance_verified_live_gui_record(
     }
     Some(LiveGuiRecordClaim {
         item_create: true,
-        fragment_bits: bit_cursor.saturating_sub(before),
+        fragment_bits: (*bit_cursor).saturating_sub(before),
     })
 }
 
@@ -299,6 +722,23 @@ pub(super) fn advance_legacy_live_gui_record_for_transport(
         });
     }
 
+    if let Some(claim) = try_get_live_gui_character_sheet_claim(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) {
+        if claim.record_end == record_end {
+            let before = *bit_cursor;
+            *bit_cursor = claim.next_bit_cursor;
+            return Some(LiveGuiRecordClaim {
+                item_create: false,
+                fragment_bits: (*bit_cursor).saturating_sub(before),
+            });
+        }
+    }
+
     let prefix = legacy_live_gui_item_create_prefix(bytes, offset, record_end)?;
     let before = *bit_cursor;
     if !appearance::advance_legacy_gui_item_create_record(
@@ -312,7 +752,7 @@ pub(super) fn advance_legacy_live_gui_record_for_transport(
     }
     Some(LiveGuiRecordClaim {
         item_create: true,
-        fragment_bits: bit_cursor.saturating_sub(before),
+        fragment_bits: (*bit_cursor).saturating_sub(before),
     })
 }
 
@@ -735,7 +1175,16 @@ fn fixed_gui_object_row_end(
 fn is_known_live_gui_subopcode(value: u8) -> bool {
     matches!(
         value,
-        b'A' | b'B' | b'C' | b'I' | b'M' | b'Q' | b'R' | b'S' | b'c' | b'i' | b'r'
+        b'A' | b'B'
+            | b'C'
+            | b'I'
+            | b'M'
+            | b'Q'
+            | b'R'
+            | GUI_CHARACTER_SHEET_SUBOPCODE
+            | b'c'
+            | b'i'
+            | b'r'
     )
 }
 

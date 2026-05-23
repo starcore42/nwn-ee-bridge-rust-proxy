@@ -3280,6 +3280,30 @@ fn local_diamond_seq12_rebuilt_high_bit_door_placeable_stream_claims_exactly() {
     assert_eq!(lifecycle_claim.update_records, 5);
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_contest_character_sheet_gs_live_object_claims_exactly() {
+    // Local Contest Of Champions strict capture from 2026-05-23. Opening the
+    // character sheet emits a `G S` live GUI row with mask 0xF17F. EE's
+    // `CNWSMessage::WriteGameObjUpdate_CharacterSheet` / client
+    // `sub_1407B2740` own the nested combat-info and effect-icon fragment bits;
+    // the strict validator must consume both the 57-byte read window and all 83
+    // post-header fragment bits before this packet can leave quarantine.
+    let payload = include_bytes!(
+        "../../../fixtures/live_object/local_contest_character_sheet_gs_live_object_20260523.bin"
+    );
+
+    let claim = super::claim_payload_if_verified(payload)
+        .expect("Contest character-sheet G/S live-object row should exact-claim");
+    assert_eq!(claim.live_bytes_length, 57);
+    assert_eq!(claim.fragment_bytes, 11);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 83);
+    assert_eq!(claim.records_examined, 1);
+    assert_eq!(claim.live_bytes_length + 7, claim.declared);
+}
+
 #[test]
 fn hg_live_empty_live_object_shell_claims_as_exact_noop() {
     // Live Higher Ground driver-only capture from 2026-05-17.  This is a

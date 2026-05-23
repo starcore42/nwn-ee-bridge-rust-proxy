@@ -9,9 +9,10 @@
 use crate::{
     packet::{hex_prefix, m::HighLevel},
     translate::{
-        VerifiedFamily, client_area, client_char_list, client_gui_event, client_gui_inventory,
-        client_input, client_login, client_module, client_quickbar, client_server_status, dialog,
-        party, play_module_character_list, semantic::SemanticSessionState,
+        VerifiedFamily, client_area, client_char_list, client_character_sheet, client_gui_event,
+        client_gui_inventory, client_input, client_login, client_module, client_quickbar,
+        client_server_status, dialog, journal, party, play_module_character_list,
+        semantic::SemanticSessionState,
     },
 };
 
@@ -109,6 +110,21 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientGuiInventory,
         });
     }
+    if let Some(summary) = client_character_sheet::claim_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = summary.packet_name,
+            status = summary.status,
+            object_id = %format_args!("0x{:08X}", summary.object_id),
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client GuiCharacterSheet payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientCharacterSheet",
+            packet_name: summary.packet_name,
+            verified_family: VerifiedFamily::ClientCharacterSheet,
+        });
+    }
     if let Some(summary) =
         client_input::claim_or_rewrite_payload_if_verified_with_state(payload, state)
     {
@@ -139,6 +155,20 @@ pub fn claim_or_rewrite_payload_if_verified(
             family_name: "Dialog",
             packet_name: high.name(),
             verified_family: VerifiedFamily::Dialog,
+        });
+    }
+    if let Some(summary) = journal::claim_client_payload_if_verified(payload) {
+        tracing::info!(
+            packet_name = high.name(),
+            minor = summary.minor,
+            declared = summary.declared,
+            fragment_bytes = summary.fragment_bytes,
+            "client Journal payload validated for Diamond/1.69"
+        );
+        return Some(ClientHighClaimSummary {
+            family_name: "ClientJournal",
+            packet_name: high.name(),
+            verified_family: VerifiedFamily::Journal,
         });
     }
     if let Some(summary) = client_quickbar::claim_payload_if_verified(payload) {
