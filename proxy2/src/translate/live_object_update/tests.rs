@@ -1553,6 +1553,37 @@ fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
 }
 
 #[test]
+fn local_to_heir_kraegen_thoraulik_live_object_stream_rewrites_to_exact_shape() {
+    // Local To Heir creature auto-use/dialog harness capture from 2026-05-24.
+    // The stream starts with a current-player update and then interleaves
+    // Kraegen/Thoraulik creature add/update records plus inventory/read-buffer
+    // state. The raw Diamond payload is intentionally kept as an unclaimed
+    // fixture so the bounded exact adapter must own the full rewrite.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_to_heir_seq19_kraegen_thoraulik_liveobject_20260524_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw To Heir Kraegen/Thoraulik stream should document the unclaimed Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.add_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.creature_appearance_records >= 1);
+    assert!(claim.creature_update_records >= 2);
+    assert!(
+        claim.mentions.iter().any(|mention| {
+            mention.opcode == b'U' && mention.object_type == super::CREATURE_OBJECT_TYPE
+        }),
+        "creature update records should remain owned by exact live-object claim"
+    );
+    assert_no_full_creature_appearance_has_longer_legacy_shape(&payload);
+}
+
+#[test]
 fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
     // Local XP1-Chapter 1 harness capture from 2026-05-22. The stream starts
     // with compact `U/5 0x00004408`, then current-player `I/0x2A00` where the

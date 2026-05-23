@@ -2639,6 +2639,36 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[test]
+    fn dispatcher_claims_local_to_heir_kraegen_thoraulik_live_object_stream() {
+        // Local To Heir creature auto-use/dialog harness capture from
+        // 2026-05-24. This payload appeared as a deflated server live-object
+        // window after the area-load gate opened; keep it pinned in the
+        // dispatcher path so it cannot regress into a silent stream stall.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_to_heir_seq19_kraegen_thoraulik_liveobject_20260524_unclaimed.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher To Heir live-object claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned To Heir live-object payload must exact-claim");
+        assert!(claim.add_records >= 1);
+        assert!(claim.creature_appearance_records >= 1);
+        assert!(claim.creature_update_records >= 1);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
     #[cfg(hgbridge_private_fixtures)]
     #[test]
     fn dispatcher_claims_local_cepv23_starter_lance_lute_patron_live_object() {
