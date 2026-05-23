@@ -217,6 +217,7 @@ fn reliable_m_sequence(packet: &[u8]) -> Option<u16> {
 
 #[derive(Debug, Clone)]
 pub(super) struct ServerHoldGate {
+    pub(super) area_first_sequence: u16,
     pub(super) release_client_ack_sequence: u16,
     pub(super) reason: AreaLoadedFallbackReason,
     pub(super) armed_at: Instant,
@@ -341,6 +342,7 @@ pub(super) fn clear_server_hold_gate(gate: &mut Option<ServerHoldGate>, trigger:
         return;
     };
     tracing::info!(
+        area_first_sequence = active.area_first_sequence,
         release_client_ack_sequence = active.release_client_ack_sequence,
         held_ms = Instant::now()
             .saturating_duration_since(active.armed_at)
@@ -427,6 +429,7 @@ pub(super) fn consume_late_native_area_loaded_after_completed_synthetic(
 
 pub(super) fn arm_server_hold_gate_after_area_release(
     gate: &mut Option<ServerHoldGate>,
+    area_first_sequence: u16,
     release_client_ack_sequence: u16,
     reason: Option<AreaLoadedFallbackReason>,
 ) {
@@ -434,6 +437,7 @@ pub(super) fn arm_server_hold_gate_after_area_release(
         return;
     };
     *gate = Some(ServerHoldGate {
+        area_first_sequence,
         release_client_ack_sequence,
         reason,
         armed_at: Instant::now(),
@@ -442,6 +446,7 @@ pub(super) fn arm_server_hold_gate_after_area_release(
         release_at: None,
     });
     tracing::info!(
+        area_first_sequence,
         release_client_ack_sequence,
         reason = reason.as_str(),
         diagnostic_grace_ms = SERVER_HOLD_GATE_ACK_DIAGNOSTIC_GRACE.as_millis(),
@@ -972,6 +977,7 @@ mod tests {
         let mut client_sequence_shifts = vec![SequenceShift { base: 73, delta: 1 }];
         let mut in_flight = None;
         let mut hold_gate = Some(ServerHoldGate {
+            area_first_sequence: 30,
             release_client_ack_sequence: 31,
             reason: AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
             armed_at: Instant::now(),
@@ -1379,6 +1385,7 @@ mod tests {
     #[test]
     fn server_hold_gate_records_ack_but_waits_for_area_loaded_proof() {
         let mut hold_gate = Some(ServerHoldGate {
+            area_first_sequence: 30,
             release_client_ack_sequence: 31,
             reason: AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
             armed_at: Instant::now(),

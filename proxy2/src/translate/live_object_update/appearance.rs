@@ -5009,18 +5009,16 @@ fn parse_creature_appearance_record(
                         cursor = candidate.second_name_end;
                         fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
                     }
-                } else if let Some((first, first_used_plain_token)) =
-                    advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
-                        .map(|first| (first, false))
-                        .or_else(|| {
-                            (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
-                                advance_legacy_locstring_token_without_proof_allow_plain_token(
-                                    bytes, cursor, limit,
-                                )
-                                .map(|first| (first, true))
-                            })?
-                        })
-                {
+                } else if let Some(first) = advance_legacy_locstring_token_without_proof(
+                    bytes, cursor, limit,
+                )
+                .or_else(|| {
+                    (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
+                        advance_legacy_locstring_token_without_proof_allow_plain_token(
+                            bytes, cursor, limit,
+                        )
+                    })?
+                }) {
                     cursor = first.end;
                     fragment_bits_consumed =
                         fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
@@ -5029,13 +5027,19 @@ fn parse_creature_appearance_record(
                         bytes, cursor, limit,
                     )
                     .or_else(|| {
-                        (first_used_plain_token && mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(
-                            || {
-                                advance_legacy_locstring_token_without_proof_allow_plain_token(
-                                    bytes, cursor, limit,
-                                )
-                            },
-                        )?
+                        (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
+                            // Diamond's locstring helper is selector-bit driven:
+                            // after the fragment stream chooses the token branch,
+                            // the reader consumes a DWORD token reference. The
+                            // high-bit marker is a no-proof ambiguity guard used
+                            // when we do not yet have the fragment cursor; a full
+                            // `0xFFFF` appearance can accept a plain second token
+                            // only if the following scalar/body/equipment block
+                            // proves the exact decompiled record shape.
+                            advance_legacy_locstring_token_without_proof_allow_plain_token(
+                                bytes, cursor, limit,
+                            )
+                        })?
                     });
                     if let Some(candidate) =
                         select_missing_second_locstring_token_high_byte_candidate(

@@ -711,6 +711,10 @@ fn queue_area_client_area_side_effects_for_window(
         fallback_reason,
         state.synthetic_area.synthesize_loadbar,
     )?;
+    let area_first_client_sequence = shift_sequence_for_peer(
+        &state.sequence.server_sequence_shifts,
+        original_first_sequence,
+    );
     let area_release_client_ack_sequence = shift_sequence_for_peer(
         &state.sequence.server_sequence_shifts,
         original_last_sequence,
@@ -727,6 +731,7 @@ fn queue_area_client_area_side_effects_for_window(
     // black while the UI and reliable stream continue.
     synthetic_area::arm_server_hold_gate_after_area_release(
         &mut state.synthetic_area.server_hold_gate,
+        area_first_client_sequence,
         area_release_client_ack_sequence,
         fallback_reason,
     );
@@ -1078,6 +1083,15 @@ fn record_server_emit_window_state(state: &mut SessionState, emit: &Emit) {
 mod tests {
     use super::*;
 
+    fn empty_reliable_m_frame(sequence: u16) -> Vec<u8> {
+        let mut packet = vec![0; crate::packet::m::LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, sequence));
+        packet[7] = 0x10;
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
+    }
+
     #[test]
     fn proxy_owned_client_ack_coalesces_and_releases_from_session_drain() {
         let mut state = SessionState::default();
@@ -1108,6 +1122,69 @@ mod tests {
                 .is_some()
         );
         assert_eq!(state.sequence.latest_server_sequence_to_client, Some(7));
+    }
+
+    #[test]
+    fn area_load_gate_releases_verified_packets_before_split_area_window() {
+        let mut state = SessionState::default();
+        state.synthetic_area.server_hold_gate = Some(synthetic_area::ServerHoldGate {
+            area_first_sequence: 14,
+            release_client_ack_sequence: 15,
+            reason: synthetic_area::AreaLoadedFallbackReason::LegacyHgMissingHeightRepair,
+            armed_at: Instant::now(),
+            area_window_released_at: None,
+            area_ack_observed_at: None,
+            release_at: None,
+        });
+
+        let pre_area = hold_or_release_server_packets(
+            &mut state,
+            VerifiedProof::family(VerifiedFamily::ClientSideMessage),
+            vec![empty_reliable_m_frame(9)],
+            "test pre-area reliable order",
+        );
+        assert_eq!(pre_area.len(), 1);
+        assert!(
+            state
+                .synthetic_area
+                .held_server_to_client_packets
+                .is_empty()
+        );
+        assert!(
+            state
+                .synthetic_area
+                .server_hold_gate
+                .as_ref()
+                .expect("hold gate")
+                .area_window_released_at
+                .is_none()
+        );
+
+        let area = hold_or_release_server_packets(
+            &mut state,
+            VerifiedProof::family(VerifiedFamily::AreaClientArea),
+            vec![empty_reliable_m_frame(14)],
+            "test area window release",
+        );
+        assert_eq!(area.len(), 1);
+        assert!(
+            state
+                .synthetic_area
+                .server_hold_gate
+                .as_ref()
+                .expect("hold gate")
+                .area_window_released_at
+                .is_some()
+        );
+
+        let post_area = hold_or_release_server_packets(
+            &mut state,
+            VerifiedProof::family(VerifiedFamily::ClientSideMessage),
+            vec![empty_reliable_m_frame(16)],
+            "test post-area gameplay hold",
+        );
+        assert!(post_area.is_empty());
+        assert_eq!(state.synthetic_area.held_server_to_client_packets.len(), 1);
     }
 }
 
@@ -1577,6 +1654,10 @@ fn area_load_gate_packet_release_mode(
     };
     if view.sequence == 0 {
         return None;
+    }
+
+    if !sequence_at_or_after(view.sequence, gate.area_first_sequence) {
+        return Some("packet sequence precedes rewritten Area_ClientArea window");
     }
 
     if gate.area_window_released_at.is_some() {

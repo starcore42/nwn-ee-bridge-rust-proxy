@@ -4963,4 +4963,24 @@ mod local_diamond_live_object_tests {
         assert!(claim.update_records > 0);
         assert!(claim.world_status_records > 0);
     }
+
+    #[test]
+    fn local_chapter1e_initial_live_object_rewrites_to_exact_claim() {
+        let mut payload = include_bytes!(
+            "../../fixtures/live_object/local_chapter1e_seq12_liveobject_20260523.bin"
+        )
+        .to_vec();
+
+        assert!(
+            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                &mut payload,
+                None,
+            ),
+            "Chapter1E initial live-object stream must rewrite through the bounded exact adapter"
+        );
+        let claim = live_update::claim_payload_if_verified(&payload)
+            .expect("Chapter1E initial live-object stream must be exact-claimable");
+        assert!(claim.add_records > 0);
+        assert!(claim.creature_update_records > 0);
+    }
 }
