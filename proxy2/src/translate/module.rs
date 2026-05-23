@@ -85,6 +85,21 @@ pub(crate) struct ObservedModuleArea {
     pub(crate) name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleEndGameMessage {
+    envelope: u8,
+    text: Vec<u8>,
+    sha1_hex: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleEndGameClaimSummary {
+    pub text_len: usize,
+    pub sha1_hex_len: Option<usize>,
+    pub declared: usize,
+    pub fragment_bytes: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct RewriteSummary {
     pub offset: usize,
@@ -180,46 +195,113 @@ pub fn module_end_game_shape_valid(payload: &[u8]) -> bool {
     // containing the module SHA1 hex string. Both Diamond and EE use the same
     // read-buffer order, so this is an identity translator with an exact cursor
     // proof rather than a byte patch.
-    if !is_high_level_envelope(payload.first().copied().unwrap_or_default())
+    claim_module_end_game_payload_if_verified(payload).is_some()
+}
+
+pub fn claim_module_end_game_payload_if_verified(
+    payload: &[u8],
+) -> Option<ModuleEndGameClaimSummary> {
+    let (message, declared) = parse_module_end_game_payload(payload)?;
+    let written = write_module_end_game_payload(&message)?;
+    if written.as_slice() != payload {
+        return None;
+    }
+
+    Some(ModuleEndGameClaimSummary {
+        text_len: message.text.len(),
+        sha1_hex_len: message.sha1_hex.as_ref().map(Vec::len),
+        declared,
+        fragment_bytes: payload.len() - declared,
+    })
+}
+
+fn parse_module_end_game_payload(payload: &[u8]) -> Option<(ModuleEndGameMessage, usize)> {
+    let envelope = payload.first().copied()?;
+    if !is_high_level_envelope(envelope)
         || payload.get(1) != Some(&MODULE_MAJOR)
         || payload.get(2) != Some(&MODULE_END_GAME_MINOR)
     {
-        return false;
+        return None;
     }
 
-    let Some(declared) =
-        read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
-        || payload.len() != declared + 1
+        || payload.len() != declared.checked_add(1)?
         || payload[declared] != FINAL_EMPTY_FRAGMENT_BYTE
     {
-        return false;
+        return None;
     }
 
     let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
-    let Some((next, _message_len)) =
-        read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_MAX_TEXT_BYTES)
-    else {
-        return false;
-    };
+    let (next, text_len) =
+        read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_MAX_TEXT_BYTES)?;
+    let text = payload[cursor + CNW_LENGTH_BYTES..cursor + CNW_LENGTH_BYTES + text_len].to_vec();
     cursor = next;
-    if cursor == declared {
-        return true;
+
+    let sha1_hex = if cursor == declared {
+        None
+    } else {
+        let (next, hash_len) =
+            read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_SHA1_HEX_BYTES)?;
+        if next != declared
+            || !(hash_len == 0
+                || (hash_len == MODULE_END_GAME_SHA1_HEX_BYTES
+                    && payload[cursor + CNW_LENGTH_BYTES..next]
+                        .iter()
+                        .copied()
+                        .all(is_ascii_hex)))
+        {
+            return None;
+        }
+        Some(payload[cursor + CNW_LENGTH_BYTES..next].to_vec())
+    };
+
+    Some((
+        ModuleEndGameMessage {
+            envelope,
+            text,
+            sha1_hex,
+        },
+        declared,
+    ))
+}
+
+fn write_module_end_game_payload(message: &ModuleEndGameMessage) -> Option<Vec<u8>> {
+    if !is_high_level_envelope(message.envelope)
+        || message.text.len() > MODULE_END_GAME_MAX_TEXT_BYTES
+        || message
+            .sha1_hex
+            .as_ref()
+            .is_some_and(|hash| hash.len() > MODULE_END_GAME_SHA1_HEX_BYTES)
+    {
+        return None;
     }
 
-    let Some((next, hash_len)) =
-        read_c_exo_string_shape(payload, cursor, declared, MODULE_END_GAME_SHA1_HEX_BYTES)
-    else {
-        return false;
-    };
-    next == declared
-        && (hash_len == 0
-            || (hash_len == MODULE_END_GAME_SHA1_HEX_BYTES
-                && payload[cursor + 4..next].iter().copied().all(is_ascii_hex)))
+    let mut out = vec![
+        message.envelope,
+        MODULE_MAJOR,
+        MODULE_END_GAME_MINOR,
+        0,
+        0,
+        0,
+        0,
+    ];
+    write_c_exo_string_bytes(&mut out, &message.text)?;
+    if let Some(hash) = &message.sha1_hex {
+        write_c_exo_string_bytes(&mut out, hash)?;
+    }
+    let declared = u32::try_from(out.len()).ok()?;
+    out[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+        .copy_from_slice(&declared.to_le_bytes());
+    out.push(FINAL_EMPTY_FRAGMENT_BYTE);
+    Some(out)
+}
+
+fn write_c_exo_string_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
+    let len = u32::try_from(bytes.len()).ok()?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+    Some(())
 }
 
 fn rewrite_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Option<RewriteSummary> {
@@ -2432,7 +2514,12 @@ mod tests {
     fn claims_decompile_backed_module_end_game_single_string_shape() {
         let payload = module_end_game_payload(&["The End"]);
 
+        let claim = claim_module_end_game_payload_if_verified(&payload)
+            .expect("single-string Module_EndGame should claim");
         assert!(module_end_game_shape_valid(&payload));
+        assert_eq!(claim.text_len, "The End".len());
+        assert_eq!(claim.sha1_hex_len, None);
+        assert_eq!(claim.fragment_bytes, 1);
     }
 
     #[test]
@@ -2440,13 +2527,33 @@ mod tests {
         let payload =
             module_end_game_payload(&["The End", "0123456789abcdef0123456789ABCDEF01234567"]);
 
+        let claim = claim_module_end_game_payload_if_verified(&payload)
+            .expect("single-string plus SHA1 Module_EndGame should claim");
         assert!(module_end_game_shape_valid(&payload));
+        assert_eq!(claim.text_len, "The End".len());
+        assert_eq!(claim.sha1_hex_len, Some(MODULE_END_GAME_SHA1_HEX_BYTES));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn claims_local_kingmaker_module_end_game_premiumdemo_fixture() {
+        let payload = include_bytes!(
+            "../../fixtures/module_info/local_kingmaker_module_end_game_premiumdemo_20260523.bin"
+        );
+
+        let claim = claim_module_end_game_payload_if_verified(payload)
+            .expect("local Kingmaker Module_EndGame should claim exactly");
+        assert!(module_end_game_shape_valid(payload));
+        assert_eq!(claim.text_len, "premiumdemo".len());
+        assert_eq!(claim.sha1_hex_len, None);
+        assert_eq!(claim.declared, payload.len() - 1);
     }
 
     #[test]
     fn rejects_module_end_game_with_unverified_second_string_shape() {
         let payload = module_end_game_payload(&["The End", "not-a-sha1"]);
 
+        assert!(claim_module_end_game_payload_if_verified(&payload).is_none());
         assert!(!module_end_game_shape_valid(&payload));
     }
 

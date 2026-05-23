@@ -134,6 +134,11 @@ const SERVER_TO_CLIENT_TRANSLATORS: &[ServerToClientTranslator] = &[
         translate: translate_module_time,
     },
     ServerToClientTranslator {
+        family_name: "Module_EndGame",
+        verified_family: Some(VerifiedFamily::ModuleEndGame),
+        translate: translate_module_end_game,
+    },
+    ServerToClientTranslator {
         family_name: "Camera",
         verified_family: Some(VerifiedFamily::Camera),
         translate: translate_camera,
@@ -770,6 +775,19 @@ fn translate_module_time(
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if module_time::claim_payload_if_verified(payload).is_some() {
+        claimed()
+    } else {
+        ServerTranslatorOutcome::None
+    }
+}
+
+fn translate_module_end_game(
+    payload: &mut Vec<u8>,
+    _: Option<&area::AreaPlaceableContext>,
+    _: SemanticScope,
+    _: Option<&module_resources::ModuleResourceRuntime>,
+) -> ServerTranslatorOutcome {
+    if module::claim_module_end_game_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -2412,6 +2430,31 @@ mod tests {
         assert!(rewrite.any_rewrite());
         assert_eq!(rewrite.verified_family(), VerifiedFamily::ModuleInfo);
         assert!(crate::strict::module_info_shape_valid(&payload));
+    }
+
+    #[test]
+    fn dispatcher_claims_local_kingmaker_module_end_game_without_raw_passthrough() {
+        let mut payload = include_bytes!(
+            "../../../fixtures/module_info/local_kingmaker_module_end_game_premiumdemo_20260523.bin"
+        )
+        .to_vec();
+
+        let rewrite = rewrite_single_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            !rewrite.should_quarantine(),
+            "dispatcher must not quarantine exact Module_EndGame"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(rewrite.verified_family(), VerifiedFamily::ModuleEndGame);
+        assert!(module::claim_module_end_game_payload_if_verified(&payload).is_some());
     }
 
     #[test]

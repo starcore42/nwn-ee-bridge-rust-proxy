@@ -1402,6 +1402,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::Login => {
             high.major == 0x02 && login::claim_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::ModuleEndGame => {
+            high.major == 0x03
+                && high.minor == 0x0E
+                && module::claim_module_end_game_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ModuleInfo => {
             high.major == 0x03 && high.minor == 0x01 && module_info_shape_valid(payload)
         }
@@ -1481,6 +1486,7 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::Journal
             | VerifiedFamily::LoadBar
             | VerifiedFamily::Login
+            | VerifiedFamily::ModuleEndGame
             | VerifiedFamily::ModuleInfo
             | VerifiedFamily::ModuleTime
             | VerifiedFamily::Party
