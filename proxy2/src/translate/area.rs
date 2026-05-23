@@ -4593,6 +4593,7 @@ fn observed_module_file_path_for_no_name_area_resref(
                 area_resref,
             )
             .is_some()
+                || exact_no_name_area_resource_for_packet_resref(&table, area_resref).is_some()
         }) {
             return Some(candidate);
         }
@@ -4630,6 +4631,22 @@ fn observed_module_file_path_for_no_name_area_resref(
     }
 
     if fallback_count == 1 { fallback } else { None }
+}
+
+fn exact_no_name_area_resource_for_packet_resref(
+    table: &ModuleAreaResourceTable,
+    packet_area_resref: &str,
+) -> Option<ModuleAreaResourceInfo> {
+    if !area_resref_plausible(packet_area_resref) {
+        return None;
+    }
+    let mut matches = table
+        .areas
+        .iter()
+        .filter(|info| info.resref.eq_ignore_ascii_case(packet_area_resref))
+        .cloned()
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches.remove(0))
 }
 
 fn observed_module_file_path_for_fragmented_area_resref(
@@ -5966,6 +5983,9 @@ mod tests {
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CHAPTER2E_M2Q4A_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter2e_m2q4a_client_area_20260522.bin");
+    #[cfg(hgbridge_private_fixtures)]
+    const LOCAL_CHAPTER2E_M2Q4A_NO_CONTEXT: &[u8] =
+        include_bytes!("../../fixtures/area/local_chapter2e_m2q4a_area_no_context_20260523.bin");
     #[cfg(hgbridge_private_fixtures)]
     const LOCAL_CHAPTER2_A08_BARRACKS_COMPACT: &[u8] =
         include_bytes!("../../fixtures/area/local_chapter2_a08_barracks_area_20260523.bin");
@@ -7615,6 +7635,74 @@ mod tests {
             summary.tile_count,
             compact_info.width.saturating_mul(compact_info.height)
         );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondNoAreaName)
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+        assert_eq!(proof.read_end, summary.new_read_size);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn local_chapter2e_no_name_area_resolves_from_explicit_module_without_context() {
+        let _context_guard = module_context_test_guard();
+        let chapter2e_module_path = r"C:\NWN\NWN Diamond\nwm\Chapter2E.nwm";
+        assert!(std::path::Path::new(chapter2e_module_path).is_file());
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", chapter2e_module_path);
+        let empty_context = crate::translate::module::ObservedModuleContext {
+            localized_name: String::new(),
+            module_resref: String::new(),
+            areas: Vec::new(),
+        };
+
+        let mut payload = LOCAL_CHAPTER2E_M2Q4A_NO_CONTEXT.to_vec();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&payload).expect("Chapter2E area read window");
+        let layout = area_static_layout(&payload, fragment_offset).expect("Chapter2E layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            fixed_resref_preview(
+                &payload,
+                LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET + LEGACY_AREA_OBJECT_ID_BYTES
+            )
+            .as_deref(),
+            Some("m2q4a")
+        );
+
+        let compact_info = module_area_resource_info_for_compact_packet(
+            &payload,
+            fragment_offset,
+            0x8000_03B3,
+            &layout,
+            Some(&empty_context),
+        )
+        .expect("explicit local module path should prove packet-local area CResRef");
+        assert_eq!(compact_info.resref, "m2q4a");
+
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&empty_context),
+        )
+        .expect("Chapter2E m2q4a area should rewrite before Module_Info context");
+        let proof = ee_area_client_area_exact_read_proof(&payload)
+            .expect("rewritten Chapter2E area should satisfy EE LoadArea cursor proof");
+
+        assert_eq!(summary.area_resref, "m2q4a");
+        assert_eq!(summary.tileset_resref, compact_info.tileset);
+        assert_eq!(summary.width, compact_info.width);
+        assert_eq!(summary.packet_height, compact_info.height);
         assert!(
             summary
                 .rewrite_kinds
