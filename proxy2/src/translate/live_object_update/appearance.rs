@@ -564,7 +564,9 @@ fn try_get_ee_creature_appearance_record_end_by_byte_shape_impl(
             if accepted
                 .as_ref()
                 .map(|current| {
-                    legacy_appearance_boundary_candidate_is_better(mask, &record, current)
+                    ee_appearance_boundary_candidate_is_better(
+                        mask, bytes, scan_end, &record, current,
+                    )
                 })
                 .unwrap_or(true)
             {
@@ -599,8 +601,8 @@ fn try_get_ee_creature_appearance_record_end_by_byte_shape_impl(
                         if accepted
                             .as_ref()
                             .map(|current| {
-                                legacy_appearance_boundary_candidate_is_better(
-                                    mask, &record, current,
+                                ee_appearance_boundary_candidate_is_better(
+                                    mask, bytes, scan_end, &record, current,
                                 )
                             })
                             .unwrap_or(true)
@@ -631,8 +633,8 @@ fn try_get_ee_creature_appearance_record_end_by_byte_shape_impl(
                                 if accepted
                                     .as_ref()
                                     .map(|current| {
-                                        legacy_appearance_boundary_candidate_is_better(
-                                            mask, &record, current,
+                                        ee_appearance_boundary_candidate_is_better(
+                                            mask, bytes, scan_end, &record, current,
                                         )
                                     })
                                     .unwrap_or(true)
@@ -652,6 +654,28 @@ fn try_get_ee_creature_appearance_record_end_by_byte_shape_impl(
         }
     }
     accepted.map(|record| record.record_end)
+}
+
+fn ee_appearance_boundary_candidate_is_better(
+    mask: u16,
+    bytes: &[u8],
+    scan_end: usize,
+    candidate: &LegacyAppearanceRecord,
+    current: &LegacyAppearanceRecord,
+) -> bool {
+    let candidate_hits_following_creature_update =
+        ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
+            bytes, candidate, scan_end,
+        );
+    let current_hits_following_creature_update =
+        ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
+            bytes, current, scan_end,
+        );
+    if candidate_hits_following_creature_update != current_hits_following_creature_update {
+        return candidate_hits_following_creature_update;
+    }
+
+    legacy_appearance_boundary_candidate_is_better(mask, candidate, current)
 }
 
 fn parse_ee_creature_appearance_byte_shape_candidate(
@@ -745,7 +769,7 @@ fn ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
     candidate: &LegacyAppearanceRecord,
     scan_end: usize,
 ) -> bool {
-    if candidate.equipment_records == 0 || !candidate.ee_extra_byte_inserts.is_empty() {
+    if !candidate.ee_extra_byte_inserts.is_empty() {
         return false;
     }
     let search_limit = candidate
@@ -754,7 +778,10 @@ fn ee_full_appearance_candidate_ends_before_bounded_creature_update_tail(
         .min(scan_end)
         .min(bytes.len());
     (candidate.record_end..search_limit.saturating_sub(1)).any(|following_offset| {
-        bytes.get(following_offset).copied() == Some(b'U')
+        let immediate_following_update = following_offset == candidate.record_end;
+        let equipment_backed_tail = candidate.equipment_records != 0;
+        (immediate_following_update || equipment_backed_tail)
+            && bytes.get(following_offset).copied() == Some(b'U')
             && bytes.get(following_offset + 1).copied() == Some(LEGACY_CREATURE_TYPE)
             && read_u32_le(bytes, following_offset.saturating_add(6)) == Some(0x0000_3967)
     })

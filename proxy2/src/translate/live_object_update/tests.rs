@@ -1652,6 +1652,41 @@ fn local_dark_ranger_u5_effect_inventory_gui_stream_rewrites_to_exact_shape() {
     assert!(claim.add_records >= 1);
 }
 
+#[test]
+fn local_dark_ranger_seq15_4408_inventory_gui_stream_rewrites_to_exact_shape() {
+    // Local Dark Ranger harness capture from 2026-05-23 after the BNK2 local
+    // transport delay was fixed. The packet is already a full declared
+    // `P/05/01` live-object payload and starts with the compact Diamond
+    // current-player `U/5 0x4408` effect/status reader before the same
+    // inventory/GUI/innkeeper add-update family as the older Dark Ranger
+    // fixture.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_dark_ranger_seq15_u5_4408_inventory_gui_20260523_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Dark Ranger seq15 stream is still legacy-shaped"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("Dark Ranger seq15 0x4408 + inventory stream should rewrite");
+    assert!(
+        rewrite.update_records_rewritten >= 1
+            || rewrite.bytes_inserted > 0
+            || rewrite.interleaved_fragment_spans_promoted > 0,
+        "Dark Ranger seq15 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten Dark Ranger seq15 stream should validate exactly");
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.live_gui_read_buffer_records >= 1);
+    assert!(claim.add_records >= 1);
+}
+
 #[cfg(hgbridge_private_fixtures)]
 #[test]
 fn local_cepv22_current_player_effect_gui_stream_rewrites_to_exact_shape() {

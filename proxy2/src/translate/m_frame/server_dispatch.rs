@@ -2591,6 +2591,37 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_claims_local_dark_ranger_seq15_4408_inventory_gui_stream() {
+        // Local Dark Ranger seq15 from 2026-05-23: full declared `P/05/01`
+        // payload with compact `U/5 0x4408`, current-player inventory/GUI
+        // rows, and an innkeeper full `P/5` appearance followed immediately by
+        // `U/5 0x3967`. The dispatcher must keep this in the typed live-object
+        // path until the final EE validator owns both records.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq15_u5_4408_inventory_gui_20260523_unclaimed.bin"
+        )
+        .to_vec();
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Dark Ranger seq15 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect(
+                "dispatcher-owned Dark Ranger seq15 payload must be exact EE live-object shape",
+            );
+        assert!(claim.records_examined >= 1);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[test]
     fn dispatcher_claims_local_chapter2_area_entry_coalesced_live_object() {
         // Local Diamond Chapter2 after the `a08_barracks` area load: the
         // coalesced live-object stream carries placeable/object updates and

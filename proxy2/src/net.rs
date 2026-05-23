@@ -21,7 +21,8 @@ use crate::{
 
 const MAX_DATAGRAM: usize = 65_535;
 const LOOP_SLEEP: Duration = Duration::from_millis(1);
-const EE_CRYPTO_RESPONSE_DEFER: Duration = Duration::from_millis(100);
+const EE_CRYPTO_DEFAULT_RESPONSE_DEFER: Duration = Duration::from_millis(100);
+const EE_CRYPTO_BNK2_RESPONSE_DEFER: Duration = Duration::from_millis(500);
 const MAX_SERVER_DATAGRAMS_PER_TICK_PER_SESSION: usize = 16;
 
 #[derive(Debug)]
@@ -101,15 +102,16 @@ fn drain_client_socket(
                         // (`m_kx_stage = 1`, player/CD-key strings, timeout).
                         // On loopback, an immediate BNK2 can be delivered into
                         // `HandleBNK2Message` while the native StartConnect
-                        // frame is still unwinding. Queue the crypto response
-                        // for a short transport tick so the packet shape remains
-                        // unchanged but delivery matches the non-reentrant
+                        // frame is still unwinding. Queue BNK2 for a bounded
+                        // local transport delay so the packet bytes remain
+                        // exact while delivery matches the non-reentrant
                         // ordering a real remote server naturally provides.
-                        let due = Instant::now() + EE_CRYPTO_RESPONSE_DEFER;
+                        let defer = ee_crypto_response_defer(&response);
+                        let due = Instant::now() + defer;
                         tracing::info!(
                             %client,
                             len = response.len(),
-                            defer_ms = EE_CRYPTO_RESPONSE_DEFER.as_millis(),
+                            defer_ms = defer.as_millis(),
                             tag = %String::from_utf8_lossy(response.get(..4).unwrap_or(&[])),
                             "queued EE crypto response for deferred delivery"
                         );
@@ -469,6 +471,14 @@ fn drain_pending_ee_crypto_responses(
     Ok(())
 }
 
+fn ee_crypto_response_defer(response: &[u8]) -> Duration {
+    if response.get(..4) == Some(b"BNK2") {
+        EE_CRYPTO_BNK2_RESPONSE_DEFER
+    } else {
+        EE_CRYPTO_DEFAULT_RESPONSE_DEFER
+    }
+}
+
 fn expire_sessions(config: &Config, sessions: &mut HashMap<SocketAddr, Session>) {
     let now = Instant::now();
     let timeout = config.session_timeout();
@@ -502,4 +512,29 @@ fn log_proxy_generated_client_packet(client: SocketAddr, server: SocketAddr, byt
         high_name = high.as_ref().map(|high| high.name()),
         "sending proxy-generated client-to-server packet"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bnk2_response_uses_conservative_loopback_defer() {
+        assert_eq!(
+            ee_crypto_response_defer(b"BNK2payload"),
+            EE_CRYPTO_BNK2_RESPONSE_DEFER
+        );
+    }
+
+    #[test]
+    fn non_bnk2_crypto_response_keeps_default_defer() {
+        assert_eq!(
+            ee_crypto_response_defer(b"BNK4\x01\x02\x03\x04"),
+            EE_CRYPTO_DEFAULT_RESPONSE_DEFER
+        );
+        assert_eq!(
+            ee_crypto_response_defer(b""),
+            EE_CRYPTO_DEFAULT_RESPONSE_DEFER
+        );
+    }
 }
