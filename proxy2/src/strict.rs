@@ -261,21 +261,21 @@ pub fn decide_verified_translated(
             if family == VerifiedFamily::ClientServerAdmin {
                 if !matches!(direction, Direction::ClientToServer) {
                     return StrictDecision::quarantine(
-                        "M/verified-raw-client",
+                        "M/verified-client-admin",
                         family.as_str(),
                         "client-server-admin-wrong-direction",
                     );
                 }
                 if view.trailing_payload_length != 0 {
                     return StrictDecision::quarantine(
-                        "M/verified-raw-client",
+                        "M/verified-client-admin",
                         family.as_str(),
                         "client-server-admin-trailing-spans-unsupported",
                     );
                 }
                 if view.high.is_some() || view.payload_length == 0 {
                     return StrictDecision::quarantine(
-                        "M/verified-raw-client",
+                        "M/verified-client-admin",
                         family.as_str(),
                         "client-server-admin-invalid-frame-kind",
                     );
@@ -284,20 +284,20 @@ pub fn decide_verified_translated(
                 let payload_end = payload_start + view.payload_length;
                 let Some(payload) = frame.bytes.get(payload_start..payload_end) else {
                     return StrictDecision::quarantine(
-                        "M/verified-raw-client",
+                        "M/verified-client-admin",
                         family.as_str(),
                         "client-server-admin-payload-overflow",
                     );
                 };
-                if client_server_admin::raw_payload_shape_valid(payload) {
+                if client_server_admin::exact_payload_valid(payload) {
                     return StrictDecision::allow(
-                        "M/verified-raw-client",
+                        "M/verified-client-admin",
                         family.as_str(),
-                        "verified-client-server-admin-raw-shape",
+                        "verified-client-server-admin-exact-shape",
                     );
                 }
                 return StrictDecision::quarantine(
-                    "M/verified-raw-client",
+                    "M/verified-client-admin",
                     family.as_str(),
                     "client-server-admin-invalid-shape",
                 );

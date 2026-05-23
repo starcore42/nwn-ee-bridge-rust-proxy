@@ -54,7 +54,7 @@ pub(super) fn translate_client_frame(
                 packetized_sequence = view.packetized_sequence,
                 payload_len = view.payload_length,
                 trailing_payload_len = view.trailing_payload_length,
-                "client raw server-admin M payload semantically claimed for Diamond/1.69"
+                "client server-admin M payload semantically claimed for Diamond/1.69"
             );
             return Ok(ClientFrameTranslation {
                 family: VerifiedFamily::ClientServerAdmin,
@@ -656,5 +656,20 @@ mod tests {
         assert_eq!(out_view.packetized_sequence, 1);
         assert_eq!(out_view.payload_length, 0);
         assert_eq!(out_view.trailing_payload_length, 0);
+    }
+
+    #[test]
+    fn server_admin_module_run_claims_exact_frame() {
+        let packet = build_client_m_frame(0x004B, 0x0009, b"sModule.Run");
+        let view = MFrameView::parse(&packet).expect("fixture should parse as admin M frame");
+        let mut state = SemanticSessionState::default();
+
+        let translated =
+            translate_client_frame(packet.clone(), &view, &mut state).expect("admin should claim");
+
+        assert_eq!(translated.family, VerifiedFamily::ClientServerAdmin);
+        assert_eq!(translated.proxy_ack_client_sequence, None);
+        assert!(!translated.elide_client_sequence);
+        assert_eq!(translated.packet.as_deref(), Some(packet.as_slice()));
     }
 }
