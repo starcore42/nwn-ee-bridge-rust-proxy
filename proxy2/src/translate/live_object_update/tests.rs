@@ -1826,6 +1826,40 @@ fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_contest_champions_area_entry_liveobject_matches_dumped_ee_shape() {
+    // Local Contest Of Champions 0492 harness run from 2026-05-24 at area
+    // entry. The accepted-live-object diagnostic dumped the raw Diamond
+    // combined-record live-object payload and the exact EE rewrite; keep this
+    // pinned as fixture evidence without widening the validator.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_contest_champions_seq11_area_entry_liveobject_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_contest_champions_seq11_area_entry_liveobject_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Contest Of Champions seq11 stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "Contest Of Champions seq11 rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.records_examined >= 1,
+        "area-entry live-object payload should stay parsed as typed records"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_winds_eremor_live_objects_rewrite_to_dumped_exact_ee_shape() {
     // Local The Winds of Eremor harness run from 2026-05-24. These diagnostics
     // captured both sides of three representative streams: the initial
