@@ -1826,6 +1826,121 @@ fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn hg_live_docks_091731_live_objects_match_dumped_ee_shapes() {
+    // Live HG Docks run from 2026-05-24 with seeded nwsync, auto inventory,
+    // dialog, and creature probes. The accepted-live-object diagnostic dumped
+    // each bounded typed rewrite. Pin the exact EE writer bytes so these
+    // different Docks object/update shapes cannot drift into broad acceptance.
+    for (name, legacy, expected_ee, legacy_already_exact) in [
+        (
+            "seq28",
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq28_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq28_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq29",
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq29_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq29_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq34",
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq34_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq34_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq35",
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq35_exact_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq35_exact_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+        (
+            "seq42_auto_inventory_gui",
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq42_auto_inventory_gui_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/hg_live_docks_091731_seq42_auto_inventory_gui_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+        let raw_claim = super::claim_payload_if_verified(&payload);
+
+        if legacy_already_exact {
+            assert!(
+                raw_claim.is_some(),
+                "{name} should document a live HG packet already in exact EE live-object shape"
+            );
+        } else {
+            assert!(
+                raw_claim.is_none(),
+                "{name} raw live HG stream should document the legacy Diamond shape"
+            );
+            let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+            assert!(
+                claim.records_examined >= 1,
+                "{name} should retain typed live-object records after rewrite"
+            );
+        }
+
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the live HG EE byte shape"
+        );
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("{name} final payload should exact-claim");
+        if name == "seq42_auto_inventory_gui" {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain GUI live-object row ownership"
+            );
+            assert!(
+                claim.records_examined > 1,
+                "{name} should remain a combined live-object burst"
+            );
+        } else {
+            assert!(
+                claim.records_examined >= 1,
+                "{name} should retain typed live-object ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_contest_champions_area_entry_liveobject_matches_dumped_ee_shape() {
     // Local Contest Of Champions 0492 harness run from 2026-05-24 at area
     // entry. The accepted-live-object diagnostic dumped the raw Diamond

@@ -656,6 +656,68 @@ fn local_cepv22_crp_starter_quickbar_keeps_unverified_items_blanked() {
 }
 
 #[test]
+fn local_kingmaker_quickbar_keeps_repeated_compact_policy_pinned() {
+    // Captured from the local Diamond bridge harness against the Kingmaker
+    // premium NWM on 2026-05-24, sequence 14. This byte-distinct packet has
+    // the same decompile-owned policy as the CEPv22 CRP startup quickbar:
+    // preserve proven spell/general slots, but keep the compact/unowned item
+    // branches blank until EE item materialization has independent proof.
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/local_kingmaker_seq14_quickbar_20260524.bin")
+            .to_vec();
+
+    assert_eq!(
+        read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES),
+        Some(0xFD),
+        "fixture documents a compact Kingmaker packet with a valid declared offset"
+    );
+
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("local Kingmaker quickbar source should parse before rewriting");
+    assert_eq!(parsed.read_size, 246);
+    assert_eq!(parsed.fragment_size, 2);
+    assert_eq!(parsed.final_cursor, 246);
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("local Kingmaker quickbar should be semantically owned");
+
+    println!("{summary:?}");
+    assert_eq!(summary.old_payload_length, 255);
+    assert_eq!(summary.old_declared, 0xFD);
+    assert_eq!(summary.read_size, 246);
+    assert_eq!(summary.fragment_size, 2);
+    assert_eq!(summary.final_cursor, 246);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert_eq!(summary.spells_preserved, 22);
+    assert_eq!(summary.general_buttons_preserved, 4);
+    assert_eq!(summary.item_buttons_preserved, 0);
+    assert_eq!(summary.item_buttons_blanked, 2);
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten local Kingmaker quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten local Kingmaker quickbar should expose validated EE slot types");
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 1)
+            .count(),
+        0,
+        "unverified item materialization must remain blanked for the Kingmaker capture"
+    );
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 2)
+            .count(),
+        22,
+        "all proven Kingmaker spell slots should remain visible"
+    );
+}
+
+#[test]
 fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_items() {
     let mut payload =
         include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")

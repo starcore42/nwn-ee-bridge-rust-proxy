@@ -2780,6 +2780,114 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_hg_live_docks_091731_live_object_pairs() {
+        // Live HG Docks run from 2026-05-24 produced multiple accepted
+        // live-object diagnostics while exercising area entry, object probes,
+        // and auto-inventory. Dispatcher ownership must stay on the bounded
+        // live-object path and match the dumped EE bytes exactly.
+        // Seq34 is pinned in live_object_update/tests.rs, but its dispatcher
+        // finalization is session-registry dependent in the live harness.
+        for (name, legacy, expected_ee, legacy_already_exact) in [
+            (
+                "seq28",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq28_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq28_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq29",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq29_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq29_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq35",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq35_exact_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq35_exact_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+            (
+                "seq42_auto_inventory_gui",
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq42_auto_inventory_gui_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/hg_live_docks_091731_seq42_auto_inventory_gui_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+            let raw_exact =
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_some();
+            assert_eq!(
+                raw_exact, legacy_already_exact,
+                "{name} raw fixture exactness should match the accepted-live-object evidence"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = dispatch_live_object_fixture(&mut payload);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher live HG {name} claim must stay bounded"
+            );
+            assert!(
+                !rewrite.should_quarantine(),
+                "dispatcher must not quarantine accepted live HG {name}"
+            );
+            if !legacy_already_exact {
+                assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            }
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the live HG EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned live HG payload must exact-claim");
+            if name == "seq42_auto_inventory_gui" {
+                assert!(
+                    claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                    "{name} should retain GUI live-object row ownership"
+                );
+                assert!(
+                    claim.records_examined > 1,
+                    "{name} should remain a combined live-object burst"
+                );
+            } else {
+                assert!(claim.records_examined >= 1);
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_local_contest_champions_area_entry_liveobject() {
         // Local Contest Of Champions 0492 seq11 from 2026-05-24 at area entry.
         // Dispatcher ownership must stay on the bounded typed live-object path
