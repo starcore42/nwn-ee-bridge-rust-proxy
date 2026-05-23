@@ -1720,6 +1720,40 @@ fn local_dark_ranger_seq15_4408_inventory_gui_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_dark_ranger_seq18_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Local Dark Ranger harness run from 2026-05-24 after auto-opening
+    // inventory. The accepted-live-object diagnostic dumped both the raw
+    // Diamond GIA/GRA GUI stream and the exact EE rewrite, so this fixture pins
+    // byte-for-byte ownership without widening the live-object validator.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_dark_ranger_seq18_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_dark_ranger_seq18_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Dark Ranger seq18 GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "Dark Ranger seq18 rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "GUI live-object rows should remain owned by the exact validator"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_cepv22_current_player_effect_gui_stream_rewrites_to_exact_shape() {
     // Local CEP v2.2 builder harness capture from 2026-05-20 after the compact
     // area/live-object startup repairs. The stream starts with the same

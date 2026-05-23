@@ -2639,6 +2639,51 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_dark_ranger_seq18_auto_inventory_gui_stream() {
+        // Local Dark Ranger seq18 from 2026-05-24 after auto-opening inventory:
+        // the server emitted a compact GIA/GRA live-object payload whose final
+        // EE bytes were captured by the accepted-live-object diagnostic.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq18_auto_inventory_gui_20260524_legacy.bin"
+        )
+        .to_vec();
+        let expected_ee = include_bytes!(
+            "../../../fixtures/live_object/local_dark_ranger_seq18_auto_inventory_gui_20260524_ee.bin"
+        )
+        .as_slice();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw Dark Ranger seq18 stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Dark Ranger seq18 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "dispatcher rewrite should match the harness-dumped EE byte shape"
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Dark Ranger seq18 payload must exact-claim");
+        assert!(
+            claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+            "GUI live-object rows should remain owned after dispatcher rewrite"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
     #[test]
     fn dispatcher_claims_local_to_heir_kraegen_thoraulik_live_object_stream() {
         // Local To Heir creature auto-use/dialog harness capture from
