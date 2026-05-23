@@ -2727,6 +2727,48 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_claims_local_chapter2e_area_entry_live_object() {
+        // Local Diamond Chapter2E area-entry harness run from 2026-05-24. This
+        // pins the dispatcher path against the same legacy->EE fixture pair
+        // captured by the accepted-live-object diagnostic, keeping ownership in
+        // the typed live-object translators instead of any raw fallback.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_chapter2e_seq16_liveobject_20260524_legacy.bin"
+        )
+        .to_vec();
+        let expected_ee = include_bytes!(
+            "../../../fixtures/live_object/local_chapter2e_seq16_liveobject_20260524_ee.bin"
+        )
+        .as_slice();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw Chapter2E area-entry stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Chapter2E area-entry live-object claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "dispatcher rewrite should match the harness-dumped EE byte shape"
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Chapter2E live-object payload must exact-claim");
+        assert!(claim.records_examined >= 1);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[test]
     fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
         // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:
         // the stream starts with live GUI item-create rows followed by current

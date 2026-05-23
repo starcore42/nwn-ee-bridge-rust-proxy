@@ -2890,6 +2890,80 @@ fn local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_chapter2e_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local Diamond Chapter2E area-entry harness run from 2026-05-24. The
+    // accepted-live-object diagnostic dumped both sides of each bounded rewrite,
+    // so these fixtures pin the byte-exact EE writer shape rather than only the
+    // final validator result.
+    for (name, legacy, expected_ee) in [
+        (
+            "seq16",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq16_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq16_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq17",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq17_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq17_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq18",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq18_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq18_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq19",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq19_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter2e_seq19_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw Chapter2E stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite must match the harness-dumped EE byte shape"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     for (name, fixture) in [
         (
