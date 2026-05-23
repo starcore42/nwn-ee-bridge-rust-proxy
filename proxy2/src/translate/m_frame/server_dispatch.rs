@@ -2686,6 +2686,100 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_local_cepv23_skies_auto_inventory_gui_stream() {
+        // Local CEP v2.3 skies seq17 from 2026-05-24 after auto-opening
+        // inventory. Dispatcher ownership must stay on the bounded typed
+        // live-object path and match the accepted-live-object EE dump exactly.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_cepv23_skies_seq17_auto_inventory_gui_20260524_legacy.bin"
+        )
+        .to_vec();
+        let expected_ee = include_bytes!(
+            "../../../fixtures/live_object/local_cepv23_skies_seq17_auto_inventory_gui_20260524_ee.bin"
+        )
+        .as_slice();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw CEP v2.3 skies stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher CEP v2.3 skies seq17 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "dispatcher rewrite should match the harness-dumped EE byte shape"
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned CEP v2.3 skies payload must exact-claim");
+        assert!(
+            claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+            "GUI live-object rows should remain owned after dispatcher rewrite"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_hg_live_seq42_auto_inventory_gui_stream() {
+        // Live HG seq42 from 2026-05-24 after auto-opening inventory in the
+        // Docks. This large two-frame burst must stay on the typed live-object
+        // dispatcher path and match the accepted-live-object EE dump exactly.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/hg_live_seq42_auto_inventory_gui_20260524_legacy.bin"
+        )
+        .to_vec();
+        let expected_ee = include_bytes!(
+            "../../../fixtures/live_object/hg_live_seq42_auto_inventory_gui_20260524_ee.bin"
+        )
+        .as_slice();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw live HG seq42 stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher live HG seq42 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "dispatcher rewrite should match the live HG EE byte shape"
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned live HG seq42 payload must exact-claim");
+        assert!(
+            claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+            "GUI live-object rows should remain owned after dispatcher rewrite"
+        );
+        assert!(
+            claim.records_examined > 1,
+            "live HG seq42 should remain a combined live-object burst"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_local_winds_eremor_live_object_pairs() {
         // Local The Winds of Eremor run from 2026-05-24 produced new
         // placeable-heavy streams plus an auto-inventory GUI stream. The

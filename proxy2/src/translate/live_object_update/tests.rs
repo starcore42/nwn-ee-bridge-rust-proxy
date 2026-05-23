@@ -1754,6 +1754,78 @@ fn local_dark_ranger_seq18_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_cepv23_skies_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Local CEP v2.3 skies harness run from 2026-05-24 after auto-opening
+    // inventory. This compact GIA/GRA stream is the same packet family as the
+    // Dark Ranger and Winds GUI captures, but carries different object/body
+    // bytes; keep it pinned to the exact accepted-live-object rewrite.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_cepv23_skies_seq17_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_cepv23_skies_seq17_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw CEP v2.3 skies GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "CEP v2.3 skies rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "GUI live-object rows should remain owned by the exact validator"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Live HG smoke run from 2026-05-24 after auto-opening inventory at the
+    // Docks. The accepted-live-object diagnostic captured a two-frame
+    // auto-inventory GUI/live-object burst; pin the exact EE writer output so
+    // the large combined-record path stays byte-for-byte owned.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/hg_live_seq42_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/hg_live_seq42_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw live HG seq42 GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "live HG seq42 rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "live HG seq42 should retain GUI live-object row ownership"
+    );
+    assert!(
+        claim.records_examined > 1,
+        "live HG seq42 should remain a combined live-object burst"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_winds_eremor_live_objects_rewrite_to_dumped_exact_ee_shape() {
     // Local The Winds of Eremor harness run from 2026-05-24. These diagnostics
     // captured both sides of three representative streams: the initial
