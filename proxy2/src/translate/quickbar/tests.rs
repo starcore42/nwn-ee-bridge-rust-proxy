@@ -573,6 +573,89 @@ fn local_xp2_chapter3_compact_declared_quickbar_claims_spells() {
 }
 
 #[test]
+fn local_cepv22_crp_starter_quickbar_keeps_unverified_items_blanked() {
+    // Captured from the local Diamond bridge harness against the CEP v2.2 CRP
+    // starter module on 2026-05-23 after opening inventory. The decompile-owned
+    // reader proves the SetAllButtons boundary and the spell/general slots, but
+    // the two item-like branches do not yet have a verified EE materialization
+    // shape: one is an unowned explicit item candidate and one is a compact body
+    // recovered without its source type tag. They must stay deliberate blanks.
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/local_cepv22_crp_starter_quickbar_20260523.bin")
+            .to_vec();
+
+    assert_eq!(
+        read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES),
+        Some(0xFD),
+        "fixture documents a compact local CEPv22 CRP packet with a valid declared offset"
+    );
+
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("local CEPv22 CRP quickbar source should parse before rewriting");
+    let recovered_item_slots = parsed
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                button.kind,
+                QuickbarButtonKind::Item {
+                    recovered_type_tag: true,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        recovered_item_slots, 1,
+        "fixture must keep the compact missing-type item branch visible to the reader"
+    );
+    assert_eq!(parsed.read_size, 246);
+    assert_eq!(parsed.fragment_size, 2);
+    assert_eq!(parsed.final_cursor, 246);
+
+    let summary = rewrite_simple_quickbar_payload_if_possible(&mut payload)
+        .expect("local CEPv22 CRP quickbar should be semantically owned");
+
+    println!("{summary:?}");
+    assert_eq!(summary.old_payload_length, 255);
+    assert_eq!(summary.old_declared, 0xFD);
+    assert_eq!(summary.read_size, 246);
+    assert_eq!(summary.fragment_size, 2);
+    assert_eq!(summary.final_cursor, 246);
+    assert_eq!(summary.trailing_read_bytes, 0);
+    assert_eq!(summary.spells_preserved, 22);
+    assert_eq!(summary.general_buttons_preserved, 4);
+    assert_eq!(summary.item_buttons_preserved, 0);
+    assert_eq!(
+        summary.item_buttons_blanked, 2,
+        "compact or unowned item branches stay blanked until EE materialization is proven"
+    );
+    assert_eq!(summary.unsupported_buttons_blanked, 0);
+    assert!(
+        ee_set_all_buttons_payload_shape_valid(&payload),
+        "rewritten local CEPv22 CRP quickbar must satisfy the exact EE SetAllButtons reader shape"
+    );
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten local CEPv22 CRP quickbar should expose validated EE slot types");
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 1)
+            .count(),
+        0,
+        "unverified item materialization must not leak into the emitted EE quickbar"
+    );
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 2)
+            .count(),
+        22,
+        "all proven CEPv22 CRP spell slots should remain visible"
+    );
+}
+
+#[test]
 fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_items() {
     let mut payload =
         include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
