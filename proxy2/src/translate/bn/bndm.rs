@@ -11,6 +11,7 @@ use super::SessionState;
 pub(super) enum BndmTranslation {
     LegacyDisconnectRetireSession(Vec<u8>),
     NwsyncHandoffConsumedRetireSession,
+    PreSessionDisconnectConsumedRetireSession,
 }
 
 pub(super) fn translate_client_bndm(
@@ -40,6 +41,19 @@ pub(super) fn translate_client_bndm(
             "client BNDM consumed as EE NWSync handoff control; proxy session will be retired"
         );
         return Ok(BndmTranslation::NwsyncHandoffConsumedRetireSession);
+    }
+
+    // EE can also emit the exact direct-disconnect control while abandoning a
+    // connect attempt before BNCS. At that point no Diamond session exists and
+    // there is no decompile-backed legacy UDP port to put in a BNDS datagram, so
+    // the only bounded translation is to consume the verified EE control and
+    // retire this proxy session.
+    if state.latest_bncs_udp_port().is_none() {
+        tracing::info!(
+            old_len = bytes.len(),
+            "client BNDM consumed as pre-BNCS direct disconnect; proxy session will be retired"
+        );
+        return Ok(BndmTranslation::PreSessionDisconnectConsumedRetireSession);
     }
 
     let udp_port = state
@@ -73,6 +87,17 @@ mod tests {
         assert!(matches!(
             translated,
             BndmTranslation::NwsyncHandoffConsumedRetireSession
+        ));
+    }
+
+    #[test]
+    fn consumes_pre_bncs_bndm_without_nwsync_advert() {
+        let mut state = SessionState::default();
+
+        let translated = translate_client_bndm(b"BNDM", &mut state).expect("pre-BNCS BNDM");
+        assert!(matches!(
+            translated,
+            BndmTranslation::PreSessionDisconnectConsumedRetireSession
         ));
     }
 

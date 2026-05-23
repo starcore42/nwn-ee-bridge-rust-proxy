@@ -108,12 +108,11 @@ impl SessionState {
             && !self.nwsync_handoff_bndm_consumed
             && !self.reliable_gameplay_seen
             // EE's native NWSync handoff can tear down the current net-layer
-            // session before the normal BNCS/BNVR verifier path exists. When
-            // BNCS is not yet captured there is no Diamond UDP-port disconnect
-            // shape to emit, and the exact four-byte BNDM is proxy-owned
-            // handoff control. If BNCS already exists, keep the older
-            // decompile-backed post-BNVR handoff allowance; otherwise BNDM is
-            // a real disconnect and must translate to legacy BNDS below.
+            // session before the normal BNCS/BNVR verifier path exists. If
+            // BNCS already exists, keep the older decompile-backed post-BNVR
+            // handoff allowance; otherwise BNDM is handled by the focused
+            // pre-session disconnect path in `bndm`, because no legacy UDP
+            // port exists for a BNDS datagram.
             && (self.latest_bncs_udp_port.is_none() || self.server_bnvr_accept_seen)
     }
 
@@ -189,6 +188,11 @@ pub fn translate_client_to_server(
                 bndm::BndmTranslation::NwsyncHandoffConsumedRetireSession => {
                     Ok(ClientTranslation::ConsumedRetireSession {
                         reason: "nwsync-handoff-bndm",
+                    })
+                }
+                bndm::BndmTranslation::PreSessionDisconnectConsumedRetireSession => {
+                    Ok(ClientTranslation::ConsumedRetireSession {
+                        reason: "pre-bncs-bndm-disconnect",
                     })
                 }
             };
