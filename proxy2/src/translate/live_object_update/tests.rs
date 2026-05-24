@@ -1616,6 +1616,45 @@ fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_xp1_chapter2_4408_inventory_creature_stream_rewrites_to_exact_shape() {
+    // Local XP1-Chapter 2 harness capture from 2026-05-24. The stream starts
+    // with `U/5 0x00004408`, but this module emits two counted visual-effect
+    // entries before the current-player `I/0x2A00` inventory/read-buffer block
+    // and the following Merom Rescher creature add/update records. The clean
+    // rerun dumped both the raw Diamond payload and the exact EE writer output,
+    // so pin the byte shape rather than widening strict validation.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp1_chapter2_seq16_4408_inventory_creature_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_xp1_chapter2_seq16_4408_inventory_creature_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP1-Chapter 2 0x4408 + inventory/creature stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "XP1-Chapter 2 0x4408 rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(claim.creature_update_records >= 1);
+    assert!(claim.inventory_records >= 1);
+    assert!(claim.add_records >= 1);
+    assert!(
+        claim.live_gui_read_buffer_records >= 1,
+        "XP1-Chapter 2 stream should retain GUI/read-buffer ownership after rewrite"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp1_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
     // Local XP1-Chapter 1 harness run from 2026-05-24. The accepted
     // live-object diagnostic dumped the area-entry Diamond payloads and the

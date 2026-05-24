@@ -3243,6 +3243,43 @@ mod tests {
         }
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_xp1_chapter2_4408_inventory_creature_stream() {
+        // Local XP1-Chapter 2 seq16 accepted-live-object dump from 2026-05-24.
+        // The first `U/5 0x4408` record has two counted visual-effect rows
+        // before current-player inventory/read-buffer state and Merom Rescher
+        // add/update records. Dispatcher ownership must stay in the bounded
+        // live-object rewrite path through exact EE validation.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_xp1_chapter2_seq16_4408_inventory_creature_20260524_legacy.bin"
+        )
+        .to_vec();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw XP1-Chapter 2 stream should document the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher XP1-Chapter 2 0x4408 stream claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned XP1-Chapter 2 payload must exact-claim");
+        assert!(claim.records_examined >= 1);
+        assert!(claim.creature_update_records >= 1);
+        assert!(claim.add_records >= 1);
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
     #[test]
     fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
         // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:

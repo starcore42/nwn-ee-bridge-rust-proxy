@@ -80,7 +80,8 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             return record_end;
         }
         if read_u32_le(bytes, offset + 6) == Some(0x0000_4408) {
-            let legacy_4408_end = offset.saturating_add(LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8);
+            let legacy_4408_end =
+                offset.saturating_add(minimum_legacy_creature_4408_record_length_at(bytes, offset));
             if legacy_4408_end < scan_end
                 && inventory::try_get_missing_current_player_2a00_record_end(
                     bytes,
@@ -1348,22 +1349,24 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
     }
 
     if raw_mask == 0x0000_4408 {
-        // Local Diamond bw167demo captures this compact creature self/status
-        // shape while entering the module:
+        // Local Diamond bw167demo and XP1 Chapter 2 captures prove this compact
+        // creature self/status shape while entering a module:
         //
         //   U/5 header + mask
-        //   0x0008 status-effect delta: WORD count, 3-byte legacy effect row
+        //   0x0008 status-effect delta: WORD count, count * 3-byte legacy rows
         //   0x0400 scalar/status branch: four WORDs
         //   0x4000 self/status suffix: fragment BOOLs only for the no-master
         //          branch observed here
         //
         // EE `sub_140781E80+0x1126` calls the status-effect reader for mask
         // `0x0008`; the focused creature translator inserts the EE
-        // ObjectVisualTransformData identity map and then proves the whole
-        // record through `creature.rs`. This boundary floor merely prevents the
-        // generic live-object scanner from treating the interior `A` effect byte
-        // as a real `A/5` submessage boundary.
-        return LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8;
+        // ObjectVisualTransformData identity map after each effect row and
+        // then proves the whole record through `creature.rs`. This boundary
+        // floor merely prevents the generic live-object scanner from treating
+        // interior `A` effect bytes as real `A/5` submessage boundaries. The
+        // count-zero malformed XP2 family is still kept at the prior one-row
+        // floor so its focused count repair can own that exact shape.
+        return minimum_legacy_creature_4408_record_length_at(bytes, offset);
     }
 
     if raw_mask == 0x0000_0008 {
@@ -1468,6 +1471,17 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
     }
 
     LEGACY_UPDATE_HEADER_BYTES
+}
+
+fn minimum_legacy_creature_4408_record_length_at(bytes: &[u8], offset: usize) -> usize {
+    let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
+        return LEGACY_UPDATE_HEADER_BYTES;
+    };
+    if count > 256 {
+        return LEGACY_UPDATE_HEADER_BYTES;
+    }
+    let effect_rows = if count == 0 { 1 } else { usize::from(count) };
+    LEGACY_UPDATE_HEADER_BYTES + 2 + effect_rows * 3 + 8
 }
 
 pub(super) fn looks_like_legacy_live_object_sub_message_boundary(
