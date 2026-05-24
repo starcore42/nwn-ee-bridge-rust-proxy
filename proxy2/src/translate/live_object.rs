@@ -2527,6 +2527,18 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             .copied()
             .unwrap_or(true)
     };
+    let source_state_bits = if compact_empty_inline_name.is_none()
+        && compact_short_name_token_tail_end.is_none()
+        && remaining_source_bits >= required_source_bits
+    {
+        Some(legacy_placeable_add_state_bits(
+            &before_bits,
+            *bit_cursor,
+            source_name_inner_bits,
+        ))
+    } else {
+        None
+    };
     let mut visual_offset = if let Some(recovered) = compact_empty_inline_name {
         let (recovered_tail_offset, recovered_legacy_tail_end) =
             apply_legacy_placeable_empty_inline_fallback_name(bytes, record_end, recovered)?;
@@ -2659,6 +2671,11 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         source_name_inner_bits,
         destination_name_inner_bits,
         source_bits = required_source_bits,
+        legacy_optional_gate_consumed = source_state_bits.is_some(),
+        legacy_optional_gate_source = source_state_bits.map(|_| source_optional_object_bit),
+        ee_optional_target_gate = legacy_optional_object_bytes_present,
+        placeable_add_state = ?source_state_bits,
+        ee_light_is_on = false,
         tail = %format_hex_slice(bytes, tail_offset, (*record_end).saturating_sub(tail_offset).min(16)),
         bits = %format_bit_slice(&before_bits, *bit_cursor, required_source_bits.min(16)),
         "server->client live-object placeable add candidate"
@@ -2874,8 +2891,9 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         if bits.len() < post_name_bit + 9 {
             return None;
         }
-        let legacy_state =
-            legacy_placeable_add_state_bits(&before_bits, *bit_cursor, source_name_inner_bits);
+        let legacy_state = source_state_bits.unwrap_or_else(|| {
+            legacy_placeable_add_state_bits(&before_bits, *bit_cursor, source_name_inner_bits)
+        });
         summary.fragment_bits_changed |= write_ee_placeable_add_state_bits(
             bits,
             post_name_bit,

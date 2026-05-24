@@ -88,6 +88,32 @@ Current status:
   exact EE add-fragment validator for both absent and present optional-target
   branches. Keep this issue open pending visual replay and remaining
   placeable-update/orientation audit.
+- 2026-05-25 `P/05/01` placeable-update boundary audit: found and removed a
+  scalar-only duplicate door/placeable `U` boundary helper in the live-object
+  add-map pass. The shared transport boundary now follows the same EE reader
+  order as the typed validator: position, scalar/vector orientation,
+  appearance/resref, scale/state, and optional inline name; it accepts only
+  candidate spans that land on a real stream boundary and rejects ambiguous
+  scalar/vector byte shapes. Regression tests cover vector-orientation spans,
+  opcode-looking appearance WORD bytes, and scalar+appearance candidate
+  skipping. Verified with `cargo test -q -p hgbridge-proxy2
+  live_object_update::boundary::tests:: -- --nocapture` and the existing
+  `legacy_all_bits_placeable_update_preserves_orientation_mask_when_rewritten`
+  regression. Keep this issue open pending visual replay and any remaining
+  placeable state/update audit.
+- 2026-05-25 `P/05/01` placeable state diagnostics: added Rust proxy2
+  semantic logging at the typed placeable add/update boundary without changing
+  packet shape. `A/09` add logs now expose the decompile-backed source state
+  fields, consumed legacy optional gate, emitted EE optional-target gate, and
+  neutral light gate when the full source bool span is proven; compact
+  source-only add shapes remain explicitly unlabeled instead of inventing
+  state. `U/09` update logs now print decoded source and emitted EE visual /
+  visual-active / locked / lockable / visual-payload bits from the same
+  state-block cursor used by the exact validator. Verified with
+  `cargo test -q -p hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 placeable_update -- --nocapture`, and
+  `cargo check -q -p hgbridge-proxy2`. Next replay should compare these labels
+  on visually bad placeables before changing mapping rules.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
