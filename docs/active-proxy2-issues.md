@@ -41,6 +41,13 @@ Current status:
   blank/general slots or unowned item candidates; at least one real item or
   spell slot must survive. Added a fixture-free public regression for the
   candidate-only tail case.
+- 2026-05-25 `P/05/01` inventory/quickbar-link audit: rechecked the
+  `I/0x2E01` large-equipment quickbar-link prefix against the Diamond
+  `sub_455940` / EE `sub_1407B4F70` mask order. The parser must reject an
+  absent pre-promotion interleaved tail, but the exact validator still has to
+  accept `read_end == record_end` after those bytes are promoted into the CNW
+  fragment bitstream. Added fixture-free tests for both sides of that contract
+  and re-ran the captured `0x2E01` inventory/GQ cases.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
@@ -222,6 +229,13 @@ Current status:
   final EE static-row proof. Added fixture-free public regression coverage for
   zero-vector rejection and nonzero yaw preservation. Keep the broader issue
   open pending a visual replay against a confirmed bad static placeable.
+- 2026-05-25 `P/05/01` inventory/quickbar-link audit: confirmed the
+  `I/0x2E01` large-equipment interleaved-tail branch is a split/promotion
+  boundary issue, not a byte-reader body. The prefix scanner rejects a missing
+  bounded tail before promotion, while the post-promotion exact claim accepts
+  the shortened read cursor. Added fixture-free coverage for the absent-tail
+  prefix and the bounded 11-byte tail before `GQ`; verified the existing
+  captured `0x2E01` Docks/Sooty inventory cases still claim after rewrite.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

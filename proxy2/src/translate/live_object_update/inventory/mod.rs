@@ -1758,3 +1758,45 @@ mod current_player_2a00_selector_repair_tests {
         assert_eq!(bit_cursor, 12);
     }
 }
+
+#[cfg(test)]
+mod quickbar_link_tail_tests {
+    use super::*;
+
+    fn large_equipment_2e01_prefix(set_count: u8) -> Vec<u8> {
+        let mut record = vec![b'I'];
+        record.extend_from_slice(&LEGACY_INVENTORY_CURRENT_PLAYER_OWNER.to_le_bytes());
+        record.extend_from_slice(&0x2E01u16.to_le_bytes());
+        record.extend_from_slice(&[0; 10]); // 0x0001 compact branch bytes.
+        record.push(0); // 0x0400 clear_count.
+        record.push(set_count);
+        record.extend(std::iter::repeat(0x2A).take(usize::from(set_count)));
+        record
+    }
+
+    #[test]
+    fn large_equipment_2e01_prefix_requires_bounded_fragment_tail() {
+        let record = large_equipment_2e01_prefix(16);
+
+        assert!(
+            try_get_legacy_live_inventory_prefix_claim(&record, 0, record.len()).is_none(),
+            "0x2E01 large-equipment prefix must not invent an absent interleaved tail span"
+        );
+    }
+
+    #[test]
+    fn large_equipment_2e01_tail_prefix_stops_before_following_gq() {
+        let mut stream = large_equipment_2e01_prefix(16);
+        let read_end = stream.len();
+        stream.extend_from_slice(&[
+            0x0E, 0x16, 0x14, 0x12, 0x40, 0x0E, 0x1E, 0x26, 0x24, 0x22, 0x50,
+        ]);
+        stream.extend_from_slice(&[b'G', b'Q', 0]);
+
+        let prefix = try_get_legacy_live_inventory_prefix_claim(&stream, 0, stream.len())
+            .expect("bounded 0x2E01 interleaved-tail prefix should parse");
+
+        assert_eq!(prefix.read_end, read_end);
+        assert!(prefix.interleaved_fragment_tail_allowed);
+    }
+}
