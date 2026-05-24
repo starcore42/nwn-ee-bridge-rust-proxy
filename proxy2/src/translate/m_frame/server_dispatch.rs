@@ -2776,6 +2776,52 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_local_kingmaker_auto_inventory_gui_stream() {
+        // Local Kingmaker seq17 from 2026-05-24 after auto-opening inventory.
+        // This compact GUI byte family matches ShadowGuard, but it is pinned
+        // separately so the premium NWM path cannot regress into a generic or
+        // raw high-level claim.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_kingmaker_seq17_auto_inventory_gui_20260524_legacy.bin"
+        )
+        .to_vec();
+        let expected_ee = include_bytes!(
+            "../../../fixtures/live_object/local_kingmaker_seq17_auto_inventory_gui_20260524_ee.bin"
+        )
+        .as_slice();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw Kingmaker stream documents the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "dispatcher Kingmaker seq17 claim must stay bounded"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "dispatcher rewrite should match the harness-dumped EE byte shape"
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned Kingmaker payload must exact-claim");
+        assert!(
+            claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+            "GUI live-object rows should remain owned after dispatcher rewrite"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_local_witchs_wake_live_object_pairs() {
         // Local Witch's Wake run from 2026-05-24 reached gameplay and
         // auto-opened inventory. Both accepted diagnostics should stay owned

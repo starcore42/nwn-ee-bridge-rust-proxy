@@ -2169,6 +2169,40 @@ fn local_shadowguard_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_kingmaker_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Local Kingmaker premium module harness run from 2026-05-24 after
+    // auto-opening inventory. The bytes match the ShadowGuard compact GUI
+    // family, but this fixture pins the module-specific accepted-live-object
+    // evidence from the same run that supplied the Kingmaker quickbar fixture.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_kingmaker_seq17_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_kingmaker_seq17_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw Kingmaker GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "Kingmaker rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "GUI live-object rows should remain owned by the exact validator"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_witchs_wake_live_objects_rewrite_to_dumped_exact_ee_shape() {
     // Local Witch's Wake premium module harness run from 2026-05-24 reached
     // gameplay and auto-opened inventory. The accepted-live-object diagnostics
