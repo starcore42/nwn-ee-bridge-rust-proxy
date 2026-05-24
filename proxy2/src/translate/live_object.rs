@@ -30,7 +30,7 @@
 //! exactly where EE will begin reading the map, or for verified door/placeable
 //! add records at the EE decompile-backed cursor.
 
-use crate::translate::area::AreaPlaceableContext;
+use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
 use std::collections::HashSet;
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
@@ -2682,13 +2682,27 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     let legacy_user_defined_static = is_legacy_user_defined_placeable_appearance(appearance);
     if area_static_duplicate || legacy_user_defined_static {
         let mut area_rows = String::new();
+        let mut area_module_state_mismatch = false;
         if let Some(context) = area_context {
             for (index, row) in context.rows_with_placeable_id(object_id).enumerate() {
                 if index != 0 {
                     area_rows.push(',');
                 }
+                if let (Some(source_state), Some(module_state)) =
+                    (source_state_bits, row.module_state)
+                {
+                    area_module_state_mismatch |=
+                        placeable_add_state_conflicts_with_area_module_state(
+                            source_state,
+                            module_state,
+                        );
+                }
+                let module_state = row
+                    .module_state
+                    .map(format_area_placeable_module_state)
+                    .unwrap_or_else(|| "unproven".to_string());
                 area_rows.push_str(&format!(
-                    "app=0x{:04X}@{:.2},{:.2},{:.2}",
+                    "app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
                     row.appearance, row.x, row.y, row.z
                 ));
             }
@@ -2698,6 +2712,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             appearance,
             area_static_duplicate,
             legacy_user_defined_static,
+            area_module_state_mismatch,
             source_bits = required_source_bits,
             area_rows = %area_rows,
             "server->client live-object placeable add overlaps area/static context; retaining add so later updates have an active EE object"
@@ -2968,6 +2983,28 @@ fn legacy_placeable_add_state_bits(
         unknown_1ac: bit(8),
         name_valid: bit(9),
     }
+}
+
+fn placeable_add_state_conflicts_with_area_module_state(
+    state: PlaceableAddStateBits,
+    module_state: AreaPlaceableContextState,
+) -> bool {
+    state.useable != module_state.useable
+        || state.trap_disarmable != module_state.trap_disarmable
+        || state.lockable != module_state.lockable
+        || state.locked != module_state.locked
+}
+
+fn format_area_placeable_module_state(module_state: AreaPlaceableContextState) -> String {
+    format!(
+        "static={} useable={} trap={} disarmable={} lockable={} locked={}",
+        module_state.static_object,
+        module_state.useable,
+        module_state.trap_flag,
+        module_state.trap_disarmable,
+        module_state.lockable,
+        module_state.locked
+    )
 }
 
 fn write_ee_placeable_add_state_bits(
@@ -4802,6 +4839,7 @@ mod tests {
                 dir_y: 0.0,
                 dir_z: 0.0,
                 has_direction: false,
+                module_state: None,
             }],
             ..crate::translate::area::AreaPlaceableContext::default()
         };

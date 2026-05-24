@@ -245,6 +245,17 @@ pub struct AreaPlaceableContextRow {
     pub dir_y: f32,
     pub dir_z: f32,
     pub has_direction: bool,
+    pub module_state: Option<AreaPlaceableContextState>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AreaPlaceableContextState {
+    pub static_object: bool,
+    pub useable: bool,
+    pub trap_flag: bool,
+    pub trap_disarmable: bool,
+    pub lockable: bool,
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -682,6 +693,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         &area_resref,
         legacy_area_object_id,
         static_placeable_count_zero_repairs != 0,
+        module_resource_static_placeable_repair_info.as_ref(),
     );
     let placeable_context_valid = placeable_context.is_some();
     let placeable_context = placeable_context.unwrap_or_default();
@@ -2938,6 +2950,7 @@ fn collect_area_post_tile_placeable_context(
     area_resref: &str,
     legacy_area_object_id: u32,
     filter_ambiguous_context_rows: bool,
+    module_resource_info: Option<&ModuleAreaResourceInfo>,
 ) -> Option<AreaPlaceableContext> {
     let scan = scan_area_tile_stream(payload, fragment_offset);
     if !scan.valid {
@@ -3043,6 +3056,16 @@ fn collect_area_post_tile_placeable_context(
         let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
         let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
         let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
+        let module_state = module_static_placeable_context_state(
+            module_resource_info,
+            appearance,
+            x,
+            y,
+            z,
+            dir_x,
+            dir_y,
+            dir_z,
+        );
         if area_placeable_context_id_is_ambiguous(
             object_id,
             legacy_area_object_id,
@@ -3067,6 +3090,7 @@ fn collect_area_post_tile_placeable_context(
             dir_y,
             dir_z,
             has_direction: true,
+            module_state,
         });
         cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
     }
@@ -3075,6 +3099,50 @@ fn collect_area_post_tile_placeable_context(
         area_resref: area_resref.to_string(),
         light_rows,
         static_rows,
+    })
+}
+
+fn module_static_placeable_context_state(
+    module_resource_info: Option<&ModuleAreaResourceInfo>,
+    appearance: u16,
+    x: f32,
+    y: f32,
+    z: f32,
+    dir_x: f32,
+    dir_y: f32,
+    dir_z: f32,
+) -> Option<AreaPlaceableContextState> {
+    let static_placeables = module_resource_info?
+        .placeables
+        .iter()
+        .filter(|placeable| {
+            if !placeable.static_object
+                || !module_static_placeable_row_matches_resource(appearance, x, y, z, placeable)
+            {
+                return false;
+            }
+            let Some((expected_x, expected_y, expected_z)) =
+                static_placeable_direction_from_bearing(placeable.bearing)
+            else {
+                return false;
+            };
+            area_float_close(dir_x, expected_x, 0.01)
+                && area_float_close(dir_y, expected_y, 0.01)
+                && area_float_close(dir_z, expected_z, 0.01)
+        })
+        .collect::<Vec<_>>();
+    if static_placeables.len() != 1 {
+        return None;
+    }
+
+    let placeable = static_placeables[0];
+    Some(AreaPlaceableContextState {
+        static_object: placeable.static_object,
+        useable: placeable.useable,
+        trap_flag: placeable.trap_flag,
+        trap_disarmable: placeable.trap_disarmable,
+        lockable: placeable.lockable,
+        locked: placeable.locked,
     })
 }
 
@@ -6423,6 +6491,15 @@ mod tests {
                 !placeable.trap_flag,
                 "static area placeable row {index} unexpectedly comes from a trapped GIT placeable"
             );
+            let state = row
+                .module_state
+                .expect("module-backed static placeable row should retain its GIT state context");
+            assert_eq!(state.static_object, placeable.static_object);
+            assert_eq!(state.useable, placeable.useable);
+            assert_eq!(state.trap_flag, placeable.trap_flag);
+            assert_eq!(state.trap_disarmable, placeable.trap_disarmable);
+            assert_eq!(state.lockable, placeable.lockable);
+            assert_eq!(state.locked, placeable.locked);
             remaining.retain(|candidate_index| *candidate_index != placeable_index);
         }
     }
@@ -6652,6 +6729,18 @@ mod tests {
         assert_eq!(proof.sound_count, 11);
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+        assert!(
+            summary.placeable_context.static_rows.iter().all(|row| {
+                row.module_state.is_some_and(|state| {
+                    state.static_object
+                        && !state.trap_flag
+                        && state.trap_disarmable
+                        && !state.lockable
+                        && !state.locked
+                })
+            }),
+            "module-backed static context should retain the GIT trap/use/lock state for live-object comparison"
+        );
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }
 
