@@ -1614,6 +1614,112 @@ fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
     assert!(claim.live_gui_read_buffer_records >= 1);
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp1_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local XP1-Chapter 1 harness run from 2026-05-24. The accepted
+    // live-object diagnostic dumped the area-entry Diamond payloads and the
+    // exact EE writer output, so these fixtures pin the bounded writer byte
+    // shape instead of broadening validation around this module family.
+    for (name, legacy, expected_ee) in [
+        (
+            "seq13",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq13_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq13_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq14",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq14_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq14_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq15",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq15_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq15_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq16",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq16_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_chapter1_seq16_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw XP1-Chapter 1 stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE bytes"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp1_chapter1_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Same XP1-Chapter 1 run after auto-opening inventory. This compact GIA/GRA
+    // live-object stream must remain owned by the exact GUI-row validator.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw XP1-Chapter 1 auto-inventory GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "XP1-Chapter 1 auto-inventory GUI rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "XP1-Chapter 1 auto-inventory stream should retain GUI live-object row ownership"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
 #[test]
 fn local_xp2_chapter2_current_player_4408_inventory_2a00_compact_rewrites_to_exact_shape() {
     // Local XP2 Chapter 2 harness capture from 2026-05-22 after the inventory

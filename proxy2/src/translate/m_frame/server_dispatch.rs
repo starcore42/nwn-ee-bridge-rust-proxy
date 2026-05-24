@@ -3133,6 +3133,116 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_xp1_chapter1_live_object_pairs() {
+        // Local XP1-Chapter 1 harness run from 2026-05-24. Area entry produced
+        // several compact live-object updates, then auto-inventory produced a
+        // compact GIA/GRA GUI stream. The dispatcher must keep each payload on
+        // the bounded live-object rewrite path until the exact EE bytes match
+        // the accepted-live-object diagnostics.
+        for (name, legacy, expected_ee, expect_gui) in [
+            (
+                "seq13",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq13_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq13_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq14",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq14_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq14_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq15",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq15_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq15_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq16",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq16_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq16_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq26_auto_inventory_gui",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw XP1-Chapter 1 stream should document the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = dispatch_live_object_fixture(&mut payload);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher XP1-Chapter 1 {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned XP1-Chapter 1 payload must exact-claim");
+            assert!(
+                claim.records_examined >= 1,
+                "{name} should retain at least one typed live-object record"
+            );
+            if expect_gui {
+                assert!(
+                    claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                    "{name} should retain GUI live-object row ownership"
+                );
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+        }
+    }
+
     #[test]
     fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
         // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:
