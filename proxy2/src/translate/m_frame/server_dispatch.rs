@@ -3416,6 +3416,104 @@ mod tests {
         }
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_xp2_chapter3_live_object_pairs() {
+        // Local XP2 Chapter 3 Gates of Cania run from 2026-05-24. Area entry
+        // and auto-inventory produced accepted-live-object dumps; dispatcher
+        // ownership must stay on the bounded typed live-object path and match
+        // the dumped EE bytes exactly. Seq13 depends on the live-object
+        // lifecycle facts established by seq12, so keep this test ordered like
+        // the harness stream instead of proving each packet in isolation.
+        let mut semantic_state = semantic::SemanticSessionState::default();
+        for (name, legacy, expected_ee, expect_gui) in [
+            (
+                "seq12_area_entry",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq12_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq12_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq13_area_entry",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq13_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq13_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq22_auto_inventory_gui",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq22_auto_inventory_gui_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter3_seq22_auto_inventory_gui_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw XP2 Chapter 3 stream should document the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = rewrite_single_inflated_payload_for_ee(
+                &mut payload,
+                None,
+                SemanticScope::DeflatedReassembly,
+                None,
+                Some(&semantic_state.objects),
+                None,
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher XP2 Chapter 3 {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned XP2 Chapter 3 payload must exact-claim");
+            assert!(claim.records_examined >= 1);
+            if expect_gui {
+                assert!(
+                    claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                    "{name} should retain GUI live-object row ownership"
+                );
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+            crate::translate::semantic::observe_verified_payload(
+                &mut semantic_state,
+                crate::packet::Direction::ServerToClient,
+                &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+                &payload,
+            );
+        }
+    }
+
     #[test]
     fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
         // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:

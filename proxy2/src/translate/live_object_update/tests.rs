@@ -3788,6 +3788,78 @@ fn local_xp2_chapter3_inventory_gui_stream_rewrites_to_exact_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_xp2_chapter3_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local Diamond XP2 Chapter 3 run from 2026-05-24 reached Gates of Cania
+    // gameplay and auto-opened inventory. The accepted-live-object diagnostic
+    // dumped both sides of the bounded rewrite, so pin the exact writer bytes
+    // instead of only proving the final validator accepts the payload.
+    for (name, legacy, expected_ee, expect_gui) in [
+        (
+            "seq12_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq12_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq12_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq13_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq13_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq13_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq22_auto_inventory_gui",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq22_auto_inventory_gui_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter3_seq22_auto_inventory_gui_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw XP2 Chapter 3 stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE bytes"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        if expect_gui {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain GUI live-object row ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp2_chapter2_cutscene_invisibility_000f_rewrites_to_exact_shape() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_chapter2_cutscene_invisibility_u5_000f_20260522.bin"
