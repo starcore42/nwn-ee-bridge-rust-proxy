@@ -3280,6 +3280,142 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_xp2_chapter1_live_object_pairs() {
+        // Local XP2_Chapter1 `xp2_intro` area-entry run from 2026-05-24.
+        // These deflated live-object windows were accepted only after the
+        // dispatcher routed them through the focused typed live-object rewrites.
+        for (name, legacy) in [
+            (
+                "seq11",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq11_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq12",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq12_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq13",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq13_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq14",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq14_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq15",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq15_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq16",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq16_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq17",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq17_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq18",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq18_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq19",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq19_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq20",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq20_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq21",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq21_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq22",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq22_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+            (
+                "seq23",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp2_chapter1_seq23_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw XP2_Chapter1 stream should document the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = dispatch_live_object_fixture(&mut payload);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher XP2_Chapter1 {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned XP2_Chapter1 payload must exact-claim");
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified_with_lifecycle(
+                    &payload,
+                    |_, _| false
+                )
+                .is_some(),
+                "{name} dispatcher output should be lifecycle-safe after bounded cleanup"
+            );
+            assert!(
+                claim.records_examined >= 1,
+                "{name} should retain at least one typed live-object record"
+            );
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+        }
+    }
+
     #[test]
     fn dispatcher_claims_local_chapter3_auto_inventory_gui_live_object() {
         // Local Chapter3 `m3q1a10` after auto-opening inventory on 2026-05-23:

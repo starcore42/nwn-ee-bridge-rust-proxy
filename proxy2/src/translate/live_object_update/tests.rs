@@ -3504,6 +3504,185 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     }
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp2_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local XP2_Chapter1 `xp2_intro` area-entry capture from 2026-05-24.
+    // This module produced a dense sequence of deflated GameObjUpdate_LiveObject
+    // frames while the EE client crossed the area-load gate. Keep each stream
+    // pinned to the bounded typed live-object rewrite path and the exact
+    // accepted-live-object EE bytes dumped by the harness.
+    for (name, legacy, expected_ee) in [
+        (
+            "seq11",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq11_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq11_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq12",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq12_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq12_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq13",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq13_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq13_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq14",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq14_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq14_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq15",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq15_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq15_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq16",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq16_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq16_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq17",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq17_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq17_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq18",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq18_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq18_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq19",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq19_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq19_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq20",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq20_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq20_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq21",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq21_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq21_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq22",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq22_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq22_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+        (
+            "seq23",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq23_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp2_chapter1_seq23_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw XP2_Chapter1 stream should document the legacy Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{name} XP2_Chapter1 live-object rewrite must stay bounded"
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite must match the harness-dumped EE byte shape"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
 #[test]
 fn local_xp2_chapter2_u5_8008_effect_visibility_rewrites_to_exact_shape() {
     // Local Diamond XP2 Chapter 2 strict capture from 2026-05-22. The packet is
