@@ -3681,6 +3681,78 @@ fn local_chapter2e_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_chapter4_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local Diamond Chapter4 area-entry and auto-inventory harness run from
+    // 2026-05-24. The accepted-live-object diagnostic dumped both the legacy
+    // Diamond input and the bounded typed EE writer output; keep the exact
+    // bytes pinned here rather than only checking final validator acceptance.
+    for (name, legacy, expected_ee, expect_gui) in [
+        (
+            "seq12_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq12_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq12_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq13_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq13_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq13_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq23_auto_inventory",
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq23_auto_inventory_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_chapter4_seq23_auto_inventory_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw Chapter4 stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE bytes"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        if expect_gui {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain GUI live-object row ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
     for (name, fixture) in [
         (

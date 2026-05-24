@@ -3266,6 +3266,102 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_local_chapter4_live_object_pairs() {
+        // Local Diamond Chapter4 run from 2026-05-24. Area entry and
+        // auto-inventory produced accepted live-object rewrites; dispatcher
+        // ownership must stay on the bounded typed live-object path and match
+        // the dumped EE bytes exactly.
+        let mut semantic_state = semantic::SemanticSessionState::default();
+        for (name, legacy, expected_ee, expect_gui) in [
+            (
+                "seq12_area_entry",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq12_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq12_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq13_area_entry",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq13_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq13_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq23_auto_inventory",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq23_auto_inventory_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_chapter4_seq23_auto_inventory_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw Chapter4 stream should document the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = rewrite_single_inflated_payload_for_ee(
+                &mut payload,
+                None,
+                SemanticScope::DeflatedReassembly,
+                None,
+                Some(&semantic_state.objects),
+                None,
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher Chapter4 {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned Chapter4 payload must exact-claim");
+            assert!(claim.records_examined >= 1);
+            if expect_gui {
+                assert!(
+                    claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                    "{name} should retain GUI live-object row ownership"
+                );
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+            crate::translate::semantic::observe_verified_payload(
+                &mut semantic_state,
+                crate::packet::Direction::ServerToClient,
+                &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+                &payload,
+            );
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_local_xp1_chapter1_live_object_pairs() {
         // Local XP1-Chapter 1 harness run from 2026-05-24. Area entry produced
         // several compact live-object updates, then auto-inventory produced a
