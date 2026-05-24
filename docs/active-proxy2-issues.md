@@ -8,6 +8,49 @@ evidence and date or remove it from the active list. Specific modules, assets,
 resrefs, captures, and chapters belong here only as evidence for a broader rule,
 not as standalone workaround targets.
 
+## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
+
+Reported: 2026-05-25 during automation prompt review.
+
+Symptoms:
+- Some translated packets can look semantically plausible or pass exact
+  byte-shape validation while still being wrong because Diamond and EE read or
+  emit bits in a different order.
+- A shifted bit cursor can make later appearance, trap/static, lock/useable,
+  orientation, inventory/equipment, quickbar, or nested-object fields decode as
+  believable but incorrect values.
+
+Current status:
+- Treat every previously accepted packet family, translator, repair, validator,
+  and fixture as needing re-audit unless it already has explicit
+  decompile-backed proof for Diamond and EE bit order and cursor movement.
+- Do not sign off on a packet as correct based only on visible behavior,
+  semantic-looking decoded values, an accepted capture, or an EE byte-shape
+  validator pass.
+- Required proof includes field sequence, bit widths, BOOL ordering, optional
+  branch guards, inserted/removed bits, padding/alignment, variable-length
+  string/locstring boundaries, nested object boundaries, signedness/endian/scale
+  handling, and cursor reset or handoff points.
+- When proof is missing, add a targeted audit note here, keep or reopen the
+  issue, and convert any specific observed case into a generalized regression
+  fixture only after the bit-level rule is confirmed from decompiles.
+- 2026-05-25 quickbar split audit: tightened the cursor-derived
+  `P/1E/01 GuiQuickbar_SetAllButtons` fallback so it follows the same
+  decompile-owned boundary rule as the normal bounded tail scan. A source-only
+  tail may no longer be discarded when the shifted cursor can prove only
+  blank/general slots or unowned item candidates; at least one real item or
+  spell slot must survive. Added a fixture-free public regression for the
+  candidate-only tail case.
+
+Most likely areas to re-audit first:
+- `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
+  repairs, trap/static flags, and orientation fields.
+- `P/05/01 GameObjUpdate_LiveObject`: add/update records, appearance/model
+  records, scalar/vector orientation branches, state flags, and nested fragment
+  boundaries.
+- Quickbar, inventory/equipment, and any packet family with nested
+  variable-length objects or conditional BOOL gates.
+
 ## Visual/alignment regression: placeables and player model
 
 Reported: 2026-05-24 during the recurring `continue-ee-bridge-dev` automation.
@@ -130,6 +173,47 @@ Current status:
   `cargo check -q -p hgbridge-proxy2`. Keep this issue open until a local visual
   replay confirms the affected placeable/player appearances and the diagnostic
   labels match the intended Diamond state.
+- 2026-05-25 local `To Heir is Human` replay
+  `C:\nwnbridge\local-diamond-bridge-20260525-041906` reached `cormanthor`
+  again with 0-byte proxy stderr and no quarantine files. The late screenshot
+  shows the player rendered as a normal small humanoid, not the reported bird
+  model. The repeated compact `A/09` + `U/09 0xFFFFFFF7 -> 0x37` placeable
+  update was not a state-mapping mismatch: the byte reader proves scalar
+  orientation while the legacy bit stream is already at the state block, so the
+  source diagnostic must decode with inserted-orientation semantics instead of
+  the raw sparse mask cursor. Fixed the shared `U/09` diagnostic cursor and
+  added fixture-free tests proving compact inserted-scalar source state and
+  normal preserved-scalar source state. Verified with
+  `cargo test -q -p hgbridge-proxy2 source_state_diagnostic -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 placeable_update -- --nocapture`, and
+  `cargo check -q -p hgbridge-proxy2`. Keep the broader issue open for a
+  targeted visual comparison against an actually bad placeable/player capture;
+  current local evidence no longer shows a source/EE state-label divergence.
+- 2026-05-25 `P/05/01` compact placeable-add residue audit: generalized the
+  compact `A/09` add-record rewrite so any bounded residual source-fragment
+  count from 0 through the four Diamond compact tail BOOLs is drained before
+  the EE direct-name guard/light bits are emitted. The prior accepted set
+  covered zero, one, or full four-bit residue but skipped the structurally
+  equivalent two/three-bit cases. Added fixture-free coverage that runs all
+  five residue counts through the exact EE add-fragment validator. Verified
+  with `cargo test -q -p hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 compact_placeable_add -- --nocapture`,
+  `cargo fmt --all --check`, and `cargo check -q -p hgbridge-proxy2`. Keep the
+  broader issue open pending visual replay against a confirmed bad placeable.
+- 2026-05-25 `P/04/01` -> `P/05/01` placeable state-context audit: carried
+  uniquely matched module GIT static-placeable state into the reusable
+  `AreaPlaceableContext` rows instead of leaving live-object overlap checks with
+  only appearance/position evidence. Matching is still bounded to repaired or
+  named module-backed static rows with unique appearance/position/bearing
+  proof. `A/09` overlap diagnostics now print that module state and flag
+  useable/trap-disarmable/lockable/locked mismatches against the decompile-backed
+  add-record source bits without changing emitted packet state. Verified with
+  `cargo test -q -p hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 translate::area::tests::local_to_heir_compact_area_uses_module_resource_dimensions -- --nocapture`,
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p hgbridge-proxy2 translate::area::tests::local_chapter2_no_name_area_resolves_fragmented_area_resref -- --nocapture`,
+  `cargo fmt --all --check`, `git diff --check`, and
+  `cargo check -q -p hgbridge-proxy2`. Keep the broader issue open pending
+  visual replay against a confirmed bad placeable.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

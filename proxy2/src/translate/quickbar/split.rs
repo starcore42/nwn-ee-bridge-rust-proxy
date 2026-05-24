@@ -22,13 +22,6 @@ pub(super) struct QuickbarTransportSplit {
 }
 
 impl QuickbarTransportSplit {
-    fn preserves_decompile_owned_payload(&self) -> bool {
-        self.translated_item_slots != 0
-            || self.spell_slots != 0
-            || self.general_slots != 0
-            || self.item_candidate_slots != 0
-    }
-
     fn classified_slots(&self) -> u32 {
         self.translated_item_slots
             .saturating_add(self.spell_slots)
@@ -346,8 +339,14 @@ fn choose_cursor_derived_quickbar_split(
             }
         }
         QuickbarSplitPolicy::DecompileOwnedBoundary => {
-            if !split.preserves_decompile_owned_payload() {
-                Some("boundary-no-owned-payload")
+            if !split.has_decompile_owned_item_or_spell() {
+                // Keep this fallback aligned with the normal bounded tail
+                // sweep above: general/no-payload buttons and item-candidate
+                // blanks are not enough proof because a shifted byte cursor can
+                // manufacture them cheaply.  The split must preserve at least
+                // one decompile-owned item or spell slot before any source-only
+                // fragment tail is discarded.
+                Some("boundary-no-item-or-spell")
             } else {
                 None
             }
@@ -689,5 +688,33 @@ pub(super) fn find_legacy_quickbar_resync(
         best_candidate
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_derived_split_rejects_candidate_only_quickbar_tail() {
+        let mut body_and_tail = Vec::new();
+        body_and_tail.push(1);
+        body_and_tail.extend(std::iter::repeat(0).take(8));
+        body_and_tail.extend(std::iter::repeat(0).take(LEGACY_QUICKBAR_BUTTON_COUNT - 1));
+        body_and_tail.extend(
+            std::iter::repeat(0xFF)
+                .take(MAX_DECOMPILE_OWNED_QUICKBAR_FRAGMENT_TAIL_SCAN_BYTES + 16),
+        );
+
+        let split = choose_quickbar_split(
+            &body_and_tail,
+            &[0x60],
+            QuickbarSplitPolicy::DecompileOwnedBoundary,
+        );
+
+        assert!(
+            split.is_none(),
+            "a cursor-derived split with only blank/candidate slots must not discard a source tail"
+        );
     }
 }
