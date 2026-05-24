@@ -172,6 +172,102 @@ pub(super) fn try_repair_for_creature_update(
                 });
             }
         }
+
+        let mut trial_bytes = live_bytes.clone();
+        let mut trial_record_end = *record_end;
+        if let Some(action0_damage_rewrite) =
+            creature::insert_3967_action0_missing_damage_byte_for_ee(
+                &mut trial_bytes,
+                offset,
+                &mut trial_record_end,
+                &candidate_bits,
+                bit_cursor,
+            )
+        {
+            let mut trial_cursor = bit_cursor;
+            if creature::advance_verified_noop_creature_update_record(
+                &trial_bytes,
+                offset,
+                trial_record_end,
+                &candidate_bits,
+                &mut trial_cursor,
+            ) {
+                let old_bits_len = fragment_bits.len();
+                let new_bits_len = candidate_bits.len();
+                *live_bytes = trial_bytes;
+                *record_end = trial_record_end;
+                *fragment_bits = candidate_bits;
+                trace_tail_repair_accept(
+                    pending,
+                    offset,
+                    *record_end,
+                    candidate_tail_start,
+                    bit_cursor,
+                    trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    action0_damage_rewrite.bytes_inserted,
+                    0,
+                    0,
+                );
+                return Some(CreatureTailRepairResult {
+                    bit_cursor: trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    bytes_inserted: action0_damage_rewrite.bytes_inserted,
+                    bytes_removed: 0,
+                    bits_inserted: 0,
+                });
+            }
+        }
+
+        let mut trial_bytes = live_bytes.clone();
+        let mut trial_record_end = *record_end;
+        if let Some(action0_associate_rewrite) =
+            creature::insert_3967_action0_short_associate_suffix_for_ee(
+                &mut trial_bytes,
+                offset,
+                &mut trial_record_end,
+                &candidate_bits,
+                bit_cursor,
+            )
+        {
+            let mut trial_cursor = bit_cursor;
+            if creature::advance_verified_noop_creature_update_record(
+                &trial_bytes,
+                offset,
+                trial_record_end,
+                &candidate_bits,
+                &mut trial_cursor,
+            ) {
+                let old_bits_len = fragment_bits.len();
+                let new_bits_len = candidate_bits.len();
+                *live_bytes = trial_bytes;
+                *record_end = trial_record_end;
+                *fragment_bits = candidate_bits;
+                trace_tail_repair_accept(
+                    pending,
+                    offset,
+                    *record_end,
+                    candidate_tail_start,
+                    bit_cursor,
+                    trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    action0_associate_rewrite.bytes_inserted,
+                    0,
+                    0,
+                );
+                return Some(CreatureTailRepairResult {
+                    bit_cursor: trial_cursor,
+                    old_bits_len,
+                    new_bits_len,
+                    bytes_inserted: action0_associate_rewrite.bytes_inserted,
+                    bytes_removed: 0,
+                    bits_inserted: 0,
+                });
+            }
+        }
     }
 
     trace_tail_repair_reject(pending, offset, *record_end, bit_cursor);

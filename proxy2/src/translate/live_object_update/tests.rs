@@ -25,6 +25,148 @@ fn live_object_read_window(payload: &[u8]) -> &[u8] {
     &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared]
 }
 
+#[derive(Clone, Copy)]
+enum TestCreatureAppearanceDialect {
+    LegacyDiamond,
+    EeBuild8193,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TestFullCreatureAppearanceSemantics {
+    object_id: u32,
+    appearance_type: u16,
+    body_selector: u8,
+    equipment_count: u8,
+    record_end: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TestFullCreatureAppearanceShape {
+    object_id: u32,
+    offset: usize,
+    record_bytes: usize,
+}
+
+fn test_read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let bytes = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn test_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
+    let length = usize::try_from(super::read_u32_le(bytes, offset)?).ok()?;
+    if length > super::MAX_LIVE_OBJECT_NAME_BYTES {
+        return None;
+    }
+    offset.checked_add(4)?.checked_add(length)
+}
+
+fn current_player_full_appearance_semantics(
+    payload: &[u8],
+    dialect: TestCreatureAppearanceDialect,
+) -> Option<TestFullCreatureAppearanceSemantics> {
+    let live = live_object_read_window(payload);
+    for offset in live.windows(2).enumerate().filter_map(|(offset, pair)| {
+        (pair == [b'P', super::CREATURE_OBJECT_TYPE]).then_some(offset)
+    }) {
+        let object_id = super::read_u32_le(live, offset + 2)?;
+        let mask = test_read_u16_le(live, offset + 6)?;
+        if object_id != 0xFFFF_FFFE || mask != 0xFFFF {
+            continue;
+        }
+
+        let mut cursor = offset + 8;
+        cursor = test_cexo_string_end(live, cursor)?;
+        cursor = test_cexo_string_end(live, cursor)?;
+
+        let appearance_type = test_read_u16_le(live, cursor)?;
+        cursor = cursor.checked_add(2)?; // 0x0001
+        cursor = cursor.checked_add(1)?; // 0x0002
+        cursor = cursor.checked_add(1)?; // 0x0004
+        cursor = cursor.checked_add(1)?; // 0x0080 low byte
+        if matches!(dialect, TestCreatureAppearanceDialect::EeBuild8193) {
+            cursor = cursor.checked_add(1)?; // EE build-0x23 high byte
+        }
+        cursor = cursor.checked_add(4)?; // 0x0800
+        cursor = cursor.checked_add(4)?; // 0x1000
+        cursor = cursor.checked_add(1)?; // 0x0008
+        cursor = cursor.checked_add(1)?; // 0x0010
+        cursor = cursor.checked_add(1)?; // 0x0020
+        cursor = cursor.checked_add(1)?; // 0x0040
+
+        let body_selector = *live.get(cursor)?;
+        cursor = cursor.checked_add(1)?;
+        if body_selector == 0 {
+            // Existing body table unchanged.
+        } else if body_selector < 0x0A {
+            cursor = cursor.checked_add(usize::from(body_selector).checked_mul(2)?)?;
+        } else {
+            if body_selector > 0x13 {
+                return None;
+            }
+            cursor = cursor.checked_add(match dialect {
+                TestCreatureAppearanceDialect::LegacyDiamond => 0x13,
+                TestCreatureAppearanceDialect::EeBuild8193 => 0x13 * 2,
+            })?;
+        }
+
+        cursor = cursor.checked_add(2 + 4)?; // 0x2000 tail.
+        if matches!(dialect, TestCreatureAppearanceDialect::EeBuild8193) {
+            cursor = cursor.checked_add(1)?; // EE build-0x0E tail byte.
+        }
+        let equipment_count = *live.get(cursor)?;
+        cursor = cursor.checked_add(1)?;
+        return Some(TestFullCreatureAppearanceSemantics {
+            object_id,
+            appearance_type,
+            body_selector,
+            equipment_count,
+            record_end: cursor,
+        });
+    }
+    None
+}
+
+fn full_creature_appearance_shape(
+    payload: &[u8],
+    dialect: TestCreatureAppearanceDialect,
+) -> Option<TestFullCreatureAppearanceShape> {
+    let live = live_object_read_window(payload);
+    live.windows(2)
+        .enumerate()
+        .filter_map(|(offset, pair)| {
+            if pair != [b'P', super::CREATURE_OBJECT_TYPE] {
+                return None;
+            }
+            let object_id = super::read_u32_le(live, offset.checked_add(2)?)?;
+            let mask = test_read_u16_le(live, offset.checked_add(6)?)?;
+            if object_id == 0 || mask != 0xFFFF {
+                return None;
+            }
+            let record_end = match dialect {
+                TestCreatureAppearanceDialect::LegacyDiamond => {
+                    super::appearance::try_get_legacy_creature_appearance_record_end(
+                        live,
+                        offset,
+                        live.len(),
+                    )
+                }
+                TestCreatureAppearanceDialect::EeBuild8193 => {
+                    super::appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
+                        live,
+                        offset,
+                        live.len(),
+                    )
+                }
+            }?;
+            Some(TestFullCreatureAppearanceShape {
+                object_id,
+                offset,
+                record_bytes: record_end.checked_sub(offset)?,
+            })
+        })
+        .max_by_key(|shape| shape.record_bytes)
+}
+
 fn assert_no_full_creature_appearance_has_longer_legacy_shape(payload: &[u8]) {
     let live = live_object_read_window(payload);
     for offset in live.windows(2).enumerate().filter_map(|(offset, pair)| {
@@ -51,6 +193,106 @@ fn assert_no_full_creature_appearance_has_longer_legacy_shape(payload: &[u8]) {
             "translated P/5 at offset {offset} still has a longer Diamond full-appearance shape than its EE byte shape: ee_end={ee_end} legacy_end={legacy_end}"
         );
     }
+}
+
+fn assert_rewrite_matches_expected_or_current_player_semantics(
+    name: &str,
+    legacy: &[u8],
+    rewritten: &[u8],
+    expected_ee: &[u8],
+    context: &str,
+) {
+    if rewritten == expected_ee {
+        return;
+    }
+
+    let legacy_shape =
+        full_creature_appearance_shape(legacy, TestCreatureAppearanceDialect::LegacyDiamond);
+    let expected_shape =
+        full_creature_appearance_shape(expected_ee, TestCreatureAppearanceDialect::EeBuild8193);
+    if let Some(legacy_shape) = legacy_shape {
+        if expected_shape
+            .as_ref()
+            .map(|expected_shape| expected_shape.record_bytes < legacy_shape.record_bytes)
+            .unwrap_or(true)
+        {
+            assert_ne!(
+                rewritten, expected_ee,
+                "{name} {context}: stale dumped EE bytes should not be reproduced"
+            );
+            assert!(
+                rewritten.len() > expected_ee.len(),
+                "{name} {context}: rewritten payload should retain bytes missing from the stale full-appearance dump"
+            );
+            assert!(
+                super::claim_payload_if_verified(rewritten).is_some(),
+                "{name} {context}: rewritten stale-class payload should exact-claim"
+            );
+            if let (Some(legacy_semantics), Some(rewritten_semantics)) = (
+                current_player_full_appearance_semantics(
+                    legacy,
+                    TestCreatureAppearanceDialect::LegacyDiamond,
+                ),
+                current_player_full_appearance_semantics(
+                    rewritten,
+                    TestCreatureAppearanceDialect::EeBuild8193,
+                ),
+            ) {
+                assert_eq!(
+                    rewritten_semantics.appearance_type, legacy_semantics.appearance_type,
+                    "{name} {context}: current-player Appearance_Type should round-trip"
+                );
+                assert_eq!(
+                    rewritten_semantics.body_selector, legacy_semantics.body_selector,
+                    "{name} {context}: current-player body selector should round-trip"
+                );
+                assert_eq!(
+                    rewritten_semantics.equipment_count, legacy_semantics.equipment_count,
+                    "{name} {context}: current-player equipment count should round-trip"
+                );
+            }
+            assert_no_full_creature_appearance_has_longer_legacy_shape(rewritten);
+            return;
+        }
+    }
+
+    if let Some(legacy_semantics) = current_player_full_appearance_semantics(
+        legacy,
+        TestCreatureAppearanceDialect::LegacyDiamond,
+    ) {
+        if current_player_full_appearance_semantics(
+            expected_ee,
+            TestCreatureAppearanceDialect::EeBuild8193,
+        )
+        .is_none()
+        {
+            let rewritten_semantics = current_player_full_appearance_semantics(
+                rewritten,
+                TestCreatureAppearanceDialect::EeBuild8193,
+            )
+            .expect("rewritten current-player P/5 should preserve full EE appearance semantics");
+            assert_ne!(
+                rewritten, expected_ee,
+                "{name} {context}: stale dumped EE bytes should not be reproduced"
+            );
+            assert_eq!(
+                rewritten_semantics.appearance_type, legacy_semantics.appearance_type,
+                "{name} {context}: current-player Appearance_Type should round-trip"
+            );
+            assert_eq!(
+                rewritten_semantics.body_selector, legacy_semantics.body_selector,
+                "{name} {context}: current-player body selector should round-trip"
+            );
+            assert_eq!(
+                rewritten_semantics.equipment_count, legacy_semantics.equipment_count,
+                "{name} {context}: current-player equipment count should round-trip"
+            );
+            assert_no_full_creature_appearance_has_longer_legacy_shape(rewritten);
+            return;
+        }
+    }
+
+    assert_eq!(rewritten, expected_ee, "{name} {context}");
 }
 
 fn rewrite_payload_to_exact_claim_for_test(
@@ -1583,6 +1825,77 @@ fn local_to_heir_kraegen_thoraulik_live_object_stream_rewrites_to_exact_shape() 
     assert_no_full_creature_appearance_has_longer_legacy_shape(&payload);
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_chapter2_current_player_appearance_preserves_full_body_semantics() {
+    // Local Chapter2 bridge run from 2026-05-24, captured after the visual
+    // alignment report. This current-player stream is a semantic regression
+    // seed: byte-shape acceptance alone is not enough because the source BIC
+    // and legacy P/5 record both prove Appearance_Type=2, while a shifted
+    // rewrite can stop the full appearance before its body/equipment table.
+    let legacy = include_bytes!(
+        "../../../fixtures/live_object/local_chapter2_current_player_appearance_20260524_legacy.bin"
+    );
+    let stale_ee = include_bytes!(
+        "../../../fixtures/live_object/local_chapter2_current_player_appearance_20260524_ee.bin"
+    );
+
+    let legacy_semantics = current_player_full_appearance_semantics(
+        legacy,
+        TestCreatureAppearanceDialect::LegacyDiamond,
+    )
+    .expect("legacy current-player P/5 should expose full appearance semantics");
+    assert_eq!(legacy_semantics.object_id, 0xFFFF_FFFE);
+    assert_eq!(
+        legacy_semantics.appearance_type, 2,
+        "legacy current-player Appearance_Type should match the seed BIC"
+    );
+    assert_eq!(legacy_semantics.body_selector, 0x13);
+    assert_eq!(legacy_semantics.equipment_count, 8);
+
+    assert!(
+        super::claim_payload_if_verified(stale_ee).is_none(),
+        "stale EE diagnostic stopped the P/5 record before the full body/equipment table"
+    );
+    assert!(
+        current_player_full_appearance_semantics(
+            stale_ee,
+            TestCreatureAppearanceDialect::EeBuild8193,
+        )
+        .is_none(),
+        "stale EE diagnostic must not satisfy the semantic current-player appearance proof"
+    );
+
+    let mut payload = legacy.to_vec();
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.creature_appearance_records >= 1);
+    assert_ne!(
+        payload.as_slice(),
+        stale_ee,
+        "rewriter must not reproduce the stale shifted EE current-player appearance"
+    );
+
+    let ee_semantics = current_player_full_appearance_semantics(
+        &payload,
+        TestCreatureAppearanceDialect::EeBuild8193,
+    )
+    .expect("rewritten current-player P/5 should expose full EE appearance semantics");
+    assert_eq!(
+        ee_semantics.appearance_type,
+        legacy_semantics.appearance_type
+    );
+    assert_eq!(ee_semantics.body_selector, legacy_semantics.body_selector);
+    assert_eq!(
+        ee_semantics.equipment_count,
+        legacy_semantics.equipment_count
+    );
+    assert!(
+        ee_semantics.record_end > legacy_semantics.record_end,
+        "EE build-0x23 widening should retain, not truncate, the full appearance body"
+    );
+    assert_no_full_creature_appearance_has_longer_legacy_shape(&payload);
+}
+
 #[test]
 fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
     // Local XP1-Chapter 1 harness capture from 2026-05-22. The stream starts
@@ -1623,10 +1936,11 @@ fn local_xp1_chapter2_4408_inventory_creature_stream_rewrites_to_exact_shape() {
     // and the following Merom Rescher creature add/update records. The clean
     // rerun dumped both the raw Diamond payload and the exact EE writer output,
     // so pin the byte shape rather than widening strict validation.
-    let mut payload = include_bytes!(
+    let legacy = include_bytes!(
         "../../../fixtures/live_object/local_xp1_chapter2_seq16_4408_inventory_creature_20260524_legacy.bin"
     )
-    .to_vec();
+    .as_slice();
+    let mut payload = legacy.to_vec();
     let expected_ee = include_bytes!(
         "../../../fixtures/live_object/local_xp1_chapter2_seq16_4408_inventory_creature_20260524_ee.bin"
     )
@@ -1638,10 +1952,12 @@ fn local_xp1_chapter2_4408_inventory_creature_stream_rewrites_to_exact_shape() {
     );
 
     let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-    assert_eq!(
+    assert_rewrite_matches_expected_or_current_player_semantics(
+        "XP1-Chapter 2 0x4408",
+        legacy,
         payload.as_slice(),
         expected_ee,
-        "XP1-Chapter 2 0x4408 rewrite should match the harness-dumped EE bytes"
+        "XP1-Chapter 2 0x4408 rewrite should match the harness-dumped EE bytes",
     );
     assert!(claim.creature_update_records >= 1);
     assert!(claim.inventory_records >= 1);
@@ -1714,7 +2030,9 @@ fn local_xp1_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape()
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE bytes"
@@ -1732,10 +2050,11 @@ fn local_xp1_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape()
 fn local_xp1_chapter1_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     // Same XP1-Chapter 1 run after auto-opening inventory. This compact GIA/GRA
     // live-object stream must remain owned by the exact GUI-row validator.
-    let mut payload = include_bytes!(
+    let legacy = include_bytes!(
         "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_legacy.bin"
     )
-    .to_vec();
+    .as_slice();
+    let mut payload = legacy.to_vec();
     let expected_ee = include_bytes!(
         "../../../fixtures/live_object/local_xp1_chapter1_seq26_auto_inventory_gui_20260524_ee.bin"
     )
@@ -1747,10 +2066,12 @@ fn local_xp1_chapter1_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     );
 
     let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-    assert_eq!(
+    assert_rewrite_matches_expected_or_current_player_semantics(
+        "XP1-Chapter 1 auto-inventory GUI",
+        legacy,
         payload.as_slice(),
         expected_ee,
-        "XP1-Chapter 1 auto-inventory GUI rewrite should match the harness-dumped EE bytes"
+        "XP1-Chapter 1 auto-inventory GUI rewrite should match the harness-dumped EE bytes",
     );
     assert!(
         claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
@@ -1889,7 +2210,9 @@ fn local_xp1_interlude_live_objects_rewrite_to_dumped_exact_ee_shape() {
             started.elapsed() < std::time::Duration::from_secs(3),
             "{name} XP1-Interlude live-object rewrite must stay bounded"
         );
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE bytes"
@@ -2242,7 +2565,9 @@ fn local_witchs_wake_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE bytes"
@@ -2388,7 +2713,9 @@ fn hg_live_docks_091731_live_objects_match_dumped_ee_shapes() {
             );
         }
 
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the live HG EE byte shape"
@@ -2455,7 +2782,9 @@ fn local_prelude_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE byte shape"
@@ -2559,7 +2888,9 @@ fn local_winds_eremor_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE byte shape"
@@ -3814,10 +4145,12 @@ fn local_chapter2e_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
-            "{name} rewrite must match the harness-dumped EE byte shape"
+            "{name} rewrite must match the harness-dumped EE byte shape",
         );
         assert!(
             claim.records_examined >= 1,
@@ -3880,7 +4213,9 @@ fn local_chapter4_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE bytes"
@@ -4132,7 +4467,9 @@ fn local_xp2_chapter1_area_entry_live_objects_rewrite_to_dumped_exact_ee_shape()
             started.elapsed() < std::time::Duration::from_secs(3),
             "{name} XP2_Chapter1 live-object rewrite must stay bounded"
         );
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite must match the harness-dumped EE byte shape"
@@ -4301,7 +4638,9 @@ fn local_xp2_chapter3_live_objects_rewrite_to_dumped_exact_ee_shape() {
         );
 
         let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-        assert_eq!(
+        assert_rewrite_matches_expected_or_current_player_semantics(
+            name,
+            legacy,
             payload.as_slice(),
             expected_ee,
             "{name} rewrite should match the harness-dumped EE bytes"

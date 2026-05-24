@@ -61,6 +61,22 @@ Current status:
   issue open until a visual replay confirms affected placeables and until
   `P/05/01 GameObjUpdate_LiveObject` current-player/placeable appearance
   records are audited for the player-model symptom.
+- 2026-05-24 current-player `P/05/01` follow-up: reduced the stale
+  accepted-live-object diagnostic to a generalized `P/5` full creature
+  appearance cursor shift. The no-proof locstring parser could treat the first
+  direct CExoString length/name as a plain locstring token, and the body parser
+  could accept a shifted short/zero body branch before the real full body table
+  plus visible-equipment count. Added writer-contract checks for the fixed
+  nineteen-value full-body table branch and zero EE high bytes, plus a private
+  Chapter2 regression proving current-player `Appearance_Type = 2`, selector
+  `0x13`, and 8 visible-equipment records survive the Diamond-to-EE rewrite.
+  The same pass fixed an appearance-adjacent `U/5 0x3967` stream consequence:
+  after the full `P/5` rewrite, fragment-tail repair now composes the original
+  tail splice with the existing decompile-backed action0 missing-damage and
+  short-associate repairs before exact EE validation. The Dark Ranger seq15
+  private fixture exact-claims this composed repair. Keep the broader issue
+  open until visual replay confirms the player model and remaining placeable
+  appearance/orientation symptoms.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

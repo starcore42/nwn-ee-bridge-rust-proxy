@@ -5036,77 +5036,100 @@ fn parse_creature_appearance_record(
                         cursor = candidate.second_name_end;
                         fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
                     }
-                } else if let Some(first) = advance_legacy_locstring_token_without_proof(
-                    bytes, cursor, limit,
-                )
-                .or_else(|| {
-                    (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
-                        advance_legacy_locstring_token_without_proof_allow_plain_token(
-                            bytes, cursor, limit,
-                        )
-                    })?
-                }) {
-                    cursor = first.end;
-                    fragment_bits_consumed =
-                        fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
-                    let mut name_bits = vec![true, true, false];
-                    let standard_second_token = advance_legacy_locstring_token_without_proof(
-                        bytes, cursor, limit,
-                    )
-                    .or_else(|| {
-                        (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
-                            // Diamond's locstring helper is selector-bit driven:
-                            // after the fragment stream chooses the token branch,
-                            // the reader consumes a DWORD token reference. The
-                            // high-bit marker is a no-proof ambiguity guard used
-                            // when we do not yet have the fragment cursor; a full
-                            // `0xFFFF` appearance can accept a plain second token
-                            // only if the following scalar/body/equipment block
-                            // proves the exact decompiled record shape.
-                            advance_legacy_locstring_token_without_proof_allow_plain_token(
-                                bytes, cursor, limit,
-                            )
-                        })?
-                    });
-                    if let Some(candidate) =
-                        select_missing_second_locstring_token_high_byte_candidate(
-                            bytes, cursor, limit, mask,
-                        )
-                        .filter(|candidate| {
-                            standard_second_token
-                                .as_ref()
-                                .and_then(|second| {
-                                    score_missing_first_inline_name_low_byte_tail(
-                                        bytes, second.end, limit,
+                } else {
+                    let direct_pair_has_semantic_tail =
+                        advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
+                            .and_then(|first_end| {
+                                advance_message_string(
+                                    bytes,
+                                    first_end,
+                                    limit,
+                                    MAX_LIVE_OBJECT_NAME_BYTES,
+                                )
+                            })
+                            .and_then(|second_end| {
+                                score_missing_first_inline_name_low_byte_tail(
+                                    bytes, second_end, limit,
+                                )
+                            })
+                            .is_some();
+                    let first = advance_legacy_locstring_token_without_proof(bytes, cursor, limit)
+                        .or_else(|| {
+                            (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK
+                                && !direct_pair_has_semantic_tail)
+                                .then(|| {
+                                    advance_legacy_locstring_token_without_proof_allow_plain_token(
+                                        bytes, cursor, limit,
                                     )
-                                })
-                                .map(|(standard_record_end, standard_equipment)| {
-                                    candidate.equipment_records > standard_equipment
-                                        || (candidate.equipment_records == standard_equipment
-                                            && candidate.record_end > standard_record_end)
-                                })
-                                .unwrap_or(true)
-                        })
-                    {
-                        ee_extra_byte_inserts.push(
-                            CreatureAppearanceByteInsert::MissingSecondLocStringTokenHighByte {
-                                offset: candidate.name_end,
-                            },
-                        );
-                        cursor = candidate.name_end;
-                        fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
-                        name_bits.extend([true, false]);
-                    } else if let Some(second) = standard_second_token {
-                        cursor = second.end;
+                                })?
+                        });
+                    if let Some(first) = first {
+                        cursor = first.end;
                         fragment_bits_consumed =
-                            fragment_bits_consumed.checked_add(second.fragment_bits_consumed)?;
-                        name_bits.extend([true, false]);
-                    } else if let Some(candidate) =
-                        select_missing_second_inline_name_low_byte_candidate(
-                            bytes, cursor, limit, mask, None,
-                        )
-                        .filter(|candidate| {
-                            advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
+                            fragment_bits_consumed.checked_add(first.fragment_bits_consumed)?;
+                        let mut name_bits = vec![true, true, false];
+                        let standard_second_token =
+                            advance_legacy_locstring_token_without_proof(bytes, cursor, limit);
+                        let plain_second_token =
+                            (mask == LEGACY_APPEARANCE_ALL_FIELDS_MASK).then(|| {
+                                // Diamond's locstring helper is selector-bit driven:
+                                // after the fragment stream chooses the token branch,
+                                // the reader consumes a DWORD token reference. The
+                                // high-bit marker is a no-proof ambiguity guard used
+                                // when we do not yet have the fragment cursor; a full
+                                // `0xFFFF` appearance can accept a plain second token
+                                // only after the direct CExoString component shape
+                                // fails. Trying the markerless token first shifts
+                                // current-player first/last-name records such as
+                                // `len=7, "Rescher"` into the scalar field cursor.
+                                advance_legacy_locstring_token_without_proof_allow_plain_token(
+                                    bytes, cursor, limit,
+                                )
+                            })?;
+                        if let Some(candidate) =
+                            select_missing_second_locstring_token_high_byte_candidate(
+                                bytes, cursor, limit, mask,
+                            )
+                            .filter(|candidate| {
+                                standard_second_token
+                                    .as_ref()
+                                    .and_then(|second| {
+                                        score_missing_first_inline_name_low_byte_tail(
+                                            bytes, second.end, limit,
+                                        )
+                                    })
+                                    .map(|(standard_record_end, standard_equipment)| {
+                                        candidate.equipment_records > standard_equipment
+                                            || (candidate.equipment_records == standard_equipment
+                                                && candidate.record_end > standard_record_end)
+                                    })
+                                    .unwrap_or(true)
+                            })
+                        {
+                            ee_extra_byte_inserts.push(
+                                CreatureAppearanceByteInsert::MissingSecondLocStringTokenHighByte {
+                                    offset: candidate.name_end,
+                                },
+                            );
+                            cursor = candidate.name_end;
+                            fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
+                            name_bits.extend([true, false]);
+                        } else if let Some(second) = standard_second_token {
+                            cursor = second.end;
+                            fragment_bits_consumed = fragment_bits_consumed
+                                .checked_add(second.fragment_bits_consumed)?;
+                            name_bits.extend([true, false]);
+                        } else if let Some(candidate) =
+                            select_missing_second_inline_name_low_byte_candidate(
+                                bytes, cursor, limit, mask, None,
+                            )
+                            .filter(|candidate| {
+                                advance_message_string(
+                                    bytes,
+                                    cursor,
+                                    limit,
+                                    MAX_LIVE_OBJECT_NAME_BYTES,
+                                )
                                 .and_then(|standard_second_end| {
                                     score_missing_first_inline_name_low_byte_tail(
                                         bytes,
@@ -5120,67 +5143,31 @@ fn parse_creature_appearance_record(
                                             && candidate.record_end > standard_record_end)
                                 })
                                 .unwrap_or(true)
-                        })
-                    {
-                        ee_extra_byte_inserts.push(
+                            })
+                        {
+                            ee_extra_byte_inserts.push(
                             CreatureAppearanceByteInsert::MissingSecondInlineNameLengthLowByte {
                                 offset: cursor,
                                 length: candidate.name_len,
                             },
                         );
-                        cursor = candidate.name_end;
-                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
-                        name_bits.push(false);
-                    } else if let Some(second_end) =
-                        advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
-                    {
-                        cursor = second_end;
-                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
-                        name_bits.push(false);
-                    } else {
-                        let candidate = select_missing_second_inline_name_candidate(
-                            bytes, cursor, limit, mask, None,
-                        )?;
-                        ee_extra_byte_inserts.push(
-                            CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
-                                offset: cursor,
-                                length: u32::try_from(candidate.name_len).ok()?,
-                            },
-                        );
-                        cursor = candidate.name_end;
-                        fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
-                        name_bits.push(false);
-                    }
-                    appearance_name_bits = Some(name_bits);
-                } else {
-                    fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
-                    appearance_name_bits = Some(vec![true, false, false]);
-                    let mut second_component_consumed = false;
-                    if let Some(first_end) =
-                        advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
-                    {
-                        cursor = first_end;
-                    } else {
-                        let candidate = select_missing_first_inline_name_low_byte_candidate(
-                            bytes, cursor, limit, mask, None,
-                        )?;
-                        ee_extra_byte_inserts.push(
-                            CreatureAppearanceByteInsert::MissingFirstInlineNameLengthLowByte {
-                                offset: cursor,
-                                length: candidate.first_name_len,
-                            },
-                        );
-                        cursor = candidate.second_name_end;
-                        second_component_consumed = true;
-                    }
-                    if !second_component_consumed {
-                        if let Some(standard_second_end) =
+                            cursor = candidate.name_end;
+                            fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                            name_bits.push(false);
+                        } else if let Some(second_end) =
                             advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
                         {
-                            cursor = standard_second_end;
+                            cursor = second_end;
+                            fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                            name_bits.push(false);
+                        } else if let Some(second) = plain_second_token {
+                            cursor = second.end;
+                            fragment_bits_consumed = fragment_bits_consumed
+                                .checked_add(second.fragment_bits_consumed)?;
+                            name_bits.extend([true, false]);
                         } else {
                             let candidate = select_missing_second_inline_name_candidate(
-                                bytes, cursor, limit, mask, bit_proof,
+                                bytes, cursor, limit, mask, None,
                             )?;
                             ee_extra_byte_inserts.push(
                                 CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
@@ -5189,6 +5176,51 @@ fn parse_creature_appearance_record(
                                 },
                             );
                             cursor = candidate.name_end;
+                            fragment_bits_consumed = fragment_bits_consumed.checked_add(1)?;
+                            name_bits.push(false);
+                        }
+                        appearance_name_bits = Some(name_bits);
+                    } else {
+                        fragment_bits_consumed = fragment_bits_consumed.checked_add(2)?;
+                        appearance_name_bits = Some(vec![true, false, false]);
+                        let mut second_component_consumed = false;
+                        if let Some(first_end) =
+                            advance_message_string(bytes, cursor, limit, MAX_LIVE_OBJECT_NAME_BYTES)
+                        {
+                            cursor = first_end;
+                        } else {
+                            let candidate = select_missing_first_inline_name_low_byte_candidate(
+                                bytes, cursor, limit, mask, None,
+                            )?;
+                            ee_extra_byte_inserts.push(
+                                CreatureAppearanceByteInsert::MissingFirstInlineNameLengthLowByte {
+                                    offset: cursor,
+                                    length: candidate.first_name_len,
+                                },
+                            );
+                            cursor = candidate.second_name_end;
+                            second_component_consumed = true;
+                        }
+                        if !second_component_consumed {
+                            if let Some(standard_second_end) = advance_message_string(
+                                bytes,
+                                cursor,
+                                limit,
+                                MAX_LIVE_OBJECT_NAME_BYTES,
+                            ) {
+                                cursor = standard_second_end;
+                            } else {
+                                let candidate = select_missing_second_inline_name_candidate(
+                                    bytes, cursor, limit, mask, bit_proof,
+                                )?;
+                                ee_extra_byte_inserts.push(
+                                    CreatureAppearanceByteInsert::MissingSecondInlineNameLength {
+                                        offset: cursor,
+                                        length: u32::try_from(candidate.name_len).ok()?,
+                                    },
+                                );
+                                cursor = candidate.name_end;
+                            }
                         }
                     }
                 }
@@ -5677,6 +5709,13 @@ fn advance_creature_appearance_body_fields(
         // `0xFFFF` as "must carry a full 19-part table" made compact local
         // Diamond current-creature appearances unclaimable even though the
         // decompiled reader accepts them exactly.
+        if full_body_table_writer_shape_follows_zero_selector(
+            bytes,
+            cursor.checked_add(1)?,
+            dialect,
+        ) {
+            return None;
+        }
         return cursor.checked_add(1).filter(|end| *end <= limit);
     }
     if direct_selector < 0x0A {
@@ -5692,8 +5731,11 @@ fn advance_creature_appearance_body_fields(
 
     // Diamond `sub_448E30` compares the selector against `0x0A`; selectors
     // `1..=9` are compact index/value deltas, while any selector `>= 0x0A`
-    // enters the fixed full-body branch and reads exactly 19 body-part bytes.
-    // The selector is not itself required to equal `0x13`.
+    // enters the fixed full-body branch and reads exactly nineteen part
+    // values. The bridge validates that fixed table shape. In the EE-facing
+    // dialect this also means every widened high byte must be zero, so a
+    // shifted following live-object opcode such as `U/5` cannot masquerade as
+    // a valid full-body branch.
     cursor = cursor.checked_add(1)?;
     match dialect {
         CreatureAppearanceWireDialect::LegacyDiamond => {
@@ -5707,11 +5749,73 @@ fn advance_creature_appearance_body_fields(
             }
         }
         CreatureAppearanceWireDialect::EeBuild8193 => {
-            cursor = cursor
-                .checked_add(usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT).checked_mul(2)?)?;
+            for _ in 0..usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT) {
+                cursor = cursor.checked_add(1)?;
+                if bytes.get(cursor).copied()? != 0 {
+                    return None;
+                }
+                cursor = cursor.checked_add(1)?;
+            }
         }
     }
     (cursor <= limit).then_some(cursor)
+}
+
+fn full_body_table_writer_shape_follows_zero_selector(
+    bytes: &[u8],
+    selector_offset: usize,
+    dialect: CreatureAppearanceWireDialect,
+) -> bool {
+    let Some(selector) = bytes.get(selector_offset).copied() else {
+        return false;
+    };
+    if selector < 0x0A {
+        return false;
+    }
+
+    let Some(mut cursor) = selector_offset.checked_add(1) else {
+        return false;
+    };
+    match dialect {
+        CreatureAppearanceWireDialect::LegacyDiamond => {
+            let Some(next) = cursor.checked_add(usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT))
+            else {
+                return false;
+            };
+            if next > bytes.len() {
+                return false;
+            }
+            cursor = next;
+        }
+        CreatureAppearanceWireDialect::EeBuild8193 => {
+            for _ in 0..usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT) {
+                let Some(low_end) = cursor.checked_add(1) else {
+                    return false;
+                };
+                if low_end >= bytes.len() || bytes.get(low_end).copied() != Some(0) {
+                    return false;
+                }
+                let Some(next) = low_end.checked_add(1) else {
+                    return false;
+                };
+                cursor = next;
+            }
+        }
+    }
+
+    let Some(after_2000_tail) = cursor.checked_add(2 + 4) else {
+        return false;
+    };
+    cursor = after_2000_tail;
+    if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+        let Some(next) = cursor.checked_add(1) else {
+            return false;
+        };
+        cursor = next;
+    }
+    bytes
+        .get(cursor)
+        .is_some_and(|count| *count <= LEGACY_APPEARANCE_MAX_EQUIPMENT_RECORDS)
 }
 
 fn legacy_missing_second_name_bytes_are_inline_printable(bytes: &[u8]) -> bool {
@@ -6164,6 +6268,9 @@ fn advance_creature_appearance_scalar_fields(
                 );
             }
             CreatureAppearanceWireDialect::EeBuild8193 => {
+                if bytes.get(cursor).copied()? != 0 {
+                    return None;
+                }
                 cursor = cursor.checked_add(1)?;
             }
         }
