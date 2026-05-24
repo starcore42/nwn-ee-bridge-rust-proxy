@@ -3245,6 +3245,189 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_local_xp1_interlude_live_object_pairs() {
+        // Local XP1-Interlude `x1_premonition` run from 2026-05-24. The
+        // dispatcher must keep each dumped payload on the bounded typed
+        // live-object rewrite path and match the accepted-live-object EE bytes.
+        let mut semantic_state = semantic::SemanticSessionState::default();
+        for (name, legacy, expected_ee, expect_gui) in [
+            (
+                "seq12",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq12_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq12_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq13",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq13_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq13_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq14",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq14_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq14_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq15",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq15_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq15_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq16",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq16_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq16_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq17",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq17_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq17_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq18",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq18_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq18_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq21",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq21_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq21_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq30_auto_inventory_gui",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq30_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_xp1_interlude_seq30_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw XP1-Interlude stream should document the pre-rewrite Diamond shape"
+            );
+
+            if name == "seq21" {
+                // The harness stream established current-player object context
+                // before the later dialog heartbeat and auto-inventory packets.
+                semantic_state
+                    .objects
+                    .observe_mentions(&[semantic::LiveObjectMention {
+                        opcode: b'A',
+                        object_type: 0x05,
+                        object_id: 0xFFFF_FFFE,
+                        name: None,
+                        position: None,
+                        orientation: None,
+                        bounds: None,
+                    }]);
+            }
+
+            let started = std::time::Instant::now();
+            let rewrite = rewrite_single_inflated_payload_for_ee(
+                &mut payload,
+                None,
+                SemanticScope::DeflatedReassembly,
+                None,
+                Some(&semantic_state.objects),
+                None,
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher XP1-Interlude {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE byte shape"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned XP1-Interlude payload must exact-claim");
+            assert!(claim.records_examined >= 1);
+            if expect_gui {
+                assert!(
+                    claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                    "{name} should retain GUI live-object row ownership"
+                );
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+            crate::translate::semantic::observe_verified_payload(
+                &mut semantic_state,
+                crate::packet::Direction::ServerToClient,
+                &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+                &payload,
+            );
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_local_xp1_chapter2_4408_inventory_creature_stream() {
         // Local XP1-Chapter 2 seq16 accepted-live-object dump from 2026-05-24.
         // The first `U/5 0x4408` record has two counted visual-effect rows

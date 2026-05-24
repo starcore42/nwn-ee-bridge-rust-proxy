@@ -1759,6 +1759,155 @@ fn local_xp1_chapter1_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
 }
 
+#[cfg(hgbridge_private_fixtures)]
+#[test]
+fn local_xp1_interlude_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local XP1-Interlude `x1_premonition` strict-clean harness run from
+    // 2026-05-24. The accepted-live-object diagnostics captured both the
+    // Diamond inputs and the exact EE writer outputs for area-entry, dialog
+    // heartbeat, and auto-inventory streams.
+    for (name, legacy, expected_ee, expect_gui) in [
+        (
+            "seq12",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq12_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq12_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq13",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq13_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq13_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq14",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq14_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq14_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq15",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq15_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq15_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq16",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq16_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq16_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq17",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq17_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq17_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq18",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq18_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq18_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq21",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq21_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq21_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq30_auto_inventory_gui",
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq30_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_xp1_interlude_seq30_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw XP1-Interlude stream should document the legacy Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{name} XP1-Interlude live-object rewrite must stay bounded"
+        );
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE bytes"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain at least one typed live-object record"
+        );
+        if expect_gui {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain GUI live-object row ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
 #[test]
 fn local_xp2_chapter2_current_player_4408_inventory_2a00_compact_rewrites_to_exact_shape() {
     // Local XP2 Chapter 2 harness capture from 2026-05-22 after the inventory
