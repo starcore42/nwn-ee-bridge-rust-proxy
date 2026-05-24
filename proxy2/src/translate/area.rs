@@ -3634,7 +3634,10 @@ fn normalize_static_placeable_direction_components(
         return None;
     }
     if horizontal_len_sq <= 1.0e-12 {
-        return Some((0.0, 1.0, 0.0));
+        // A zero-length direction vector has no decompile-preserving yaw. Do
+        // not invent north here; a module-resource repair may still supply the
+        // original GIT bearing before the final EE reader proof runs.
+        return None;
     }
     let horizontal_len = horizontal_len_sq.sqrt();
     if !horizontal_len.is_finite() || horizontal_len <= 0.0 {
@@ -6356,6 +6359,46 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod public_static_direction_tests {
+    use super::*;
+
+    fn angle_delta(actual: f32, expected: f32) -> f32 {
+        let two_pi = std::f32::consts::PI * 2.0;
+        (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
+    }
+
+    #[test]
+    fn static_direction_normalization_rejects_zero_vector_without_inventing_yaw() {
+        assert_eq!(
+            normalize_static_placeable_direction_components(0.0, 0.0, 0.0),
+            None
+        );
+        assert_eq!(
+            normalize_static_placeable_direction_components(1.0e-8, 0.0, 0.0),
+            None
+        );
+        assert!(
+            !static_placeable_direction_is_ee_safe(0.0, 0.0, 0.0),
+            "zero-length static-placeable rows cannot satisfy the EE direction proof"
+        );
+    }
+
+    #[test]
+    fn static_direction_normalization_preserves_nonzero_yaw() {
+        let (dir_x, dir_y, dir_z) = normalize_static_placeable_direction_components(2.0, -3.0, 4.0)
+            .expect("nonzero horizontal vector should normalize");
+        let source_yaw = (-2.0f32).atan2(-3.0);
+        let normalized_yaw = (-dir_x).atan2(dir_y);
+
+        assert!(static_placeable_direction_is_ee_safe(dir_x, dir_y, dir_z));
+        assert!(
+            angle_delta(normalized_yaw, source_yaw).abs() <= 1.0e-6,
+            "normalization must preserve the decompiled atan2(-x, y) yaw"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

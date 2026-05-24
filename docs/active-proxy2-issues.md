@@ -214,6 +214,14 @@ Current status:
   `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`. Keep the broader issue open pending
   visual replay against a confirmed bad placeable.
+- 2026-05-25 `P/04/01` static direction audit: tightened the static-placeable
+  direction normalizer so zero-length direction vectors no longer get converted
+  to north. The decompiled static row supplies only `OBJECTID + appearance +
+  position + direction vector`; a zero horizontal vector has no yaw to preserve,
+  so it must either be repaired by unique module GIT bearing proof or fail the
+  final EE static-row proof. Added fixture-free public regression coverage for
+  zero-vector rejection and nonzero yaw preservation. Keep the broader issue
+  open pending a visual replay against a confirmed bad static placeable.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
