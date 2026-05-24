@@ -2382,6 +2382,66 @@ fn hg_live_docks_091731_live_objects_match_dumped_ee_shapes() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_prelude_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local Prelude harness run from 2026-05-24 reached gameplay with no root
+    // quarantine. The accepted-live-object diagnostics captured both the raw
+    // Diamond inputs and exact EE writer outputs for area entry plus the later
+    // auto-inventory GUI stream.
+    for (name, legacy, expected_ee, expect_gui) in [
+        (
+            "seq10_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_prelude_seq10_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_prelude_seq10_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq19_auto_inventory_gui",
+            include_bytes!(
+                "../../../fixtures/live_object/local_prelude_seq19_auto_inventory_gui_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_prelude_seq19_auto_inventory_gui_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw Prelude stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE byte shape"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain typed live-object records after rewrite"
+        );
+        if expect_gui {
+            assert!(
+                claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+                "{name} should retain live GUI row ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_contest_champions_area_entry_liveobject_matches_dumped_ee_shape() {
     // Local Contest Of Champions 0492 harness run from 2026-05-24 at area
     // entry. The accepted-live-object diagnostic dumped the raw Diamond
