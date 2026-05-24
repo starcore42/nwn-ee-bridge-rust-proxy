@@ -2918,32 +2918,18 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         // position without those bytes; that cannot be the real optional branch, so
         // the EE guard is forced false while the seven shared trailing BOOLs are
         // copied from the decompile-backed legacy positions.
-        let optional_bit = *bit_cursor + 2 + destination_name_inner_bits;
-        insert_cnw_msb_bit(bits, optional_bit, legacy_optional_object_bytes_present)?;
-        summary.fragment_bits_changed = true;
-
         let post_name_bit = *bit_cursor + 1 + destination_name_inner_bits;
-        if bits.len() <= post_name_bit + 9 {
+        if bits.len() < post_name_bit + 9 {
             return None;
         }
-        for (destination_delta, source_relative) in [
-            (0usize, 1usize),
-            (2, 3),
-            (3, 4),
-            (4, 5),
-            (5, 6),
-            (6, 7),
-            (7, 8),
-            (8, 9),
-        ] {
-            let value = before_bits
-                .get(*bit_cursor + source_relative + source_name_inner_bits)
-                .copied()
-                .unwrap_or(false);
-            summary.fragment_bits_changed |=
-                set_cnw_msb_bit(bits, post_name_bit + destination_delta, value)?;
-        }
-        summary.fragment_bits_changed |= set_cnw_msb_bit(bits, post_name_bit + 9, false)?;
+        let legacy_state =
+            legacy_placeable_add_state_bits(&before_bits, *bit_cursor, source_name_inner_bits);
+        summary.fragment_bits_changed |= write_ee_placeable_add_state_bits(
+            bits,
+            post_name_bit,
+            legacy_state,
+            legacy_optional_object_bytes_present,
+        )?;
     }
 
     // EE's placeable add reader reaches `ObjectVisualTransformData::Read`
@@ -2991,6 +2977,65 @@ fn rewrite_legacy_placeable_add_record_for_ee(
 
     *bit_cursor += 11 + destination_name_inner_bits;
     Some(summary)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableAddStateBits {
+    reputation_visual: bool,
+    static_plot: bool,
+    useable: bool,
+    trap_disarmable: bool,
+    lockable: bool,
+    locked: bool,
+    unknown_1ac: bool,
+    name_valid: bool,
+}
+
+fn legacy_placeable_add_state_bits(
+    bits: &[bool],
+    bit_cursor: usize,
+    source_name_inner_bits: usize,
+) -> PlaceableAddStateBits {
+    let bit = |relative: usize| {
+        bits.get(bit_cursor + source_name_inner_bits + relative)
+            .copied()
+            .unwrap_or(false)
+    };
+    PlaceableAddStateBits {
+        reputation_visual: bit(1),
+        static_plot: bit(3),
+        useable: bit(4),
+        trap_disarmable: bit(5),
+        lockable: bit(6),
+        locked: bit(7),
+        unknown_1ac: bit(8),
+        name_valid: bit(9),
+    }
+}
+
+fn write_ee_placeable_add_state_bits(
+    bits: &mut Vec<bool>,
+    post_name_bit: usize,
+    state: PlaceableAddStateBits,
+    optional_object_bytes_present: bool,
+) -> Option<bool> {
+    insert_cnw_msb_bit(bits, post_name_bit + 1, optional_object_bytes_present)?;
+    let mut changed = true;
+    for (delta, value) in [
+        (0usize, state.reputation_visual),
+        (1, optional_object_bytes_present),
+        (2, state.static_plot),
+        (3, state.useable),
+        (4, state.trap_disarmable),
+        (5, state.lockable),
+        (6, state.locked),
+        (7, state.unknown_1ac),
+        (8, state.name_valid),
+        (9, false),
+    ] {
+        changed |= set_cnw_msb_bit(bits, post_name_bit + delta, value)?;
+    }
+    Some(changed)
 }
 
 fn advance_known_live_record_fragment_cursor_for_ee(
@@ -4089,6 +4134,118 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod placeable_add_semantic_tests {
+    use super::*;
+
+    fn inline_placeable_add_record() -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE, 0x85, 0x00, 0x00, 0x80]);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(b"Lamp");
+        bytes.push(5);
+        bytes.extend_from_slice(&0x000Eu16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        let record_end = bytes.len();
+        (bytes, record_end)
+    }
+
+    fn assert_ee_placeable_add_state_bits(
+        bits: &[bool],
+        post_name_bit: usize,
+        expected: PlaceableAddStateBits,
+        expected_optional_target: bool,
+    ) {
+        assert_eq!(bits.get(post_name_bit), Some(&expected.reputation_visual));
+        assert_eq!(bits.get(post_name_bit + 1), Some(&expected_optional_target));
+        assert_eq!(bits.get(post_name_bit + 2), Some(&expected.static_plot));
+        assert_eq!(bits.get(post_name_bit + 3), Some(&expected.useable));
+        assert_eq!(bits.get(post_name_bit + 4), Some(&expected.trap_disarmable));
+        assert_eq!(bits.get(post_name_bit + 5), Some(&expected.lockable));
+        assert_eq!(bits.get(post_name_bit + 6), Some(&expected.locked));
+        assert_eq!(bits.get(post_name_bit + 7), Some(&expected.unknown_1ac));
+        assert_eq!(bits.get(post_name_bit + 8), Some(&expected.name_valid));
+        assert_eq!(bits.get(post_name_bit + 9), Some(&false));
+    }
+
+    #[test]
+    fn placeable_add_rewrite_preserves_shared_state_bits_and_neutralizes_absent_optional_target() {
+        let (mut bytes, mut record_end) = inline_placeable_add_record();
+        let mut bits = vec![
+            false, // direct CExoString name branch.
+            true,  // legacy reputation/visual selector.
+            true,  // stale optional-target-like bit, but no guarded OBJECTID bytes.
+            true,  // static/plot.
+            true,  // useable.
+            false, // trap disarmable: non-trapped visuals must stay non-trapped.
+            true,  // lockable.
+            false, // locked.
+            true,  // unknown 0x1AC sibling.
+            true,  // name-valid.
+        ];
+        let expected = legacy_placeable_add_state_bits(&bits, 0, 0);
+        let mut bit_cursor = 0usize;
+
+        let rewrite = rewrite_legacy_placeable_add_record_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            None,
+        )
+        .expect("placeable add should rewrite through the typed state-bit mapper");
+
+        assert_eq!(rewrite.maps_inserted, 1);
+        assert_eq!(bit_cursor, 11);
+        assert_ee_placeable_add_state_bits(&bits, 1, expected, false);
+        assert!(has_ee_identity_visual_transform_map_at(
+            &bytes, 19, record_end
+        ));
+
+        let mut verified_cursor = 0usize;
+        assert!(
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                &bytes,
+                0,
+                record_end,
+                &bits,
+                &mut verified_cursor,
+            )
+        );
+        assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn placeable_add_rewrite_preserves_real_optional_target_guard() {
+        let (mut bytes, mut record_end) = inline_placeable_add_record();
+        bytes.extend_from_slice(&0x8000_1234u32.to_le_bytes());
+        record_end += 4;
+        let mut bits = vec![
+            false, false, true, false, false, false, false, false, false, true,
+        ];
+        let expected = legacy_placeable_add_state_bits(&bits, 0, 0);
+        let mut bit_cursor = 0usize;
+
+        rewrite_legacy_placeable_add_record_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            None,
+        )
+        .expect("placeable add with guarded OBJECTID should rewrite");
+
+        assert_eq!(bit_cursor, 11);
+        assert_ee_placeable_add_state_bits(&bits, 1, expected, true);
+        assert_eq!(read_u32_le(&bytes, 19), Some(0x8000_1234));
+        assert!(has_ee_identity_visual_transform_map_at(
+            &bytes, 23, record_end
+        ));
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

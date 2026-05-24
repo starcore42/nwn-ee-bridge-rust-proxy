@@ -77,6 +77,17 @@ Current status:
   private fixture exact-claims this composed repair. Keep the broader issue
   open until visual replay confirms the player model and remaining placeable
   appearance/orientation symptoms.
+- 2026-05-25 `P/05/01` placeable-add audit: replaced the literal add-record
+  bit-copy table with a typed Diamond-to-EE state-bit mapper for `A/09`
+  placeable add records. The mapper preserves the shared reputation/static,
+  useable, trap-disarmable, lockable, locked, unknown sibling, and name-valid
+  fields, inserts the EE optional-target guard bit instead of overwriting a
+  shared legacy bit, clears stale optional-target-like bits when no guarded
+  OBJECTID bytes are present, preserves real guarded OBJECTID tails, and forces
+  the EE light guard false. New fixture-free semantic tests run through the
+  exact EE add-fragment validator for both absent and present optional-target
+  branches. Keep this issue open pending visual replay and remaining
+  placeable-update/orientation audit.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
