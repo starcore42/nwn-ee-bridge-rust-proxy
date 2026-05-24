@@ -71,8 +71,6 @@ const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
 const LEGACY_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS: usize = 5;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 const LEGACY_DOOR_PLACEABLE_GENERIC_UPDATE_TAIL_BYTES: usize = 9;
-const EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES: usize = 1;
-const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const MIN_AMBIGUOUS_TAIL_READ_BYTES: usize = 16;
 const CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET: usize = 32;
 const EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES: [u8;
@@ -1491,7 +1489,12 @@ fn looks_like_salvageable_legacy_live_object_record_at(
             // valid, so salvage must require the same bounded door/placeable
             // cursor proof used by the exact boundary scanner. A mere nonzero
             // mask is not semantic ownership.
-            try_get_ee_door_placeable_update_record_end(bytes, record_offset, scan_end).is_some()
+            crate::translate::live_object_update::try_get_verified_door_placeable_update_record_end_for_transport(
+                bytes,
+                record_offset,
+                scan_end,
+            )
+            .is_some()
         }
         b'U' if object_type == CREATURE_OBJECT_TYPE => {
             // A nonzero creature-update mask is not enough to anchor a shifted
@@ -1671,7 +1674,11 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
         )
     ) {
         if let Some(record_end) =
-            try_get_ee_door_placeable_update_record_end(bytes, offset, scan_end)
+            crate::translate::live_object_update::try_get_verified_door_placeable_update_record_end_for_transport(
+                bytes,
+                offset,
+                scan_end,
+            )
         {
             return record_end;
         }
@@ -1749,61 +1756,6 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
         return scan_end;
     }
     scan_end
-}
-
-fn try_get_ee_door_placeable_update_record_end(
-    bytes: &[u8],
-    offset: usize,
-    scan_end: usize,
-) -> Option<usize> {
-    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end
-        || offset + LEGACY_UPDATE_HEADER_BYTES > bytes.len()
-        || bytes.get(offset).copied()? != b'U'
-        || !matches!(
-            bytes.get(offset + 1).copied()?,
-            PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
-        )
-        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
-    {
-        return None;
-    }
-
-    let mask = read_u32_le(bytes, offset + 6)?;
-    let allowed_mask = LEGACY_UPDATE_POSITION_MASK
-        | LEGACY_UPDATE_ORIENTATION_MASK
-        | LEGACY_UPDATE_SCALE_STATE_MASK
-        | LEGACY_UPDATE_STATE_MASK
-        | LEGACY_UPDATE_NAME_MASK;
-    if mask == 0 || (mask & !allowed_mask) != 0 {
-        return None;
-    }
-
-    // EE `WriteGameObjUpdate_UpdateObject` writes door/placeable update read
-    // bytes in this fixed order. This add-map pass shares the same boundary
-    // discipline as live_object_update::boundary: once the update record is in
-    // EE shape, never rediscover its end by scanning for interior opcode-like
-    // bytes.
-    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
-    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
-    }
-    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
-    }
-    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
-    }
-    if read_cursor > scan_end || read_cursor > bytes.len() {
-        return None;
-    }
-    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        read_cursor = inline_cexo_string_end(bytes, read_cursor)?;
-    }
-    if read_cursor <= scan_end && read_cursor <= bytes.len() {
-        Some(read_cursor)
-    } else {
-        None
-    }
 }
 
 fn compact_placeable_add_end_before_same_object_update_like_tail(

@@ -191,7 +191,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             return record_end;
         }
         if let Some(record_end) =
-            try_get_ee_door_placeable_update_record_end(bytes, offset, scan_end)
+            try_get_ee_door_placeable_update_record_end_for_transport(bytes, offset, scan_end)
         {
             return record_end;
         }
@@ -940,7 +940,7 @@ fn try_get_ee_door_add_record_end(bytes: &[u8], offset: usize, scan_end: usize) 
     (record_end <= scan_end && read_u16_le(bytes, name_offset + 4).is_some()).then_some(record_end)
 }
 
-fn try_get_ee_door_placeable_update_record_end(
+pub(super) fn try_get_ee_door_placeable_update_record_end_for_transport(
     bytes: &[u8],
     offset: usize,
     scan_end: usize,
@@ -962,69 +962,125 @@ fn try_get_ee_door_placeable_update_record_end(
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
         | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK
         | LEGACY_UPDATE_NAME_MASK;
     if mask == 0 || (mask & !allowed_mask) != 0 {
         return None;
     }
 
     // EE `WriteGameObjUpdate_UpdateObject` emits read-buffer fields in this
-    // fixed order for door/placeable updates: position bytes, scalar
-    // orientation bytes, scale/state bytes, then an inline name when the name
-    // mask is set. State-only fields live in CNW fragment bits and do not move
-    // the read cursor. Once a bridge packet is in this EE shape, the stream
-    // boundary is decompile-owned and must not be discovered by scanning for an
-    // interior byte that happens to look like a live-object opcode.
-    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
+    // fixed order for door/placeable updates: position bytes, the selected
+    // orientation branch, appearance/resref, scale/state bytes, then an inline
+    // name when the name mask is set. State-only fields live in CNW fragment
+    // bits and do not move the read cursor. This transport scanner does not
+    // have the fragment BOOL that selects scalar vs vector orientation, so it
+    // accepts only a candidate read cursor that lands on the actual stream
+    // boundary. If both branches land on distinct plausible boundaries, the
+    // byte shape is ambiguous and the focused exact validator should own it.
+    let mut cursors = vec![offset + LEGACY_UPDATE_HEADER_BYTES];
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+        let mut position_cursors = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            if let Some(next) = cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES) {
+                position_cursors.push(next);
+            }
+        }
+        cursors = position_cursors;
     }
     if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
+        let mut branch_cursors = Vec::with_capacity(cursors.len().saturating_mul(2));
+        for cursor in cursors {
+            if let Some(next) = cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES) {
+                branch_cursors.push(next);
+            }
+            if let Some(next) = cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES) {
+                branch_cursors.push(next);
+            }
+        }
+        cursors = branch_cursors;
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        let mut appearance_cursors = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            let Some(appearance) = read_u16_le(bytes, cursor) else {
+                continue;
+            };
+            let Some(mut next) = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES) else {
+                continue;
+            };
+            if appearance >= 0xFFFE {
+                let Some(resref_end) = next.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)
+                else {
+                    continue;
+                };
+                next = resref_end;
+            }
+            appearance_cursors.push(next);
+        }
+        cursors = appearance_cursors;
     }
     if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
-    }
-    if read_cursor > scan_end || read_cursor > bytes.len() {
-        return None;
-    }
-    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        if let Some(name_end) = locstring::inline_cexo_string_end(bytes, read_cursor) {
-            read_cursor = name_end;
-        } else if is_bridge_empty_state_update_mask(mask) {
-            // Bridge-created cleanup shape, not a Diamond/EE server shape:
-            // after add/visual-map rewrites, a legacy all-fields door/placeable
-            // update can be reduced to state-only semantics while still carrying
-            // the previously translated EE mask. EE's reader cannot consume the
-            // position/orientation/name bits without their read-buffer fields.
-            //
-            // Decompile-backed rule: state lives entirely in fragment BOOLs; the
-            // dropped position/orientation/name fields require read bytes. If the
-            // byte immediately after the update header is a real next live-object
-            // boundary and the full EE inline-name form did not parse, the current
-            // record's bounded read span is exactly the ten-byte update header.
-            let header_end = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
-            if header_end <= scan_end
-                && looks_like_legacy_live_object_sub_message_boundary(bytes, header_end)
-            {
-                return Some(header_end);
+        let mut scale_cursors = Vec::with_capacity(cursors.len());
+        for cursor in cursors {
+            if let Some(next) = cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES) {
+                scale_cursors.push(next);
             }
-            return None;
-        } else {
-            return None;
+        }
+        cursors = scale_cursors;
+    }
+
+    let mut proven_end = None;
+    for cursor in cursors {
+        if cursor > scan_end || cursor > bytes.len() {
+            continue;
+        }
+        let mut read_cursor = cursor;
+        if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+            if let Some(name_end) = locstring::inline_cexo_string_end(bytes, read_cursor) {
+                read_cursor = name_end;
+            } else if is_bridge_empty_state_update_mask(mask) {
+                // Bridge-created cleanup shape, not a Diamond/EE server shape:
+                // after add/visual-map rewrites, a legacy all-fields
+                // door/placeable update can be reduced to state-only semantics
+                // while still carrying the previously translated EE mask. EE's
+                // reader cannot consume the position/orientation/name bits
+                // without their read-buffer fields.
+                //
+                // Decompile-backed rule: state lives entirely in fragment BOOLs;
+                // the dropped position/orientation/name fields require read
+                // bytes. If the byte immediately after the update header is a
+                // real next live-object boundary and the full EE inline-name form
+                // did not parse, the current record's bounded read span is
+                // exactly the ten-byte update header.
+                let header_end = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+                if header_end <= scan_end
+                    && looks_like_legacy_live_object_sub_message_boundary(bytes, header_end)
+                {
+                    return Some(header_end);
+                }
+                continue;
+            } else {
+                continue;
+            }
+        }
+
+        if record_end_lands_on_boundary(bytes, read_cursor, scan_end) {
+            proven_end = match proven_end {
+                Some(existing) if existing != read_cursor => return None,
+                Some(existing) => Some(existing),
+                None => Some(read_cursor),
+            };
         }
     }
-    if read_cursor <= scan_end && read_cursor <= bytes.len() {
-        Some(read_cursor)
-    } else {
-        None
-    }
+    proven_end
 }
 
 fn is_bridge_empty_state_update_mask(mask: u32) -> bool {
     let ee_supported_all = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
         | LEGACY_UPDATE_SCALE_STATE_MASK
-        | LEGACY_UPDATE_STATE_MASK;
+        | LEGACY_UPDATE_STATE_MASK
+        | LEGACY_UPDATE_APPEARANCE_MASK;
     mask == ee_supported_all || mask == (ee_supported_all | LEGACY_UPDATE_NAME_MASK)
 }
 
@@ -1564,6 +1620,59 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ee_placeable_update_boundary_uses_vector_orientation_span() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_ORIENTATION_MASK.to_le_bytes());
+        live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES
+        );
+    }
+
+    #[test]
+    fn ee_placeable_update_boundary_counts_appearance_word_before_next_record() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        // This appearance WORD intentionally starts with `D/9`; the transport
+        // boundary must count it as the EE appearance field, not split a delete.
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        );
+    }
+
+    #[test]
+    fn ee_placeable_update_boundary_keeps_scalar_orientation_with_appearance() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+        live.extend_from_slice(
+            &(LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_APPEARANCE_MASK).to_le_bytes(),
+        );
+        live.push(0x12);
+        live.extend_from_slice(&0x000Eu16.to_le_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        );
+    }
 
     #[test]
     fn compact_placeable_add_short_name_boundary_precedes_following_update() {

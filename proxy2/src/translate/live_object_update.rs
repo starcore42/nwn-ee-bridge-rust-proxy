@@ -1392,6 +1392,16 @@ pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     boundary::try_get_ee_creature_update_record_end_for_transport(live_bytes, offset, scan_end)
 }
 
+pub(crate) fn try_get_verified_door_placeable_update_record_end_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    boundary::try_get_ee_door_placeable_update_record_end_for_transport(
+        live_bytes, offset, scan_end,
+    )
+}
+
 pub(crate) fn legacy_creature_appearance_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,
