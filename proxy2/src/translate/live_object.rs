@@ -2480,18 +2480,13 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     let destination_name_inner_bits = usize::from(short_name || inline_locstring_name);
     let required_source_bits = 10 + source_name_inner_bits;
     let remaining_source_bits = before_bits.len().saturating_sub(*bit_cursor);
-    let compact_source_bit_count_available = remaining_source_bits == 0
-        || remaining_source_bits == 1
-        || remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS;
-    let compact_empty_inline_name = if compact_source_bit_count_available {
-        try_find_legacy_placeable_empty_inline_fallback_name(bytes, name_offset, *record_end, false)
-    } else {
-        None
-    };
-    let compact_short_name_token_tail_end = if short_name
-        && compact_empty_inline_name.is_none()
-        && compact_source_bit_count_available
-    {
+    let compact_empty_inline_name = try_find_legacy_placeable_empty_inline_fallback_name(
+        bytes,
+        name_offset,
+        *record_end,
+        false,
+    );
+    let compact_short_name_token_tail_end = if short_name && compact_empty_inline_name.is_none() {
         legacy_placeable_add_tail_end(bytes, name_offset + CNW_LENGTH_BYTES, *record_end, false)
     } else {
         None
@@ -2502,18 +2497,12 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     {
         return None;
     }
-    let compact_source_bits = if (compact_empty_inline_name.is_some()
-        || compact_short_name_token_tail_end.is_some())
-        && compact_source_bit_count_available
-    {
-        if remaining_source_bits >= LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
-            LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS
+    let compact_source_bits =
+        if compact_empty_inline_name.is_some() || compact_short_name_token_tail_end.is_some() {
+            remaining_source_bits.min(LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS)
         } else {
-            remaining_source_bits
-        }
-    } else {
-        0
-    };
+            0
+        };
     let source_post_name_bit = *bit_cursor + 1 + source_name_inner_bits;
     let source_optional_object_bit = if compact_empty_inline_name.is_some() {
         false
@@ -4132,6 +4121,15 @@ mod placeable_add_semantic_tests {
         (bytes, record_end)
     }
 
+    fn compact_short_name_placeable_add_record() -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE, 0xB6, 0x00, 0x00, 0x80]);
+        bytes.extend_from_slice(&[0x18, 0x16, 0x00, 0x00]);
+        bytes.extend_from_slice(&[0x05, 0x11, 0x00, 0x00, 0x00]);
+        let record_end = bytes.len();
+        (bytes, record_end)
+    }
+
     fn assert_ee_placeable_add_state_bits(
         bits: &[bool],
         post_name_bit: usize,
@@ -4225,6 +4223,55 @@ mod placeable_add_semantic_tests {
         assert!(has_ee_identity_visual_transform_map_at(
             &bytes, 23, record_end
         ));
+    }
+
+    #[test]
+    fn compact_placeable_add_drains_any_bounded_source_residue_before_ee_guards() {
+        for residue_bits in 0..=LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
+            let (mut bytes, mut record_end) = compact_short_name_placeable_add_record();
+            let mut bits = (0..residue_bits)
+                .map(|index| index % 2 == 0)
+                .collect::<Vec<_>>();
+            let mut bit_cursor = 0usize;
+
+            let rewrite = rewrite_legacy_placeable_add_record_for_ee(
+                &mut bytes,
+                &mut record_end,
+                &mut bits,
+                &mut bit_cursor,
+                0,
+                None,
+            )
+            .expect("compact placeable add residue should rewrite through the same bounded rule");
+
+            assert_eq!(rewrite.maps_inserted, 1);
+            assert_eq!(bit_cursor, 12);
+            assert_eq!(bits.len(), 12);
+            assert_eq!(
+                bits[0], true,
+                "outer locstring branch for residue {residue_bits}"
+            );
+            assert!(
+                bits[1..].iter().all(|bit| !*bit),
+                "compact source residue {residue_bits} should be replaced by neutral EE guards"
+            );
+            assert!(has_ee_identity_visual_transform_map_at(
+                &bytes, 15, record_end
+            ));
+
+            let mut verified_cursor = 0usize;
+            assert!(
+                crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                    &bytes,
+                    0,
+                    record_end,
+                    &bits,
+                    &mut verified_cursor,
+                ),
+                "rewritten compact add with {residue_bits} residual bits should exact-claim"
+            );
+            assert_eq!(verified_cursor, bit_cursor);
+        }
     }
 }
 
