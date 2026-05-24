@@ -1813,6 +1813,54 @@ mod tests {
         );
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn shadowguard_module_info_window_splits_for_resource_gate() {
+        // Local ShadowGuard premium-module startup from 2026-05-24 emits
+        // Module_Info inside a coalesced Diamond server window. Keep the split
+        // and strict proof pinned so module-resource insertion does not regress
+        // into raw coalesced passthrough.
+        let packet = include_bytes!(
+            "../../../fixtures/m_frame/local_shadowguard_seq7_module_info_coalesced_20260524.bin"
+        );
+        let mut state = SessionState::default();
+        let view = MFrameView::parse(packet).expect("ShadowGuard coalesced packet should parse");
+        assert!(view.crc_valid);
+        assert_eq!(view.sequence, 7);
+        assert_eq!(view.ack_sequence, 72);
+
+        let rewrite = rewrite_server_window_spans_if_needed(packet, &view, &mut state)
+            .expect("ShadowGuard Module_Info coalesced packet should rewrite")
+            .expect("ShadowGuard Module_Info window should split for resource insertion");
+
+        let CoalescedRewrite::SplitPreShifted { packets } = rewrite else {
+            panic!("ShadowGuard module-resource window should split into pre-shifted packets");
+        };
+
+        let (proof, module_packet) = packets
+            .iter()
+            .find(|(proof, _)| proof_contains_module_info_family(proof))
+            .expect("split window should contain a Module_Info proof");
+        let decision = crate::strict::decide_verified_proof_translated(
+            crate::packet::Direction::ServerToClientSynthetic,
+            proof,
+            module_packet,
+        );
+        assert_eq!(
+            decision.verdict,
+            crate::strict::Verdict::Allow,
+            "released ShadowGuard Module_Info must remain strict-valid: {decision:?}"
+        );
+        assert!(
+            state
+                .synthetic_area
+                .pending_server_to_client_packets
+                .iter()
+                .any(|pending| pending.family == VerifiedFamily::ServerStatusModuleResources),
+            "coalesced ShadowGuard Module_Info should queue exact module resources"
+        );
+    }
+
     #[test]
     fn coalesced_module_info_queues_exact_module_resources_with_sequence_shift() {
         let mut state = SessionState::default();

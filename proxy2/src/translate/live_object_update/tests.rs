@@ -2082,6 +2082,39 @@ fn local_cepv23_skies_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_shadowguard_auto_inventory_gui_stream_matches_dumped_ee_shape() {
+    // Local ShadowGuard premium module harness run from 2026-05-24 after
+    // auto-opening inventory. The bytes match the CEPv23 compact GUI family,
+    // but this fixture pins the module-specific accepted-live-object evidence.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_shadowguard_seq18_auto_inventory_gui_20260524_legacy.bin"
+    )
+    .to_vec();
+    let expected_ee = include_bytes!(
+        "../../../fixtures/live_object/local_shadowguard_seq18_auto_inventory_gui_20260524_ee.bin"
+    )
+    .as_slice();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw ShadowGuard GUI stream should document the legacy Diamond shape"
+    );
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert_eq!(
+        payload.as_slice(),
+        expected_ee,
+        "ShadowGuard rewrite should match the harness-dumped EE bytes"
+    );
+    assert!(
+        claim.live_gui_item_create_records + claim.live_gui_read_buffer_records >= 1,
+        "GUI live-object rows should remain owned by the exact validator"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     // Live HG smoke run from 2026-05-24 after auto-opening inventory at the
     // Docks. The accepted-live-object diagnostic captured a two-frame
