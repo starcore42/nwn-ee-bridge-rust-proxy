@@ -127,6 +127,8 @@ const MIN_MODULE_FILE_PREFIX_MATCH_CHARS: usize = 6;
 const MAX_GFF_FIELD_COUNT: u32 = 65_536;
 const MAX_GFF_STRUCT_COUNT: u32 = 65_536;
 const GFF_TYPE_BYTE: u32 = 0;
+const GFF_TYPE_WORD: u32 = 2;
+const GFF_TYPE_SHORT: u32 = 3;
 const GFF_TYPE_DWORD: u32 = 4;
 const GFF_TYPE_INT: u32 = 5;
 const GFF_TYPE_FLOAT: u32 = 8;
@@ -163,6 +165,7 @@ pub enum AreaRewriteKind {
     LegacyDiamondSoundCountZeroMeansOneRepair,
     LegacyDiamondStaticPlaceableCountZeroRepair,
     LegacyDiamondStaticPlaceableDirectionNormalize,
+    LegacyDiamondModuleResourceStaticPlaceableRepair,
     LegacyDiamondIgnoredTrailingStaticPlaceableRowsDropped,
 }
 
@@ -196,6 +199,7 @@ pub struct AreaRewriteSummary {
     pub sound_count_zero_one_repairs: u32,
     pub static_placeable_count_zero_repairs: u32,
     pub static_placeable_direction_normalizations: u32,
+    pub module_resource_static_placeable_repairs: u32,
     pub static_placeable_trailing_rows_dropped: u32,
     pub rewrite_kinds: Vec<AreaRewriteKind>,
     pub placeable_context_valid: bool,
@@ -564,6 +568,27 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         &tile_scan,
     )
     .unwrap_or(0);
+    let module_resource_static_placeable_repair_info =
+        module_resource_area_repair.as_ref().cloned().or_else(|| {
+            module_area_resource_info_for_named_static_placeables(
+                &working_payload,
+                working_fragment_offset,
+                &tile_scan,
+                &area_resref,
+                module_context,
+            )
+        });
+    let module_resource_static_placeable_repairs = module_resource_static_placeable_repair_info
+        .as_ref()
+        .and_then(|resource_info| {
+            repair_module_resource_static_placeable_rows(
+                &mut working_payload,
+                working_fragment_offset,
+                &tile_scan,
+                resource_info,
+            )
+        })
+        .unwrap_or(0);
     if !tile_scan.valid {
         tracing::warn!(
             area_resref = %area_resref,
@@ -630,6 +655,9 @@ fn rewrite_declared_area_client_area_payload_with_mode(
     }
     if static_placeable_direction_normalizations != 0 {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondStaticPlaceableDirectionNormalize);
+    }
+    if module_resource_static_placeable_repairs != 0 {
+        rewrite_kinds.push(AreaRewriteKind::LegacyDiamondModuleResourceStaticPlaceableRepair);
     }
     if static_placeable_trailing_rows_dropped != 0 {
         rewrite_kinds.push(AreaRewriteKind::LegacyDiamondIgnoredTrailingStaticPlaceableRowsDropped);
@@ -749,6 +777,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
             sound_count_zero_one_repairs,
             static_placeable_count_zero_repairs,
             static_placeable_direction_normalizations,
+            module_resource_static_placeable_repairs,
             static_placeable_trailing_rows_dropped,
             first_tile_read_offset = rewritten_layout.first_tile_read_offset,
             old_fragment_byte,
@@ -797,6 +826,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         sound_count_zero_one_repairs,
         static_placeable_count_zero_repairs,
         static_placeable_direction_normalizations,
+        module_resource_static_placeable_repairs,
         static_placeable_trailing_rows_dropped,
         rewrite_kinds,
         placeable_context_valid,
@@ -1379,6 +1409,7 @@ struct ModuleAreaResourceInfo {
     tiles: Vec<ModuleAreaTile>,
     map_notes: Vec<ModuleAreaMapNote>,
     sounds: Vec<ModuleAreaSound>,
+    placeables: Vec<ModuleAreaPlaceable>,
 }
 
 #[derive(Debug, Clone)]
@@ -1410,6 +1441,22 @@ struct ModuleAreaSound {
     y: f32,
     z: f32,
     resrefs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleAreaPlaceable {
+    tag: String,
+    appearance: u16,
+    x: f32,
+    y: f32,
+    z: f32,
+    bearing: f32,
+    static_object: bool,
+    useable: bool,
+    trap_flag: bool,
+    trap_disarmable: bool,
+    lockable: bool,
+    locked: bool,
 }
 
 fn repair_compact_area_from_module_resource(
@@ -3342,6 +3389,163 @@ fn normalize_legacy_static_placeable_directions(
     Some(normalized)
 }
 
+fn repair_module_resource_static_placeable_rows(
+    payload: &mut [u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    info: &ModuleAreaResourceInfo,
+) -> Option<u32> {
+    if !scan.valid || info.placeables.is_empty() {
+        return Some(0);
+    }
+
+    let static_placeables = info
+        .placeables
+        .iter()
+        .filter(|placeable| placeable.static_object)
+        .collect::<Vec<_>>();
+    let proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if proof.static_rows_count == 0
+        || static_placeables.len() != usize::from(proof.static_rows_count)
+    {
+        return Some(0);
+    }
+
+    let mut remaining = (0..static_placeables.len()).collect::<Vec<_>>();
+    let mut matches = Vec::with_capacity(static_placeables.len());
+    let mut cursor = proof.static_rows_read_offset;
+    for _ in 0..proof.static_rows_count {
+        let appearance = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?;
+        let x = read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?;
+        let y = read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?;
+        let z = read_area_f32(payload, fragment_offset, cursor.checked_add(14)?)?;
+        let candidates = remaining
+            .iter()
+            .copied()
+            .filter(|index| {
+                module_static_placeable_row_matches_resource(
+                    appearance,
+                    x,
+                    y,
+                    z,
+                    static_placeables[*index],
+                )
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return Some(0);
+        }
+        let matched = candidates[0];
+        matches.push((cursor, matched));
+        remaining.retain(|index| *index != matched);
+        cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
+    }
+
+    let mut repaired = 0u32;
+    for (cursor, placeable_index) in matches {
+        let placeable = static_placeables[placeable_index];
+        let (dir_x, dir_y, dir_z) = static_placeable_direction_from_bearing(placeable.bearing)?;
+        let changed = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?
+            != placeable.appearance
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?,
+                placeable.x,
+            )
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?,
+                placeable.y,
+            )
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(14)?)?,
+                placeable.z,
+            )
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(18)?)?,
+                dir_x,
+            )
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(22)?)?,
+                dir_y,
+            )
+            || !same_f32_bits(
+                read_area_f32(payload, fragment_offset, cursor.checked_add(26)?)?,
+                dir_z,
+            );
+        write_area_u16(
+            payload,
+            fragment_offset,
+            cursor.checked_add(4)?,
+            placeable.appearance,
+        )?;
+        write_area_f32(
+            payload,
+            fragment_offset,
+            cursor.checked_add(6)?,
+            placeable.x,
+        )?;
+        write_area_f32(
+            payload,
+            fragment_offset,
+            cursor.checked_add(10)?,
+            placeable.y,
+        )?;
+        write_area_f32(
+            payload,
+            fragment_offset,
+            cursor.checked_add(14)?,
+            placeable.z,
+        )?;
+        write_area_f32(payload, fragment_offset, cursor.checked_add(18)?, dir_x)?;
+        write_area_f32(payload, fragment_offset, cursor.checked_add(22)?, dir_y)?;
+        write_area_f32(payload, fragment_offset, cursor.checked_add(26)?, dir_z)?;
+        if changed {
+            repaired = repaired.checked_add(1)?;
+        }
+    }
+
+    let repaired_proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if repaired_proof.static_rows_read_offset != proof.static_rows_read_offset
+        || repaired_proof.static_rows_count != proof.static_rows_count
+        || repaired_proof.zero_static_placeable_rows != proof.zero_static_placeable_rows
+    {
+        return None;
+    }
+
+    Some(repaired)
+}
+
+fn module_static_placeable_row_matches_resource(
+    appearance: u16,
+    x: f32,
+    y: f32,
+    z: f32,
+    placeable: &ModuleAreaPlaceable,
+) -> bool {
+    const TOLERANCE: f32 = 0.01;
+    if appearance != placeable.appearance {
+        return false;
+    }
+    let matching_components = [
+        area_float_close(x, placeable.x, TOLERANCE),
+        area_float_close(y, placeable.y, TOLERANCE),
+        area_float_close(z, placeable.z, TOLERANCE),
+    ]
+    .into_iter()
+    .filter(|matches| *matches)
+    .count();
+    matching_components >= 2
+}
+
+fn area_float_close(actual: f32, expected: f32, tolerance: f32) -> bool {
+    (actual - expected).abs() <= tolerance
+}
+
+fn static_placeable_direction_from_bearing(bearing: f32) -> Option<(f32, f32, f32)> {
+    bearing
+        .is_finite()
+        .then_some((-bearing.sin(), bearing.cos(), 0.0))
+}
+
 fn normalize_static_placeable_direction_components(
     dir_x: f32,
     dir_y: f32,
@@ -4320,6 +4524,121 @@ fn module_area_resource_info_for_compact_packet(
     (matches.len() == 1).then(|| matches.remove(0))
 }
 
+fn module_area_resource_info_for_named_static_placeables(
+    payload: &[u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    area_resref: &str,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<ModuleAreaResourceInfo> {
+    if !area_resref_plausible(area_resref) || !scan.valid {
+        return None;
+    }
+    let packet_tileset = fixed_resref_preview(
+        payload,
+        HIGH_LEVEL_HEADER_BYTES.checked_add(scan.layout.tileset_read_offset)?,
+    )?;
+    let owned_context = if module_context.is_none() {
+        crate::translate::module::observed_module_context()
+    } else {
+        None
+    };
+    let observed_context = module_context.or(owned_context.as_ref());
+    let explicit_candidate = explicit_observed_module_file_candidate();
+    let explicit_key = explicit_candidate.as_ref().map(|path| path_key(path));
+
+    let mut candidates = Vec::new();
+    if let Some(candidate) = explicit_candidate {
+        candidates.push(candidate);
+    }
+    if let Some(context) = observed_context {
+        if let Some(candidate) = observed_module_file_path_for_area_resref(context, area_resref) {
+            candidates.push(candidate);
+        }
+        candidates.extend(observed_module_file_candidates(context));
+    }
+
+    let mut seen_paths = HashSet::new();
+    let mut matched_tables = HashSet::new();
+    let mut matched_info = None;
+    for candidate in candidates {
+        let candidate_key = path_key(&candidate);
+        if !seen_paths.insert(candidate_key.clone()) || !candidate.is_file() {
+            continue;
+        }
+        let Some(table) = read_module_area_resource_table(&candidate) else {
+            continue;
+        };
+        let explicit_match = explicit_key
+            .as_ref()
+            .is_some_and(|key| key == &candidate_key);
+        if !explicit_match {
+            let Some(context) = observed_context else {
+                continue;
+            };
+            let identity_matches = module_table_identity_matches_observed_context(&table, context)
+                || module_file_path_matches_observed_context(&candidate, context);
+            let area_matches = module_table_area_matches_observed_context(&table, context);
+            if !identity_matches && !area_matches {
+                continue;
+            }
+        }
+
+        let area_matches = table
+            .areas
+            .iter()
+            .filter(|info| {
+                info.resref.eq_ignore_ascii_case(area_resref)
+                    && module_named_static_placeable_packet_matches_resource(
+                        payload,
+                        fragment_offset,
+                        scan,
+                        &packet_tileset,
+                        info,
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if area_matches.len() != 1 {
+            continue;
+        }
+
+        let table_key = module_area_resource_table_match_key(&table);
+        if matched_tables.insert(table_key) {
+            if matched_info.is_some() {
+                return None;
+            }
+            matched_info = area_matches.into_iter().next();
+        }
+    }
+
+    matched_info
+}
+
+fn module_named_static_placeable_packet_matches_resource(
+    payload: &[u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    packet_tileset: &str,
+    info: &ModuleAreaResourceInfo,
+) -> bool {
+    if !module_resource_tile_scan_matches(scan, info)
+        || !info.tileset.eq_ignore_ascii_case(packet_tileset)
+    {
+        return false;
+    }
+    let Some(proof) = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)
+    else {
+        return false;
+    };
+    let static_placeables = info
+        .placeables
+        .iter()
+        .filter(|placeable| placeable.static_object)
+        .count();
+    static_placeables == usize::from(proof.static_rows_count)
+}
+
 fn module_table_matches_observed_context(
     table: &ModuleAreaResourceTable,
     context: &crate::translate::module::ObservedModuleContext,
@@ -4933,9 +5252,10 @@ fn read_module_area_resource_table(path: &Path) -> Option<ModuleAreaResourceTabl
             }) {
                 let git_bytes =
                     bytes.get(git_entry.offset..git_entry.offset.checked_add(git_entry.size)?)?;
-                if let Some((map_notes, sounds)) = parse_git_runtime_info(git_bytes) {
-                    area.map_notes = map_notes;
-                    area.sounds = sounds;
+                if let Some(runtime) = parse_git_runtime_info(git_bytes) {
+                    area.map_notes = runtime.map_notes;
+                    area.sounds = runtime.sounds;
+                    area.placeables = runtime.placeables;
                 }
             }
             areas.push(area);
@@ -5066,6 +5386,7 @@ fn parse_are_resource_info(bytes: &[u8], fallback_resref: &str) -> Option<Module
         tiles,
         map_notes: Vec::new(),
         sounds: Vec::new(),
+        placeables: Vec::new(),
     })
 }
 
@@ -5111,12 +5432,29 @@ fn parse_are_tiles(
         .collect()
 }
 
-fn parse_git_runtime_info(bytes: &[u8]) -> Option<(Vec<ModuleAreaMapNote>, Vec<ModuleAreaSound>)> {
+#[derive(Debug, Clone)]
+struct ModuleGitRuntimeInfo {
+    map_notes: Vec<ModuleAreaMapNote>,
+    sounds: Vec<ModuleAreaSound>,
+    placeables: Vec<ModuleAreaPlaceable>,
+}
+
+fn parse_git_runtime_info(bytes: &[u8]) -> Option<ModuleGitRuntimeInfo> {
     let fields = gff_root_fields(bytes)?;
-    Some((
-        parse_git_map_notes(bytes, &fields)?,
-        parse_git_sounds(bytes, &fields)?,
-    ))
+    let (map_notes, sounds) = match (
+        parse_git_map_notes(bytes, &fields),
+        parse_git_sounds(bytes, &fields),
+    ) {
+        (Some(map_notes), Some(sounds)) => (map_notes, sounds),
+        _ => (Vec::new(), Vec::new()),
+    };
+    // Static placeable semantics are independent of the older map-note/sound
+    // tail repair path and must not be lost because an unrelated list failed.
+    Some(ModuleGitRuntimeInfo {
+        map_notes,
+        sounds,
+        placeables: parse_git_placeables(bytes, &fields).unwrap_or_default(),
+    })
 }
 
 fn parse_git_map_notes(bytes: &[u8], root_fields: &[GffField]) -> Option<Vec<ModuleAreaMapNote>> {
@@ -5208,12 +5546,58 @@ fn parse_git_sound_resrefs(bytes: &[u8], fields: &[GffField]) -> Option<Vec<Stri
         .collect()
 }
 
+fn parse_git_placeables(
+    bytes: &[u8],
+    root_fields: &[GffField],
+) -> Option<Vec<ModuleAreaPlaceable>> {
+    let Some(placeable_list) = gff_field_by_label(root_fields, "Placeable List") else {
+        return Some(Vec::new());
+    };
+    if placeable_list.field_type != GFF_TYPE_LIST {
+        return None;
+    }
+
+    let mut placeables = Vec::new();
+    for struct_index in gff_list_structs(bytes, placeable_list.data)? {
+        let fields = gff_struct_fields(bytes, struct_index)?;
+        let placeable = ModuleAreaPlaceable {
+            tag: gff_field_by_label(&fields, "Tag")
+                .and_then(|field| gff_string_value(bytes, field))
+                .unwrap_or_default(),
+            appearance: required_gff_u16(&fields, "Appearance")?,
+            x: required_gff_float(&fields, "X")?,
+            y: required_gff_float(&fields, "Y")?,
+            z: required_gff_float(&fields, "Z")?,
+            bearing: required_gff_float(&fields, "Bearing")?,
+            static_object: optional_gff_bool(&fields, "Static"),
+            useable: optional_gff_bool(&fields, "Useable"),
+            trap_flag: optional_gff_bool(&fields, "TrapFlag"),
+            trap_disarmable: optional_gff_bool(&fields, "TrapDisarmable"),
+            lockable: optional_gff_bool(&fields, "Lockable"),
+            locked: optional_gff_bool(&fields, "Locked"),
+        };
+        if ![placeable.x, placeable.y, placeable.z, placeable.bearing]
+            .into_iter()
+            .all(f32::is_finite)
+        {
+            return None;
+        }
+        placeables.push(placeable);
+    }
+
+    Some(placeables)
+}
+
 fn required_gff_float(fields: &[GffField], label: &str) -> Option<f32> {
     gff_field_by_label(fields, label).and_then(gff_float_value)
 }
 
 fn required_gff_u32(fields: &[GffField], label: &str) -> Option<u32> {
     gff_field_by_label(fields, label).and_then(gff_dword_value)
+}
+
+fn required_gff_u16(fields: &[GffField], label: &str) -> Option<u16> {
+    gff_field_by_label(fields, label).and_then(gff_u16_value)
 }
 
 fn required_gff_raw_i32_bits(fields: &[GffField], label: &str) -> Option<u32> {
@@ -5225,6 +5609,10 @@ fn optional_gff_byte(fields: &[GffField], label: &str) -> u8 {
     gff_field_by_label(fields, label)
         .and_then(gff_byte_value)
         .unwrap_or(0)
+}
+
+fn optional_gff_bool(fields: &[GffField], label: &str) -> bool {
+    optional_gff_byte(fields, label) != 0
 }
 
 fn sound_floats_finite(sound: &ModuleAreaSound) -> bool {
@@ -5375,6 +5763,15 @@ fn gff_field_by_label<'a>(fields: &'a [GffField], label: &str) -> Option<&'a Gff
 fn gff_byte_value(field: &GffField) -> Option<u8> {
     match field.field_type {
         GFF_TYPE_BYTE => u8::try_from(field.data).ok(),
+        _ => None,
+    }
+}
+
+fn gff_u16_value(field: &GffField) -> Option<u16> {
+    match field.field_type {
+        GFF_TYPE_WORD => u16::try_from(field.data).ok(),
+        GFF_TYPE_SHORT if field.data <= i16::MAX as u32 => u16::try_from(field.data).ok(),
+        GFF_TYPE_DWORD | GFF_TYPE_INT => u16::try_from(field.data).ok(),
         _ => None,
     }
 }
@@ -5939,6 +6336,97 @@ mod tests {
         }
     }
 
+    fn float_close(actual: f32, expected: f32, tolerance: f32) -> bool {
+        (actual - expected).abs() <= tolerance
+    }
+
+    fn assert_float_close(label: &str, actual: f32, expected: f32, tolerance: f32) {
+        assert!(
+            float_close(actual, expected, tolerance),
+            "{label}: actual={actual:?} expected={expected:?} tolerance={tolerance:?}"
+        );
+    }
+
+    fn angle_delta(actual: f32, expected: f32) -> f32 {
+        let two_pi = std::f32::consts::PI * 2.0;
+        (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
+    }
+
+    fn assert_angle_close(label: &str, actual: f32, expected: f32, tolerance: f32) {
+        let delta = angle_delta(actual, expected);
+        assert!(
+            delta.abs() <= tolerance,
+            "{label}: actual={actual:?} expected={expected:?} delta={delta:?} tolerance={tolerance:?}"
+        );
+    }
+
+    fn static_row_bearing(row: &AreaPlaceableContextRow) -> f32 {
+        (-row.dir_x).atan2(row.dir_y)
+    }
+
+    fn assert_static_area_rows_match_module_placeables(
+        rows: &[AreaPlaceableContextRow],
+        placeables: &[ModuleAreaPlaceable],
+    ) {
+        let static_placeables = placeables
+            .iter()
+            .filter(|placeable| placeable.static_object)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), static_placeables.len());
+        let mut remaining = (0..static_placeables.len()).collect::<Vec<_>>();
+        for (index, row) in rows.iter().enumerate() {
+            assert!(
+                row.has_direction,
+                "static placeable row {index} should carry direction"
+            );
+            let matching = remaining
+                .iter()
+                .copied()
+                .filter(|candidate_index| {
+                    let placeable = static_placeables[*candidate_index];
+                    row.appearance == placeable.appearance
+                        && float_close(row.x, placeable.x, 0.01)
+                        && float_close(row.y, placeable.y, 0.01)
+                        && float_close(row.z, placeable.z, 0.01)
+                        && float_close(row.dir_z, 0.0, 0.01)
+                        && angle_delta(static_row_bearing(row), placeable.bearing).abs() <= 0.01
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matching.len(),
+                1,
+                "static placeable row {index} should match one GIT static placeable: appearance={} x={:?} y={:?} z={:?} bearing={:?}",
+                row.appearance,
+                row.x,
+                row.y,
+                row.z,
+                static_row_bearing(row)
+            );
+            let placeable_index = matching[0];
+            let placeable = static_placeables[placeable_index];
+            assert_eq!(
+                row.appearance, placeable.appearance,
+                "static placeable row {index} tag={}",
+                placeable.tag
+            );
+            assert_float_close("static placeable x", row.x, placeable.x, 0.01);
+            assert_float_close("static placeable y", row.y, placeable.y, 0.01);
+            assert_float_close("static placeable z", row.z, placeable.z, 0.01);
+            assert_float_close("static placeable dir_z", row.dir_z, 0.0, 0.01);
+            assert_angle_close(
+                "static placeable bearing",
+                static_row_bearing(row),
+                placeable.bearing,
+                0.01,
+            );
+            assert!(
+                !placeable.trap_flag,
+                "static area placeable row {index} unexpectedly comes from a trapped GIT placeable"
+            );
+            remaining.retain(|candidate_index| *candidate_index != placeable_index);
+        }
+    }
+
     const DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT: &[u8] = include_bytes!(
         "../../fixtures/area/hg_docksofascension_client_area_legacy_missing_height.bin"
     );
@@ -6367,6 +6855,21 @@ mod tests {
         assert_eq!(compact_info.tileset, "ttf01");
         assert_eq!(compact_info.map_notes.len(), 2);
         assert_eq!(compact_info.sounds.len(), 8);
+        assert_eq!(compact_info.placeables.len(), 8);
+        assert_eq!(
+            compact_info
+                .placeables
+                .iter()
+                .filter(|placeable| placeable.static_object)
+                .count(),
+            6
+        );
+        assert!(
+            compact_info
+                .placeables
+                .iter()
+                .all(|placeable| !placeable.trap_flag)
+        );
 
         let mut staged_source = payload.clone();
         write_fixed_resref_payload(
@@ -6428,6 +6931,23 @@ mod tests {
         )
         .expect("staged compact tail repair should validate source cursor");
         assert_eq!(staged_proof.static_rows_count, 6);
+        let staged_named_static_info = module_area_resource_info_for_named_static_placeables(
+            &staged_source,
+            staged_fragment_offset,
+            &staged_scan,
+            "cormanthor",
+            None,
+        )
+        .expect("named static placeable rows should resolve to the local GIT resource");
+        assert_eq!(staged_named_static_info.resref, "cormanthor");
+        assert_eq!(
+            staged_named_static_info
+                .placeables
+                .iter()
+                .filter(|placeable| placeable.static_object)
+                .count(),
+            usize::from(staged_proof.static_rows_count)
+        );
 
         let mut repaired_source = payload.clone();
         repair_compact_area_from_module_resource(
@@ -6490,10 +7010,23 @@ mod tests {
                 .rewrite_kinds
                 .contains(&AreaRewriteKind::LegacyDiamondCompactPostTileTailRepair)
         );
+        assert!(
+            summary.module_resource_static_placeable_repairs > 0,
+            "module GIT evidence should repair at least one semantically shifted static placeable row"
+        );
+        assert!(
+            summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceStaticPlaceableRepair)
+        );
         assert_eq!(proof.transition_count, 2);
         assert_eq!(proof.sound_count, 8);
         assert_eq!(proof.light_count, 0);
         assert_eq!(proof.static_count, 6);
+        assert_static_area_rows_match_module_placeables(
+            &summary.placeable_context.static_rows,
+            &compact_info.placeables,
+        );
         assert_eq!(proof.first_post_static_count, 0);
         assert_eq!(proof.second_post_static_count, 0);
         assert_eq!(proof.read_end, summary.new_read_size);
@@ -7785,6 +8318,46 @@ mod tests {
         assert_eq!(info.width, 5);
         assert_eq!(info.height, 3);
         assert_eq!(info.tileset, "tin01");
+        assert_eq!(info.placeables.len(), 43);
+        assert_eq!(
+            info.placeables
+                .iter()
+                .filter(|placeable| placeable.static_object)
+                .count(),
+            32
+        );
+        assert_eq!(
+            info.placeables
+                .iter()
+                .filter(|placeable| placeable.useable)
+                .count(),
+            7
+        );
+        assert_eq!(
+            info.placeables
+                .iter()
+                .filter(|placeable| placeable.trap_disarmable)
+                .count(),
+            43
+        );
+        assert_eq!(
+            info.placeables
+                .iter()
+                .filter(|placeable| placeable.lockable)
+                .count(),
+            0
+        );
+        assert_eq!(
+            info.placeables
+                .iter()
+                .filter(|placeable| placeable.locked)
+                .count(),
+            0
+        );
+        assert!(
+            info.placeables.iter().all(|placeable| !placeable.trap_flag),
+            "Chapter2 a08_barracks GIT has no trapped placeables; trap visuals must not be invented by area/live translation"
+        );
 
         let summary = rewrite_area_client_area_payload_with_module_context(
             &mut payload,

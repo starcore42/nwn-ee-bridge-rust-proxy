@@ -1,5 +1,13 @@
 # Active proxy2 issues
 
+This is the working active-issues document for recurring proxy2 development.
+Use it to leave concise notes on unresolved generalized protocol/state issues,
+suspected packet families, evidence gathered, and next verification steps.
+When an issue is confirmed fixed, mark it crossed off with the confirming
+evidence and date or remove it from the active list. Specific modules, assets,
+resrefs, captures, and chapters belong here only as evidence for a broader rule,
+not as standalone workaround targets.
+
 ## Visual/alignment regression: placeables and player model
 
 Reported: 2026-05-24 during the recurring `continue-ee-bridge-dev` automation.
@@ -29,6 +37,30 @@ Current status:
   `C:\nwnbridge\local-diamond-bridge-20260524-210621` reached gameplay with no
   root quarantine and produced accepted-live-object diagnostics, but those
   diagnostics were intentionally not promoted because of this report.
+- 2026-05-24 follow-up: reduced the placeable visual symptoms to a generalized
+  `P/04/01 Area_ClientArea` semantic row problem, not a byte-shape failure.
+  The local `To Heir is Human` `cormanthor` compact fixture had exact EE
+  cursor proof but decoded one static row as appearance 82, x=48.367825,
+  y=4.26e-39, z approximately 0 while the module GIT proves y=43.604927.
+  Implemented module-resource-backed GIT placeable parsing and bounded
+  static-row repair:
+  preserve packet object ids, rewrite appearance/position/bearing only when
+  the local GIT static count equals the packet static count and each row
+  uniquely matches by appearance plus at least two coordinates. Private tests
+  prove this against `cormanthor` and parse Chapter2 `a08_barracks` as 43
+  placeables/32 static/7 usable/0 trapped.
+- A fresh 2026-05-24 local `To Heir is Human` bridge replay
+  `C:\nwnbridge\local-diamond-bridge-20260524-221113` reached the named
+  `cormanthor` `Area_ClientArea` path with 0-byte proxy stderr and no root
+  quarantine. That named packet did not need static-row repair
+  (`module_resource_static_placeable_repairs=0`), but the production hook now
+  also resolves exact named area packets through the same module-backed static
+  placeable guard before deciding no rewrite is required.
+- `P/04/01 Area_ClientArea` static-row semantic drift is partially addressed
+  for module-resource-backed compact and exact-named area packets. Keep this
+  issue open until a visual replay confirms affected placeables and until
+  `P/05/01 GameObjUpdate_LiveObject` current-player/placeable appearance
+  records are audited for the player-model symptom.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
