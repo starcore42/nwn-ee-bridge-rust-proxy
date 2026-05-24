@@ -69,9 +69,6 @@ pub(super) fn rewrite_update_record_for_ee(
     let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let raw_mask = read_u32_le(live_bytes, record_offset + 6)?;
     let original_bit_cursor = *bit_cursor;
-    let source_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
-        .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, raw_mask))
-        .flatten();
     if matches!(
         object_type,
         PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE | CREATURE_OBJECT_TYPE
@@ -843,6 +840,30 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     let update_bits_present = update_record_owns_fragment_bits(object_type, translated_mask);
+    let source_placeable_state_bits = if object_type == PLACEABLE_OBJECT_TYPE && update_bits_present
+    {
+        let mut source_bits = bits.clone();
+        let zero_bits_inserted = if low_tail_zero_fragment_bits_to_insert == 0 {
+            true
+        } else {
+            let inserted = vec![false; low_tail_zero_fragment_bits_to_insert];
+            bits::insert_msb_bits(&mut source_bits, *bit_cursor, &inserted).is_some()
+        };
+        if zero_bits_inserted {
+            placeable_update_source_state_bits_at(
+                &source_bits,
+                *bit_cursor,
+                fragment_source_mask,
+                orientation_fragment_rewrite,
+            )
+        } else {
+            None
+        }
+    } else if object_type == PLACEABLE_OBJECT_TYPE {
+        placeable_update_state_bits_at(bits, original_bit_cursor, raw_mask)
+    } else {
+        None
+    };
     let bit_rewrite_candidate = if update_bits_present {
         if !*bit_cursor_reliable {
             *bit_cursor_reliable = false;
@@ -1060,6 +1081,50 @@ fn placeable_update_state_bits_at(
         } else {
             EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
         })?;
+    }
+
+    Some(PlaceableUpdateStateBits {
+        visual_selector: bits.get(cursor).copied()?,
+        visual_state_active: bits.get(cursor + 1).copied()?,
+        locked: bits.get(cursor + 2).copied()?,
+        lockable: bits.get(cursor + 3).copied()?,
+        visual_payload: bits.get(cursor + 4).copied()?,
+    })
+}
+
+fn placeable_update_source_state_bits_at(
+    bits: &[bool],
+    bit_cursor: usize,
+    source_mask: u32,
+    orientation_rewrite: OrientationFragmentRewrite,
+) -> Option<PlaceableUpdateStateBits> {
+    if (source_mask & LEGACY_UPDATE_STATE_MASK) == 0 {
+        return None;
+    }
+
+    let mut cursor = bit_cursor;
+    if (source_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS)?;
+    }
+    if (source_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        match orientation_rewrite {
+            OrientationFragmentRewrite::InsertLegacyByteScalarPad
+            | OrientationFragmentRewrite::InsertScalar(_) => {
+                // The byte reader already proved the scalar orientation branch
+                // and the bridge inserts EE scalar bits. The source fragment
+                // cursor is already at the following state block.
+            }
+            OrientationFragmentRewrite::PreserveExisting
+            | OrientationFragmentRewrite::ForceScalar
+            | OrientationFragmentRewrite::ForceVector => {
+                let vector_orientation = bits.get(cursor).copied()?;
+                cursor = cursor.checked_add(if vector_orientation {
+                    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                } else {
+                    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                })?;
+            }
+        }
     }
 
     Some(PlaceableUpdateStateBits {
@@ -1476,4 +1541,71 @@ fn rewrite_legacy_live_object_update_bits(
 
     *bit_cursor = cursor;
     Some(rewrite)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(
+        visual_selector: bool,
+        visual_state_active: bool,
+        locked: bool,
+        lockable: bool,
+        visual_payload: bool,
+    ) -> PlaceableUpdateStateBits {
+        PlaceableUpdateStateBits {
+            visual_selector,
+            visual_state_active,
+            locked,
+            lockable,
+            visual_payload,
+        }
+    }
+
+    #[test]
+    fn source_state_diagnostic_keeps_compact_state_cursor_when_scalar_bits_are_inserted() {
+        let source_mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let bits = vec![
+            true, false, // position fragment
+            false, true, false, false, false, // compact legacy state block
+            true, false, false, false, false, // following low-tail/control bits
+        ];
+
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::InsertLegacyByteScalarPad,
+            ),
+            Some(state(false, true, false, false, false))
+        );
+        assert_eq!(
+            placeable_update_state_bits_at(&bits, 0, source_mask),
+            Some(state(true, false, false, false, false))
+        );
+    }
+
+    #[test]
+    fn source_state_diagnostic_consumes_preserved_scalar_orientation() {
+        let source_mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let bits = vec![
+            false, true, // position fragment
+            false, true, false, true, false, // scalar orientation fragment
+            true, false, true, false, true, // state block
+        ];
+
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::PreserveExisting,
+            ),
+            Some(state(true, false, true, false, true))
+        );
+    }
 }
