@@ -2115,6 +2115,66 @@ fn local_shadowguard_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_witchs_wake_live_objects_rewrite_to_dumped_exact_ee_shape() {
+    // Local Witch's Wake premium module harness run from 2026-05-24 reached
+    // gameplay and auto-opened inventory. The accepted-live-object diagnostics
+    // captured the bounded area-entry rewrite and the later compact
+    // current-player inventory update as exact legacy/EE pairs.
+    for (name, legacy, expected_ee, expect_inventory) in [
+        (
+            "seq13_area_entry",
+            include_bytes!(
+                "../../../fixtures/live_object/local_witchs_wake_seq13_area_entry_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_witchs_wake_seq13_area_entry_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            "seq15_auto_inventory",
+            include_bytes!(
+                "../../../fixtures/live_object/local_witchs_wake_seq15_auto_inventory_liveobject_20260524_legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../fixtures/live_object/local_witchs_wake_seq15_auto_inventory_liveobject_20260524_ee.bin"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let mut payload = legacy.to_vec();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{name} raw Witch's Wake stream should document the legacy Diamond shape"
+        );
+
+        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+        assert_eq!(
+            payload.as_slice(),
+            expected_ee,
+            "{name} rewrite should match the harness-dumped EE bytes"
+        );
+        assert!(
+            claim.records_examined >= 1,
+            "{name} should retain typed live-object record ownership"
+        );
+        if expect_inventory {
+            assert!(
+                claim.inventory_records >= 1,
+                "{name} should retain current-player inventory ownership"
+            );
+        }
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn hg_live_seq42_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     // Live HG smoke run from 2026-05-24 after auto-opening inventory at the
     // Docks. The accepted-live-object diagnostic captured a two-frame

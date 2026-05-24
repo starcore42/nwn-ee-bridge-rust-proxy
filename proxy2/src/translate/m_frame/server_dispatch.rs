@@ -2776,6 +2776,92 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
+    fn dispatcher_claims_local_witchs_wake_live_object_pairs() {
+        // Local Witch's Wake run from 2026-05-24 reached gameplay and
+        // auto-opened inventory. Both accepted diagnostics should stay owned
+        // by the typed GameObjUpdate_LiveObject dispatcher path.
+        let mut semantic_state = semantic::SemanticSessionState::default();
+        for (name, legacy, expected_ee, expect_inventory) in [
+            (
+                "seq13_area_entry",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_witchs_wake_seq13_area_entry_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_witchs_wake_seq13_area_entry_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                false,
+            ),
+            (
+                "seq15_auto_inventory",
+                include_bytes!(
+                    "../../../fixtures/live_object/local_witchs_wake_seq15_auto_inventory_liveobject_20260524_legacy.bin"
+                )
+                .as_slice(),
+                include_bytes!(
+                    "../../../fixtures/live_object/local_witchs_wake_seq15_auto_inventory_liveobject_20260524_ee.bin"
+                )
+                .as_slice(),
+                true,
+            ),
+        ] {
+            let mut payload = legacy.to_vec();
+
+            assert!(
+                crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                    .is_none(),
+                "{name} raw Witch's Wake stream documents the pre-rewrite Diamond shape"
+            );
+
+            let started = std::time::Instant::now();
+            let rewrite = rewrite_single_inflated_payload_for_ee(
+                &mut payload,
+                None,
+                SemanticScope::DeflatedReassembly,
+                None,
+                Some(&semantic_state.objects),
+                None,
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "dispatcher Witch's Wake {name} claim must stay bounded"
+            );
+            assert!(rewrite.any_rewrite(), "{name} should be rewritten");
+            assert_eq!(
+                rewrite.verified_family(),
+                VerifiedFamily::GameObjUpdateLiveObject
+            );
+            assert_eq!(
+                payload.as_slice(),
+                expected_ee,
+                "{name} dispatcher rewrite should match the harness-dumped EE bytes"
+            );
+            let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+                .expect("dispatcher-owned Witch's Wake payload must exact-claim");
+            assert!(
+                claim.records_examined >= 1,
+                "{name} should retain typed live-object record ownership"
+            );
+            if expect_inventory {
+                assert!(
+                    claim.inventory_records >= 1,
+                    "{name} should retain current-player inventory ownership"
+                );
+            }
+            assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+            crate::translate::semantic::observe_verified_payload(
+                &mut semantic_state,
+                crate::packet::Direction::ServerToClient,
+                &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+                &payload,
+            );
+        }
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
     fn dispatcher_claims_hg_live_seq42_auto_inventory_gui_stream() {
         // Live HG seq42 from 2026-05-24 after auto-opening inventory in the
         // Docks. This large two-frame burst must stay on the typed live-object
