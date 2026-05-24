@@ -355,18 +355,8 @@ fn apply_4000(
 }
 
 pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
-    }
-    let high_byte = object_id & 0xFF00_0000;
-    matches!(
-        high_byte,
-        0x8000_0000
-            | 0x8800_0000
-            | 0xFF00_0000
-            | 0x0100_0000
-            | 0x0500_0000
-            | 0x0800_0000
-            | 0x3500_0000
-    ) || (0x0000_1000..=0x00FF_FFFF).contains(&object_id)
+    super::super::object_ids::looks_like_legacy_live_object_id_value_with_compact_min(
+        object_id,
+        0x0000_1000,
+    )
 }

@@ -37,7 +37,7 @@ mod gui;
 mod inventory;
 mod item;
 mod locstring;
-mod object_ids;
+pub(crate) mod object_ids;
 mod placeable;
 mod reader;
 mod record;

@@ -42,6 +42,40 @@ use super::{
 const CNW_LENGTH_BYTES: usize = 4;
 const EXTERNAL_OBJECT_ID_BIT: u32 = 0x8000_0000;
 
+pub(crate) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
+    object_id != 0
+        && object_id != u32::MAX
+        && (has_known_legacy_live_object_id_namespace(object_id)
+            || is_compact_legacy_object_id(object_id))
+}
+
+pub(crate) fn looks_like_legacy_live_object_id_value_with_compact_min(
+    object_id: u32,
+    min_compact: u32,
+) -> bool {
+    object_id != 0
+        && object_id != u32::MAX
+        && (has_known_legacy_live_object_id_namespace(object_id)
+            || (min_compact..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID).contains(&object_id))
+}
+
+pub(crate) fn has_known_legacy_live_object_id_namespace(object_id: u32) -> bool {
+    matches!(
+        object_id & 0xFF00_0000,
+        // EE's decompiled readers treat OBJECTID as an opaque DWORD. These
+        // namespaces are scanner/validator false-positive guards gathered from
+        // verified Diamond/HG traffic, not module-specific gameplay rules.
+        0x8000_0000
+            | 0x8800_0000
+            | 0xFF00_0000
+            | 0x0100_0000
+            | 0x0500_0000
+            | 0x0800_0000
+            | 0x3500_0000
+            | 0xAC00_0000
+    )
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveObjectExternalObjectIdCanonicalizeSummary {
     pub compact_add_ids_observed: u32,
@@ -221,7 +255,7 @@ fn is_supported_external_object_type(object_type: u8) -> bool {
     )
 }
 
-fn is_compact_legacy_object_id(object_id: u32) -> bool {
+pub(crate) fn is_compact_legacy_object_id(object_id: u32) -> bool {
     (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID).contains(&object_id)
 }
 
@@ -246,4 +280,51 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
         .get_mut(offset..offset + 4)?
         .copy_from_slice(&value.to_le_bytes());
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_live_object_id_filter_accepts_known_external_namespaces() {
+        for object_id in [
+            0x8000_0001,
+            0x8800_0001,
+            0xFF00_0001,
+            0x0100_0001,
+            0x0500_0001,
+            0x0800_0001,
+            0x3500_0001,
+            0xAC00_0001,
+        ] {
+            assert!(
+                looks_like_legacy_live_object_id_value(object_id),
+                "namespace for 0x{object_id:08X} should be accepted before focused parser proof"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_live_object_id_filter_keeps_null_and_sentinel_rejected() {
+        assert!(!looks_like_legacy_live_object_id_value(0));
+        assert!(!looks_like_legacy_live_object_id_value(u32::MAX));
+    }
+
+    #[test]
+    fn compact_floor_variant_preserves_inventory_false_positive_guard() {
+        assert!(looks_like_legacy_live_object_id_value(0x0000_00FE));
+        assert!(!looks_like_legacy_live_object_id_value_with_compact_min(
+            0x0000_00FE,
+            0x0000_1000,
+        ));
+        assert!(looks_like_legacy_live_object_id_value_with_compact_min(
+            0x0000_1000,
+            0x0000_1000,
+        ));
+        assert!(looks_like_legacy_live_object_id_value_with_compact_min(
+            0xAC00_0001,
+            0x0000_1000,
+        ));
+    }
 }

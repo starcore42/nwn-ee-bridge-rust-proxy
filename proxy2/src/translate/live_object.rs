@@ -50,8 +50,6 @@ const MAX_LIVE_OBJECT_NAME_BYTES: usize = 128;
 // world-status record is still claimable without reintroducing envelope-only
 // pass-through.
 const MAX_SALVAGED_LEGACY_LIVE_LEADIN_BYTES: usize = MAX_LEGACY_LIVE_LEADIN_SCAN_BYTES;
-const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
-const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
 const ITEM_OBJECT_TYPE: u8 = 0x06;
 const TRIGGER_OBJECT_TYPE: u8 = 0x07;
@@ -1937,7 +1935,7 @@ fn looks_like_hg_low_compact_placeable_continuation_at(
     let Some(object_id) = read_u32_le(bytes, record_offset + 2) else {
         return false;
     };
-    if object_id == 0 || object_id >= MIN_COMPACT_LEGACY_LIVE_OBJECT_ID {
+    if !crate::translate::live_object_update::object_ids::is_compact_legacy_object_id(object_id) {
         return false;
     }
 
@@ -4050,31 +4048,9 @@ fn looks_like_legacy_live_gui_object_id_at(bytes: &[u8], offset: usize) -> bool 
 }
 
 fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
-    }
-
-    // Decompile-backed boundary rule:
-    // EE reads the live-object id as an opaque DWORD; the high-byte filtering
-    // below is only our false-positive guard while scanning legacy read bytes.
-    // HG captures for Docks of Ascension door/placeable add records use
-    // 0x08xxxxxx and 0x35xxxxxx static-object namespaces. Accept those
-    // namespaces explicitly instead of broadening to every nonzero high byte,
-    // because shifted ASCII/name/appearance bytes can otherwise look like
-    // record boundaries and corrupt door/placeable transforms.
-    let high_byte = object_id & 0xFF00_0000;
-    matches!(
-        high_byte,
-        0x8000_0000
-            | 0x8800_0000
-            | 0xFF00_0000
-            | 0x0100_0000
-            | 0x0500_0000
-            | 0x0800_0000
-            | 0x3500_0000
-            | 0xAC00_0000
-    ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
-        .contains(&object_id)
+    crate::translate::live_object_update::object_ids::looks_like_legacy_live_object_id_value(
+        object_id,
+    )
 }
 
 fn is_ee_live_gui_sub_opcode_byte(value: u8) -> bool {
@@ -4104,6 +4080,40 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod live_object_id_tests {
+    use super::*;
+
+    #[test]
+    fn low_compact_placeable_continuation_uses_compact_object_id_guard() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        bytes.extend_from_slice(&0x0000_1234u32.to_le_bytes());
+        bytes.extend_from_slice(&[b'I', 0x21, 0x43, 0x65, 0x87]);
+        bytes.extend_from_slice(&[0x00, 0x21, 0x43, 0x65, 0x87]);
+
+        assert!(looks_like_hg_low_compact_placeable_continuation_at(
+            &bytes,
+            0,
+            bytes.len(),
+        ));
+
+        bytes[2..6].copy_from_slice(&0u32.to_le_bytes());
+        assert!(!looks_like_hg_low_compact_placeable_continuation_at(
+            &bytes,
+            0,
+            bytes.len(),
+        ));
+
+        bytes[2..6].copy_from_slice(&0x8000_1234u32.to_le_bytes());
+        assert!(!looks_like_hg_low_compact_placeable_continuation_at(
+            &bytes,
+            0,
+            bytes.len(),
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -114,6 +114,22 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 placeable_update -- --nocapture`, and
   `cargo check -q -p hgbridge-proxy2`. Next replay should compare these labels
   on visually bad placeables before changing mapping rules.
+- 2026-05-25 `P/05/01` live-object OBJECTID scanner audit: centralized the
+  known legacy live-object id namespace guard used by the live-object add,
+  update boundary, creature/appearance, and inventory validators. This keeps
+  the decompile-backed OBJECTID treatment as an opaque DWORD while sharing the
+  proxy's false-positive guard for proven Diamond/HG namespaces, with the
+  tighter inventory compact-id floor still explicit. The same pass fixed the
+  low-compact placeable continuation probe, which had rejected every nonzero
+  compact id before checking the following fragment/continuation proof. Verified
+  with `cargo test -q -p hgbridge-proxy2 object_id -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 live_object_update::boundary::tests:: -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 placeable_update -- --nocapture`, the two
+  private Chapter2/Winds live-object fixture seeds, and
+  `cargo check -q -p hgbridge-proxy2`. Keep this issue open until a local visual
+  replay confirms the affected placeable/player appearances and the diagnostic
+  labels match the intended Diamond state.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

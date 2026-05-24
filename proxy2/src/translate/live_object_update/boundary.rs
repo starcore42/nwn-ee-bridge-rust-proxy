@@ -10,10 +10,9 @@ use super::{
     LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
-    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
-    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance,
-    creature, door, effects, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le,
-    reader, trigger,
+    MAX_LIVE_OBJECT_NAME_BYTES, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature,
+    door, effects, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le, reader,
+    trigger,
 };
 
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
@@ -1592,29 +1591,7 @@ pub(super) fn looks_like_legacy_live_object_id_at(bytes: &[u8], offset: usize) -
 }
 
 pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
-    }
-
-    let high_byte = object_id & 0xFF00_0000;
-    matches!(
-        high_byte,
-        // EE's decompile treats object ids as opaque DWORDs. These high-byte
-        // filters are scanner guards, not engine rules. HG live-object door,
-        // placeable, and Starcore5 Sooty Crow creature-add captures use
-        // 0x08xxxxxx, 0x35xxxxxx, and 0xACxxxxxx ids, so accept those
-        // namespaces explicitly while still rejecting arbitrary shifted ASCII
-        // bytes.
-        0x8000_0000
-            | 0x8800_0000
-            | 0xFF00_0000
-            | 0x0100_0000
-            | 0x0500_0000
-            | 0x0800_0000
-            | 0x3500_0000
-            | 0xAC00_0000
-    ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
-        .contains(&object_id)
+    super::object_ids::looks_like_legacy_live_object_id_value(object_id)
 }
 
 #[cfg(test)]

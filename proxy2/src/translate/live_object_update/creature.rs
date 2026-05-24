@@ -3023,16 +3023,7 @@ fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
         // here.
         return true;
     }
-    matches!(
-        object_id & 0xFF00_0000,
-        // Diamond/EE readers treat object ids as opaque DWORDs; this list is
-        // only a false-positive guard for live-object stream scanning. HG's
-        // 2026-05-12 Starcore5 Sooty Crow capture proves a creature add/update
-        // namespace at 0xACxxxxxx immediately after an exact `I/0x2B00`
-        // inventory cursor, so allow the focused creature parser to validate
-        // those records instead of rejecting the id before semantic proof.
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000 | 0xAC00_0000
-    )
+    super::object_ids::has_known_legacy_live_object_id_namespace(object_id)
 }
 
 fn simulate_legacy_live_creature_update_cursors(

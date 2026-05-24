@@ -4892,14 +4892,7 @@ fn checked_shift_optional_relative(value: Option<usize>, delta: usize) -> Option
 }
 
 fn looks_like_legacy_creature_object_id(object_id: u32) -> bool {
-    if object_id == 0 || object_id == u32::MAX {
-        return false;
-    }
-    matches!(
-        object_id & 0xFF00_0000,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
-    ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
-        .contains(&object_id)
+    super::object_ids::looks_like_legacy_live_object_id_value(object_id)
 }
 
 fn parse_creature_appearance_record(
@@ -8589,10 +8582,8 @@ fn looks_like_fixed_visible_equipment_object_id(object_id: u32) -> bool {
     {
         return true;
     }
-    matches!(
-        object_id & 0xFF00_0000,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
-    ) || looks_like_fixed_width_compact_visible_equipment_object_id(object_id)
+    super::object_ids::has_known_legacy_live_object_id_namespace(object_id)
+        || looks_like_fixed_width_compact_visible_equipment_object_id(object_id)
 }
 
 fn looks_like_fixed_width_compact_visible_equipment_object_id(object_id: u32) -> bool {
@@ -8610,11 +8601,7 @@ fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
     if object_id == 0xFFFF_FFF7 || object_id == 0xFFFF_FFFD {
         return true;
     }
-    matches!(
-        object_id & 0xFF00_0000,
-        0x8000_0000 | 0x8800_0000 | 0xFF00_0000 | 0x0100_0000 | 0x0500_0000
-    ) || (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID)
-        .contains(&object_id)
+    super::object_ids::looks_like_legacy_live_object_id_value(object_id)
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]
