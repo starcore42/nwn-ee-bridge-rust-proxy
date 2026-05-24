@@ -2082,6 +2082,60 @@ fn local_cepv23_skies_auto_inventory_gui_stream_matches_dumped_ee_shape() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
+fn local_cepv22_starter_area_entry_live_object_rewrites_to_exact_shape() {
+    // Local CEP v2.2 starter harness run from 2026-05-24. The proxy reached
+    // this area-entry live-object stream while loading the small CEP starter
+    // area; keep it as private evidence for the bounded exact live-object
+    // adapter rather than broadening the dispatcher around a module-specific
+    // shape.
+    let mut payload = include_bytes!(
+        "../../../fixtures/live_object/local_cepv22_starter_seq12_liveobject_20260524_unclaimed.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw CEP v2.2 starter stream should document the legacy Diamond shape"
+    );
+
+    let mut with_area_context = payload.clone();
+    let area_context = crate::translate::area::AreaPlaceableContext {
+        area_resref: "area".to_string(),
+        static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+            object_id: 0x8000_006D,
+            appearance: 0x2743,
+            x: 1.0,
+            y: 1.0,
+            z: 0.0,
+            dir_x: 0.0,
+            dir_y: 1.0,
+            dir_z: 0.0,
+            has_direction: true,
+        }],
+        light_rows: Vec::new(),
+    };
+    assert!(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut with_area_context,
+            Some(&area_context)
+        ),
+        "area-backed exact rewrite should remain bounded for the CEP v2.2 starter stream"
+    );
+    let area_context_claim = super::claim_payload_if_verified(&with_area_context)
+        .expect("area-backed rewrite should exact-claim");
+    assert!(area_context_claim.add_records >= 1);
+
+    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
+    assert!(claim.add_records >= 1);
+    assert!(
+        claim.creature_appearance_records + claim.creature_update_records >= 1,
+        "CEP v2.2 starter rewrite should own at least one creature record"
+    );
+    assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+}
+
+#[cfg(hgbridge_private_fixtures)]
+#[test]
 fn local_shadowguard_auto_inventory_gui_stream_matches_dumped_ee_shape() {
     // Local ShadowGuard premium module harness run from 2026-05-24 after
     // auto-opening inventory. The bytes match the CEPv23 compact GUI family,

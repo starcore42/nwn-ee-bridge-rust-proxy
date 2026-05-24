@@ -3194,6 +3194,45 @@ mod tests {
         assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
     }
 
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn dispatcher_claims_local_cepv22_starter_area_entry_live_object() {
+        // Local CEP v2.2 starter seq12 from 2026-05-24 appeared as a deflated
+        // area-entry GameObjUpdate_LiveObject stream after the CEP starter
+        // Area_ClientArea rewrite. Dispatcher ownership must stay on the
+        // bounded typed live-object path; no raw zlib/high-level passthrough is
+        // allowed for this module-specific evidence.
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_cepv22_starter_seq12_liveobject_20260524_unclaimed.bin"
+        )
+        .to_vec();
+
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw CEP v2.2 starter stream should document the pre-rewrite Diamond shape"
+        );
+
+        let started = std::time::Instant::now();
+        let rewrite = dispatch_live_object_fixture(&mut payload);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "dispatcher CEP v2.2 starter seq12 claim must stay bounded even when baseitems.2da is cold"
+        );
+        assert!(rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.verified_family(),
+            VerifiedFamily::GameObjUpdateLiveObject
+        );
+        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
+            .expect("dispatcher-owned CEP v2.2 starter payload must exact-claim");
+        assert!(claim.add_records >= 1);
+        assert!(
+            claim.creature_appearance_records + claim.creature_update_records >= 1,
+            "CEP v2.2 starter payload should retain typed creature ownership"
+        );
+        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+    }
+
     #[test]
     fn dispatcher_claims_local_chapter2_area_entry_coalesced_live_object() {
         // Local Diamond Chapter2 after the `a08_barracks` area load: the
