@@ -3417,6 +3417,12 @@ fn normalize_legacy_static_placeable_directions(
     }
 
     let proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if proof.zero_static_placeable_rows != 0 {
+        // A zero static-placeable WORD means the decompiled area reader does
+        // not consume following row-shaped bytes.  The drop helper owns that
+        // legacy tail; do not normalize it into claimed semantic rows.
+        return Some(0);
+    }
     if proof.static_rows_count == 0 {
         return Some(0);
     }
@@ -3479,6 +3485,12 @@ fn repair_module_resource_static_placeable_rows(
         .filter(|placeable| placeable.static_object)
         .collect::<Vec<_>>();
     let proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    if proof.zero_static_placeable_rows != 0 {
+        // Row-shaped bytes after a zero count are outside the Diamond/EE static
+        // list contract.  They may be dropped, but module GIT evidence must not
+        // promote or rewrite them as claimed static rows.
+        return Some(0);
+    }
     if proof.static_rows_count == 0
         || static_placeables.len() != usize::from(proof.static_rows_count)
     {
@@ -6383,6 +6395,17 @@ mod public_static_direction_tests {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn push_fixed_resref(bytes: &mut Vec<u8>, value: &str) {
+        assert!(value.len() <= CRESREF_TEXT_BYTES);
+        let mut resref = [0u8; CRESREF_TEXT_BYTES];
+        resref[..value.len()].copy_from_slice(value.as_bytes());
+        bytes.extend_from_slice(&resref);
+    }
+
+    fn pad_to_read_offset(bytes: &mut Vec<u8>, read_offset: usize) {
+        bytes.resize(HIGH_LEVEL_HEADER_BYTES + read_offset, 0);
+    }
+
     fn angle_delta(actual: f32, expected: f32) -> f32 {
         let two_pi = std::f32::consts::PI * 2.0;
         (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
@@ -6417,6 +6440,16 @@ mod public_static_direction_tests {
     fn static_placeable_source_rows_payload(
         rows: &[(u16, f32, f32, f32, f32, f32, f32)],
     ) -> (Vec<u8>, usize, AreaTileStreamScan) {
+        static_placeable_source_rows_payload_with_count(
+            u16::try_from(rows.len()).expect("test row count should fit in WORD"),
+            rows,
+        )
+    }
+
+    fn static_placeable_source_rows_payload_with_count(
+        static_count: u16,
+        rows: &[(u16, f32, f32, f32, f32, f32, f32)],
+    ) -> (Vec<u8>, usize, AreaTileStreamScan) {
         let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
         payload.extend_from_slice(&[0, 0, 0, 0]);
 
@@ -6424,10 +6457,7 @@ mod public_static_direction_tests {
         push_u32(&mut payload, 0); // map-pin rows
         push_u16(&mut payload, 0); // sound rows
         push_u16(&mut payload, 0); // light-placeable rows
-        push_u16(
-            &mut payload,
-            u16::try_from(rows.len()).expect("test row count should fit in WORD"),
-        );
+        push_u16(&mut payload, static_count);
         for (index, (appearance, x, y, z, dir_x, dir_y, dir_z)) in rows.iter().enumerate() {
             push_u32(
                 &mut payload,
@@ -6470,6 +6500,150 @@ mod public_static_direction_tests {
             Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
         );
         (payload, fragment_offset, scan)
+    }
+
+    fn real_area_static_placeable_source_rows_payload_with_count(
+        static_count: u16,
+        rows: &[(u16, f32, f32, f32, f32, f32, f32)],
+    ) -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        // One minimal Diamond/EE tile row: DWORD tile, DWORD orientation, DWORD
+        // height, WORD flags, and the always-present two source-light bytes.
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 0); // map-pin rows
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, static_count);
+        for (index, (appearance, x, y, z, dir_x, dir_y, dir_z)) in rows.iter().enumerate() {
+            push_u32(
+                &mut payload,
+                0x8000_0042u32
+                    .checked_add(u32::try_from(index).expect("test row index should fit in DWORD"))
+                    .expect("test object id should stay in the legacy object namespace"),
+            );
+            push_u16(&mut payload, *appearance);
+            push_f32(&mut payload, *x);
+            push_f32(&mut payload, *y);
+            push_f32(&mut payload, *z);
+            push_f32(&mut payload, *dir_x);
+            push_f32(&mut payload, *dir_y);
+            push_f32(&mut payload, *dir_z);
+        }
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 1);
+        assert_eq!(scan.packet_height, 1);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
+        );
+        (payload, fragment_offset, scan)
+    }
+
+    #[test]
+    fn zero_count_static_tail_is_not_normalized_or_module_repaired() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "unclaimed_tail_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        };
+        let info = module_info_with_placeables(vec![placeable]);
+        let (mut payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                0,
+                &[(82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0)],
+            );
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("zero-count row-shaped tail should still have a bounded source proof");
+        assert_eq!(proof.static_rows_count, 1);
+        assert_eq!(proof.zero_static_placeable_rows, 1);
+        let original = payload.clone();
+
+        assert_eq!(
+            normalize_legacy_static_placeable_directions(&mut payload, fragment_offset, &scan),
+            Some(0),
+            "normalization must not claim row-shaped bytes after a zero static count"
+        );
+        assert_eq!(
+            repair_module_resource_static_placeable_rows(
+                &mut payload,
+                fragment_offset,
+                &scan,
+                &info
+            ),
+            Some(0),
+            "module GIT proof must not promote row-shaped bytes after a zero static count"
+        );
+        assert_eq!(
+            payload, original,
+            "unclaimed zero-count static tail bytes must stay untouched until the drop path owns them"
+        );
+
+        let dropped =
+            drop_legacy_zero_static_placeable_trailing_rows(&mut payload, fragment_offset, &scan)
+                .expect("zero-count static tail should be droppable");
+        assert_eq!(dropped, 1);
+        let new_fragment_offset = HIGH_LEVEL_HEADER_BYTES + proof.static_rows_read_offset;
+        let trimmed_scan = scan_area_tile_stream(&payload, new_fragment_offset);
+        let trimmed_proof =
+            legacy_area_source_tail_exact_read_proof(&payload, new_fragment_offset, &trimmed_scan)
+                .expect("trimmed zero-count source should keep exact cursor proof");
+        assert_eq!(trimmed_proof.static_rows_count, 0);
+        assert_eq!(trimmed_proof.zero_static_placeable_rows, 0);
     }
 
     #[test]

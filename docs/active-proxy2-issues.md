@@ -301,6 +301,13 @@ Current status:
   Verified with `cargo test -q -p hgbridge-proxy2 public_static_direction_tests
   -- --nocapture`. Keep the broader issue open pending visual replay against a
   confirmed bad static/live placeable capture.
+- 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
+  static direction normalizer and module-resource static-row repair helpers so
+  row-shaped bytes after a zero static-placeable count remain unclaimed until
+  the dedicated drop path trims them. This follows the Diamond/EE decompile
+  rule that the preceding WORD count owns the loop. Added public fixture-free
+  coverage proving normalization and GIT repair do not promote the tail, and
+  that the drop path preserves the exact source cursor proof.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
