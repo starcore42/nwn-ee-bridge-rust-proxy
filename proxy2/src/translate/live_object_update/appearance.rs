@@ -8629,7 +8629,10 @@ mod public_tests {
         bytes.extend_from_slice(text);
     }
 
-    fn push_full_appearance_tail(bytes: &mut Vec<u8>, dialect: CreatureAppearanceWireDialect) {
+    fn push_full_appearance_tail_fields(
+        bytes: &mut Vec<u8>,
+        dialect: CreatureAppearanceWireDialect,
+    ) {
         push_u16(bytes, 2); // 0x0001 appearance type.
         bytes.extend_from_slice(&[1, 2]); // 0x0002 and 0x0004.
         bytes.push(3); // 0x0080 low byte.
@@ -8653,7 +8656,39 @@ mod public_tests {
         if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
             bytes.push(0); // EE build-0x0E tail byte.
         }
+    }
+
+    fn push_full_appearance_tail(bytes: &mut Vec<u8>, dialect: CreatureAppearanceWireDialect) {
+        push_full_appearance_tail_fields(bytes, dialect);
         bytes.push(0); // visible-equipment count.
+    }
+
+    fn push_no_name_active_property_tail(bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // shared DWORD.
+        bytes.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]); // shared DWORD.
+        bytes.push(0); // active-property count.
+        bytes.extend_from_slice(&[0, 0]); // value-mask trailer.
+    }
+
+    fn push_visible_equipment_no_name_item(bytes: &mut Vec<u8>) {
+        bytes.push(b'A');
+        push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
+        push_u32(bytes, 2); // visible-equipment slot.
+        push_u32(bytes, 0x01); // stock weapon row, model type 2.
+        bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
+        push_no_name_active_property_tail(bytes);
+    }
+
+    fn full_legacy_creature_appearance_with_direct_name_and_no_name_equipment() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(1); // visible-equipment count.
+        push_visible_equipment_no_name_item(&mut bytes);
+        bytes
     }
 
     fn push_zero_body_selector_appearance_tail(
@@ -8715,6 +8750,16 @@ mod public_tests {
 
     fn direct_name_bits() -> Vec<bool> {
         vec![false]
+    }
+
+    fn direct_name_with_no_name_equipment_bits() -> Vec<bool> {
+        vec![
+            false, // creature direct CExoString name.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
     }
 
     #[test]
@@ -8867,6 +8912,83 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 1,
             "EE zero-body-selector validation must preserve the direct-name bit cursor"
+        );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_item_bits_advance_exactly() {
+        let bytes = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
+        let fragment_bits = direct_name_with_no_name_equipment_bits();
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 5,
+            "visible-equipment item consumes the direct creature-name bit plus four Diamond active-property bits"
+        );
+
+        let mut short_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &fragment_bits[..4],
+                &mut short_cursor,
+            ),
+            "the nested active-property tail must not be accepted with a missing source BOOL"
+        );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_item_cursor_survives_ee_widening() {
+        let mut bytes = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = direct_name_with_no_name_equipment_bits();
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy full appearance with one visible-equipment item should widen");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 32,
+            "full body widening plus three model-type-2 item bytes and EE item visual map should be inserted"
+        );
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            fragment_bits,
+            [false, true, false, false, true, false],
+            "EE active-property BOOL is inserted after the shared pre-DWORD active-property BOOL"
+        );
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 6,
+            "EE validation must account for the inserted active-property BOOL without moving the item boundary"
         );
     }
 }

@@ -378,6 +378,16 @@ Current status:
   build-0x23 scalar high byte plus the feature-0x0E tail byte, and preserves the
   one-bit cursor through exact EE validation. Verified with `cargo test -q -p
   hgbridge-proxy2 full_appearance_ -- --nocapture`.
+- 2026-05-26 `P/05/01` creature full-appearance visible-equipment audit: no
+  packet behavior changed, but public fixture-free coverage now proves the
+  decompiled handoff from full-body fields to visible-equipment count and a
+  nested `A` item row. A direct creature-name source consumes one BOOL, the
+  visible item no-name active-property tail consumes the next four Diamond BOOLs
+  after the model-type-2 item body, a missing active-property BOOL rejects the
+  record, and the EE-only active-property BOOL is inserted immediately after the
+  shared pre-DWORD BOOL without moving the item boundary. Verified with
+  `cargo test -q -p hgbridge-proxy2 full_appearance_visible_equipment -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 full_appearance_ -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
