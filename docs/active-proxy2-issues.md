@@ -426,6 +426,16 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2
   full_appearance_visible_equipment -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 full_appearance_ -- --nocapture`.
+- 2026-05-26 `P/1E/01` quickbar model-type-3 appearance audit: fixed the
+  quickbar EE writer to mirror the live-object item appearance rule for
+  `sub_14079FAC0`. Diamond supplies `DWORD base item + 19 BYTE model parts + 6
+  palette bytes`; EE build-0x23 reads the same model parts as 19 WORDs, keeps
+  the six palette bytes, then reads the EE-only 19x6 armor/accessory color
+  table before the visual-transform map and active-property reader. The
+  quickbar writer now repeats Diamond's six palette bytes for each EE table row
+  instead of zero-filling a cursor-valid but visually wrong table. Verified
+  with `cargo test -q -p hgbridge-proxy2 model_type_3_quickbar --
+  --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

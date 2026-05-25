@@ -373,23 +373,29 @@ fn write_ee_quickbar_item_appearance_from_legacy(
             for byte in appearance.get(parts_start..colors_start)? {
                 writer.write_word(u16::from(*byte));
             }
-            writer
-                .read_buffer
-                .extend_from_slice(appearance.get(colors_start..colors_end)?);
-            append_ee_armor_layered_color_table(writer);
+            let legacy_palette = appearance.get(colors_start..colors_end)?;
+            writer.read_buffer.extend_from_slice(legacy_palette);
+            append_ee_armor_layered_color_table(writer, legacy_palette)?;
         }
         _ => return None,
     }
     Some(())
 }
 
-fn append_ee_armor_layered_color_table(writer: &mut QuickbarPacketWriter) {
+fn append_ee_armor_layered_color_table(
+    writer: &mut QuickbarPacketWriter,
+    legacy_palette: &[u8],
+) -> Option<()> {
     // EE's model-type-3 branch reads an additional 19x6 BYTE layered-color
-    // table after the legacy armor colors. Diamond has no corresponding
-    // quickbar field, so zeroes are the neutral, decompile-owned expansion.
-    writer
-        .read_buffer
-        .extend(std::iter::repeat(0).take(EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES));
+    // table after the legacy armor colors. Diamond supplies only the six global
+    // palette bytes, so repeat that palette for each EE armor/accessory row.
+    if legacy_palette.len() != 6 {
+        return None;
+    }
+    for _ in 0..(EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES / 6) {
+        writer.read_buffer.extend_from_slice(legacy_palette);
+    }
+    Some(())
 }
 
 fn append_empty_ee_visual_transform_map(writer: &mut QuickbarPacketWriter) {
@@ -498,5 +504,109 @@ fn ee_server_object_id_wire_value(object_id: u32) -> u32 {
         object_id
     } else {
         object_id | EE_SERVER_OBJECT_ID_MARKER_BIT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEGACY_ARMOR_BASE_ITEM: u32 = 0x10;
+
+    fn model_type_3_armor_item_with_palette(palette: [u8; 6]) -> QuickbarItemObject {
+        let mut appearance_bytes = Vec::new();
+        appearance_bytes.extend_from_slice(&LEGACY_ARMOR_BASE_ITEM.to_le_bytes());
+        for part in 0..19u8 {
+            appearance_bytes.push(0x20 + part);
+        }
+        appearance_bytes.extend_from_slice(&palette);
+
+        QuickbarItemObject {
+            present: true,
+            object_id: 0x8000_0042,
+            int_param: -1,
+            base_item: LEGACY_ARMOR_BASE_ITEM,
+            appearance_type: 3,
+            active_props: Some(QuickbarActiveItemProperties::default()),
+            appearance_bytes,
+        }
+    }
+
+    #[test]
+    fn model_type_3_quickbar_appearance_repeats_legacy_palette_per_ee_row() {
+        let palette = [1, 2, 3, 4, 5, 6];
+        let item = model_type_3_armor_item_with_palette(palette);
+        let mut writer = QuickbarPacketWriter::new();
+
+        write_ee_quickbar_item_appearance_from_legacy(&mut writer, &item)
+            .expect("model-type-3 armor appearance should write");
+
+        let bytes = writer.read_buffer;
+        assert_eq!(read_u32_le(&bytes, 0), Some(LEGACY_ARMOR_BASE_ITEM));
+        for part in 0..19usize {
+            let offset = CNW_LENGTH_BYTES + part * 2;
+            assert_eq!(
+                bytes.get(offset..offset + 2),
+                Some(&[0x20 + u8::try_from(part).unwrap(), 0][..]),
+                "EE feature-0x23 branch reads model parts as zero-extended WORDs"
+            );
+        }
+
+        let palette_start = CNW_LENGTH_BYTES + (19 * 2);
+        let table_start = palette_start + palette.len();
+        assert_eq!(
+            bytes.get(palette_start..table_start),
+            Some(&palette[..]),
+            "the six Diamond armor palette bytes stay immediately before the EE table"
+        );
+        let table = bytes
+            .get(table_start..table_start + EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES)
+            .expect("EE armor/accessory table should be present");
+        assert_eq!(
+            bytes.len(),
+            table_start + EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES
+        );
+        assert!(
+            table.iter().any(|byte| *byte != 0),
+            "the EE-only model-type-3 table must not be zero-filled when Diamond supplied palette bytes"
+        );
+        for chunk in table.chunks_exact(palette.len()) {
+            assert_eq!(
+                chunk, &palette,
+                "each of the 19 EE armor/accessory rows inherits Diamond's six palette bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn model_type_3_quickbar_item_payload_still_validates_as_exact_ee_shape() {
+        let item = model_type_3_armor_item_with_palette([6, 5, 4, 3, 2, 1]);
+        let mut buttons = vec![QuickbarButton {
+            kind: QuickbarButtonKind::Item {
+                primary: item,
+                secondary: QuickbarItemObject::default(),
+                source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                recovered_type_tag: false,
+            },
+        }];
+        buttons.extend((1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
+            kind: QuickbarButtonKind::General { bytes: vec![0] },
+        }));
+        let parsed = QuickbarParse {
+            envelope: b'P',
+            declared: 0,
+            read_size: 0,
+            fragment_size: 0,
+            final_cursor: 0,
+            buttons,
+            direct_opcode_stream: false,
+        };
+
+        let payload =
+            build_ee_quickbar_payload(&parsed).expect("model-type-3 quickbar payload should write");
+        assert!(
+            ee_set_all_buttons_payload_shape_valid(&payload),
+            "palette-seeded model-type-3 item appearance must still satisfy the exact EE quickbar reader"
+        );
     }
 }
