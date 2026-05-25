@@ -146,21 +146,36 @@ fn validate_ee_quickbar_item_appearance(
     let model_type = *model_types.get(usize::try_from(base_item).ok()?)?;
     match model_type {
         0 => {
-            reader.read_word()?;
+            validate_zero_extended_legacy_byte_word(reader)?;
         }
         1 => {
-            reader.skip_bytes(2 + 6)?;
+            validate_zero_extended_legacy_byte_word(reader)?;
+            reader.skip_bytes(6)?;
         }
         2 => {
-            reader.skip_bytes(2 + 2 + 2 + 1)?;
+            for _ in 0..3 {
+                validate_zero_extended_legacy_byte_word(reader)?;
+            }
+            reader.skip_bytes(1)?;
         }
         3 => {
-            reader.skip_bytes((19 * 2) + 6)?;
+            for _ in 0..19 {
+                validate_zero_extended_legacy_byte_word(reader)?;
+            }
+            reader.skip_bytes(6)?;
             reader.skip_bytes(EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES)?;
         }
         _ => return None,
     }
     Some(base_item)
+}
+
+fn validate_zero_extended_legacy_byte_word(reader: &mut QuickbarPacketReader<'_>) -> Option<()> {
+    let word = reader.read_word()?;
+    if word > u16::from(u8::MAX) {
+        return None;
+    }
+    Some(())
 }
 
 fn validate_empty_ee_visual_transform_map(reader: &mut QuickbarPacketReader<'_>) -> bool {

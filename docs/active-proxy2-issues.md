@@ -447,6 +447,17 @@ Current status:
   guard placement, and validator rejection when the EE-only bit is flipped
   true. Verified with `cargo test -q -p hgbridge-proxy2 active_property_ --
   --nocapture` and `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`.
+- 2026-05-26 `P/1E/01` quickbar item-appearance validator audit: tightened the
+  exact EE SetAllButtons validator so model-type 0/1/2/3 fields widened from
+  Diamond BYTEs must remain zero-extended WORDs. This mirrors the live-object
+  item proof for EE build-0x23 and prevents a semantically unsupported nonzero
+  high byte from passing the byte-shape validator. Public fixture-free coverage
+  now proves model-type 0 shield, type 1 cloak, type 2 weapon, type 3 armor,
+  and locstring-inline active-property name cursor order. Verified with
+  `cargo test -q -p hgbridge-proxy2 model_type_ -- --nocapture`, `cargo test
+  -q -p hgbridge-proxy2 active_property_locstring_inline -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`, and `cargo check
+  -q -p hgbridge-proxy2`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

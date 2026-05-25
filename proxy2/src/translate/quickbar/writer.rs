@@ -512,6 +512,9 @@ mod tests {
     use super::*;
 
     const LEGACY_ARMOR_BASE_ITEM: u32 = 0x10;
+    const LEGACY_WEAPON_BASE_ITEM: u32 = 0x01;
+    const LEGACY_SHIELD_BASE_ITEM: u32 = 0x38;
+    const LEGACY_CLOAK_BASE_ITEM: u32 = 0x50;
 
     fn model_type_3_armor_item_with_active_props(
         palette: [u8; 6],
@@ -531,6 +534,26 @@ mod tests {
             base_item: LEGACY_ARMOR_BASE_ITEM,
             appearance_type: 3,
             active_props: Some(active_props),
+            appearance_bytes,
+        }
+    }
+
+    fn quickbar_item_with_appearance(
+        base_item: u32,
+        appearance_type: i8,
+        appearance_tail: &[u8],
+    ) -> QuickbarItemObject {
+        let mut appearance_bytes = Vec::new();
+        appearance_bytes.extend_from_slice(&base_item.to_le_bytes());
+        appearance_bytes.extend_from_slice(appearance_tail);
+
+        QuickbarItemObject {
+            present: true,
+            object_id: 0x8000_0042,
+            int_param: -1,
+            base_item,
+            appearance_type,
+            active_props: Some(QuickbarActiveItemProperties::default()),
             appearance_bytes,
         }
     }
@@ -680,6 +703,66 @@ mod tests {
         *byte ^= mask;
     }
 
+    fn first_model_part_high_byte_offset(payload: &[u8]) -> usize {
+        let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+        assert_eq!(payload.get(read_start), Some(&1), "slot 0 is an item slot");
+        let offset = read_start + 1 + CNW_LENGTH_BYTES + CNW_LENGTH_BYTES + CNW_LENGTH_BYTES + 1;
+        assert!(
+            offset < payload.len(),
+            "payload should contain a widened model-part high byte"
+        );
+        offset
+    }
+
+    #[test]
+    fn model_type_0_1_2_quickbar_appearances_zero_extend_legacy_bytes() {
+        let cases = [
+            (
+                "model-type-0 shield",
+                quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]),
+                vec![0x34, 0x00],
+            ),
+            (
+                "model-type-1 cloak",
+                quickbar_item_with_appearance(LEGACY_CLOAK_BASE_ITEM, 1, &[0x45, 1, 2, 3, 4, 5, 6]),
+                vec![0x45, 0x00, 1, 2, 3, 4, 5, 6],
+            ),
+            (
+                "model-type-2 weapon",
+                quickbar_item_with_appearance(
+                    LEGACY_WEAPON_BASE_ITEM,
+                    2,
+                    &[0x07, 0x08, 0x09, 0x0A],
+                ),
+                vec![0x07, 0x00, 0x08, 0x00, 0x09, 0x00, 0x0A],
+            ),
+        ];
+
+        for (label, item, expected_tail) in cases {
+            let mut writer = QuickbarPacketWriter::new();
+            write_ee_quickbar_item_appearance_from_legacy(&mut writer, &item)
+                .unwrap_or_else(|| panic!("{label} should write"));
+            assert_eq!(read_u32_le(&writer.read_buffer, 0), Some(item.base_item));
+            assert_eq!(
+                writer.read_buffer.get(CNW_LENGTH_BYTES..),
+                Some(&expected_tail[..]),
+                "{label} must zero-extend only Diamond's model BYTE fields"
+            );
+
+            let mut payload = quickbar_payload_with_primary_item(item);
+            assert!(
+                ee_set_all_buttons_payload_shape_valid(&payload),
+                "{label} payload should satisfy the exact EE quickbar reader"
+            );
+            let high_byte = first_model_part_high_byte_offset(&payload);
+            payload[high_byte] = 1;
+            assert!(
+                !ee_set_all_buttons_payload_shape_valid(&payload),
+                "{label} validator must reject a nonzero high byte in a Diamond-widened model WORD"
+            );
+        }
+    }
+
     #[test]
     fn model_type_3_quickbar_appearance_repeats_legacy_palette_per_ee_row() {
         let palette = [1, 2, 3, 4, 5, 6];
@@ -733,6 +816,14 @@ mod tests {
         assert!(
             ee_set_all_buttons_payload_shape_valid(&payload),
             "palette-seeded model-type-3 item appearance must still satisfy the exact EE quickbar reader"
+        );
+
+        let mut shifted = payload;
+        let high_byte = first_model_part_high_byte_offset(&shifted);
+        shifted[high_byte] = 1;
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&shifted),
+            "validator must reject a nonzero high byte in a Diamond-widened model-type-3 WORD"
         );
     }
 
@@ -839,6 +930,61 @@ mod tests {
         assert!(
             !ee_set_all_buttons_payload_shape_valid(&shifted),
             "validator must reject a true EE-only CanUseItem bit after token-name bits"
+        );
+    }
+
+    #[test]
+    fn active_property_locstring_inline_name_keeps_inner_bit_before_active_state() {
+        let active_props = QuickbarActiveItemProperties {
+            has_armor_word: true,
+            armor_word: 0x1234,
+            name_is_locstring: true,
+            locstring_name: QuickbarLocStringField {
+                custom_tlk: false,
+                language_id: 0,
+                string_ref: 0,
+                text: b"Etched Blade".to_vec(),
+            },
+            post_name_bool1: true,
+            cost: 0x2122_2324,
+            stack_or_charges: 0x3132_3334,
+            post_name_bool2: false,
+            post_name_bool3: false,
+            post_name_bool4: true,
+            properties: Vec::new(),
+            state_mask: 0x44,
+            value_mask: 0,
+            value_mask_bytes: Vec::new(),
+            ..QuickbarActiveItemProperties::default()
+        };
+        let item =
+            model_type_3_armor_item_with_active_props([4, 5, 6, 7, 8, 9], active_props.clone());
+        let payload = quickbar_payload_with_primary_item(item);
+        assert!(ee_set_all_buttons_payload_shape_valid(&payload));
+
+        let mut reader = ee_reader_for_payload(&payload);
+        skip_primary_armor_item_prefix(&mut reader, active_props.armor_word);
+        assert_eq!(
+            reader.read_bit(),
+            Some(true),
+            "locstring item name outer selector precedes the inline-name branch"
+        );
+        assert_eq!(
+            reader.read_bit(),
+            Some(false),
+            "inline locstring inner selector precedes its CExoString bytes"
+        );
+        assert_eq!(
+            reader.read_string(),
+            Some(active_props.locstring_name.text.clone())
+        );
+        assert_common_active_property_tail(&mut reader, &active_props);
+
+        let mut shifted = payload.clone();
+        flip_fragment_bit(&mut shifted, 7);
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&shifted),
+            "validator must reject a true EE-only CanUseItem bit after inline locstring-name bits"
         );
     }
 }
