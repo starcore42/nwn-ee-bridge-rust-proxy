@@ -6371,9 +6371,105 @@ fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
 mod public_static_direction_tests {
     use super::*;
 
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_f32(bytes: &mut Vec<u8>, value: f32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
     fn angle_delta(actual: f32, expected: f32) -> f32 {
         let two_pi = std::f32::consts::PI * 2.0;
         (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
+    }
+
+    fn module_info_with_placeables(placeables: Vec<ModuleAreaPlaceable>) -> ModuleAreaResourceInfo {
+        ModuleAreaResourceInfo {
+            resref: "testarea".to_string(),
+            name: "Test Area".to_string(),
+            width: 1,
+            height: 1,
+            tileset: "ttr01".to_string(),
+            tiles: Vec::new(),
+            map_notes: Vec::new(),
+            sounds: Vec::new(),
+            placeables,
+        }
+    }
+
+    fn static_placeable_source_row_payload(
+        appearance: u16,
+        x: f32,
+        y: f32,
+        z: f32,
+        dir_x: f32,
+        dir_y: f32,
+        dir_z: f32,
+    ) -> (Vec<u8>, usize, AreaTileStreamScan) {
+        static_placeable_source_rows_payload(&[(appearance, x, y, z, dir_x, dir_y, dir_z)])
+    }
+
+    fn static_placeable_source_rows_payload(
+        rows: &[(u16, f32, f32, f32, f32, f32, f32)],
+    ) -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 0); // map-pin rows
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(
+            &mut payload,
+            u16::try_from(rows.len()).expect("test row count should fit in WORD"),
+        );
+        for (index, (appearance, x, y, z, dir_x, dir_y, dir_z)) in rows.iter().enumerate() {
+            push_u32(
+                &mut payload,
+                0x8000_0042u32
+                    .checked_add(u32::try_from(index).expect("test row index should fit in DWORD"))
+                    .expect("test object id should stay in the legacy object namespace"),
+            );
+            push_u16(&mut payload, *appearance);
+            push_f32(&mut payload, *x);
+            push_f32(&mut payload, *y);
+            push_f32(&mut payload, *z);
+            push_f32(&mut payload, *dir_x);
+            push_f32(&mut payload, *dir_y);
+            push_f32(&mut payload, *dir_z);
+        }
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = AreaTileStreamScan {
+            valid: true,
+            tile_end_read_offset: CNW_LENGTH_BYTES,
+            ..AreaTileStreamScan::default()
+        };
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
+        );
+        (payload, fragment_offset, scan)
     }
 
     #[test]
@@ -6407,6 +6503,138 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn module_static_row_repair_uses_resource_bearing_for_unsafe_direction() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "bearing_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: true,
+        };
+        let info = module_info_with_placeables(vec![placeable.clone()]);
+        let (mut payload, fragment_offset, scan) =
+            static_placeable_source_row_payload(82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("synthetic source row should have an exact legacy cursor proof");
+        assert!(
+            !area_static_placeable_ee_row_shape_valid(
+                &payload,
+                fragment_offset,
+                proof.static_rows_read_offset,
+            ),
+            "zero direction is a valid Diamond-shaped row but not an EE-safe static yaw"
+        );
+
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut payload,
+            fragment_offset,
+            &scan,
+            &info,
+        )
+        .expect("unique module-backed row should be repairable");
+        assert_eq!(repairs, 1);
+
+        let repaired_proof =
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+                .expect("module repair must preserve the exact source cursor proof");
+        assert_eq!(
+            repaired_proof.static_rows_read_offset,
+            proof.static_rows_read_offset
+        );
+        assert_eq!(repaired_proof.static_rows_count, proof.static_rows_count);
+        assert_eq!(
+            repaired_proof.zero_static_placeable_rows,
+            proof.zero_static_placeable_rows
+        );
+        assert!(
+            area_static_placeable_ee_row_shape_valid(
+                &payload,
+                fragment_offset,
+                proof.static_rows_read_offset,
+            ),
+            "resource-backed bearing should make the row acceptable to the EE static reader"
+        );
+
+        let (expected_x, expected_y, expected_z) =
+            static_placeable_direction_from_bearing(placeable.bearing)
+                .expect("finite module bearing should produce a static direction");
+        assert_eq!(
+            read_area_f32(
+                &payload,
+                fragment_offset,
+                proof.static_rows_read_offset + 18
+            ),
+            Some(expected_x)
+        );
+        assert_eq!(
+            read_area_f32(
+                &payload,
+                fragment_offset,
+                proof.static_rows_read_offset + 22
+            ),
+            Some(expected_y)
+        );
+        assert_eq!(
+            read_area_f32(
+                &payload,
+                fragment_offset,
+                proof.static_rows_read_offset + 26
+            ),
+            Some(expected_z)
+        );
+    }
+
+    #[test]
+    fn module_static_row_repair_rejects_ambiguous_resource_match() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "ambiguous_chest_a".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let mut duplicate = placeable.clone();
+        duplicate.tag = "ambiguous_chest_b".to_string();
+        duplicate.locked = true;
+        let info = module_info_with_placeables(vec![placeable, duplicate]);
+        let (mut payload, fragment_offset, scan) = static_placeable_source_rows_payload(&[
+            (82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0),
+            (82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0),
+        ]);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("two-row source packet should have an exact legacy cursor proof");
+        assert_eq!(proof.static_rows_count, 2);
+        let original = payload.clone();
+
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut payload,
+            fragment_offset,
+            &scan,
+            &info,
+        )
+        .expect("ambiguous rows are rejected without invalidating the packet proof");
+        assert_eq!(repairs, 0);
+        assert_eq!(
+            payload, original,
+            "ambiguous module matches must not rewrite appearance, position, or direction"
+        );
+    }
+
+    #[test]
     fn module_context_state_requires_matching_static_direction_triplet() {
         let placeable = ModuleAreaPlaceable {
             tag: "locked_chest".to_string(),
@@ -6424,17 +6652,7 @@ mod public_static_direction_tests {
         };
         let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
             .expect("finite GIT bearing should produce a row direction");
-        let info = ModuleAreaResourceInfo {
-            resref: "testarea".to_string(),
-            name: "Test Area".to_string(),
-            width: 1,
-            height: 1,
-            tileset: "ttr01".to_string(),
-            tiles: Vec::new(),
-            map_notes: Vec::new(),
-            sounds: Vec::new(),
-            placeables: vec![placeable],
-        };
+        let info = module_info_with_placeables(vec![placeable]);
 
         let state = module_static_placeable_context_state(
             Some(&info),
@@ -6488,17 +6706,7 @@ mod public_static_direction_tests {
         let mut duplicate = placeable.clone();
         duplicate.tag = "duplicate_locked_chest".to_string();
         duplicate.locked = true;
-        let duplicate_info = ModuleAreaResourceInfo {
-            resref: "testarea".to_string(),
-            name: "Test Area".to_string(),
-            width: 1,
-            height: 1,
-            tileset: "ttr01".to_string(),
-            tiles: Vec::new(),
-            map_notes: Vec::new(),
-            sounds: Vec::new(),
-            placeables: vec![placeable.clone(), duplicate],
-        };
+        let duplicate_info = module_info_with_placeables(vec![placeable.clone(), duplicate]);
         assert_eq!(
             module_static_placeable_context_state(
                 Some(&duplicate_info),
@@ -6516,17 +6724,7 @@ mod public_static_direction_tests {
 
         let mut non_static = placeable;
         non_static.static_object = false;
-        let non_static_info = ModuleAreaResourceInfo {
-            resref: "testarea".to_string(),
-            name: "Test Area".to_string(),
-            width: 1,
-            height: 1,
-            tileset: "ttr01".to_string(),
-            tiles: Vec::new(),
-            map_notes: Vec::new(),
-            sounds: Vec::new(),
-            placeables: vec![non_static],
-        };
+        let non_static_info = module_info_with_placeables(vec![non_static]);
         assert_eq!(
             module_static_placeable_context_state(
                 Some(&non_static_info),

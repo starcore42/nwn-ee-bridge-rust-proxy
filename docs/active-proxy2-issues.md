@@ -293,6 +293,14 @@ Current status:
   decompile-backed fact. Verified with `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`. Keep the broader issue open
   pending visual replay against a confirmed bad static/live placeable capture.
+- 2026-05-25 `P/04/01` static-placeable repair cursor audit: no packet behavior
+  changed, but public fixture-free coverage now proves the module-resource row
+  repair path can replace an EE-unsafe static direction vector with the unique
+  GIT bearing while preserving the exact legacy post-tile cursor/count proof,
+  and refuses to rewrite when two static GIT rows can match the same packet row.
+  Verified with `cargo test -q -p hgbridge-proxy2 public_static_direction_tests
+  -- --nocapture`. Keep the broader issue open pending visual replay against a
+  confirmed bad static/live placeable capture.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
