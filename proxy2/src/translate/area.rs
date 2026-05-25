@@ -2982,40 +2982,31 @@ fn collect_area_post_tile_placeable_context(
     )?;
     cursor = next_cursor;
 
-    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
-    cursor = cursor.checked_add(2)?;
-    let mut light_rows = Vec::with_capacity(light_count as usize);
-    for _ in 0..light_count {
-        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
-        let appearance = read_area_u16(payload, fragment_offset, cursor + 4)?;
-        let x = read_area_f32(payload, fragment_offset, cursor + 6)?;
-        let y = read_area_f32(payload, fragment_offset, cursor + 10)?;
-        let z = read_area_f32(payload, fragment_offset, cursor + 14)?;
-        if area_placeable_context_id_is_ambiguous(
-            object_id,
-            legacy_area_object_id,
-            filter_ambiguous_context_rows,
-            &light_rows,
-            &[],
-        ) {
-            tracing::debug!(
-                area_resref,
-                object_id,
+    let mut light_rows = Vec::new();
+    let (_, next_cursor) = walk_area_light_placeable_rows(
+        payload,
+        fragment_offset,
+        cursor,
+        |row| {
+            if area_placeable_context_id_is_ambiguous(
+                row.object_id,
                 legacy_area_object_id,
-                "Area_ClientArea placeable context retained area-alias light-placeable row identity"
-            );
-        }
-        light_rows.push(AreaPlaceableContextRow {
-            object_id,
-            appearance,
-            x,
-            y,
-            z,
-            has_direction: false,
-            ..AreaPlaceableContextRow::default()
-        });
-        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
-    }
+                filter_ambiguous_context_rows,
+                &light_rows,
+                &[],
+            ) {
+                tracing::debug!(
+                    area_resref,
+                    object_id = row.object_id,
+                    legacy_area_object_id,
+                    "Area_ClientArea placeable context retained area-alias light-placeable row identity"
+                );
+            }
+            light_rows.push(row);
+            Some(())
+        },
+    )?;
+    cursor = next_cursor;
 
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
     cursor = cursor.checked_add(2)?;
@@ -3260,25 +3251,9 @@ fn legacy_area_source_tail_exact_read_proof(
     cursor = next_cursor;
     bit_cursor = next_bit_cursor;
 
-    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
-    if u32::from(light_count) > MAX_AREA_POST_TILE_LIST_COUNT {
-        return None;
-    }
-    cursor = cursor.checked_add(2)?;
-    for _ in 0..light_count {
-        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
-        if !legacy_area_object_id_plausible(object_id) {
-            return None;
-        }
-        read_area_u16(payload, fragment_offset, cursor + 4)?;
-        for component in 0..3 {
-            let value = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)?;
-            if !value.is_finite() || value.abs() > 100_000.0 {
-                return None;
-            }
-        }
-        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
-    }
+    let (_, next_cursor) =
+        walk_area_light_placeable_rows(payload, fragment_offset, cursor, |_| Some(()))?;
+    cursor = next_cursor;
 
     let static_count_read_offset = cursor;
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
@@ -3742,25 +3717,9 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
     cursor = next_cursor;
     bit_cursor = next_bit_cursor;
 
-    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
-    if u32::from(light_count) > MAX_AREA_POST_TILE_LIST_COUNT {
-        return None;
-    }
-    cursor = cursor.checked_add(2)?;
-    for _ in 0..light_count {
-        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
-        if !legacy_area_object_id_plausible(object_id) {
-            return None;
-        }
-        read_area_u16(payload, fragment_offset, cursor + 4)?;
-        for component in 0..3 {
-            let value = read_area_f32(payload, fragment_offset, cursor + 6 + component * 4)?;
-            if !value.is_finite() || value.abs() > 100_000.0 {
-                return None;
-            }
-        }
-        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
-    }
+    let (light_count, next_cursor) =
+        walk_area_light_placeable_rows(payload, fragment_offset, cursor, |_| Some(()))?;
+    cursor = next_cursor;
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
     if u32::from(static_count) > MAX_AREA_POST_TILE_LIST_COUNT {
         return None;
@@ -3899,6 +3858,69 @@ fn advance_area_sound_rows(
     }
 
     Some((sound_count, cursor, bit_cursor))
+}
+
+fn walk_area_light_placeable_rows<F>(
+    payload: &[u8],
+    fragment_offset: usize,
+    cursor: usize,
+    mut on_row: F,
+) -> Option<(u16, usize)>
+where
+    F: FnMut(AreaPlaceableContextRow) -> Option<()>,
+{
+    let light_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if u32::from(light_count) > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    let mut cursor = cursor.checked_add(2)?;
+    for _ in 0..light_count {
+        // EE `CNWSArea::PackAreaIntoMessage` emits the light-placeable list as
+        // a byte-only WORD count followed by `OBJECTID`, `WORD appearance`, and
+        // one position triplet. EE `CNWCArea::LoadArea` feeds exactly that row
+        // into the light helper, and Diamond's reader has the same one-triplet
+        // branch before static placeables. No CNW fragment BOOLs are consumed
+        // here; sharing this walker keeps later static rows from being exposed
+        // after an unproven light-row cursor.
+        let row = read_area_light_placeable_row(payload, fragment_offset, cursor)?;
+        on_row(row)?;
+        cursor = cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?;
+        if HIGH_LEVEL_HEADER_BYTES.checked_add(cursor)? > fragment_offset {
+            return None;
+        }
+    }
+
+    Some((light_count, cursor))
+}
+
+fn read_area_light_placeable_row(
+    payload: &[u8],
+    fragment_offset: usize,
+    cursor: usize,
+) -> Option<AreaPlaceableContextRow> {
+    let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+    if !legacy_area_object_id_plausible(object_id) {
+        return None;
+    }
+    let appearance = read_area_u16(payload, fragment_offset, cursor + 4)?;
+    let x = read_area_f32(payload, fragment_offset, cursor + 6)?;
+    let y = read_area_f32(payload, fragment_offset, cursor + 10)?;
+    let z = read_area_f32(payload, fragment_offset, cursor + 14)?;
+    for value in [x, y, z] {
+        if !value.is_finite() || value.abs() > 100_000.0 {
+            return None;
+        }
+    }
+
+    Some(AreaPlaceableContextRow {
+        object_id,
+        appearance,
+        x,
+        y,
+        z,
+        has_direction: false,
+        ..AreaPlaceableContextRow::default()
+    })
 }
 
 fn repair_missing_area_height(
@@ -6803,6 +6825,80 @@ mod public_static_direction_tests {
         (payload, fragment_offset, scan)
     }
 
+    fn real_area_light_static_placeable_payload(
+        light_object_id: u32,
+    ) -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 0); // map-pin rows
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 1); // light-placeable rows
+        push_u32(&mut payload, light_object_id);
+        push_u16(&mut payload, 77);
+        push_f32(&mut payload, 5.0);
+        push_f32(&mut payload, 6.0);
+        push_f32(&mut payload, 0.0);
+        push_u16(&mut payload, 1); // static-placeable rows
+        push_u32(&mut payload, 0x8000_0042);
+        push_u16(&mut payload, 82);
+        push_f32(&mut payload, 10.0);
+        push_f32(&mut payload, 20.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 1.0);
+        push_f32(&mut payload, 0.0);
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 1);
+        assert_eq!(scan.packet_height, 1);
+        (payload, fragment_offset, scan)
+    }
+
     fn ee_area_static_placeable_payload_with_post_static_tail(
         first_post_static_rows: &[u16],
         second_post_static_count: u16,
@@ -6962,6 +7058,56 @@ mod public_static_direction_tests {
             )
             .is_none(),
             "context collection must not expose later static rows when the sound-row bit cursor is unproven"
+        );
+    }
+
+    #[test]
+    fn placeable_context_uses_light_rows_before_static_rows() {
+        let (payload, fragment_offset, scan) =
+            real_area_light_static_placeable_payload(0x8000_0077);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("light row should keep exact source cursor proof");
+        assert_eq!(proof.static_rows_count, 1);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("placeable context walker must share the exact light-row cursor");
+        assert_eq!(context.light_rows.len(), 1);
+        assert_eq!(context.static_rows.len(), 1);
+        assert_eq!(context.light_rows[0].object_id, 0x8000_0077);
+        assert_eq!(context.light_rows[0].appearance, 77);
+        assert_eq!(context.light_rows[0].x, 5.0);
+        assert_eq!(context.light_rows[0].y, 6.0);
+        assert!(!context.light_rows[0].has_direction);
+        assert_eq!(context.static_rows[0].appearance, 82);
+        assert!(context.static_rows[0].has_direction);
+    }
+
+    #[test]
+    fn placeable_context_rejects_unproven_light_row_shape() {
+        let (payload, fragment_offset, scan) =
+            real_area_light_static_placeable_payload(0x0000_0077);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan).is_none(),
+            "light rows outside the legacy object namespace are not an exact Diamond area tail"
+        );
+        assert!(
+            collect_area_post_tile_placeable_context(
+                &payload,
+                fragment_offset,
+                "testarea",
+                0x8000_0001,
+                false,
+                None,
+            )
+            .is_none(),
+            "context collection must not expose later static rows after an unproven light row"
         );
     }
 

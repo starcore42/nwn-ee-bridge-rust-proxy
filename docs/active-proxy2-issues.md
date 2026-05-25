@@ -341,6 +341,15 @@ Current status:
   exposed as context only when that byte and bit cursor movement is proven.
   Added fixture-free coverage for a sound row followed by a static placeable,
   and for rejecting the same byte shape when the six sound bits are missing.
+- 2026-05-25 `P/04/01` light-placeable cursor audit: shared the decompile-backed
+  light-row walker across the legacy exact proof, EE exact proof, and
+  placeable-context collector. Light rows are byte-only after their `WORD`
+  count: `OBJECTID`, `WORD appearance`, and one position triplet, with no CNW
+  fragment BOOLs before the following static-placeable count. Context collection
+  now rejects unproven light rows instead of exposing later static rows from a
+  shifted cursor. Added fixture-free coverage for a valid light row before a
+  static row and for rejecting a light row outside the legacy object-id
+  namespace.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
