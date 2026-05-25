@@ -8656,6 +8656,30 @@ mod public_tests {
         bytes.push(0); // visible-equipment count.
     }
 
+    fn push_zero_body_selector_appearance_tail(
+        bytes: &mut Vec<u8>,
+        dialect: CreatureAppearanceWireDialect,
+    ) {
+        push_u16(bytes, 2); // 0x0001 appearance type.
+        bytes.extend_from_slice(&[1, 2]); // 0x0002 and 0x0004.
+        bytes.push(3); // 0x0080 low byte.
+        if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+            bytes.push(0); // EE build-0x23 high byte.
+        }
+        push_u32(bytes, 0x1122_3344); // 0x0800.
+        push_u32(bytes, 0x5566_7788); // 0x1000.
+        bytes.extend_from_slice(&[4, 5, 6, 7]); // 0x0008..0x0040.
+
+        bytes.push(0); // 0x0100 body selector: keep existing body table.
+
+        push_u16(bytes, 0x99AA);
+        push_u32(bytes, 0xBBCC_DDEE); // 0x2000 tail.
+        if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+            bytes.push(0); // EE build-0x0E tail byte.
+        }
+        bytes.push(0); // visible-equipment count.
+    }
+
     fn full_legacy_creature_appearance_with_mixed_locstring_name() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -8667,6 +8691,19 @@ mod public_tests {
         bytes
     }
 
+    fn full_legacy_creature_appearance_with_direct_name_and_zero_body_selector() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_zero_body_selector_appearance_tail(
+            &mut bytes,
+            CreatureAppearanceWireDialect::LegacyDiamond,
+        );
+        bytes
+    }
+
     fn mixed_locstring_name_bits() -> Vec<bool> {
         vec![
             true,  // creature-name selector: two locstring components.
@@ -8674,6 +8711,10 @@ mod public_tests {
             false, // first component client-TLK/language selector.
             false, // second component: inline CExoString branch.
         ]
+    }
+
+    fn direct_name_bits() -> Vec<bool> {
+        vec![false]
     }
 
     #[test]
@@ -8754,6 +8795,78 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 4,
             "EE build-byte widening must not move the decompiled creature-name bit cursor"
+        );
+    }
+
+    #[test]
+    fn full_appearance_direct_name_zero_body_selector_advances_exactly() {
+        let bytes = full_legacy_creature_appearance_with_direct_name_and_zero_body_selector();
+        let fragment_bits = direct_name_bits();
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 1,
+            "direct CExoString name owns only the outer name selector"
+        );
+
+        let mut locstring_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &[true, false, false],
+                &mut locstring_cursor,
+            ),
+            "locstring selectors must not reinterpret a direct CExoString name"
+        );
+    }
+
+    #[test]
+    fn full_appearance_zero_body_selector_survives_ee_widening() {
+        let mut bytes = full_legacy_creature_appearance_with_direct_name_and_zero_body_selector();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = direct_name_bits();
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy zero-body-selector appearance should widen to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 2,
+            "zero body selector needs only the EE scalar high byte and feature-0x0E tail byte"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 1,
+            "EE zero-body-selector validation must preserve the direct-name bit cursor"
         );
     }
 }

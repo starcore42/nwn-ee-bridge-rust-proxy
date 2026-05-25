@@ -369,6 +369,15 @@ Current status:
   reinterpretation of token bytes, then verify that the same four-bit cursor
   survives the legacy-to-EE build-0x23 body widening. Verified with `cargo test
   -q -p hgbridge-proxy2 full_appearance_locstring_name -- --nocapture`.
+- 2026-05-26 `P/05/01` creature full-appearance direct-name/zero-body audit:
+  no packet behavior changed, but public fixture-free coverage now proves the
+  direct `CExoString` name branch consumes exactly one source BOOL and rejects
+  locstring reinterpretation of the same read-buffer bytes. The same pass
+  covers the decompiled body selector `0` branch: it consumes only the selector
+  byte, does not synthesize a nineteen-part body table, inserts only the EE
+  build-0x23 scalar high byte plus the feature-0x0E tail byte, and preserves the
+  one-bit cursor through exact EE validation. Verified with `cargo test -q -p
+  hgbridge-proxy2 full_appearance_ -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
