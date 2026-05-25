@@ -285,6 +285,14 @@ Current status:
   -p hgbridge-proxy2 module_context_state_requires_matching_static_direction_triplet
   -- --nocapture`. Keep the broader issue open pending visual replay against a
   confirmed bad static/live placeable capture.
+- 2026-05-25 `P/04/01` static-placeable context uniqueness audit: no packet
+  behavior changed, but public coverage now proves module trap/use/lock state is
+  not inherited when two static GIT rows match the same appearance/position/
+  direction proof or when the matching module row is not static. This keeps
+  later `A/09` overlap diagnostics from treating ambiguous module state as a
+  decompile-backed fact. Verified with `cargo test -q -p hgbridge-proxy2
+  public_static_direction_tests -- --nocapture`. Keep the broader issue open
+  pending visual replay against a confirmed bad static/live placeable capture.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

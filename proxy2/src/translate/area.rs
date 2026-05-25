@@ -6465,6 +6465,83 @@ mod public_static_direction_tests {
             "a plausible appearance/position row must not inherit GIT state when the second static triplet proves a different yaw"
         );
     }
+
+    #[test]
+    fn module_context_state_requires_unique_static_resource_row() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "locked_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: true,
+            lockable: true,
+            locked: false,
+        };
+        let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+
+        let mut duplicate = placeable.clone();
+        duplicate.tag = "duplicate_locked_chest".to_string();
+        duplicate.locked = true;
+        let duplicate_info = ModuleAreaResourceInfo {
+            resref: "testarea".to_string(),
+            name: "Test Area".to_string(),
+            width: 1,
+            height: 1,
+            tileset: "ttr01".to_string(),
+            tiles: Vec::new(),
+            map_notes: Vec::new(),
+            sounds: Vec::new(),
+            placeables: vec![placeable.clone(), duplicate],
+        };
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&duplicate_info),
+                82,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            None,
+            "matching appearance/position/direction is not enough when two static GIT rows can own different state"
+        );
+
+        let mut non_static = placeable;
+        non_static.static_object = false;
+        let non_static_info = ModuleAreaResourceInfo {
+            resref: "testarea".to_string(),
+            name: "Test Area".to_string(),
+            width: 1,
+            height: 1,
+            tileset: "ttr01".to_string(),
+            tiles: Vec::new(),
+            map_notes: Vec::new(),
+            sounds: Vec::new(),
+            placeables: vec![non_static],
+        };
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&non_static_info),
+                82,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            None,
+            "live/non-static module placeables must not seed static-row trap/use/lock context"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]
