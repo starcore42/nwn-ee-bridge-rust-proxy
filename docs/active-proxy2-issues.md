@@ -236,6 +236,12 @@ Current status:
   the shortened read cursor. Added fixture-free coverage for the absent-tail
   prefix and the bounded 11-byte tail before `GQ`; verified the existing
   captured `0x2E01` Docks/Sooty inventory cases still claim after rewrite.
+- 2026-05-25 `P/05/01` placeable-add repeat-pass guard audit: tightened the
+  already-EE-shaped `A/09` guard repair so an inline CExoString using EE's
+  `outer=true, inner=false` helper keeps the inner selector before the optional
+  OBJECTID guard. Only the legacy `outer=true, inner=true` direct-name mismatch
+  is collapsed to `outer=false`. Added fixture-free tests for both optional
+  OBJECTID branches and exact post-repair add validation.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
