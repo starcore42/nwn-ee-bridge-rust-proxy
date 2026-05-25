@@ -1114,15 +1114,21 @@ fn placeable_update_source_state_bits_at(
                 // and the bridge inserts EE scalar bits. The source fragment
                 // cursor is already at the following state block.
             }
-            OrientationFragmentRewrite::PreserveExisting
-            | OrientationFragmentRewrite::ForceScalar
-            | OrientationFragmentRewrite::ForceVector => {
+            OrientationFragmentRewrite::PreserveExisting => {
                 let vector_orientation = bits.get(cursor).copied()?;
                 cursor = cursor.checked_add(if vector_orientation {
                     EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
                 } else {
                     EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
                 })?;
+            }
+            OrientationFragmentRewrite::ForceScalar => {
+                let _stale_selector = bits.get(cursor).copied()?;
+                cursor = cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS)?;
+            }
+            OrientationFragmentRewrite::ForceVector => {
+                let _stale_selector = bits.get(cursor).copied()?;
+                cursor = cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS)?;
             }
         }
     }
@@ -1436,7 +1442,10 @@ fn rewrite_legacy_live_object_update_bits(
                 cursor += EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
             }
             OrientationFragmentRewrite::ForceVector => {
-                if !source_has_orientation || bits.len().saturating_sub(cursor) < 1 {
+                if !source_has_orientation
+                    || bits.len().saturating_sub(cursor)
+                        < EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                {
                     return None;
                 }
                 let selector = bits.get_mut(cursor)?;
@@ -1606,6 +1615,69 @@ mod tests {
                 OrientationFragmentRewrite::PreserveExisting,
             ),
             Some(state(true, false, true, false, true))
+        );
+    }
+
+    #[test]
+    fn source_state_diagnostic_uses_forced_scalar_width_when_selector_is_stale() {
+        let source_mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let bits = vec![
+            true, false, // position fragment
+            true, false, true, false, true, // stale vector selector plus scalar-width payload
+            false, true, true, false, true, // state block
+        ];
+
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::ForceScalar,
+            ),
+            Some(state(false, true, true, false, true))
+        );
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::PreserveExisting,
+            ),
+            Some(state(false, true, false, true, false)),
+            "a stale vector selector must not drive source-state diagnostics"
+        );
+    }
+
+    #[test]
+    fn source_state_diagnostic_uses_forced_vector_width_when_selector_is_stale() {
+        let source_mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let bits = vec![
+            false, true,  // position fragment
+            false, // stale scalar selector
+            true, false, true, false, true, // state block
+            false, false, true, true, false, // following bits that stale scalar would misread
+        ];
+
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::ForceVector,
+            ),
+            Some(state(true, false, true, false, true))
+        );
+        assert_eq!(
+            placeable_update_source_state_bits_at(
+                &bits,
+                0,
+                source_mask,
+                OrientationFragmentRewrite::PreserveExisting,
+            ),
+            Some(state(true, false, false, true, true)),
+            "a stale scalar selector would read vector payload bits as state"
         );
     }
 }

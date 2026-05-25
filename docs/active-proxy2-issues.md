@@ -253,6 +253,16 @@ Current status:
   hgbridge-proxy2 placeable_name_mode_tests -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`, `cargo fmt
   --all --check`, `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-25 `P/05/01` placeable-update forced-orientation diagnostic audit:
+  no packet shape changed, but the source-state logger now decodes `U/09`
+  state bits using the byte-proven forced scalar/vector branch width instead of
+  reusing a stale selector bit. This matters when exact bytes prove one
+  orientation branch while the fragment cursor still contains the opposite
+  selector; otherwise visual/locked state diagnostics can be shifted while the
+  emitted packet remains exact. Added fixture-free tests for forced scalar and
+  forced vector source-state decoding. Verified with `cargo test -q -p
+  hgbridge-proxy2 source_state_diagnostic -- --nocapture` and `cargo test -q
+  -p hgbridge-proxy2 placeable_update -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
