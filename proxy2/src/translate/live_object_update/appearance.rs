@@ -3016,11 +3016,27 @@ fn apply_item_name_fragment_proof_rewrite(
         LegacyItemNameFragmentProof::LocStringToken => {
             let source_outer = *fragment_bits.get(bit_cursor)?;
             *fragment_bits.get_mut(bit_cursor)? = true;
-            if source_outer {
-                *fragment_bits.get_mut(bit_cursor.checked_add(1)?)? = true;
+            let inner_cursor = bit_cursor.checked_add(1)?;
+            let language_cursor = bit_cursor.checked_add(2)?;
+            if !source_outer {
+                // The source fragment stream selected the direct CExoString
+                // branch, so neither locstring-helper bit exists yet. Materialize
+                // both the token inner selector and the token language bit before
+                // the following active-property BOOLs.
+                super::bits::insert_msb_bit(fragment_bits, inner_cursor, true)?;
+                super::bits::insert_msb_bit(fragment_bits, language_cursor, false)?;
+                return Some(2);
+            }
+            let source_inner = *fragment_bits.get(inner_cursor)?;
+            *fragment_bits.get_mut(inner_cursor)? = true;
+            if source_inner {
                 Some(0)
             } else {
-                super::bits::insert_msb_bit(fragment_bits, bit_cursor.checked_add(1)?, true)?;
+                // The source took the locstring helper's inline branch. Reusing
+                // the next semantic bit as the token language selector shifts
+                // active-property state, so insert a neutral language bit at the
+                // decompiled token cursor.
+                super::bits::insert_msb_bit(fragment_bits, language_cursor, false)?;
                 Some(1)
             }
         }
@@ -8679,6 +8695,16 @@ mod public_tests {
         push_no_name_active_property_tail(bytes);
     }
 
+    fn push_visible_equipment_locstring_token_item(bytes: &mut Vec<u8>) {
+        bytes.push(b'A');
+        push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
+        push_u32(bytes, 2); // visible-equipment slot.
+        push_u32(bytes, 0x01); // stock weapon row, model type 2.
+        bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
+        push_u32(bytes, 0x0100_75D6); // active-property TLK/custom-token name.
+        push_no_name_active_property_tail(bytes);
+    }
+
     fn full_legacy_creature_appearance_with_direct_name_and_no_name_equipment() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -8688,6 +8714,20 @@ mod public_tests {
         push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
         bytes.push(1); // visible-equipment count.
         push_visible_equipment_no_name_item(&mut bytes);
+        bytes
+    }
+
+    fn full_legacy_creature_appearance_with_inline_names_and_locstring_token_equipment() -> Vec<u8>
+    {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_cexo_string(&mut bytes, b"Title");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(1); // visible-equipment count.
+        push_visible_equipment_locstring_token_item(&mut bytes);
         bytes
     }
 
@@ -8755,6 +8795,21 @@ mod public_tests {
     fn direct_name_with_no_name_equipment_bits() -> Vec<bool> {
         vec![
             false, // creature direct CExoString name.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
+    fn inline_names_with_locstring_token_equipment_bits() -> Vec<bool> {
+        vec![
+            true,  // creature-name selector: two locstring components.
+            false, // first component: inline CExoString branch.
+            false, // second component: inline CExoString branch.
+            true,  // item name selector: locstring helper.
+            true,  // item locstring helper: TLK/custom-token branch.
+            false, // item locstring language selector.
             true,  // first Diamond active-property BOOL.
             false, // second Diamond active-property BOOL.
             true,  // third Diamond active-property BOOL.
@@ -8989,6 +9044,96 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 6,
             "EE validation must account for the inserted active-property BOOL without moving the item boundary"
+        );
+    }
+
+    #[test]
+    fn visible_equipment_item_token_rewrite_materializes_language_bit() {
+        let mut bits = vec![false, true, false, true, false];
+        let inserted = apply_item_name_fragment_proof_rewrite(
+            &mut bits,
+            0,
+            LegacyItemNameFragmentProof::LocStringToken,
+        )
+        .expect("direct item selector should rewrite to locstring token");
+        assert_eq!(inserted, 2);
+        assert_eq!(
+            bits,
+            [true, true, false, true, false, true, false],
+            "direct item-name repair must insert both token helper bits before active-property state"
+        );
+
+        let mut bits = vec![true, false, true, false, true, false];
+        let inserted = apply_item_name_fragment_proof_rewrite(
+            &mut bits,
+            0,
+            LegacyItemNameFragmentProof::LocStringToken,
+        )
+        .expect("locstring-inline item selector should rewrite to locstring token");
+        assert_eq!(inserted, 1);
+        assert_eq!(
+            bits,
+            [true, true, false, true, false, true, false],
+            "locstring-inline repair must insert a token language bit instead of reusing the next semantic bit"
+        );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_locstring_token_repair_keeps_active_bits() {
+        let mut bytes =
+            full_legacy_creature_appearance_with_inline_names_and_locstring_token_equipment();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = inline_names_with_locstring_token_equipment_bits();
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy token-named visible equipment should widen");
+        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(
+            fragment_bits,
+            [
+                true, false, false, true, true, false, true, false, false, true, false
+            ],
+            "source token item should insert only EE's active-property BOOL after the shared pre-DWORD BOOL"
+        );
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, fragment_bits.len());
+
+        let mut stale_bits = vec![
+            false, // stale creature direct-name selector.
+            false, // stale nested item direct-name selector.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ];
+        let mut stale_record_end = record_end;
+        let repair = repair_ee_creature_appearance_name_bits_if_possible(
+            &bytes,
+            0,
+            &mut stale_record_end,
+            &mut stale_bits,
+            0,
+        )
+        .expect("EE-shaped token item should repair stale name selectors");
+        assert_eq!(repair.bytes_inserted, 0);
+        assert_eq!(repair.bits_inserted, 5);
+        assert_eq!(stale_record_end, record_end);
+        assert_eq!(
+            stale_bits, fragment_bits,
+            "repair must materialize creature inline-name bits, item token inner/language bits, and EE active-property bit without stealing active state"
         );
     }
 }

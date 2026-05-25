@@ -388,6 +388,19 @@ Current status:
   shared pre-DWORD BOOL without moving the item boundary. Verified with
   `cargo test -q -p hgbridge-proxy2 full_appearance_visible_equipment -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 full_appearance_ -- --nocapture`.
+- 2026-05-26 `P/05/01` creature full-appearance visible-equipment token-name
+  repair: fixed a generalized bit-cursor bug in the already-EE-shaped
+  appearance name repair path. When a nested visible-equipment item is
+  byte-proven as the active-property locstring-token branch but stale source
+  bits still select direct or locstring-inline name mode, the repair must
+  materialize both the token inner selector and the token language bit before
+  active-property BOOLs. Reusing the next semantic bit as the language selector
+  could leave the exact EE validator green while shifting active-property state.
+  Added fixture-free coverage for direct -> token, locstring-inline -> token,
+  and full `P/5` EE repair through exact validation. Verified with `cargo test
+  -q -p hgbridge-proxy2 visible_equipment_item_token_rewrite -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2
+  full_appearance_visible_equipment_locstring_token_repair -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
