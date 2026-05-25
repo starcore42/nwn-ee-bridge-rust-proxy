@@ -401,6 +401,19 @@ Current status:
   -q -p hgbridge-proxy2 visible_equipment_item_token_rewrite -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2
   full_appearance_visible_equipment_locstring_token_repair -- --nocapture`.
+- 2026-05-26 `P/05/01` creature full-appearance visible-equipment inline-name
+  repair: fixed the reciprocal stale-selector case for nested item names. The
+  decompiled item-name fragment widths are direct `CExoString` = one BOOL,
+  locstring-inline = outer + inner BOOLs, and locstring-token = outer + inner +
+  language BOOLs. The repair path now resizes that selector prefix before
+  active-property BOOLs, so token -> locstring-inline drops the stale language
+  bit and token -> direct drops both locstring helper bits instead of leaving an
+  exact-validator-green shifted active-property state. Added fixture-free
+  coverage for direct/locstring-inline branch selection, EE widening, helper
+  insertion/removal, and full already-EE-shaped `P/5` repair. Verified with
+  `cargo test -q -p hgbridge-proxy2 visible_equipment_item_ -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 full_appearance_visible_equipment --
+  --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

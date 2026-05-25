@@ -321,6 +321,12 @@ struct FragmentNameBitRewrite {
     proof: LegacyItemNameFragmentProof,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct FragmentNameBitRewriteDelta {
+    inserted: usize,
+    removed: usize,
+}
+
 #[derive(Debug, Clone)]
 struct LegacyAppearanceItemAddRecord {
     fragment_bits_consumed: usize,
@@ -2527,7 +2533,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             return None;
         }
     }
-    let Some(nested_name_bits_inserted) =
+    let Some(nested_name_bit_delta) =
         apply_record_name_bit_rewrites(fragment_bits, appearance_bit_cursor, &record)
     else {
         *bytes = original_bytes;
@@ -2558,6 +2564,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         return None;
     };
     let mut bytes_removed = byte_apply.bytes_removed;
+    bits_removed = bits_removed.checked_add(nested_name_bit_delta.removed)?;
     let mut proof_cursor = bit_cursor;
     if !advance_verified_ee_creature_appearance_record(
         bytes,
@@ -2612,7 +2619,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                     ) {
                         return Some(CreatureAppearanceExtraRewrite {
                             bits_inserted: name_pattern_bits_inserted
-                                .saturating_add(nested_name_bits_inserted)
+                                .saturating_add(nested_name_bit_delta.inserted)
                                 .saturating_add(record.ee_extra_insert_offsets.len()),
                             bits_removed,
                             bytes_inserted: byte_apply.bytes_inserted,
@@ -2638,7 +2645,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                     ) {
                         return Some(CreatureAppearanceExtraRewrite {
                             bits_inserted: name_pattern_bits_inserted
-                                .saturating_add(nested_name_bits_inserted)
+                                .saturating_add(nested_name_bit_delta.inserted)
                                 .saturating_add(record.ee_extra_insert_offsets.len()),
                             bits_removed,
                             bytes_inserted: byte_apply.bytes_inserted,
@@ -2656,7 +2663,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
 
     Some(CreatureAppearanceExtraRewrite {
         bits_inserted: name_pattern_bits_inserted
-            .saturating_add(nested_name_bits_inserted)
+            .saturating_add(nested_name_bit_delta.inserted)
             .saturating_add(record.ee_extra_insert_offsets.len()),
         bits_removed,
         bytes_inserted: byte_apply.bytes_inserted,
@@ -2770,11 +2777,12 @@ pub(super) fn remove_ee_creature_appearance_zero_fragment_padding_if_possible(
             bits_removed = bits_removed.checked_add(range.count)?;
         }
 
-        let Some(nested_name_bits_inserted) =
+        let Some(nested_name_bit_delta) =
             apply_record_name_bit_rewrites(fragment_bits, bit_cursor, &candidate_record)
         else {
             continue;
         };
+        bits_removed = bits_removed.checked_add(nested_name_bit_delta.removed)?;
 
         for (inserted, relative_offset) in candidate_record
             .ee_extra_insert_offsets
@@ -2800,7 +2808,8 @@ pub(super) fn remove_ee_creature_appearance_zero_fragment_padding_if_possible(
             &mut proof_cursor,
         ) {
             return Some(CreatureAppearanceExtraRewrite {
-                bits_inserted: nested_name_bits_inserted
+                bits_inserted: nested_name_bit_delta
+                    .inserted
                     .saturating_add(candidate_record.ee_extra_insert_offsets.len()),
                 bits_removed,
                 bytes_inserted: 0,
@@ -2939,14 +2948,19 @@ pub(super) fn repair_ee_creature_appearance_name_bits_if_possible(
                 0usize
             }
         };
-        let mut nested_name_bits_inserted = 0usize;
+        let mut nested_name_bit_delta = FragmentNameBitRewriteDelta::default();
         for rewrite in byte_record.ee_name_bit_rewrites.iter().copied() {
-            nested_name_bits_inserted =
-                nested_name_bits_inserted.checked_add(apply_item_name_fragment_proof_rewrite(
-                    &mut trial_fragment_bits,
-                    appearance_bit_cursor.checked_add(rewrite.relative_offset)?,
-                    rewrite.proof,
-                )?)?;
+            let rewrite_delta = apply_item_name_fragment_proof_rewrite(
+                &mut trial_fragment_bits,
+                appearance_bit_cursor.checked_add(rewrite.relative_offset)?,
+                rewrite.proof,
+            )?;
+            nested_name_bit_delta.inserted = nested_name_bit_delta
+                .inserted
+                .checked_add(rewrite_delta.inserted)?;
+            nested_name_bit_delta.removed = nested_name_bit_delta
+                .removed
+                .checked_add(rewrite_delta.removed)?;
         }
         for (inserted, relative_offset) in byte_record
             .ee_extra_insert_offsets
@@ -2988,9 +3002,9 @@ pub(super) fn repair_ee_creature_appearance_name_bits_if_possible(
             }
             return Some(CreatureAppearanceExtraRewrite {
                 bits_inserted: name_bits_inserted
-                    .saturating_add(nested_name_bits_inserted)
+                    .saturating_add(nested_name_bit_delta.inserted)
                     .saturating_add(byte_record.ee_extra_insert_offsets.len()),
-                bits_removed: 0,
+                bits_removed: nested_name_bit_delta.removed,
                 bytes_inserted: 0,
                 bytes_removed: 0,
             });
@@ -3006,52 +3020,82 @@ fn apply_item_name_fragment_proof_rewrite(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
     proof: LegacyItemNameFragmentProof,
-) -> Option<usize> {
+) -> Option<FragmentNameBitRewriteDelta> {
+    fn source_width(fragment_bits: &[bool], bit_cursor: usize) -> Option<usize> {
+        if !*fragment_bits.get(bit_cursor)? {
+            return Some(LEGACY_APPEARANCE_ITEM_NAME_INLINE_CEXO_BITS);
+        }
+        if *fragment_bits.get(bit_cursor.checked_add(1)?)? {
+            Some(LEGACY_APPEARANCE_ITEM_NAME_STRREF_LOCSTRING_BITS)
+        } else {
+            Some(LEGACY_APPEARANCE_ITEM_NAME_BARE_INLINE_LOCSTRING_BITS)
+        }
+    }
+
+    fn resize_name_bits(
+        fragment_bits: &mut Vec<bool>,
+        bit_cursor: usize,
+        source_width: usize,
+        target_bits: &[bool],
+    ) -> Option<FragmentNameBitRewriteDelta> {
+        for (relative, bit) in target_bits
+            .iter()
+            .copied()
+            .take(source_width.min(target_bits.len()))
+            .enumerate()
+        {
+            *fragment_bits.get_mut(bit_cursor.checked_add(relative)?)? = bit;
+        }
+        let target_width = target_bits.len();
+        if target_width > source_width {
+            for relative in source_width..target_width {
+                super::bits::insert_msb_bit(
+                    fragment_bits,
+                    bit_cursor.checked_add(relative)?,
+                    target_bits[relative],
+                )?;
+            }
+            return Some(FragmentNameBitRewriteDelta {
+                inserted: target_width - source_width,
+                removed: 0,
+            });
+        }
+        if target_width < source_width {
+            let remove_start = bit_cursor.checked_add(target_width)?;
+            let remove_end = bit_cursor.checked_add(source_width)?;
+            if remove_end > fragment_bits.len() {
+                return None;
+            }
+            fragment_bits.drain(remove_start..remove_end);
+            return Some(FragmentNameBitRewriteDelta {
+                inserted: 0,
+                removed: source_width - target_width,
+            });
+        }
+        Some(FragmentNameBitRewriteDelta::default())
+    }
+
     match proof {
-        LegacyItemNameFragmentProof::None => Some(0),
-        LegacyItemNameFragmentProof::InlineCExoString => {
-            *fragment_bits.get_mut(bit_cursor)? = false;
-            Some(0)
-        }
-        LegacyItemNameFragmentProof::LocStringToken => {
-            let source_outer = *fragment_bits.get(bit_cursor)?;
-            *fragment_bits.get_mut(bit_cursor)? = true;
-            let inner_cursor = bit_cursor.checked_add(1)?;
-            let language_cursor = bit_cursor.checked_add(2)?;
-            if !source_outer {
-                // The source fragment stream selected the direct CExoString
-                // branch, so neither locstring-helper bit exists yet. Materialize
-                // both the token inner selector and the token language bit before
-                // the following active-property BOOLs.
-                super::bits::insert_msb_bit(fragment_bits, inner_cursor, true)?;
-                super::bits::insert_msb_bit(fragment_bits, language_cursor, false)?;
-                return Some(2);
-            }
-            let source_inner = *fragment_bits.get(inner_cursor)?;
-            *fragment_bits.get_mut(inner_cursor)? = true;
-            if source_inner {
-                Some(0)
-            } else {
-                // The source took the locstring helper's inline branch. Reusing
-                // the next semantic bit as the token language selector shifts
-                // active-property state, so insert a neutral language bit at the
-                // decompiled token cursor.
-                super::bits::insert_msb_bit(fragment_bits, language_cursor, false)?;
-                Some(1)
-            }
-        }
+        LegacyItemNameFragmentProof::None => Some(FragmentNameBitRewriteDelta::default()),
+        LegacyItemNameFragmentProof::InlineCExoString => resize_name_bits(
+            fragment_bits,
+            bit_cursor,
+            source_width(fragment_bits, bit_cursor)?,
+            &[false],
+        ),
+        LegacyItemNameFragmentProof::LocStringToken => resize_name_bits(
+            fragment_bits,
+            bit_cursor,
+            source_width(fragment_bits, bit_cursor)?,
+            &[true, true, false],
+        ),
         LegacyItemNameFragmentProof::LocStringInlineCExoString
-        | LegacyItemNameFragmentProof::BareInlineLocString => {
-            let source_outer = *fragment_bits.get(bit_cursor)?;
-            *fragment_bits.get_mut(bit_cursor)? = true;
-            if source_outer {
-                *fragment_bits.get_mut(bit_cursor.checked_add(1)?)? = false;
-                Some(0)
-            } else {
-                super::bits::insert_msb_bit(fragment_bits, bit_cursor.checked_add(1)?, false)?;
-                Some(1)
-            }
-        }
+        | LegacyItemNameFragmentProof::BareInlineLocString => resize_name_bits(
+            fragment_bits,
+            bit_cursor,
+            source_width(fragment_bits, bit_cursor)?,
+            &[true, false],
+        ),
     }
 }
 
@@ -3059,16 +3103,18 @@ fn apply_record_name_bit_rewrites(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
     record: &LegacyAppearanceRecord,
-) -> Option<usize> {
-    let mut inserted = 0usize;
+) -> Option<FragmentNameBitRewriteDelta> {
+    let mut delta = FragmentNameBitRewriteDelta::default();
     for rewrite in record.ee_name_bit_rewrites.iter().copied() {
-        inserted = inserted.checked_add(apply_item_name_fragment_proof_rewrite(
+        let rewrite_delta = apply_item_name_fragment_proof_rewrite(
             fragment_bits,
             bit_cursor.checked_add(rewrite.relative_offset)?,
             rewrite.proof,
-        )?)?;
+        )?;
+        delta.inserted = delta.inserted.checked_add(rewrite_delta.inserted)?;
+        delta.removed = delta.removed.checked_add(rewrite_delta.removed)?;
     }
-    Some(inserted)
+    Some(delta)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8705,6 +8751,16 @@ mod public_tests {
         push_no_name_active_property_tail(bytes);
     }
 
+    fn push_visible_equipment_inline_name_item(bytes: &mut Vec<u8>) {
+        bytes.push(b'A');
+        push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
+        push_u32(bytes, 2); // visible-equipment slot.
+        push_u32(bytes, 0x01); // stock weapon row, model type 2.
+        bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
+        push_cexo_string(bytes, b"Blade"); // direct or locstring-inline name body.
+        push_no_name_active_property_tail(bytes);
+    }
+
     fn full_legacy_creature_appearance_with_direct_name_and_no_name_equipment() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -8728,6 +8784,31 @@ mod public_tests {
         push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
         bytes.push(1); // visible-equipment count.
         push_visible_equipment_locstring_token_item(&mut bytes);
+        bytes
+    }
+
+    fn full_legacy_creature_appearance_with_direct_name_and_inline_equipment() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(1); // visible-equipment count.
+        push_visible_equipment_inline_name_item(&mut bytes);
+        bytes
+    }
+
+    fn full_legacy_creature_appearance_with_inline_names_and_inline_equipment() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_cexo_string(&mut bytes, b"Title");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(1); // visible-equipment count.
+        push_visible_equipment_inline_name_item(&mut bytes);
         bytes
     }
 
@@ -8810,6 +8891,43 @@ mod public_tests {
             true,  // item name selector: locstring helper.
             true,  // item locstring helper: TLK/custom-token branch.
             false, // item locstring language selector.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
+    fn direct_name_with_direct_inline_equipment_bits() -> Vec<bool> {
+        vec![
+            false, // creature direct CExoString name.
+            false, // item direct CExoString name.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
+    fn direct_name_with_locstring_inline_equipment_bits() -> Vec<bool> {
+        vec![
+            false, // creature direct CExoString name.
+            true,  // item name selector: locstring helper.
+            false, // item locstring helper: inline CExoString branch.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
+    fn inline_names_with_locstring_inline_equipment_bits() -> Vec<bool> {
+        vec![
+            true,  // creature-name selector: two locstring components.
+            false, // first component: inline CExoString branch.
+            false, // second component: inline CExoString branch.
+            true,  // item name selector: locstring helper.
+            false, // item locstring helper: inline CExoString branch.
             true,  // first Diamond active-property BOOL.
             false, // second Diamond active-property BOOL.
             true,  // third Diamond active-property BOOL.
@@ -9048,15 +9166,104 @@ mod public_tests {
     }
 
     #[test]
+    fn full_appearance_visible_equipment_inline_name_bits_choose_fragment_branch() {
+        let bytes = full_legacy_creature_appearance_with_direct_name_and_inline_equipment();
+
+        let mut direct_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &direct_name_with_direct_inline_equipment_bits(),
+            &mut direct_cursor,
+        ));
+        assert_eq!(
+            direct_cursor, 6,
+            "direct item names consume one item-name BOOL plus four Diamond active-property BOOLs"
+        );
+
+        let locstring_bits = direct_name_with_locstring_inline_equipment_bits();
+        let mut locstring_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &locstring_bits,
+            &mut locstring_cursor,
+        ));
+        assert_eq!(
+            locstring_cursor, 7,
+            "locstring-inline item names consume outer and inner helper BOOLs before active-property state"
+        );
+
+        let mut short_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &locstring_bits[..6],
+                &mut short_cursor,
+            ),
+            "the locstring-inline item branch must not accept a missing active-property BOOL"
+        );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_locstring_inline_cursor_survives_ee_widening() {
+        let mut bytes = full_legacy_creature_appearance_with_direct_name_and_inline_equipment();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = direct_name_with_locstring_inline_equipment_bits();
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy full appearance with locstring-inline equipment should widen");
+
+        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            fragment_bits,
+            [false, true, false, true, false, false, true, false],
+            "EE active-property BOOL is inserted after the shared pre-DWORD BOOL, not before the inline-name branch"
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(bit_cursor, 8);
+    }
+
+    #[test]
     fn visible_equipment_item_token_rewrite_materializes_language_bit() {
         let mut bits = vec![false, true, false, true, false];
-        let inserted = apply_item_name_fragment_proof_rewrite(
+        let delta = apply_item_name_fragment_proof_rewrite(
             &mut bits,
             0,
             LegacyItemNameFragmentProof::LocStringToken,
         )
         .expect("direct item selector should rewrite to locstring token");
-        assert_eq!(inserted, 2);
+        assert_eq!(
+            delta,
+            FragmentNameBitRewriteDelta {
+                inserted: 2,
+                removed: 0
+            }
+        );
         assert_eq!(
             bits,
             [true, true, false, true, false, true, false],
@@ -9064,17 +9271,66 @@ mod public_tests {
         );
 
         let mut bits = vec![true, false, true, false, true, false];
-        let inserted = apply_item_name_fragment_proof_rewrite(
+        let delta = apply_item_name_fragment_proof_rewrite(
             &mut bits,
             0,
             LegacyItemNameFragmentProof::LocStringToken,
         )
         .expect("locstring-inline item selector should rewrite to locstring token");
-        assert_eq!(inserted, 1);
+        assert_eq!(
+            delta,
+            FragmentNameBitRewriteDelta {
+                inserted: 1,
+                removed: 0
+            }
+        );
         assert_eq!(
             bits,
             [true, true, false, true, false, true, false],
             "locstring-inline repair must insert a token language bit instead of reusing the next semantic bit"
+        );
+    }
+
+    #[test]
+    fn visible_equipment_item_inline_rewrite_removes_stale_token_bits() {
+        let mut bits = vec![true, true, false, true, false, true, false];
+        let delta = apply_item_name_fragment_proof_rewrite(
+            &mut bits,
+            0,
+            LegacyItemNameFragmentProof::LocStringInlineCExoString,
+        )
+        .expect("token item selector should rewrite to locstring-inline");
+        assert_eq!(
+            delta,
+            FragmentNameBitRewriteDelta {
+                inserted: 0,
+                removed: 1
+            }
+        );
+        assert_eq!(
+            bits,
+            [true, false, true, false, true, false],
+            "locstring-inline repair must delete the stale token language bit before active-property state"
+        );
+
+        let mut bits = vec![true, true, false, true, false, true, false];
+        let delta = apply_item_name_fragment_proof_rewrite(
+            &mut bits,
+            0,
+            LegacyItemNameFragmentProof::InlineCExoString,
+        )
+        .expect("token item selector should rewrite to direct CExoString");
+        assert_eq!(
+            delta,
+            FragmentNameBitRewriteDelta {
+                inserted: 0,
+                removed: 2
+            }
+        );
+        assert_eq!(
+            bits,
+            [false, true, false, true, false],
+            "direct-name repair must delete both stale locstring helper bits before active-property state"
         );
     }
 
@@ -9135,6 +9391,71 @@ mod public_tests {
             stale_bits, fragment_bits,
             "repair must materialize creature inline-name bits, item token inner/language bits, and EE active-property bit without stealing active state"
         );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_inline_repair_drops_stale_token_language_bit() {
+        let mut bytes = full_legacy_creature_appearance_with_inline_names_and_inline_equipment();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = inline_names_with_locstring_inline_equipment_bits();
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy inline-named visible equipment should widen");
+        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            fragment_bits,
+            [
+                true, false, false, true, false, true, false, false, true, false
+            ],
+            "source inline item should insert only EE's active-property BOOL after the shared pre-DWORD BOOL"
+        );
+
+        let mut stale_bits = vec![
+            true,  // creature-name selector: two locstring components.
+            false, // first component: inline CExoString branch.
+            false, // second component: inline CExoString branch.
+            true,  // stale item locstring selector.
+            true,  // stale item token selector.
+            false, // stale item token language selector.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ];
+        let mut stale_record_end = record_end;
+        let repair = repair_ee_creature_appearance_name_bits_if_possible(
+            &bytes,
+            0,
+            &mut stale_record_end,
+            &mut stale_bits,
+            0,
+        )
+        .expect("EE-shaped inline item should repair stale token selectors");
+        assert_eq!(repair.bytes_inserted, 0);
+        assert_eq!(repair.bits_inserted, 1);
+        assert_eq!(repair.bits_removed, 1);
+        assert_eq!(stale_record_end, record_end);
+        assert_eq!(
+            stale_bits, fragment_bits,
+            "repair must remove the stale token language bit before inserting EE active-property state"
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            stale_record_end,
+            &stale_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, stale_bits.len());
     }
 }
 
