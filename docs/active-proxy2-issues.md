@@ -436,6 +436,17 @@ Current status:
   instead of zero-filling a cursor-valid but visually wrong table. Verified
   with `cargo test -q -p hgbridge-proxy2 model_type_3_quickbar --
   --nocapture`.
+- 2026-05-26 `P/1E/01` quickbar active-property cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the nested
+  item active-property bit order after quickbar item appearance widening.
+  Direct `CExoString` names consume one BOOL, custom-token locstring names
+  consume outer + inner BOOLs before language/string-ref bytes, and EE's
+  `sub_14076BD30` `CanUseItem` BOOL is inserted after the shared pre-DWORD
+  active-property BOOL rather than stealing a post-DWORD state bit. The tests
+  also cover nonzero active-property rows, value-mask bytes, secondary-item
+  guard placement, and validator rejection when the EE-only bit is flipped
+  true. Verified with `cargo test -q -p hgbridge-proxy2 active_property_ --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

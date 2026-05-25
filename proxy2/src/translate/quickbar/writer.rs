@@ -513,7 +513,10 @@ mod tests {
 
     const LEGACY_ARMOR_BASE_ITEM: u32 = 0x10;
 
-    fn model_type_3_armor_item_with_palette(palette: [u8; 6]) -> QuickbarItemObject {
+    fn model_type_3_armor_item_with_active_props(
+        palette: [u8; 6],
+        active_props: QuickbarActiveItemProperties,
+    ) -> QuickbarItemObject {
         let mut appearance_bytes = Vec::new();
         appearance_bytes.extend_from_slice(&LEGACY_ARMOR_BASE_ITEM.to_le_bytes());
         for part in 0..19u8 {
@@ -527,9 +530,154 @@ mod tests {
             int_param: -1,
             base_item: LEGACY_ARMOR_BASE_ITEM,
             appearance_type: 3,
-            active_props: Some(QuickbarActiveItemProperties::default()),
+            active_props: Some(active_props),
             appearance_bytes,
         }
+    }
+
+    fn model_type_3_armor_item_with_palette(palette: [u8; 6]) -> QuickbarItemObject {
+        model_type_3_armor_item_with_active_props(palette, QuickbarActiveItemProperties::default())
+    }
+
+    fn quickbar_payload_with_primary_item(item: QuickbarItemObject) -> Vec<u8> {
+        let mut buttons = vec![QuickbarButton {
+            kind: QuickbarButtonKind::Item {
+                primary: item,
+                secondary: QuickbarItemObject::default(),
+                source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
+                recovered_type_tag: false,
+            },
+        }];
+        buttons.extend((1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
+            kind: QuickbarButtonKind::General { bytes: vec![0] },
+        }));
+        let parsed = QuickbarParse {
+            envelope: b'P',
+            declared: 0,
+            read_size: 0,
+            fragment_size: 0,
+            final_cursor: 0,
+            buttons,
+            direct_opcode_stream: false,
+        };
+
+        build_ee_quickbar_payload(&parsed).expect("quickbar payload should write")
+    }
+
+    fn ee_reader_for_payload(payload: &[u8]) -> QuickbarPacketReader<'_> {
+        let declared = usize::try_from(
+            read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES).expect("declared length"),
+        )
+        .expect("declared length should fit usize");
+        let read_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+        let read_buffer = payload
+            .get(read_start..declared)
+            .expect("declared read buffer should be present");
+        let fragments = payload
+            .get(declared..)
+            .expect("fragment bytes should be present");
+        let mut reader = QuickbarPacketReader {
+            read_buffer,
+            fragments,
+            cursor: 0,
+            fragment_cursor: 0,
+            fragment_bit: 0,
+            final_fragment_bits: 0,
+        };
+        reader.final_fragment_bits = u8::try_from(reader.read_bits(3).expect("final bit header"))
+            .expect("final bit header should fit byte");
+        reader
+    }
+
+    fn skip_primary_armor_item_prefix(reader: &mut QuickbarPacketReader<'_>, armor_word: u16) {
+        assert_eq!(reader.read_byte(), Some(1), "slot 0 is an item slot");
+        assert_eq!(reader.read_bit(), Some(true), "primary item is present");
+        assert_eq!(
+            reader.read_dword(),
+            Some(0x8000_0042),
+            "quickbar item object id is EE-server marked"
+        );
+        assert_eq!(
+            reader.read_i32(),
+            Some(-1),
+            "primary int param is preserved"
+        );
+        assert_eq!(reader.read_dword(), Some(LEGACY_ARMOR_BASE_ITEM));
+        for part in 0..19u16 {
+            assert_eq!(
+                reader.read_word(),
+                Some(0x20 + part),
+                "EE reads model-type-3 armor parts as WORDs"
+            );
+        }
+        reader
+            .skip_bytes(6 + EE_QUICKBAR_ARMOR_LAYERED_COLOR_BYTES)
+            .expect("legacy palette plus EE armor/accessory colors");
+        assert_eq!(
+            reader.read_i32(),
+            Some(0),
+            "first visual-transform map is empty"
+        );
+        assert_eq!(
+            reader.read_i32(),
+            Some(0),
+            "second visual-transform map is empty"
+        );
+        assert_eq!(
+            reader.read_word(),
+            Some(armor_word),
+            "armor active-property word precedes item-name bits"
+        );
+    }
+
+    fn assert_common_active_property_tail(
+        reader: &mut QuickbarPacketReader<'_>,
+        active_props: &QuickbarActiveItemProperties,
+    ) {
+        assert_eq!(reader.read_bit(), Some(active_props.post_name_bool1));
+        assert_eq!(reader.read_dword(), Some(active_props.cost));
+        assert_eq!(reader.read_dword(), Some(active_props.stack_or_charges));
+        assert_eq!(
+            reader.read_bit(),
+            Some(false),
+            "EE-only CanUseItem bit is inserted after the shared pre-DWORD BOOL"
+        );
+        assert_eq!(reader.read_bit(), Some(active_props.post_name_bool2));
+        assert_eq!(reader.read_bit(), Some(active_props.post_name_bool3));
+        assert_eq!(reader.read_bit(), Some(active_props.post_name_bool4));
+        assert_eq!(
+            reader.read_byte(),
+            Some(u8::try_from(active_props.properties.len()).unwrap())
+        );
+        for property in &active_props.properties {
+            assert_eq!(reader.read_word(), Some(property.property));
+            assert_eq!(reader.read_word(), Some(property.subtype));
+            assert_eq!(reader.read_word(), Some(property.cost_table_value));
+            assert_eq!(reader.read_byte(), Some(property.param));
+        }
+        assert_eq!(reader.read_byte(), Some(active_props.state_mask));
+        assert_eq!(reader.read_byte(), Some(active_props.value_mask));
+        for expected in &active_props.value_mask_bytes {
+            assert_eq!(reader.read_byte(), Some(*expected));
+        }
+        assert_eq!(reader.read_bit(), Some(false), "secondary item is absent");
+        for slot in 1..LEGACY_QUICKBAR_BUTTON_COUNT {
+            assert_eq!(reader.read_byte(), Some(0), "slot {slot} stays blank");
+        }
+        assert_eq!(reader.cursor, reader.read_buffer.len());
+    }
+
+    fn flip_fragment_bit(payload: &mut [u8], bit_index: usize) {
+        let declared = usize::try_from(
+            read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES).expect("declared length"),
+        )
+        .expect("declared length should fit usize");
+        let byte_offset = declared + bit_index / 8;
+        let mask = 0x80 >> (bit_index % 8);
+        let byte = payload
+            .get_mut(byte_offset)
+            .expect("fragment bit should be present");
+        *byte ^= mask;
     }
 
     #[test]
@@ -581,32 +729,116 @@ mod tests {
     #[test]
     fn model_type_3_quickbar_item_payload_still_validates_as_exact_ee_shape() {
         let item = model_type_3_armor_item_with_palette([6, 5, 4, 3, 2, 1]);
-        let mut buttons = vec![QuickbarButton {
-            kind: QuickbarButtonKind::Item {
-                primary: item,
-                secondary: QuickbarItemObject::default(),
-                source: QuickbarItemSource::ExplicitTypeAndFragmentBits,
-                recovered_type_tag: false,
-            },
-        }];
-        buttons.extend((1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
-            kind: QuickbarButtonKind::General { bytes: vec![0] },
-        }));
-        let parsed = QuickbarParse {
-            envelope: b'P',
-            declared: 0,
-            read_size: 0,
-            fragment_size: 0,
-            final_cursor: 0,
-            buttons,
-            direct_opcode_stream: false,
-        };
-
-        let payload =
-            build_ee_quickbar_payload(&parsed).expect("model-type-3 quickbar payload should write");
+        let payload = quickbar_payload_with_primary_item(item);
         assert!(
             ee_set_all_buttons_payload_shape_valid(&payload),
             "palette-seeded model-type-3 item appearance must still satisfy the exact EE quickbar reader"
+        );
+    }
+
+    #[test]
+    fn active_property_direct_name_keeps_can_use_insert_after_pre_dword_bool() {
+        let active_props = QuickbarActiveItemProperties {
+            has_armor_word: true,
+            armor_word: 0xBEEF,
+            name_is_locstring: false,
+            string_name: b"Moonblade".to_vec(),
+            post_name_bool1: true,
+            cost: 0x0102_0304,
+            stack_or_charges: 0x0506_0708,
+            post_name_bool2: false,
+            post_name_bool3: true,
+            post_name_bool4: false,
+            properties: vec![QuickbarActivePropertyEntry {
+                property: 0x1112,
+                subtype: 0x2122,
+                cost_table_value: 0x3132,
+                param: 0x41,
+            }],
+            state_mask: 0xA5,
+            value_mask: 0b1000_0001,
+            value_mask_bytes: vec![0x51, 0x52],
+            ..QuickbarActiveItemProperties::default()
+        };
+        let item =
+            model_type_3_armor_item_with_active_props([9, 8, 7, 6, 5, 4], active_props.clone());
+        let payload = quickbar_payload_with_primary_item(item);
+        assert!(ee_set_all_buttons_payload_shape_valid(&payload));
+
+        let mut reader = ee_reader_for_payload(&payload);
+        skip_primary_armor_item_prefix(&mut reader, active_props.armor_word);
+        assert_eq!(
+            reader.read_bit(),
+            Some(false),
+            "direct CExoString item name consumes exactly one source-order BOOL"
+        );
+        assert_eq!(reader.read_string(), Some(active_props.string_name.clone()));
+        assert_common_active_property_tail(&mut reader, &active_props);
+
+        let mut shifted = payload.clone();
+        flip_fragment_bit(&mut shifted, 6);
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&shifted),
+            "validator must reject a true EE-only CanUseItem bit instead of treating it as a shifted active-property field"
+        );
+    }
+
+    #[test]
+    fn active_property_locstring_token_name_keeps_inner_bits_before_active_state() {
+        let active_props = QuickbarActiveItemProperties {
+            has_armor_word: true,
+            armor_word: 0xCAFE,
+            name_is_locstring: true,
+            locstring_name: QuickbarLocStringField {
+                custom_tlk: true,
+                language_id: 3,
+                string_ref: 0x0100_75D6,
+                text: Vec::new(),
+            },
+            post_name_bool1: false,
+            cost: 0x1111_2222,
+            stack_or_charges: 0x3333_4444,
+            post_name_bool2: true,
+            post_name_bool3: false,
+            post_name_bool4: true,
+            properties: Vec::new(),
+            state_mask: 0x12,
+            value_mask: 0b0000_0100,
+            value_mask_bytes: vec![0x77],
+            ..QuickbarActiveItemProperties::default()
+        };
+        let item =
+            model_type_3_armor_item_with_active_props([1, 3, 5, 7, 9, 11], active_props.clone());
+        let payload = quickbar_payload_with_primary_item(item);
+        assert!(ee_set_all_buttons_payload_shape_valid(&payload));
+
+        let mut reader = ee_reader_for_payload(&payload);
+        skip_primary_armor_item_prefix(&mut reader, active_props.armor_word);
+        assert_eq!(
+            reader.read_bit(),
+            Some(true),
+            "locstring item name outer selector precedes active-property state"
+        );
+        assert_eq!(
+            reader.read_bit(),
+            Some(true),
+            "custom-token locstring inner selector precedes language/string-ref bytes"
+        );
+        assert_eq!(
+            reader.read_byte(),
+            Some(active_props.locstring_name.language_id)
+        );
+        assert_eq!(
+            reader.read_dword(),
+            Some(active_props.locstring_name.string_ref)
+        );
+        assert_common_active_property_tail(&mut reader, &active_props);
+
+        let mut shifted = payload.clone();
+        flip_fragment_bit(&mut shifted, 7);
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&shifted),
+            "validator must reject a true EE-only CanUseItem bit after token-name bits"
         );
     }
 }
