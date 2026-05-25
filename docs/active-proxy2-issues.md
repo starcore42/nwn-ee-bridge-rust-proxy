@@ -308,6 +308,14 @@ Current status:
   rule that the preceding WORD count owns the loop. Added public fixture-free
   coverage proving normalization and GIT repair do not promote the tail, and
   that the drop path preserves the exact source cursor proof.
+- 2026-05-25 `P/04/01` post-static zero-WORD verifier audit: tightened the
+  exact EE `Area_ClientArea` reader proof so both proxy-owned post-static tail
+  counts must be zero. The bridge dialect inserts these two WORDs for legacy
+  packets, and no non-empty first-list row shape has decompile proof yet; the
+  old proof could skip arbitrary WORDs after static-placeable rows and still
+  claim an exact EE cursor. Added fixture-free public coverage proving the
+  zero/zero tail is accepted and nonzero first or second post-static counts are
+  rejected.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
