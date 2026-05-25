@@ -316,6 +316,15 @@ Current status:
   claim an exact EE cursor. Added fixture-free public coverage proving the
   zero/zero tail is accepted and nonzero first or second post-static counts are
   rejected.
+- 2026-05-25 `P/04/01` transition-label cursor audit: shared the
+  decompile-backed transition-row fragment-bit walk across the exact legacy/EE
+  tail proofs, zero-sound repair, and placeable-context collector. Transition
+  labels consume a visibility BOOL, the CExoLocString TLK/direct selector, and
+  one extra BOOL before the DWORD TLK branch; the context collector previously
+  skipped every transition as an inline CExoString and could silently lose later
+  static-placeable state when a valid TLK branch preceded it. Added
+  fixture-free public coverage proving a TLK transition preserves the exact
+  source cursor and still exposes following static-placeable context.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -2959,16 +2959,15 @@ fn collect_area_post_tile_placeable_context(
 
     let mut cursor = scan.tile_end_read_offset;
 
-    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if transition_count > 4096 {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
-    for _ in 0..transition_count {
-        let name_offset = cursor.checked_add(4 + 3 * 4)?;
-        let (_, after_name) = read_c_exo_string_shape(payload, fragment_offset, name_offset, 1024)?;
-        cursor = after_name;
-    }
+    let fragment_bits_available = area_payload_fragment_bits_available(payload, fragment_offset)?;
+    let (_, next_cursor, _) = advance_area_transition_rows(
+        payload,
+        fragment_offset,
+        cursor,
+        LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS,
+        fragment_bits_available,
+    )?;
+    cursor = next_cursor;
 
     let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
     if map_pin_count > 4096 {
@@ -3185,6 +3184,60 @@ fn legacy_area_source_tail_consumes_read_buffer(
     legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan).is_some()
 }
 
+fn advance_area_transition_rows(
+    payload: &[u8],
+    fragment_offset: usize,
+    cursor: usize,
+    bit_cursor: usize,
+    fragment_bits_available: usize,
+) -> Option<(u32, usize, usize)> {
+    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
+    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
+        return None;
+    }
+    let mut cursor = cursor.checked_add(4)?;
+    let mut bit_cursor = bit_cursor;
+    for _ in 0..transition_count {
+        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
+        if !legacy_area_object_id_plausible(object_id) {
+            return None;
+        }
+        for component in 0..3 {
+            let value = read_area_f32(payload, fragment_offset, cursor + 4 + component * 4)?;
+            if !value.is_finite() || value.abs() > 100_000.0 {
+                return None;
+            }
+        }
+
+        // EE and Diamond both write a byte-buffer body followed by fragment
+        // bits for the transition label: one visibility BOOL, the
+        // CExoLocString TLK/direct selector, and one extra BOOL before the
+        // DWORD TLK branch. Keep every area tail walker on this same cursor
+        // contract so later map/sound/static rows cannot be shifted by a
+        // plausible-looking transition name.
+        area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let client_tlk = area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
+        bit_cursor = bit_cursor.checked_add(1)?;
+        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
+        cursor = if client_tlk {
+            area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
+            bit_cursor = bit_cursor.checked_add(1)?;
+            read_area_u32(payload, fragment_offset, locstring_offset)?;
+            locstring_offset.checked_add(4)?
+        } else {
+            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
+        };
+        if bit_cursor > fragment_bits_available
+            || HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset
+        {
+            return None;
+        }
+    }
+
+    Some((transition_count, cursor, bit_cursor))
+}
+
 fn legacy_area_source_tail_exact_read_proof(
     payload: &[u8],
     fragment_offset: usize,
@@ -3209,37 +3262,15 @@ fn legacy_area_source_tail_exact_read_proof(
 
     let mut cursor = scan.tile_end_read_offset;
 
-    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
-    for _ in 0..transition_count {
-        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
-        if !legacy_area_object_id_plausible(object_id) {
-            return None;
-        }
-        for component in 0..3 {
-            let value = read_area_f32(payload, fragment_offset, cursor + 4 + component * 4)?;
-            if !value.is_finite() || value.abs() > 100_000.0 {
-                return None;
-            }
-        }
-
-        area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let client_tlk = area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
-        cursor = if client_tlk {
-            area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-            bit_cursor = bit_cursor.checked_add(1)?;
-            read_area_u32(payload, fragment_offset, locstring_offset)?;
-            locstring_offset.checked_add(4)?
-        } else {
-            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
-        };
-    }
+    let (_, next_cursor, next_bit_cursor) = advance_area_transition_rows(
+        payload,
+        fragment_offset,
+        cursor,
+        bit_cursor,
+        fragment_bits_available,
+    )?;
+    cursor = next_cursor;
+    bit_cursor = next_bit_cursor;
 
     let (_map_pin_count, after_map_pins) =
         advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
@@ -3730,42 +3761,15 @@ fn ee_area_client_area_exact_read_proof(payload: &[u8]) -> Option<AreaExactReadP
 
     let mut cursor = scan.tile_end_read_offset;
 
-    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
-    for _ in 0..transition_count {
-        let object_id = read_area_u32(payload, fragment_offset, cursor)?;
-        if !legacy_area_object_id_plausible(object_id) {
-            return None;
-        }
-        for component in 0..3 {
-            let value = read_area_f32(payload, fragment_offset, cursor + 4 + component * 4)?;
-            if !value.is_finite() || value.abs() > 100_000.0 {
-                return None;
-            }
-        }
-
-        // EE writer/reader pair for this list uses one fragment BOOL for the
-        // transition-name visibility flag and then the shared
-        // `CExoLocStringServer` selector. HG Docks takes the inline
-        // `CExoString` branch for each row; the TLK branch is modeled because
-        // the decompiled helper has an exact one-bit-plus-DWORD shape.
-        area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let client_tlk = area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
-        cursor = if client_tlk {
-            area_payload_fragment_bit(payload, fragment_offset, bit_cursor)?;
-            bit_cursor = bit_cursor.checked_add(1)?;
-            read_area_u32(payload, fragment_offset, locstring_offset)?;
-            locstring_offset.checked_add(4)?
-        } else {
-            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
-        };
-    }
+    let (transition_count, next_cursor, next_bit_cursor) = advance_area_transition_rows(
+        payload,
+        fragment_offset,
+        cursor,
+        bit_cursor,
+        fragment_bits_available,
+    )?;
+    cursor = next_cursor;
+    bit_cursor = next_bit_cursor;
 
     let (map_pin_count, after_map_pins) =
         advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
@@ -4101,31 +4105,20 @@ fn repair_legacy_zero_sound_counts(
     // are left untouched.
     let fragment = payload.get(fragment_offset..)?;
     let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
-    let mut bit_cursor = LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
+    let bit_cursor = LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
     if bit_cursor > fragment_bits_available {
         return None;
     }
 
     let mut cursor = scan.tile_end_read_offset;
-    let transition_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if transition_count > MAX_AREA_POST_TILE_LIST_COUNT {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
-    for _ in 0..transition_count {
-        cursor.checked_add(4 + 3 * 4)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let client_tlk = fragment_bit(fragment, bit_cursor)?;
-        bit_cursor = bit_cursor.checked_add(1)?;
-        let locstring_offset = cursor.checked_add(4 + 3 * 4)?;
-        cursor = if client_tlk {
-            bit_cursor = bit_cursor.checked_add(1)?;
-            read_area_u32(payload, fragment_offset, locstring_offset)?;
-            locstring_offset.checked_add(4)?
-        } else {
-            read_c_exo_string_shape(payload, fragment_offset, locstring_offset, 4096)?.1
-        };
-    }
+    let (_, next_cursor, _) = advance_area_transition_rows(
+        payload,
+        fragment_offset,
+        cursor,
+        bit_cursor,
+        fragment_bits_available,
+    )?;
+    cursor = next_cursor;
 
     let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
     if map_pin_count != 0 {
@@ -6586,6 +6579,79 @@ mod public_static_direction_tests {
         (payload, fragment_offset, scan)
     }
 
+    fn real_area_tlk_transition_static_placeable_payload() -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 1); // transition rows
+        push_u32(&mut payload, 0x8000_0099); // transition object id
+        push_f32(&mut payload, 1.25);
+        push_f32(&mut payload, 2.5);
+        push_f32(&mut payload, 0.0);
+        push_u32(&mut payload, 0x0000_1234); // TLK string ref branch
+        push_u32(&mut payload, 0); // map-pin rows
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, 1); // static-placeable rows
+        push_u32(&mut payload, 0x8000_0042);
+        push_u16(&mut payload, 82);
+        push_f32(&mut payload, 10.0);
+        push_f32(&mut payload, 20.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 1.0);
+        push_f32(&mut payload, 0.0);
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[false, true, false]);
+        let fragment =
+            encode_cnw_msb_payload_bits(&payload_bits).expect("test fragment should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS + 3)
+        );
+        (payload, fragment_offset, scan)
+    }
+
     fn ee_area_static_placeable_payload_with_post_static_tail(
         first_post_static_rows: &[u16],
         second_post_static_count: u16,
@@ -6652,6 +6718,30 @@ mod public_static_direction_tests {
             ee_area_client_area_exact_read_proof(&nonzero_second).is_none(),
             "the second post-static count is also bridge-owned zero for legacy Area_ClientArea rewrites"
         );
+    }
+
+    #[test]
+    fn placeable_context_uses_transition_locstring_bits_before_static_rows() {
+        let (payload, fragment_offset, scan) = real_area_tlk_transition_static_placeable_payload();
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("TLK transition branch should keep exact source cursor proof");
+        assert_eq!(proof.static_rows_count, 1);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("placeable context walker must share the transition label bit cursor");
+        assert_eq!(context.static_rows.len(), 1);
+        assert_eq!(context.light_rows.len(), 0);
+        assert_eq!(context.static_rows[0].appearance, 82);
+        assert_eq!(context.static_rows[0].x, 10.0);
+        assert_eq!(context.static_rows[0].y, 20.0);
+        assert!(context.static_rows[0].has_direction);
     }
 
     #[test]
