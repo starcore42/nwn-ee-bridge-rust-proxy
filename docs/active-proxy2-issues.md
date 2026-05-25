@@ -325,6 +325,14 @@ Current status:
   static-placeable state when a valid TLK branch preceded it. Added
   fixture-free public coverage proving a TLK transition preserves the exact
   source cursor and still exposes following static-placeable context.
+- 2026-05-25 `P/04/01` map-pin cursor audit: shared the decompile-backed
+  byte-only map-pin walker with the placeable-context collector. Map-pin rows
+  are `DWORD id + CExoString label + three FLOAT coordinates` and do not consume
+  CNW fragment bits; the old context-only walker used a narrower label bound
+  than the exact Area_ClientArea proof and could drop later static-placeable
+  context after a valid long label. Added fixture-free coverage proving a long
+  map-pin label preserves the exact source cursor and still exposes following
+  static-placeable rows.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

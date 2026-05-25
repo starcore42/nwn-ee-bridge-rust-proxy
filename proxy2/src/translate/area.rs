@@ -2969,20 +2969,8 @@ fn collect_area_post_tile_placeable_context(
     )?;
     cursor = next_cursor;
 
-    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if map_pin_count > 4096 {
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
-    for _ in 0..map_pin_count {
-        let label_offset = cursor.checked_add(4)?;
-        let (_, after_label) =
-            read_c_exo_string_shape(payload, fragment_offset, label_offset, 1024)?;
-        cursor = after_label.checked_add(3 * 4)?;
-        if HIGH_LEVEL_HEADER_BYTES + cursor > fragment_offset {
-            return None;
-        }
-    }
+    let (_, next_cursor) = advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
+    cursor = next_cursor;
 
     let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
     if sound_count > 4096 {
@@ -6652,6 +6640,85 @@ mod public_static_direction_tests {
         (payload, fragment_offset, scan)
     }
 
+    fn real_area_long_map_pin_static_placeable_payload() -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 1); // map-pin rows
+        push_u32(&mut payload, 1); // map-pin id
+        let label = vec![b'M'; 1500];
+        push_u32(
+            &mut payload,
+            u32::try_from(label.len()).expect("test map-pin label length should fit in DWORD"),
+        );
+        payload.extend_from_slice(&label);
+        push_f32(&mut payload, 3.0);
+        push_f32(&mut payload, 4.0);
+        push_f32(&mut payload, 0.0);
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, 1); // static-placeable rows
+        push_u32(&mut payload, 0x8000_0042);
+        push_u16(&mut payload, 82);
+        push_f32(&mut payload, 10.0);
+        push_f32(&mut payload, 20.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 1.0);
+        push_f32(&mut payload, 0.0);
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
+        );
+        (payload, fragment_offset, scan)
+    }
+
     fn ee_area_static_placeable_payload_with_post_static_tail(
         first_post_static_rows: &[u16],
         second_post_static_count: u16,
@@ -6738,6 +6805,30 @@ mod public_static_direction_tests {
         .expect("placeable context walker must share the transition label bit cursor");
         assert_eq!(context.static_rows.len(), 1);
         assert_eq!(context.light_rows.len(), 0);
+        assert_eq!(context.static_rows[0].appearance, 82);
+        assert_eq!(context.static_rows[0].x, 10.0);
+        assert_eq!(context.static_rows[0].y, 20.0);
+        assert!(context.static_rows[0].has_direction);
+    }
+
+    #[test]
+    fn placeable_context_uses_map_pin_cursor_before_static_rows() {
+        let (payload, fragment_offset, scan) = real_area_long_map_pin_static_placeable_payload();
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("long CExoString map-pin label should keep exact source cursor proof");
+        assert_eq!(proof.static_rows_count, 1);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("placeable context walker must share the exact map-pin cursor");
+        assert_eq!(context.light_rows.len(), 0);
+        assert_eq!(context.static_rows.len(), 1);
         assert_eq!(context.static_rows[0].appearance, 82);
         assert_eq!(context.static_rows[0].x, 10.0);
         assert_eq!(context.static_rows[0].y, 20.0);
