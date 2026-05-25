@@ -4312,7 +4312,7 @@ mod placeable_add_semantic_tests {
     }
 }
 
-#[cfg(all(test, hgbridge_private_fixtures))]
+#[cfg(test)]
 mod placeable_name_mode_tests {
     use super::*;
 
@@ -4360,6 +4360,18 @@ mod placeable_name_mode_tests {
         assert!(has_ee_identity_visual_transform_map_at(
             &bytes, 19, record_end
         ));
+
+        let mut verified_cursor = 0usize;
+        assert!(
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                &bytes,
+                0,
+                record_end,
+                &bits,
+                &mut verified_cursor,
+            )
+        );
+        assert_eq!(verified_cursor, bit_cursor);
     }
 
     #[test]
@@ -4388,6 +4400,18 @@ mod placeable_name_mode_tests {
         assert!(has_ee_identity_visual_transform_map_at(
             &bytes, 19, record_end
         ));
+
+        let mut verified_cursor = 0usize;
+        assert!(
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                &bytes,
+                0,
+                record_end,
+                &bits,
+                &mut verified_cursor,
+            )
+        );
+        assert_eq!(verified_cursor, bit_cursor);
     }
 }
 

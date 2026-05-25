@@ -166,6 +166,21 @@ mod tests {
         live
     }
 
+    fn ee_placeable_add_without_optional_object() -> Vec<u8> {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_0085u32.to_le_bytes());
+        live.extend_from_slice(&5u32.to_le_bytes());
+        live.extend_from_slice(b"Chest");
+        live.push(0x05);
+        live.extend_from_slice(&0x000Eu16.to_le_bytes());
+        live.extend_from_slice(&0x0000u16.to_le_bytes());
+        live.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        live
+    }
+
     #[test]
     fn optional_object_inline_helper_keeps_inner_selector_alignment() {
         let live = ee_placeable_add_with_optional_object();
@@ -208,6 +223,47 @@ mod tests {
     }
 
     #[test]
+    fn absent_optional_object_inline_helper_keeps_inner_selector_alignment() {
+        let live = ee_placeable_add_without_optional_object();
+        let mut bits = vec![
+            true, false, // EE locstring helper: outer=true, inner=false.
+            true, true, false, true, false, true, false, true, false, true,
+        ];
+        let mut bit_cursor = 0;
+
+        let changed = repair_verified_ee_placeable_add_guard_bits(
+            &live,
+            0,
+            live.len(),
+            &mut bits,
+            &mut bit_cursor,
+        )
+        .expect("absent optional-object guard repair should own the EE-shaped record");
+
+        assert!(changed);
+        assert_eq!(bit_cursor, 12);
+        assert_eq!(
+            &bits[..4],
+            &[true, false, true, false],
+            "outer/inner stay aligned and absent optional OBJECTID guard is repaired after the first state bit"
+        );
+        assert!(
+            !bits[11],
+            "EE-only visual-transform guard is forced neutral at the decompiled final bit"
+        );
+
+        let mut verified_cursor = 0;
+        assert!(super::super::add::advance_verified_add_record(
+            &live,
+            0,
+            live.len(),
+            &bits,
+            &mut verified_cursor,
+        ));
+        assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
     fn optional_object_direct_name_mode_repair_reuses_inner_bit_as_state() {
         let live = ee_placeable_add_with_optional_object();
         let mut bits = vec![
@@ -230,6 +286,46 @@ mod tests {
             &bits[..3],
             &[false, true, true],
             "outer is forced direct, former inner remains first state bit, optional guard follows"
+        );
+        assert!(
+            !bits[10],
+            "EE-only visual-transform guard is forced neutral at the decompiled final bit"
+        );
+
+        let mut verified_cursor = 0;
+        assert!(super::super::add::advance_verified_add_record(
+            &live,
+            0,
+            live.len(),
+            &bits,
+            &mut verified_cursor,
+        ));
+        assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn absent_optional_object_direct_name_mode_repair_reuses_inner_bit_as_state() {
+        let live = ee_placeable_add_without_optional_object();
+        let mut bits = vec![
+            true, true, true, false, true, false, true, false, true, false, true,
+        ];
+        let mut bit_cursor = 0;
+
+        let changed = repair_verified_ee_placeable_add_guard_bits(
+            &live,
+            0,
+            live.len(),
+            &mut bits,
+            &mut bit_cursor,
+        )
+        .expect("direct-name mode repair should own the EE-shaped record without optional bytes");
+
+        assert!(changed);
+        assert_eq!(bit_cursor, 11);
+        assert_eq!(
+            &bits[..3],
+            &[false, true, false],
+            "outer is forced direct, former inner remains first state bit, absent optional guard follows"
         );
         assert!(
             !bits[10],

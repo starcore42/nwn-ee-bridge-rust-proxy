@@ -242,6 +242,17 @@ Current status:
   OBJECTID guard. Only the legacy `outer=true, inner=true` direct-name mismatch
   is collapsed to `outer=false`. Added fixture-free tests for both optional
   OBJECTID branches and exact post-repair add validation.
+- 2026-05-25 `P/05/01` placeable-add guard coverage audit: no packet behavior
+  changed, but the decompile-backed name/optional-target bit-order proof is now
+  covered in the public test suite. Added fixture-free no-optional-OBJECTID
+  guard regressions for both `outer=true, inner=false` inline helper names and
+  `outer=true, inner=true` direct-name repair, and moved the inline/direct
+  placeable name-mode tests out from the private-fixture gate while asserting
+  the final exact EE add cursor. Verified with `cargo test -q -p
+  hgbridge-proxy2 add_guard -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 placeable_name_mode_tests -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`, `cargo fmt
+  --all --check`, `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
