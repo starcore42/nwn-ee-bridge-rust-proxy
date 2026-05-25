@@ -333,6 +333,14 @@ Current status:
   context after a valid long label. Added fixture-free coverage proving a long
   map-pin label preserves the exact source cursor and still exposes following
   static-placeable rows.
+- 2026-05-25 `P/04/01` sound-row cursor audit: shared the decompile-backed
+  sound-list walker across the legacy exact proof, EE exact proof, and
+  placeable-context collector. Sound rows are a `WORD` count, a fixed 54-byte
+  sound-object byte body with a nested `WORD` CResRef count plus 16-byte resrefs,
+  and six CNW fragment BOOLs per row; later light/static placeable rows are now
+  exposed as context only when that byte and bit cursor movement is proven.
+  Added fixture-free coverage for a sound row followed by a static placeable,
+  and for rejecting the same byte shape when the six sound bits are missing.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
