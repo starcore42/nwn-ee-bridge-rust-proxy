@@ -275,6 +275,16 @@ Current status:
   test -q -p hgbridge-proxy2 placeable_update -- --nocapture`. Keep the broader
   issue open pending a targeted visual comparison against a confirmed bad
   placeable/player capture.
+- 2026-05-25 `P/04/01` static-placeable context-state audit: no packet behavior
+  changed, but the module GIT state handoff now has public regression coverage
+  for the decompiled two-triplet static row rule. A static row may inherit
+  module useable/trap/lock state only when appearance plus at least two
+  coordinates and the second direction triplet match the resource bearing;
+  plausible appearance/position alone is not enough because EE and Diamond use
+  that second triplet to derive static mesh yaw. Verified with `cargo test -q
+  -p hgbridge-proxy2 module_context_state_requires_matching_static_direction_triplet
+  -- --nocapture`. Keep the broader issue open pending visual replay against a
+  confirmed bad static/live placeable capture.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

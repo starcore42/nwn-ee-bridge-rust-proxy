@@ -3112,6 +3112,12 @@ fn module_static_placeable_context_state(
     dir_y: f32,
     dir_z: f32,
 ) -> Option<AreaPlaceableContextState> {
+    // The static-row state handoff to later live-object diagnostics is only
+    // sound when the row proves the decompiled static mesh orientation too.
+    // EE `CNWCArea::LoadArea` passes the first triplet as placement and the
+    // second triplet into the static helper's yaw path; Diamond follows the
+    // same two-triplet row shape. Appearance plus nearby coordinates are not
+    // enough to identify the original GIT row's lock/trap/useable state.
     let static_placeables = module_resource_info?
         .placeables
         .iter()
@@ -6397,6 +6403,66 @@ mod public_static_direction_tests {
         assert!(
             angle_delta(normalized_yaw, source_yaw).abs() <= 1.0e-6,
             "normalization must preserve the decompiled atan2(-x, y) yaw"
+        );
+    }
+
+    #[test]
+    fn module_context_state_requires_matching_static_direction_triplet() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "locked_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: true,
+        };
+        let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let info = ModuleAreaResourceInfo {
+            resref: "testarea".to_string(),
+            name: "Test Area".to_string(),
+            width: 1,
+            height: 1,
+            tileset: "ttr01".to_string(),
+            tiles: Vec::new(),
+            map_notes: Vec::new(),
+            sounds: Vec::new(),
+            placeables: vec![placeable],
+        };
+
+        let state = module_static_placeable_context_state(
+            Some(&info),
+            82,
+            10.0,
+            99.0,
+            0.0,
+            expected_direction.0,
+            expected_direction.1,
+            expected_direction.2,
+        )
+        .expect("appearance plus two coordinates plus bearing-derived direction proves state");
+        assert_eq!(
+            state,
+            AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: false,
+                trap_disarmable: false,
+                lockable: true,
+                locked: true,
+            }
+        );
+
+        assert_eq!(
+            module_static_placeable_context_state(Some(&info), 82, 10.0, 99.0, 0.0, 0.0, 1.0, 0.0),
+            None,
+            "a plausible appearance/position row must not inherit GIT state when the second static triplet proves a different yaw"
         );
     }
 }
