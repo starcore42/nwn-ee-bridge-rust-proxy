@@ -359,6 +359,16 @@ Current status:
   letting a partial prefix seed later live-object diagnostics. Added
   fixture-free coverage for both zero-count tail ownership and non-exact
   post-static trailing bytes.
+- 2026-05-26 `P/05/01` creature full-appearance locstring-name audit: no packet
+  behavior changed, but public fixture-free coverage now proves the full
+  `P/5` appearance name branch where the outer selector enters the locstring
+  pair, the first component takes the TLK/custom-token branch, and the second
+  component takes the inline CExoString branch. The tests prove Diamond source
+  cursor ownership of the outer bit, TLK inner bit, client-TLK/language bit,
+  and second inline bit, reject a missing component bit or direct-string
+  reinterpretation of token bytes, then verify that the same four-bit cursor
+  survives the legacy-to-EE build-0x23 body widening. Verified with `cargo test
+  -q -p hgbridge-proxy2 full_appearance_locstring_name -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

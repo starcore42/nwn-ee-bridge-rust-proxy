@@ -6144,6 +6144,11 @@ fn advance_legacy_locstring_component_with_proof(
 ) -> Option<LegacyLocStringComponentAdvance> {
     let inner_is_tlk_token = *proof.fragment_bits.get(component_bit_cursor)?;
     if inner_is_tlk_token {
+        // The outer creature-name BOOL has already selected the locstring
+        // pair. For each component, Diamond `sub_53E700` and EE's matching
+        // helper consume the inner token selector plus the client-TLK/language
+        // selector from the CNW fragment stream, then read only the DWORD token
+        // reference from the read buffer.
         proof
             .fragment_bits
             .get(component_bit_cursor.checked_add(1)?)?;
@@ -8602,6 +8607,155 @@ fn looks_like_creature_or_legacy_sentinel_id(object_id: u32) -> bool {
         return true;
     }
     super::object_ids::looks_like_legacy_live_object_id_value(object_id)
+}
+
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_cexo_string(bytes: &mut Vec<u8>, text: &[u8]) {
+        push_u32(
+            bytes,
+            u32::try_from(text.len()).expect("test string length fits"),
+        );
+        bytes.extend_from_slice(text);
+    }
+
+    fn push_full_appearance_tail(bytes: &mut Vec<u8>, dialect: CreatureAppearanceWireDialect) {
+        push_u16(bytes, 2); // 0x0001 appearance type.
+        bytes.extend_from_slice(&[1, 2]); // 0x0002 and 0x0004.
+        bytes.push(3); // 0x0080 low byte.
+        if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+            bytes.push(0); // EE build-0x23 high byte.
+        }
+        push_u32(bytes, 0x1122_3344); // 0x0800.
+        push_u32(bytes, 0x5566_7788); // 0x1000.
+        bytes.extend_from_slice(&[4, 5, 6, 7]); // 0x0008..0x0040.
+
+        bytes.push(LEGACY_APPEARANCE_BODY_PART_COUNT);
+        for part in 0..LEGACY_APPEARANCE_BODY_PART_COUNT {
+            bytes.push(part);
+            if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+                bytes.push(0);
+            }
+        }
+
+        push_u16(bytes, 0x99AA);
+        push_u32(bytes, 0xBBCC_DDEE); // 0x2000 tail.
+        if matches!(dialect, CreatureAppearanceWireDialect::EeBuild8193) {
+            bytes.push(0); // EE build-0x0E tail byte.
+        }
+        bytes.push(0); // visible-equipment count.
+    }
+
+    fn full_legacy_creature_appearance_with_mixed_locstring_name() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_u32(&mut bytes, 0x0100_75D6); // TLK/custom-token reference.
+        push_cexo_string(&mut bytes, b"Hero");
+        push_full_appearance_tail(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes
+    }
+
+    fn mixed_locstring_name_bits() -> Vec<bool> {
+        vec![
+            true,  // creature-name selector: two locstring components.
+            true,  // first component: TLK/custom-token branch.
+            false, // first component client-TLK/language selector.
+            false, // second component: inline CExoString branch.
+        ]
+    }
+
+    #[test]
+    fn full_appearance_locstring_name_bits_advance_exactly() {
+        let bytes = full_legacy_creature_appearance_with_mixed_locstring_name();
+        let fragment_bits = mixed_locstring_name_bits();
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 4,
+            "outer name, TLK inner, client-TLK/language, and inline inner bits are all source-owned"
+        );
+
+        let mut missing_component_bit = fragment_bits[..3].to_vec();
+        let mut short_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &missing_component_bit,
+                &mut short_cursor,
+            ),
+            "a TLK component without the following inline-component bit must not be accepted"
+        );
+        missing_component_bit[0] = false;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &missing_component_bit,
+                &mut short_cursor,
+            ),
+            "the direct CExoString selector must not reinterpret locstring token bytes"
+        );
+    }
+
+    #[test]
+    fn full_appearance_locstring_name_cursor_survives_ee_body_widening() {
+        let mut bytes = full_legacy_creature_appearance_with_mixed_locstring_name();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = mixed_locstring_name_bits();
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy full appearance should widen to exact EE shape");
+
+        assert_eq!(rewrite.bytes_inserted, 21);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 4,
+            "EE build-byte widening must not move the decompiled creature-name bit cursor"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]
