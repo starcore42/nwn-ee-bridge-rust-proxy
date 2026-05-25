@@ -350,6 +350,15 @@ Current status:
   shifted cursor. Added fixture-free coverage for a valid light row before a
   static row and for rejecting a light row outside the legacy object-id
   namespace.
+- 2026-05-25 `P/04/01` static context tail-proof audit: tightened
+  `AreaPlaceableContext` extraction so static/live-overlap state is exported
+  only after the full legacy post-tile tail proof succeeds. The collector now
+  checks the shared exact proof's static count cursor before exposing rows,
+  follows the decompiled static `WORD` count when zero-count row-shaped bytes
+  are present, and rejects trailing bytes after claimed static rows instead of
+  letting a partial prefix seed later live-object diagnostics. Added
+  fixture-free coverage for both zero-count tail ownership and non-exact
+  post-static trailing bytes.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

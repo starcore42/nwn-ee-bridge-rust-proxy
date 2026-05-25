@@ -2957,6 +2957,8 @@ fn collect_area_post_tile_placeable_context(
     if !scan.valid {
         return None;
     }
+    let source_tail_proof =
+        legacy_area_source_tail_exact_read_proof(payload, fragment_offset, &scan)?;
 
     let mut cursor = scan.tile_end_read_offset;
 
@@ -3009,7 +3011,20 @@ fn collect_area_post_tile_placeable_context(
     cursor = next_cursor;
 
     let static_count = read_area_u16(payload, fragment_offset, cursor)?;
+    if cursor != source_tail_proof.static_count_read_offset {
+        return None;
+    }
+    if source_tail_proof.zero_static_placeable_rows == 0 {
+        if static_count != source_tail_proof.static_rows_count {
+            return None;
+        }
+    } else if static_count != 0 {
+        return None;
+    }
     cursor = cursor.checked_add(2)?;
+    if cursor != source_tail_proof.static_rows_read_offset {
+        return None;
+    }
     let mut static_rows = Vec::with_capacity(static_count as usize);
     for _ in 0..static_count {
         let object_id = read_area_u32(payload, fragment_offset, cursor)?;
@@ -7108,6 +7123,76 @@ mod public_static_direction_tests {
             )
             .is_none(),
             "context collection must not expose later static rows after an unproven light row"
+        );
+    }
+
+    #[test]
+    fn placeable_context_does_not_claim_zero_count_static_tail_rows() {
+        let (payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                0,
+                &[(82, 10.0, 20.0, 0.0, 0.0, 1.0, 0.0)],
+            );
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("row-shaped bytes after a zero static count remain a bounded legacy tail");
+        assert_eq!(proof.static_rows_count, 1);
+        assert_eq!(proof.zero_static_placeable_rows, 1);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("zero-count static tail still has exact source cursor proof");
+        assert_eq!(context.light_rows.len(), 0);
+        assert_eq!(
+            context.static_rows.len(),
+            0,
+            "static context must follow the decompiled WORD count, not row-shaped tail bytes"
+        );
+    }
+
+    #[test]
+    fn placeable_context_requires_exact_tail_after_static_rows() {
+        let (mut payload, fragment_offset, _scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                1,
+                &[(82, 10.0, 20.0, 0.0, 0.0, 1.0, 0.0)],
+            );
+        let fragment = payload[fragment_offset..].to_vec();
+        payload.truncate(fragment_offset);
+        push_u16(&mut payload, 0xBEEF);
+        let new_read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + new_read_size) as u32,
+        )
+        .expect("declared read size should fit after adding trailing bytes");
+        let new_fragment_offset = payload.len();
+        payload.extend_from_slice(&fragment);
+
+        let shifted_scan = scan_area_tile_stream(&payload, new_fragment_offset);
+        assert!(shifted_scan.valid);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, new_fragment_offset, &shifted_scan)
+                .is_none(),
+            "trailing bytes after the static-row loop are outside the Diamond area-tail proof"
+        );
+        assert!(
+            collect_area_post_tile_placeable_context(
+                &payload,
+                new_fragment_offset,
+                "testarea",
+                0x8000_0001,
+                false,
+                None,
+            )
+            .is_none(),
+            "context collection must not expose static rows from a non-exact post-tile tail"
         );
     }
 
