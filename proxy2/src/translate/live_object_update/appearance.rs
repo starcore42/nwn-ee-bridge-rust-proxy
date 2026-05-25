@@ -8732,6 +8732,17 @@ mod public_tests {
         bytes.extend_from_slice(&[0, 0]); // value-mask trailer.
     }
 
+    fn push_value_masked_active_property_tail(bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // shared DWORD.
+        bytes.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]); // shared DWORD.
+        bytes.push(2); // active-property count.
+        bytes.extend_from_slice(&[0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04]);
+        bytes.extend_from_slice(&[0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08]);
+        bytes.push(0xA5); // state mask.
+        bytes.push(0b1010_0101); // value-mask bytes follow for bits 0, 2, 5, and 7.
+        bytes.extend_from_slice(&[0x31, 0x32, 0x33, 0x34]);
+    }
+
     fn push_visible_equipment_no_name_item(bytes: &mut Vec<u8>) {
         bytes.push(b'A');
         push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
@@ -8739,6 +8750,15 @@ mod public_tests {
         push_u32(bytes, 0x01); // stock weapon row, model type 2.
         bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
         push_no_name_active_property_tail(bytes);
+    }
+
+    fn push_visible_equipment_value_masked_item(bytes: &mut Vec<u8>) {
+        bytes.push(b'A');
+        push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
+        push_u32(bytes, 2); // visible-equipment slot.
+        push_u32(bytes, 0x01); // stock weapon row, model type 2.
+        bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
+        push_value_masked_active_property_tail(bytes);
     }
 
     fn push_visible_equipment_locstring_token_item(bytes: &mut Vec<u8>) {
@@ -8770,6 +8790,18 @@ mod public_tests {
         push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
         bytes.push(1); // visible-equipment count.
         push_visible_equipment_no_name_item(&mut bytes);
+        bytes
+    }
+
+    fn full_legacy_creature_appearance_with_direct_name_and_value_masked_equipment() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(1); // visible-equipment count.
+        push_visible_equipment_value_masked_item(&mut bytes);
         bytes
     }
 
@@ -9163,6 +9195,92 @@ mod public_tests {
             bit_cursor, 6,
             "EE validation must account for the inserted active-property BOOL without moving the item boundary"
         );
+    }
+
+    #[test]
+    fn visible_equipment_active_property_value_mask_tail_is_exact() {
+        let mut tail = Vec::new();
+        push_value_masked_active_property_tail(&mut tail);
+        assert!(
+            parse_legacy_active_item_properties_tail(&tail),
+            "property rows plus value-mask bytes follow the decompiled active-property body"
+        );
+
+        let mut missing_value_byte = tail.clone();
+        missing_value_byte.pop();
+        assert!(
+            !parse_legacy_active_item_properties_tail(&missing_value_byte),
+            "the second mask owns one following byte per set bit"
+        );
+
+        let mut trailing_byte = tail;
+        trailing_byte.push(0);
+        assert!(
+            !parse_legacy_active_item_properties_tail(&trailing_byte),
+            "active-property tail proof must end exactly after the masked values"
+        );
+    }
+
+    #[test]
+    fn full_appearance_visible_equipment_value_mask_cursor_survives_ee_widening() {
+        let mut bytes =
+            full_legacy_creature_appearance_with_direct_name_and_value_masked_equipment();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = direct_name_with_no_name_equipment_bits();
+
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 5,
+            "nonzero active-property rows do not add fragment BOOLs beyond Diamond's four active-property bits"
+        );
+
+        let mut truncated = bytes.clone();
+        truncated.pop();
+        let mut truncated_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &truncated,
+                0,
+                truncated.len(),
+                &fragment_bits,
+                &mut truncated_cursor,
+            ),
+            "the visible-equipment item cannot claim a truncated value-mask trailer"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy full appearance with value-masked equipment should widen");
+        assert_eq!(rewrite.bytes_inserted, 32);
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            fragment_bits,
+            [false, true, false, false, true, false],
+            "EE still inserts only the active-property CanUseItem BOOL before the post-DWORD state bits"
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, fragment_bits.len());
     }
 
     #[test]

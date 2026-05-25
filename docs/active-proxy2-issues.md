@@ -414,6 +414,18 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 visible_equipment_item_ -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 full_appearance_visible_equipment --
   --nocapture`.
+- 2026-05-26 `P/05/01` creature full-appearance visible-equipment
+  active-property tail audit: no packet behavior changed, but public
+  fixture-free coverage now proves nonzero active-property rows and the
+  two-BYTE mask trailer inside a nested item row. The second mask owns exactly
+  one following BYTE for each set bit; missing or trailing value bytes reject
+  the tail. The full appearance rewrite still consumes only the direct creature
+  name bit plus Diamond's four active-property BOOLs, then inserts EE's single
+  `CanUseItem` BOOL after the shared pre-DWORD BOOL without shifting the byte
+  tail. Verified with `cargo test -q -p hgbridge-proxy2 value_mask --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  full_appearance_visible_equipment -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 full_appearance_ -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
