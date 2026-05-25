@@ -1395,6 +1395,19 @@ fn rewrite_legacy_live_object_update_bits(
 
     let mut cursor = *bit_cursor;
     let mut rewrite = FragmentRewrite::default();
+    let source_placeable_state_before = if object_type == PLACEABLE_OBJECT_TYPE
+        && (source_mask & LEGACY_UPDATE_STATE_MASK) != 0
+        && (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0
+    {
+        Some(placeable_update_source_state_bits_at(
+            bits,
+            *bit_cursor,
+            source_mask,
+            orientation_rewrite,
+        )?)
+    } else {
+        None
+    };
 
     let source_has_position = (source_mask & LEGACY_UPDATE_POSITION_MASK) != 0;
     let translated_has_position = (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0;
@@ -1548,6 +1561,13 @@ fn rewrite_legacy_live_object_update_bits(
         return None;
     }
 
+    if let Some(source_state) = source_placeable_state_before {
+        let emitted_state = placeable_update_state_bits_at(bits, *bit_cursor, translated_mask)?;
+        if source_state != emitted_state {
+            return None;
+        }
+    }
+
     *bit_cursor = cursor;
     Some(rewrite)
 }
@@ -1679,5 +1699,78 @@ mod tests {
             Some(state(true, false, false, true, true)),
             "a stale scalar selector would read vector payload bits as state"
         );
+    }
+
+    #[test]
+    fn placeable_update_bit_rewrite_preserves_state_across_orientation_repairs() {
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        for (label, orientation_rewrite, bits, expected_cursor, expected_inserted) in [
+            (
+                "insert scalar pad",
+                OrientationFragmentRewrite::InsertLegacyByteScalarPad,
+                vec![
+                    true, false, // position fragment
+                    false, true, true, false, true, // state block
+                ],
+                LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                    + 1,
+                EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS as u32 + 1,
+            ),
+            (
+                "force scalar",
+                OrientationFragmentRewrite::ForceScalar,
+                vec![
+                    true, false, // position fragment
+                    true, false, true, false, true, // stale selector plus scalar payload
+                    false, true, true, false, true, // state block
+                ],
+                LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                    + 1,
+                1,
+            ),
+            (
+                "force vector",
+                OrientationFragmentRewrite::ForceVector,
+                vec![
+                    false, true,  // position fragment
+                    false, // stale scalar selector
+                    true, false, true, false, true, // state block
+                ],
+                LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                    + 1,
+                1,
+            ),
+        ] {
+            let expected_state =
+                placeable_update_source_state_bits_at(&bits, 0, mask, orientation_rewrite)
+                    .expect("source state should decode before rewrite");
+            let mut rewritten_bits = bits;
+            let mut cursor = 0usize;
+
+            let rewrite = rewrite_legacy_live_object_update_bits(
+                PLACEABLE_OBJECT_TYPE,
+                mask,
+                mask,
+                orientation_rewrite,
+                &mut rewritten_bits,
+                &mut cursor,
+            )
+            .expect("placeable state-preserving bit rewrite should succeed");
+
+            assert_eq!(cursor, expected_cursor, "{label}");
+            assert_eq!(rewrite.bits_inserted, expected_inserted, "{label}");
+            assert_eq!(
+                placeable_update_state_bits_at(&rewritten_bits, 0, mask),
+                Some(expected_state),
+                "{label}: emitted EE state bits must match the source cursor"
+            );
+        }
     }
 }

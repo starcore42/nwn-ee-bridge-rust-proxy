@@ -263,6 +263,18 @@ Current status:
   forced vector source-state decoding. Verified with `cargo test -q -p
   hgbridge-proxy2 source_state_diagnostic -- --nocapture` and `cargo test -q
   -p hgbridge-proxy2 placeable_update -- --nocapture`.
+- 2026-05-25 `P/05/01` placeable-update state-preservation audit: hardened the
+  cloned `U/09` fragment-bit rewrite so source placeable state bits decoded at
+  the byte-proven Diamond cursor must equal the emitted EE state bits after
+  scalar insertion, forced scalar, or forced vector orientation repair. A
+  mismatch now rejects the candidate instead of allowing a semantically shifted
+  but byte-plausible update. Added fixture-free coverage for all three
+  orientation repair paths. Verified with `cargo test -q -p hgbridge-proxy2
+  source_state_diagnostic -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_update_bit_rewrite_preserves_state -- --nocapture`, and `cargo
+  test -q -p hgbridge-proxy2 placeable_update -- --nocapture`. Keep the broader
+  issue open pending a targeted visual comparison against a confirmed bad
+  placeable/player capture.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
