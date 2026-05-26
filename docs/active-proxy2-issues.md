@@ -540,21 +540,24 @@ Current status:
   standalone second-list BOOL ownership, `0x2000 -> 0x0800` selector handoff,
   and `0x2000 -> 0x4000` update-BOOL handoff. Verified with `cargo test -q -p
   hgbridge-proxy2 inventory_2000_ -- --nocapture`.
-- 2026-05-26 `P/05/01` inventory `0x0001` compact-state cursor audit: fixed
-  the stale `0x0401` mask-specific bypass that accepted a true `0x0001` BOOL
-  as if it could hand off directly to `0x0400`. Diamond `sub_455940`
-  (`00455AAD..00455D80`) and EE `sub_1407B4F70` (`1407B51ED..1407B559F`) both
-  read `SHORT, DWORD, INT, BOOL`; only false is the compact handoff, while true
-  owns an extended read-buffer tail starting with another `WORD`. Public
-  default tests now prove compact false acceptance and compact true rejection
-  for standalone `0x0001` and `0x0401 -> 0x0400`; the private packet-fixture
-  suite carries the same end-to-end payload assertion. Verified with
-  `cargo test -q -p hgbridge-proxy2 inventory_0001_ -- --nocapture`, `cargo
-  test -q -p hgbridge-proxy2
-  inventory_0401_compact_handoff_requires_false_0001_bit -- --nocapture`, and
-  `cargo test -q -p hgbridge-proxy2 inventory -- --nocapture`. Keep the true
-  extended `0x0001` tail unclaimed until a typed parser models the full
-  decompiled tail.
+- 2026-05-26 `P/05/01` inventory `0x0001` compact/extended cursor audit:
+  fixed the stale `0x0401` mask-specific bypass that accepted a true
+  `0x0001` BOOL as if it could hand off directly to `0x0400`, then modeled the
+  legacy true-branch tail. Diamond `sub_455940` (`00455AAD..00455D80`) and EE
+  `sub_1407B4F70` (`1407B51ED..1407B559F`) both read `SHORT, DWORD, INT,
+  BOOL`; false is the compact handoff, while true reads `WORD`, one BYTE per
+  standard legacy Skills.2DA row, `INT+CExoString`, `INT+CExoString`, the
+  legacy-build BYTE, and the final BYTE before later mask branches. Public
+  fixture-free tests now prove compact false acceptance, true-without-tail
+  rejection, full legacy extended-tail ownership, exact handoff to following
+  `0x0400`, and truncated CExoString rejection. Verified with `cargo test -q
+  -p hgbridge-proxy2 inventory_0001_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 inventory_0401_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 inventory -- --nocapture`, `cargo fmt --all --check`, `git
+  diff --check`, and `cargo check -q -p hgbridge-proxy2`. Remaining caveat:
+  EE's newer build-gated first tail scalar is DWORD-sized; proxy2 still claims
+  only the Diamond/HG legacy BYTE path until an EE-to-EE or target-server
+  reference needs that variant.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

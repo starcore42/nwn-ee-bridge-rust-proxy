@@ -98,7 +98,7 @@ fn generic_inventory_candidates_after_mask(
     trace_inventory_stage(mask, "start", &candidates);
 
     if (mask & 0x0001) != 0 {
-        candidates = apply_0001(&candidates, record_end);
+        candidates = apply_0001(bytes, &candidates, record_end);
         trace_inventory_stage(mask, "0001", &candidates);
     }
     if (mask & 0x0002) != 0 {
@@ -194,27 +194,74 @@ fn trace_inventory_stage(mask: u16, stage: &'static str, candidates: &[GenericIn
 }
 
 fn apply_0001(
+    bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
 ) -> Vec<GenericInventoryCandidate> {
-    // Diamond sub_455940 and EE sub_1407B4F70 both read:
+    // Diamond sub_455940 (00455AAD..00455D80) and EE sub_1407B4F70
+    // (1407B51ED..1407B559F) both read:
     //
     //   WORD, DWORD, INT, BOOL
     //
-    // before the optional extended row/string branch. The compact 10-byte
-    // inventory delta shape is therefore exact only when the branch BOOL is
-    // false. If the BOOL is true, a focused extended-branch parser must own
-    // the additional read-buffer fields instead of letting this generic
-    // candidate stop early and misalign following live-object records.
-    let mut next = Vec::with_capacity(candidates.len());
+    // The false BOOL is the compact handoff.  The true BOOL owns the legacy
+    // skill/string tail: WORD, one BYTE per Skills.2DA row, INT+CExoString,
+    // INT+CExoString, then the legacy-build BYTE and final BYTE. EE's newer
+    // build-gated first tail scalar is DWORD-sized, but the HG/Diamond path and
+    // Diamond reader are BYTE-sized, so proxy2's legacy inventory proof stays on
+    // that shared cursor.
+    let mut next = Vec::with_capacity(candidates.len().saturating_mul(2));
     for candidate in advance_candidates(candidates, record_end, 10, 1) {
-        if let Some(candidate) =
-            candidate.require_fragment_bit(candidate.bits.saturating_sub(1), false)
+        let branch_bit = candidate.bits.saturating_sub(1);
+        if let Some(compact) = candidate.require_fragment_bit(branch_bit, false) {
+            next.push(compact);
+        }
+        if let Some(extended) = candidate
+            .require_fragment_bit(branch_bit, true)
+            .and_then(|candidate| advance_0001_extended_tail(bytes, candidate, record_end))
         {
-            next.push(candidate);
+            next.push(extended);
         }
     }
     next
+}
+
+const INVENTORY_0001_EXTENDED_SKILL_BYTES: usize = 28;
+const MAX_REASONABLE_INVENTORY_0001_STRING_BYTES: usize = 4096;
+
+fn advance_0001_extended_tail(
+    bytes: &[u8],
+    candidate: GenericInventoryCandidate,
+    record_end: usize,
+) -> Option<GenericInventoryCandidate> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut cursor = candidate.cursor;
+    cursor = cursor.checked_add(2)?; // WORD at 00455B99 / 1407B52FA.
+    cursor = cursor.checked_add(INVENTORY_0001_EXTENDED_SKILL_BYTES)?;
+    cursor = cursor.checked_add(4)?; // INT before first CExoString.
+    cursor = advance_inventory_cexo_string(bytes, cursor, record_end)?;
+    cursor = cursor.checked_add(4)?; // INT before second CExoString.
+    cursor = advance_inventory_cexo_string(bytes, cursor, record_end)?;
+    cursor = cursor.checked_add(2)?; // legacy-build BYTE, then final BYTE.
+    if cursor > record_end {
+        return None;
+    }
+    Some(candidate.advanced(cursor, candidate.bits))
+}
+
+fn advance_inventory_cexo_string(bytes: &[u8], cursor: usize, record_end: usize) -> Option<usize> {
+    if cursor > record_end || record_end - cursor < 4 {
+        return None;
+    }
+    let len = usize::try_from(read_u32_le(bytes, cursor)?).ok()?;
+    if len > MAX_REASONABLE_INVENTORY_0001_STRING_BYTES {
+        return None;
+    }
+    cursor
+        .checked_add(4)?
+        .checked_add(len)
+        .filter(|end| *end <= record_end)
 }
 
 fn advance_candidates(
@@ -438,6 +485,23 @@ mod tests {
         record
     }
 
+    fn inventory_0001_compact_body() -> Vec<u8> {
+        vec![0x95, 0x00, 0xD4, 0xD9, 0xE0, 0x05, 0xEB, 0x0A, 0x00, 0x00]
+    }
+
+    fn inventory_0001_extended_body() -> Vec<u8> {
+        let mut body = inventory_0001_compact_body();
+        body.extend_from_slice(&0x0007u16.to_le_bytes());
+        body.extend(0u8..INVENTORY_0001_EXTENDED_SKILL_BYTES as u8);
+        body.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        body.extend_from_slice(&4u32.to_le_bytes());
+        body.extend_from_slice(b"left");
+        body.extend_from_slice(&0x0506_0708u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&[0x09, 0x0A]);
+        body
+    }
+
     fn inventory_2000_body(first_ids: &[u32], second_ids: &[u32]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&(first_ids.len() as u32).to_le_bytes());
@@ -455,13 +519,9 @@ mod tests {
     fn inventory_0001_compact_branch_requires_false_bool() {
         // Diamond sub_455940 (00455AAD..00455D80) and EE sub_1407B4F70
         // (1407B51ED..1407B559F) both read 0x0001 as SHORT, DWORD, INT, BOOL.
-        // The false BOOL hands off to the next mask branch; the true BOOL owns
-        // an extended read-buffer tail starting with WORD and is not this
-        // compact ten-byte shape.
-        let record = inventory_mask_record(
-            0x0001,
-            &[0x95, 0x00, 0xD4, 0xD9, 0xE0, 0x05, 0xEB, 0x0A, 0x00, 0x00],
-        );
+        // The false BOOL hands off after the compact ten-byte shape; a true
+        // BOOL must own the extended read-buffer tail before any later mask.
+        let record = inventory_mask_record(0x0001, &inventory_0001_compact_body());
 
         let mut false_cursor = 0usize;
         let claim = advance_verified_inventory_record(
@@ -475,13 +535,87 @@ mod tests {
         assert_eq!(claim.fragment_bits, 1);
         assert_eq!(false_cursor, 1);
 
-        let mut true_cursor = 0usize;
+        let mut missing_tail_cursor = 0usize;
         assert!(
-            advance_verified_inventory_record(&record, 0, record.len(), &[true], &mut true_cursor,)
-                .is_none(),
-            "the true 0x0001 BOOL must not be accepted without its extended tail"
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true],
+                &mut missing_tail_cursor,
+            )
+            .is_none(),
+            "the true 0x0001 BOOL must not be accepted without the extended tail"
         );
-        assert_eq!(true_cursor, 0);
+        assert_eq!(missing_tail_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_0001_extended_branch_owns_skill_and_string_tail() {
+        // After the true selector, both decompiles read WORD, one skill BYTE per
+        // Skills.2DA row, two INT+CExoString pairs, then the legacy-build BYTE
+        // and final BYTE. The tail is byte-only; later mask branches own the
+        // next CNW fragment bit.
+        let record = inventory_mask_record(0x0001, &inventory_0001_extended_body());
+
+        let mut bit_cursor = 0usize;
+        let claim =
+            advance_verified_inventory_record(&record, 0, record.len(), &[true], &mut bit_cursor)
+                .expect("true 0x0001 BOOL should exact-claim the extended tail");
+        assert_eq!(claim.fragment_bits, 1);
+        assert_eq!(bit_cursor, 1);
+
+        let mut wrong_bit_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[false],
+                &mut wrong_bit_cursor,
+            )
+            .is_none(),
+            "false 0x0001 selector must not reinterpret an extended tail"
+        );
+        assert_eq!(wrong_bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_0001_extended_branch_hands_off_to_following_0400() {
+        let mut body = inventory_0001_extended_body();
+        body.extend_from_slice(&[
+            0x01, 0x1E, // 0x0400 clear-count and clear slot
+            0x01, 0x6B, // 0x0400 set-count and set slot
+        ]);
+        let record = inventory_mask_record(0x0401, &body);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false],
+            &mut bit_cursor,
+        )
+        .expect("true 0x0001 extended tail should hand off to 0x0400 set-slot BOOL");
+
+        assert_eq!(claim.fragment_bits, 2);
+        assert_eq!(bit_cursor, 2);
+    }
+
+    #[test]
+    fn inventory_0001_extended_branch_rejects_truncated_cexo_string() {
+        let mut body = inventory_0001_extended_body();
+        body.pop();
+        let record = inventory_mask_record(0x0001, &body);
+
+        let mut bit_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(&record, 0, record.len(), &[true], &mut bit_cursor)
+                .is_none(),
+            "extended 0x0001 cannot claim a truncated final byte/string tail"
+        );
+        assert_eq!(bit_cursor, 0);
     }
 
     #[test]
