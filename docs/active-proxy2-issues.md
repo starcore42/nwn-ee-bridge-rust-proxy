@@ -341,6 +341,19 @@ Current status:
   exposed as context only when that byte and bit cursor movement is proven.
   Added fixture-free coverage for a sound row followed by a static placeable,
   and for rejecting the same byte shape when the six sound bits are missing.
+- 2026-05-26 `P/04/01` zero sound-count repair audit: generalized the compact
+  single-CResRef sound repair so it no longer depends on the originally observed
+  no-map-pin area shape. The repair now reaches sound rows only after the shared
+  transition walker and byte-only map-pin walker prove the decompiled cursor;
+  the row-local rule remains the same (`WORD` count zero plus one plausible
+  fixed CResRef after the 54-byte sound body becomes count one), and the final
+  legacy/EE exact proofs still own the six sound BOOLs. Public fixture-free
+  coverage now proves a map-pin row before a compact sound row repairs to an
+  exact source cursor and still exposes the following static-placeable context.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  zero_sound_count_repair_uses_shared_map_pin_cursor -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
+  --nocapture`.
 - 2026-05-25 `P/04/01` light-placeable cursor audit: shared the decompile-backed
   light-row walker across the legacy exact proof, EE exact proof, and
   placeable-context collector. Light rows are byte-only after their `WORD`

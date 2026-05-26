@@ -4120,9 +4120,9 @@ fn repair_legacy_zero_sound_counts(
     // fixed `CResRef(16)` entries. Live 1.69 HG Docks packets use the legacy
     // single-entry compact form for some sound rows: the count WORD is zero,
     // but one valid CResRef immediately follows. Driver-only EE cannot consume
-    // that shape, so convert only this proven row-local legacy encoding to the
-    // exact EE writer shape. Multi-sound rows already carry their true count and
-    // are left untouched.
+    // that shape, so convert only this proven row-local legacy encoding after
+    // the shared transition/map-pin walkers prove the sound-list cursor.
+    // Multi-sound rows already carry their true count and are left untouched.
     let fragment = payload.get(fragment_offset..)?;
     let fragment_bits_available = cnw_fragment_consumable_bits(fragment)?;
     let bit_cursor = LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS;
@@ -4140,13 +4140,8 @@ fn repair_legacy_zero_sound_counts(
     )?;
     cursor = next_cursor;
 
-    let map_pin_count = read_area_u32(payload, fragment_offset, cursor)?;
-    if map_pin_count != 0 {
-        // Keep the repair scoped to the Docks-proven no-map-pin branch already
-        // modeled by the exact EE area proof.
-        return None;
-    }
-    cursor = cursor.checked_add(4)?;
+    let (_, next_cursor) = advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
+    cursor = next_cursor;
 
     let sound_count = read_area_u16(payload, fragment_offset, cursor)?;
     if u32::from(sound_count) > MAX_AREA_POST_TILE_LIST_COUNT {
@@ -4156,9 +4151,6 @@ fn repair_legacy_zero_sound_counts(
 
     let mut repairs = 0u32;
     for _ in 0..sound_count {
-        const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
-        const AREA_SOUND_BASE_BYTES: usize = 54;
-
         let count_offset = cursor.checked_add(AREA_SOUND_RESREF_COUNT_OFFSET)?;
         let resref_count = read_area_u16(payload, fragment_offset, count_offset)?;
         let effective_count = if resref_count == 0
@@ -6751,7 +6743,7 @@ mod public_static_direction_tests {
         (payload, fragment_offset, scan)
     }
 
-    fn push_test_sound_row(bytes: &mut Vec<u8>, resref: &str) {
+    fn push_test_sound_row_with_count(bytes: &mut Vec<u8>, resref: &str, resref_count: u16) {
         let before = bytes.len();
         push_u32(bytes, 0x8000_0088);
         bytes.extend_from_slice(&[0x01, 0x00, 0x00]);
@@ -6764,9 +6756,13 @@ mod public_static_direction_tests {
             push_f32(bytes, value);
         }
         assert_eq!(bytes.len() - before, AREA_SOUND_RESREF_COUNT_OFFSET);
-        push_u16(bytes, 1);
+        push_u16(bytes, resref_count);
         assert_eq!(bytes.len() - before, AREA_SOUND_BASE_BYTES);
         push_fixed_resref(bytes, resref);
+    }
+
+    fn push_test_sound_row(bytes: &mut Vec<u8>, resref: &str) {
+        push_test_sound_row_with_count(bytes, resref, 1);
     }
 
     fn real_area_sound_static_placeable_payload(
@@ -6829,6 +6825,81 @@ mod public_static_direction_tests {
         if include_sound_bits {
             payload_bits.extend_from_slice(&[false; 6]);
         }
+        let fragment =
+            encode_cnw_msb_payload_bits(&payload_bits).expect("test fragment should encode");
+        payload.extend_from_slice(&fragment);
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 1);
+        assert_eq!(scan.packet_height, 1);
+        (payload, fragment_offset, scan)
+    }
+
+    fn real_area_map_pin_zero_count_sound_static_placeable_payload()
+    -> (Vec<u8>, usize, AreaTileStreamScan) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 1); // map-pin rows
+        push_u32(&mut payload, 2); // map-pin id
+        let label = b"sound-pin";
+        push_u32(&mut payload, label.len() as u32);
+        payload.extend_from_slice(label);
+        push_f32(&mut payload, 3.0);
+        push_f32(&mut payload, 4.0);
+        push_f32(&mut payload, 0.0);
+        push_u16(&mut payload, 1); // sound rows
+        push_test_sound_row_with_count(&mut payload, "al_mg_portal1", 0);
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, 1); // static-placeable rows
+        push_u32(&mut payload, 0x8000_0042);
+        push_u16(&mut payload, 82);
+        push_f32(&mut payload, 10.0);
+        push_f32(&mut payload, 20.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 0.0);
+        push_f32(&mut payload, 1.0);
+        push_f32(&mut payload, 0.0);
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[false; 6]);
         let fragment =
             encode_cnw_msb_payload_bits(&payload_bits).expect("test fragment should encode");
         payload.extend_from_slice(&fragment);
@@ -7074,6 +7145,37 @@ mod public_static_direction_tests {
             .is_none(),
             "context collection must not expose later static rows when the sound-row bit cursor is unproven"
         );
+    }
+
+    #[test]
+    fn zero_sound_count_repair_uses_shared_map_pin_cursor() {
+        let (mut payload, fragment_offset, scan) =
+            real_area_map_pin_zero_count_sound_static_placeable_payload();
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan).is_none(),
+            "a zero resref count plus a following CResRef is a compact legacy sound row until repaired"
+        );
+
+        let repairs = repair_legacy_zero_sound_counts(&mut payload, fragment_offset, &scan)
+            .expect("sound repair should use the decompiled map-pin cursor before sound rows");
+        assert_eq!(repairs, 1);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("repaired sound row should keep exact source cursor proof");
+        assert_eq!(proof.sound_count, 1);
+        assert_eq!(proof.static_rows_count, 1);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("context walker must share map-pin and repaired sound-row cursor proof");
+        assert_eq!(context.light_rows.len(), 0);
+        assert_eq!(context.static_rows.len(), 1);
+        assert_eq!(context.static_rows[0].appearance, 82);
     }
 
     #[test]
