@@ -689,6 +689,17 @@ Current status:
   -q -p hgbridge-proxy2
   live_gui_repository_update_remains_fifteen_read_buffer_bytes --
   --nocapture`.~~
+- ~~2026-05-27 `P/05/01` live GUI read-buffer row cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the adjacent
+  `G I/i D` and `G R/r M` byte-only row shapes around the existing update-row
+  proof. Diamond `sub_4589A0`, EE `sub_1407B3F30`, and repository helper
+  `sub_1407B4620` consume inventory delete as `inner D + OBJECTID`, repository
+  update as `inner U + OBJECTID + two DWORDs`, and repository move as
+  `inner M + two BYTEs + OBJECTID`, with no CNW fragment BOOLs before following
+  GUI rows. Tests now prove inventory delete handoff, repository move handoff,
+  and rejection of a repository move whose OBJECTID is at the update/delete
+  cursor. Verified with `cargo test -q -p hgbridge-proxy2 live_gui_ --
+  --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

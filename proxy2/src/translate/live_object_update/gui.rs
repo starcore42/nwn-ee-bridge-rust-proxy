@@ -1220,9 +1220,15 @@ fn try_get_repository_read_buffer_record_end(
 
     match bytes[offset + 2] {
         GUI_DELETE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 3, 7),
+        // EE `sub_1407B4620` and the Diamond GUI repository reader both keep
+        // `G R/r U` read-buffer-only: inner `U`, OBJECTID, then two DWORDs.
+        // No CNW fragment BOOL is owned before a following GUI row.
         GUI_UPDATE_INNER_OPCODE => {
             fixed_gui_object_row_end(bytes, offset, scan_end, 3, GUI_REPOSITORY_UPDATE_ROW_BYTES)
         }
+        // Repository move rows are also byte-only, but the object id follows
+        // the two small slot/container bytes. Keeping the object-id proof at
+        // `offset + 5` prevents a shifted row from swallowing the next record.
         GUI_MOVE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 5, 9),
         _ => None,
     }

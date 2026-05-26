@@ -119,6 +119,25 @@ fn live_gui_inventory_update_rejects_repository_width_tail() {
 }
 
 #[test]
+fn live_gui_inventory_delete_row_is_read_buffer_only() {
+    // Diamond `sub_4589A0` / EE `sub_1407B3F30` dispatch `G I/i D` as a raw
+    // OBJECTID delete row. It consumes seven read-buffer bytes and no fragment
+    // BOOLs before handing off to the next GUI row.
+    let mut live = vec![b'G', b'i', b'D'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("inventory GUI delete should hand off before the following GQ row");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 2);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 10);
+}
+
+#[test]
 fn live_gui_repository_update_remains_fifteen_read_buffer_bytes() {
     let mut live = vec![b'G', b'R', b'U'];
     live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
@@ -133,6 +152,39 @@ fn live_gui_repository_update_remains_fifteen_read_buffer_bytes() {
     assert_eq!(claim.live_gui_item_create_records, 0);
     assert_eq!(claim.live_gui_fragment_bits, 0);
     assert_eq!(claim.live_bytes_length, 15);
+}
+
+#[test]
+fn live_gui_repository_move_row_owns_two_slot_bytes_then_object_id() {
+    // EE `sub_1407B4620` and Diamond's repository GUI reader consume `G R/r M`
+    // as inner opcode, two BYTE slot/container fields, then OBJECTID. There is
+    // no ReadBOOL between this row and a following GUI row.
+    let mut live = vec![b'G', b'r', b'M', 0x04, 0x09];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("repository move row should exact-claim before the following GQ row");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 2);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 12);
+}
+
+#[test]
+fn live_gui_repository_move_rejects_object_id_at_update_offset() {
+    let mut live = vec![b'G', b'R', b'M'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&[0xAA, 0xBB]);
+
+    let payload = live_gui_read_buffer_payload(&live);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "repository move must not treat an object id at the update/delete cursor as a valid row"
+    );
 }
 
 #[test]
