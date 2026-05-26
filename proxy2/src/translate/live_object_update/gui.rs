@@ -280,6 +280,9 @@ fn try_get_live_gui_character_sheet_claim(
         },
     ];
 
+    let mut boundary_candidates = Vec::new();
+    let mut full_record_candidates = Vec::new();
+
     for mode in modes {
         let mut cursor = CharacterSheetCursor::new(
             bytes,
@@ -301,14 +304,73 @@ fn try_get_live_gui_character_sheet_claim(
         }
 
         if parse_live_gui_character_sheet_body(&mut cursor, mask, mode).is_some() {
-            return Some(LiveGuiCharacterSheetClaim {
+            let claim = LiveGuiCharacterSheetClaim {
                 record_end: cursor.cursor,
                 next_bit_cursor: cursor.bit_cursor,
-            });
+            };
+            if claim.record_end == scan_end {
+                full_record_candidates.push(claim);
+            } else if looks_like_following_live_gui_character_sheet_boundary(
+                bytes,
+                claim.record_end,
+                scan_end,
+            ) {
+                boundary_candidates.push(claim);
+            }
         }
     }
 
-    None
+    if !boundary_candidates.is_empty() {
+        let earliest_boundary = boundary_candidates
+            .iter()
+            .map(|claim| claim.record_end)
+            .min()?;
+        let mut candidates_at_boundary = boundary_candidates
+            .into_iter()
+            .filter(|claim| claim.record_end == earliest_boundary);
+        let first = candidates_at_boundary.next()?;
+        if candidates_at_boundary.any(|claim| claim.next_bit_cursor != first.next_bit_cursor) {
+            // Same byte boundary but different fragment widths means the build
+            // branch cannot be proven without more state. Leave it unclaimed.
+            return None;
+        }
+        return Some(first);
+    }
+
+    full_record_candidates
+        .iter()
+        .copied()
+        .find(|claim| claim.next_bit_cursor == fragment_bits.len())
+        .or_else(|| {
+            full_record_candidates
+                .into_iter()
+                .max_by_key(|claim| claim.next_bit_cursor)
+        })
+}
+
+fn looks_like_following_live_gui_character_sheet_boundary(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> bool {
+    if offset == scan_end {
+        return true;
+    }
+    if boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
+        return true;
+    }
+    scan_end.saturating_sub(offset) >= CHARACTER_SHEET_RECORD_HEADER_BYTES
+        && bytes.get(offset).copied() == Some(LIVE_GUI_OPCODE)
+        && bytes.get(offset + 1).copied() == Some(GUI_CHARACTER_SHEET_SUBOPCODE)
+        && read_u32_le(bytes, offset + 2)
+            .map(looks_like_character_sheet_object_id)
+            .unwrap_or(false)
+        && read_u32_le(bytes, offset + 6)
+            .map(|mask| {
+                mask & !CHARACTER_SHEET_SUPPORTED_MASK == 0
+                    && mask & CHARACTER_SHEET_UNSUPPORTED_SKILLS_MASK == 0
+            })
+            .unwrap_or(false)
 }
 
 fn parse_live_gui_character_sheet_body(

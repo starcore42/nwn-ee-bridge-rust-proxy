@@ -1,5 +1,32 @@
 //! Fixture-free live-object update regression anchors.
 
+fn live_gui_character_sheet_payload(mask: u32, body: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'G', b'S']);
+    live.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+    live.extend_from_slice(&mask.to_le_bytes());
+    live.extend_from_slice(body);
+
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    fragment_bits.extend(owned_bits);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        fragment_bits,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+    payload
+}
+
+fn push_msb_bits(bits: &mut Vec<bool>, value: u32, width: usize) {
+    for shift in (0..width).rev() {
+        bits.push(((value >> shift) & 1) != 0);
+    }
+}
+
 fn creature_status_effect_4008_payload(rows: &[(u16, Option<[u8; 3]>)]) -> Vec<u8> {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x05, 0x55, 0x00, 0x00, 0x80]);
@@ -23,6 +50,80 @@ fn creature_status_effect_4008_payload(rows: &[(u16, Option<[u8; 3]>)]) -> Vec<u
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
     payload
+}
+
+#[test]
+fn live_gui_character_sheet_effect_icons_word_ids_do_not_split_on_legacy_prefix() {
+    // EE build 8193.37 widened character-sheet effect-icon counts and ids to
+    // WORDs. The leading zero removed-count byte is also a valid legacy prefix,
+    // so exact ownership must pick the full word-id branch before final cursor
+    // validation.
+    let mut body = Vec::new();
+    body.extend_from_slice(&0u16.to_le_bytes());
+    body.extend_from_slice(&1u16.to_le_bytes());
+    body.extend_from_slice(&0x1234u16.to_le_bytes());
+
+    let payload = live_gui_character_sheet_payload(0x0000_0100, &body, vec![true]);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("word-id character-sheet effect icons should exact-claim");
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 1);
+    assert_eq!(claim.live_bytes_length, 16);
+}
+
+#[test]
+fn live_gui_character_sheet_effect_icons_word_ids_require_changed_row_bool() {
+    let mut body = Vec::new();
+    body.extend_from_slice(&0u16.to_le_bytes());
+    body.extend_from_slice(&1u16.to_le_bytes());
+    body.extend_from_slice(&0x1234u16.to_le_bytes());
+
+    let payload = live_gui_character_sheet_payload(0x0000_0100, &body, Vec::new());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the changed effect-icon row owns one CNW BOOL after the WORD id"
+    );
+}
+
+#[test]
+fn live_gui_character_sheet_combat_build_8193_35_owns_five_bit_actions() {
+    // EE build 8193.35 widened the second combat-info list action field from
+    // four bits to five. The byte window is identical to the legacy shape, so
+    // the candidate selector has to use final fragment ownership, not first
+    // parse success.
+    let mut body = Vec::new();
+    let mut bits = Vec::new();
+
+    push_msb_bits(&mut bits, 0, 3);
+    body.extend_from_slice(&[0x11, 0x22, 0x33]);
+    push_msb_bits(&mut bits, 0, 7);
+    push_msb_bits(&mut bits, 0, 5);
+    push_msb_bits(&mut bits, 0, 5);
+    push_msb_bits(&mut bits, 0, 5);
+    for row in 0..3 {
+        push_msb_bits(&mut bits, 0, 5);
+        push_msb_bits(&mut bits, 0, 5);
+        body.push(0x40 + row);
+    }
+    push_msb_bits(&mut bits, 0, 4);
+    push_msb_bits(&mut bits, 0, 3);
+    bits.push(false);
+    body.push(0);
+    body.push(1);
+    body.push(0x77);
+    push_msb_bits(&mut bits, 0b1_0001, 5);
+    push_msb_bits(&mut bits, 0b101, 3);
+    bits.extend_from_slice(&[false, false, false]);
+
+    let payload = live_gui_character_sheet_payload(0x0000_0040, &body, bits.clone());
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("five-bit character-sheet combat action should exact-claim");
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_fragment_bits, bits.len() as u32);
 }
 
 #[test]

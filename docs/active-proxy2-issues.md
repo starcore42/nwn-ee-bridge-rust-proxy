@@ -635,6 +635,24 @@ Current status:
   `cargo test -q -p hgbridge-proxy2
   creature_interleaved_fragment_span_requires_exact_bit_cursor -- --nocapture`,
   plus focused `3967`, `c40f`, and `c44f` capture-backed filters.
+- ~~2026-05-27 `P/05/01` live GUI `G/S` character-sheet build-mode cursor
+  audit: fixed candidate selection so the exact validator no longer accepts the
+  first byte-plausible legacy parse when the isolated record's owned fragment
+  bits prove a newer EE shape. EE `CNWSMessage::WriteGameObjUpdate_CharacterSheet`
+  (`0x1404E6880`) / client `sub_1407B2740` read `G S`, OBJECTID, DWORD mask,
+  then mask branches including combat-info fragment fields and effect-icon
+  lists; newer builds widen the second combat action field from four to five
+  bits and effect-icon counts/ids from BYTEs to WORDs. The parser now collects
+  all exact candidates, chooses only a following-boundary-proven record or the
+  isolated candidate that consumes the full fragment cursor, and leaves
+  same-byte-boundary/different-bit-width ambiguity unclaimed instead of
+  guessing. Public fixture-free tests prove WORD effect-icon rows do not split
+  on the legacy zero-byte prefix, changed effect-icon rows require their BOOL,
+  and build-8193.35 five-bit combat actions own the extra bit. Verified with
+  `cargo test -q -p hgbridge-proxy2 live_gui_character_sheet_ -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 live_gui -- --nocapture`, `cargo fmt
+  --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
