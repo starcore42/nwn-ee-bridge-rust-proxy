@@ -262,6 +262,28 @@ fn live_gui_character_sheet_combat_build_8193_35_owns_five_bit_actions() {
 }
 
 #[test]
+fn live_gui_character_sheet_isolated_record_must_consume_all_fragment_bits() {
+    // The EE character-sheet reader (`sub_1407B2740`) owns only the BOOLs
+    // selected by the mask branches. With no following live-object boundary, a
+    // byte-complete `G S` record that leaves an extra fragment bit is not an
+    // exact isolated record and must stay unclaimed.
+    let live = [b'G', b'S', 0xFE, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    let fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + 1];
+
+    assert!(
+        super::gui::try_get_verified_ee_live_gui_record_end(
+            &live,
+            0,
+            live.len(),
+            &fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .is_none(),
+        "isolated G S must not claim a max-consumed candidate that leaves fragment bits behind"
+    );
+}
+
+#[test]
 fn creature_status_effect_single_target_payload_is_exact_ee_shape() {
     let payload =
         creature_status_effect_4008_payload(&[(0x1234, Some(&[0x44, 0x33, 0x22, 0x80, 0x66]))]);

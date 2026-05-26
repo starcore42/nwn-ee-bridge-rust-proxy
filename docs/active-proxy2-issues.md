@@ -636,6 +636,25 @@ Current status:
   `cargo test -q -p hgbridge-proxy2
   looping_effect_target_payload_owns_dword_object_id_plus_byte -- --nocapture`,
   and `cargo check -q -p hgbridge-proxy2`.~~
+- ~~2026-05-27 `P/05/01` visualeffects.2da row-type cursor audit: added a
+  shared `visualeffects.2da` `Type_FD` row-policy helper for live-object
+  visual-effect lists. When row state is loaded, `P`/`B` rows own exactly the
+  decompiled five-byte target payload before `ObjectVisualTransformData`, other
+  rows own none, and absent loaded rows reject instead of falling back to byte
+  shape. The helper now follows an explicit `NWN_BRIDGE_VISUALEFFECTS_2DA`
+  source or the observed `Module_Info` HAK order, invalidates cached table state
+  when a new HAK stack is observed, and only treats a direct base-game table as
+  authoritative after the server proves a zero-HAK module. Both looping-effect
+  `U/* 0x00000008` records and creature status-effect helper cursors now use
+  that row policy before the conservative no-table single-target fallback.
+  Public fixture-free coverage proves mixed target / no-target row boundaries
+  with loaded table state and rejection of missing target bytes / absent rows.
+  Verified with `cargo test -q -p hgbridge-proxy2 loaded_visualeffects --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 creature_status_effect_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  looping_effect_target_payload_owns_dword_object_id_plus_byte -- --nocapture`,
+  `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`.~~
 - ~~2026-05-27 `P/05/01` creature update interleaved-fragment cursor audit:
   removed the last adjacent `bit_cursor +/- 1` retry from the `U/5` compact
   fragment-span promoter. The EE/Diamond live-object dispatcher hands each
@@ -700,6 +719,17 @@ Current status:
   and rejection of a repository move whose OBJECTID is at the update/delete
   cursor. Verified with `cargo test -q -p hgbridge-proxy2 live_gui_ --
   --nocapture`.~~
+- ~~2026-05-27 `P/05/01` live GUI `G/S` isolated-cursor audit: tightened the
+  character-sheet candidate selector to match the earlier decompile proof from
+  EE `CNWSMessage::WriteGameObjUpdate_CharacterSheet` (`0x1404E6880`) and
+  client `sub_1407B2740`. A following-boundary candidate may claim a bounded
+  byte record, but an isolated `G S` record must consume the exact final CNW
+  fragment cursor; the old most-bits-consumed fallback could otherwise treat a
+  byte-complete character sheet as exact while leaving unowned fragment bits.
+  Public fixture-free coverage now proves that an isolated `G S` with a zero
+  mask and one extra fragment bit stays unclaimed. Verified with `cargo test
+  -q -p hgbridge-proxy2 live_gui_character_sheet_ -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 live_gui -- --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

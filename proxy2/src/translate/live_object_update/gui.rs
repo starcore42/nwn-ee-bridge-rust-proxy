@@ -343,11 +343,6 @@ fn try_get_live_gui_character_sheet_claim(
         .iter()
         .copied()
         .find(|claim| claim.next_bit_cursor == fragment_bits.len())
-        .or_else(|| {
-            full_record_candidates
-                .into_iter()
-                .max_by_key(|claim| claim.next_bit_cursor)
-        })
 }
 
 fn looks_like_following_live_gui_character_sheet_boundary(
