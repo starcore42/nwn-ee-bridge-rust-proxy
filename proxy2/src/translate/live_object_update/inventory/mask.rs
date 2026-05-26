@@ -102,14 +102,18 @@ fn generic_inventory_candidates_after_mask(
         trace_inventory_stage(mask, "0001", &candidates);
     }
     if (mask & 0x0002) != 0 {
+        // Diamond `sub_455940` / EE `sub_1407B4F70`: one DWORD, no BOOLs.
         candidates = advance_candidates(&candidates, record_end, 4, 0);
         trace_inventory_stage(mask, "0002", &candidates);
     }
     if (mask & 0x0008) != 0 {
+        // Diamond `sub_455940` / EE `sub_1407B4F70`: one DWORD state field,
+        // no BOOLs. Later mask branches own the next fragment bit.
         candidates = advance_candidates(&candidates, record_end, 4, 0);
         trace_inventory_stage(mask, "0008", &candidates);
     }
     if (mask & 0x8000) != 0 {
+        // Diamond `sub_455940` / EE `sub_1407B4F70`: three INTs, no BOOLs.
         candidates = advance_candidates(&candidates, record_end, 12, 0);
         trace_inventory_stage(mask, "8000", &candidates);
     }
@@ -616,6 +620,72 @@ mod tests {
             "extended 0x0001 cannot claim a truncated final byte/string tail"
         );
         assert_eq!(bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_fixed_scalar_masks_are_byte_only() {
+        // Verified EE/Diamond inventory order reads 0x0002 as one DWORD,
+        // 0x0008 as one DWORD, and 0x8000 as three INTs. None of these fixed
+        // scalar branches consumes a fragment BOOL.
+        let record = inventory_mask_record(
+            0x800A,
+            &[
+                0x11, 0x22, 0x33, 0x44, // 0x0002 DWORD
+                0x55, 0x66, 0x77, 0x88, // 0x0008 DWORD
+                0x01, 0x00, 0x00, 0x00, // 0x8000 INT 0
+                0x02, 0x00, 0x00, 0x00, // 0x8000 INT 1
+                0x03, 0x00, 0x00, 0x00, // 0x8000 INT 2
+            ],
+        );
+
+        let mut bit_cursor = 0usize;
+        let claim =
+            advance_verified_inventory_record(&record, 0, record.len(), &[], &mut bit_cursor)
+                .expect("fixed scalar inventory masks should claim without fragment BOOLs");
+        assert_eq!(claim.fragment_bits, 0);
+        assert_eq!(bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_fixed_scalar_masks_hand_off_to_following_0200_selector() {
+        // Since 0x0002/0x0008/0x8000 are byte-only, the following 0x0200 branch
+        // owns the first two fragment BOOLs. The second BOOL must be false for
+        // the DWORD zero-count path.
+        let mut body = vec![
+            0x11, 0x22, 0x33, 0x44, // 0x0002 DWORD
+            0x55, 0x66, 0x77, 0x88, // 0x0008 DWORD
+            0x01, 0x00, 0x00, 0x00, // 0x8000 INT 0
+            0x02, 0x00, 0x00, 0x00, // 0x8000 INT 1
+            0x03, 0x00, 0x00, 0x00, // 0x8000 INT 2
+        ];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        let record = inventory_mask_record(0x820A, &body);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false],
+            &mut bit_cursor,
+        )
+        .expect("0x0200 selector BOOLs should follow fixed scalar bytes");
+        assert_eq!(claim.fragment_bits, 2);
+        assert_eq!(bit_cursor, 2);
+
+        let mut shifted_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, true],
+                &mut shifted_cursor,
+            )
+            .is_none(),
+            "fixed scalar branches must not shift the 0x0200 layout selector"
+        );
+        assert_eq!(shifted_cursor, 0);
     }
 
     #[test]

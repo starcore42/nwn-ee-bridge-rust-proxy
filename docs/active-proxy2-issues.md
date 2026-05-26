@@ -558,6 +558,25 @@ Current status:
   EE's newer build-gated first tail scalar is DWORD-sized; proxy2 still claims
   only the Diamond/HG legacy BYTE path until an EE-to-EE or target-server
   reference needs that variant.
+- 2026-05-26 `P/05/01` inventory fragment-neutral branch audit: no packet
+  behavior changed, but public fixture-free coverage now proves the
+  decompile-backed cursor rules for adjacent generic mask branches that can
+  otherwise hide shifted fragment BOOLs. Diamond `sub_455940` and EE
+  `sub_1407B4F70` read `0x0002`/`0x0008` as DWORDs, `0x8000` as three INTs,
+  `0x0080`/`0x0040` as grouped ten-bit byte values, and `0x0004` as two
+  counted three-byte icon/list tuple streams, all without `ReadBOOL`.
+  Legacy-build `0x0010` reads three simple category pairs without BOOLs, while
+  `0x0020` reads three rich categories where only each second-list row owns two
+  CNW BOOLs after its seven read-buffer bytes. Tests now prove fixed-scalar
+  handoff to `0x0200`, ten-bit handoff to `0x4000`, `0x0024`
+  rich-category -> icon-list handoff, icon-list -> `0x0200` handoff, and
+  rejection of truncated ten-bit/rich/icon tuple bodies. Verified with
+  `cargo test -q -p hgbridge-proxy2 inventory_00 -- --nocapture`,
+  focused `inventory_0040_`, `inventory_0080_`, `inventory_0010_`,
+  `inventory_002`, `inventory_0004_`, `inventory_0024_`, and
+  `inventory_ten_bit_group` filters, full `cargo test -q -p hgbridge-proxy2
+  inventory -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
+  and `cargo check -q -p hgbridge-proxy2`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
