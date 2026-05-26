@@ -495,6 +495,15 @@ Current status:
   when the second BOOL selects the byte-mask branch. Verified with `cargo test
   -q -p hgbridge-proxy2 inventory_0200_ -- --nocapture` and `cargo test -q -p
   hgbridge-proxy2 inventory -- --nocapture`.
+- 2026-05-26 `P/05/01` inventory `0x0400` equipment-delta cursor audit: no
+  packet behavior changed, but public fixture-free coverage now proves the
+  Diamond `sub_455940` (`00457182..004572D2`) and EE `sub_1407B4F70`
+  (`1407B6D51..1407B6FA9`) legacy-build order. Clear slots consume only
+  read-buffer bytes; set slots consume one CNW BOOL each; and those set-slot
+  BOOLs are owned before a following `0x0200` branch reads its two BOOLs. The
+  tests also reject truncated clear/set byte lists and byte-complete records
+  with missing set-slot BOOLs. Verified with `cargo test -q -p hgbridge-proxy2
+  inventory_0400_ -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
