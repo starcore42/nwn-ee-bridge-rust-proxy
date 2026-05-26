@@ -255,15 +255,28 @@ fn creature_status_effect_mixed_target_payload_rows_stay_unclaimed_without_2da()
     );
 }
 
-fn c40f_creature_update_with_adjacent_fragment_span() -> (Vec<u8>, usize, Vec<bool>, Vec<u8>) {
+fn creature_update_with_adjacent_fragment_span(
+    raw_mask: u32,
+) -> (Vec<u8>, usize, Vec<bool>, Vec<u8>) {
     let mut live = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
-    live.extend_from_slice(&0x0000_C40Fu32.to_le_bytes());
+    live.extend_from_slice(&raw_mask.to_le_bytes());
     live.extend_from_slice(&[0; 6]); // 0x0001 position: WORD, WORD, WORD + 2 bits.
     live.push(0); // 0x0002 scalar orientation: one BYTE + four bits.
     live.extend_from_slice(&0u32.to_le_bytes()); // 0x0004 action scalar.
     live.extend_from_slice(&0u16.to_le_bytes()); // 0x0004 action code.
-    live.extend_from_slice(&0u16.to_le_bytes());
-    live.extend_from_slice(&[0; 8]); // 0x0400 four WORD scalar/status values.
+    if !matches!(raw_mask, 0x0000_C40F | 0x0000_C44F) {
+        live.push(0); // 0x0004 action state byte.
+        live.extend_from_slice(&0u16.to_le_bytes()); // 0x0004 action follow-up count.
+    }
+    if (raw_mask & 0x0000_0008) != 0 {
+        live.extend_from_slice(&0u16.to_le_bytes()); // status-effect count.
+    }
+    if (raw_mask & 0x0000_0040) != 0 {
+        live.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // WORD, BYTE, WORD, BYTE.
+    }
+    if (raw_mask & 0x0000_0400) != 0 {
+        live.extend_from_slice(&[0; 8]); // 0x0400 four WORD scalar/status values.
+    }
     let read_end = live.len();
     let span = super::bits::pack_msb_valid_bits(
         vec![false, false, false, true, false, true],
@@ -271,11 +284,17 @@ fn c40f_creature_update_with_adjacent_fragment_span() -> (Vec<u8>, usize, Vec<bo
     );
     live.extend_from_slice(&span);
 
-    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + 18];
-    // Bit order at the decompiled C40F cursor:
+    let current_record_bits = 2 // 0x0001 residual position bits.
+        + 6 // 0x0002 scalar branch: selector, four scalar bits, target guard.
+        + if (raw_mask & 0x0000_0040) != 0 { 1 } else { 0 }
+        + if (raw_mask & 0x0000_4000) != 0 { 7 } else { 0 }
+        + if (raw_mask & 0x0000_8000) != 0 { 3 } else { 0 };
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + current_record_bits];
+    // Bit order at the decompiled C40F/C44F/8047 cursor:
     //   0x0001 owns two residual position bits,
     //   0x0002 owns scalar-orientation selector + one BYTE + four scalar bits,
     //   the optional orientation target guard can own one BOOL,
+    //   0x0040 owns one state BOOL when present,
     //   0x4000 owns seven status BOOLs,
     //   0x8000 owns three self-visibility BOOLs.
     // The first scalar bit is true so starting one bit late makes the
@@ -287,48 +306,66 @@ fn c40f_creature_update_with_adjacent_fragment_span() -> (Vec<u8>, usize, Vec<bo
 
 #[test]
 fn creature_interleaved_fragment_span_requires_exact_bit_cursor() {
-    let (mut live, read_end, mut fragment_bits, span) =
-        c40f_creature_update_with_adjacent_fragment_span();
-    let old_record_end = live.len();
-    let mut record_end = old_record_end;
+    for (raw_mask, name) in [
+        (0x0000_C40F, "C40F"),
+        (0x0000_C44F, "C44F"),
+        (0x0000_8047, "8047"),
+    ] {
+        let (mut live, read_end, mut fragment_bits, span) =
+            creature_update_with_adjacent_fragment_span(raw_mask);
+        let old_record_end = live.len();
+        let mut record_end = old_record_end;
 
-    let shifted_cursor = super::CNW_FRAGMENT_HEADER_BITS + 1;
-    assert!(
-        super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
-            &mut live,
-            &mut fragment_bits,
-            0,
-            &mut record_end,
-            shifted_cursor,
-        )
-        .is_none(),
-        "the span promoter must not retry at a neighboring fragment cursor"
-    );
-    assert_eq!(record_end, old_record_end);
-    assert_eq!(live.len(), old_record_end);
-    assert_eq!(read_end + span.len(), old_record_end);
+        let shifted_cursor = super::CNW_FRAGMENT_HEADER_BITS + 1;
+        assert!(
+            super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
+                &mut live,
+                &mut fragment_bits,
+                0,
+                &mut record_end,
+                shifted_cursor,
+            )
+            .is_none(),
+            "{name} span promoter must not retry at a neighboring fragment cursor"
+        );
+        assert_eq!(record_end, old_record_end, "{name} record_end changed");
+        assert_eq!(live.len(), old_record_end, "{name} live bytes changed");
+        assert_eq!(read_end + span.len(), old_record_end, "{name} span length");
+    }
 }
 
 #[test]
 fn creature_interleaved_fragment_span_promotes_from_exact_bit_cursor() {
-    let (mut live, read_end, mut fragment_bits, span) =
-        c40f_creature_update_with_adjacent_fragment_span();
-    let old_record_end = live.len();
-    let mut record_end = old_record_end;
+    for (raw_mask, name) in [
+        (0x0000_C40F, "C40F"),
+        (0x0000_C44F, "C44F"),
+        (0x0000_8047, "8047"),
+    ] {
+        let (mut live, read_end, mut fragment_bits, span) =
+            creature_update_with_adjacent_fragment_span(raw_mask);
+        let old_record_end = live.len();
+        let mut record_end = old_record_end;
 
-    let promoted = super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
-        &mut live,
-        &mut fragment_bits,
-        0,
-        &mut record_end,
-        super::CNW_FRAGMENT_HEADER_BITS,
-    )
-    .expect("the C40F span should promote from the exact inherited bit cursor");
+        let promoted =
+            super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
+                &mut live,
+                &mut fragment_bits,
+                0,
+                &mut record_end,
+                super::CNW_FRAGMENT_HEADER_BITS,
+            )
+            .unwrap_or_else(|| {
+                panic!("{name} span should promote from the exact inherited bit cursor")
+            });
 
-    assert_eq!(promoted.read_end, read_end);
-    assert_eq!(promoted.old_record_end, old_record_end);
-    assert_eq!(promoted.bytes_promoted, span.len());
-    assert_eq!(promoted.bits_promoted, 3);
-    assert_eq!(record_end, read_end);
-    assert_eq!(live.len(), read_end);
+        assert_eq!(promoted.read_end, read_end, "{name} read_end");
+        assert_eq!(
+            promoted.old_record_end, old_record_end,
+            "{name} old_record_end"
+        );
+        assert_eq!(promoted.bytes_promoted, span.len(), "{name} span bytes");
+        assert_eq!(promoted.bits_promoted, 3, "{name} payload bits");
+        assert_eq!(record_end, read_end, "{name} record_end");
+        assert_eq!(live.len(), read_end, "{name} live length");
+    }
 }
