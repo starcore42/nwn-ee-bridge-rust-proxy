@@ -225,6 +225,13 @@ fn parse_looping_visual_effect_entries(
     }
 
     let count = usize::from(count);
+    if transform_maps_seen != 0 && transform_maps_seen != count {
+        // EE build-0x23 owns one ObjectVisualTransformData map after every row,
+        // while the Diamond/HG legacy path owns none. A mixed list means the
+        // next row boundary is already ambiguous, so quarantine it instead of
+        // duplicating a map before rows that were already EE-shaped.
+        return None;
+    }
     Some(LoopingVisualEffectList {
         insert_offsets_after_short_entries,
         already_ee_shaped: transform_maps_seen == count,
@@ -310,5 +317,43 @@ mod tests {
         assert!(is_verified_ee_looping_visual_effect_update_record(
             &record, 0, record_end
         ));
+    }
+
+    #[test]
+    fn mixed_looping_effect_transform_rows_remain_unclaimed() {
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x02,
+            0x00,
+            b'A',
+            0xB6,
+            0x00,
+        ];
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+        record.extend_from_slice(&[b'A', 0xF3, 0x00]);
+        let mut record_end = record.len();
+
+        assert!(
+            rewrite_legacy_looping_visual_effect_update_for_ee(&mut record, 0, &mut record_end)
+                .is_none(),
+            "a partial EE/legacy effect list has no decompile-backed row boundary"
+        );
+        assert!(
+            !is_verified_ee_looping_visual_effect_update_record(&record, 0, record_end),
+            "the same mixed list is not exact EE because the second row lacks its map"
+        );
+        assert!(
+            !has_legacy_looping_visual_effect_body_without_mask(&record, 0, record_end),
+            "the mixed list must not be treated as the all-legacy Diamond shape"
+        );
     }
 }

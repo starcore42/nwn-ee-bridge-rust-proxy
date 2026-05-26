@@ -590,6 +590,16 @@ Current status:
   `inventory_ten_bit_group` filters, full `cargo test -q -p hgbridge-proxy2
   inventory -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
+- ~~2026-05-26 `P/05/01` looping visual-effect update mixed-map audit: fixed
+  exact ownership so a `U/* 0x00000008` row list may be all Diamond/HG short
+  rows or all EE build-0x23 rows with `ObjectVisualTransformData`, but not a
+  mixed partial rewrite. EE `sub_1407B1F00` reads the compact count/opcode/WORD
+  rows and, on the modern visual-transform branch, owns one transform map after
+  every row; a per-row mixture leaves the next boundary ambiguous and must stay
+  quarantined instead of receiving duplicate maps. Public fixture-free coverage
+  now proves mixed rows are neither rewritten nor exact-claimed. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  mixed_looping_effect_transform_rows_remain_unclaimed -- --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
