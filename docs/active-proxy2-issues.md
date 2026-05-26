@@ -504,6 +504,18 @@ Current status:
   tests also reject truncated clear/set byte lists and byte-complete records
   with missing set-slot BOOLs. Verified with `cargo test -q -p hgbridge-proxy2
   inventory_0400_ -- --nocapture`.
+- 2026-05-26 `P/05/01` inventory `0x0800`/`0x1000` cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the adjacent
+  Diamond `sub_455940` and EE `sub_1407B4F70` branches. `0x0800` reads one CNW
+  BOOL; false consumes no read-buffer bytes, true consumes exactly twelve
+  BYTEs before the later `0x4000` state stream. `0x1000` is local UI-state work
+  and consumes no bytes or BOOLs (`004559D0..00455AAD` / `1407B50D7..1407B51ED`).
+  The tests prove the selector-only false branch, exact twelve-byte true branch,
+  `0x0800`-before-`0x4000` bit order, missing `0x4000` `U` row BOOL rejection,
+  and no phantom `0x1000` cursor. Verified with `cargo test -q -p
+  hgbridge-proxy2 inventory_0800_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 inventory_1000_ -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 inventory -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -165,8 +165,10 @@ fn generic_inventory_candidates_after_mask(
         trace_inventory_stage(mask, "0800", &candidates);
     }
     if (mask & 0x1000) != 0 {
-        // EE and Diamond both treat this inventory bit as local UI-state clear.
-        // No read-buffer bytes or CNW fragment BOOLs are consumed.
+        // Diamond `sub_455940` (004559D0..00455AAD) and EE `sub_1407B4F70`
+        // (1407B50D7..1407B51ED) both treat this inventory bit as local
+        // UI-state clear. No read-buffer bytes or CNW fragment BOOLs are
+        // consumed, so its relative position cannot move the cursor.
     }
     if (mask & 0x4000) != 0 {
         candidates = apply_4000(bytes, &candidates, record_end);
@@ -321,6 +323,10 @@ fn apply_0800(
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
 ) -> Vec<GenericInventoryCandidate> {
+    // Diamond `sub_455940` (0045816C..0045823C) and EE `sub_1407B4F70`
+    // (1407B7DDB..1407B7EEA) both read one CNW BOOL for mask 0x0800. The
+    // false branch consumes no read-buffer bytes; the true branch consumes the
+    // following twelve BYTEs before control reaches the later 0x4000 branch.
     let mut next = Vec::with_capacity(candidates.len().saturating_mul(2));
     for candidate in candidates {
         if let Some(candidate) = candidate
@@ -421,6 +427,14 @@ mod tests {
         for row in rows {
             record.extend_from_slice(row);
         }
+        record
+    }
+
+    fn inventory_mask_record(mask: u16, body: &[u8]) -> Vec<u8> {
+        let mut record = vec![b'I'];
+        record.extend_from_slice(&LEGACY_INVENTORY_CURRENT_PLAYER_OWNER.to_le_bytes());
+        record.extend_from_slice(&mask.to_le_bytes());
+        record.extend_from_slice(body);
         record
     }
 
@@ -554,5 +568,154 @@ mod tests {
                 .is_none(),
             "0x4000 `U` rows must own the final WORD after their BOOL/BYTE fields"
         );
+    }
+
+    #[test]
+    fn inventory_0800_false_branch_consumes_selector_only() {
+        // Diamond sub_455940 and EE sub_1407B4F70 both read one BOOL for mask
+        // 0x0800. When that BOOL is false, the branch owns no read-buffer
+        // bytes before the next mask bit is considered.
+        let record = inventory_mask_record(0x0800, &[]);
+
+        let candidate =
+            try_parse_generic_inventory_claim_with_branching(&record, 0, record.len(), 0x0800)
+                .expect("0x0800 false branch should parse at the current read cursor");
+        assert_eq!(candidate.cursor, record.len());
+        assert_eq!(candidate.bits, 1);
+
+        let mut bit_cursor = 0usize;
+        let claim =
+            advance_verified_inventory_record(&record, 0, record.len(), &[false], &mut bit_cursor)
+                .expect("0x0800 false branch should consume exactly one selector BOOL");
+        assert_eq!(claim.fragment_bits, 1);
+        assert_eq!(bit_cursor, 1);
+
+        let mut missing_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(&record, 0, record.len(), &[], &mut missing_cursor)
+                .is_none(),
+            "a byte-complete 0x0800 false branch is not exact without its selector BOOL"
+        );
+        assert_eq!(missing_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_0800_true_branch_consumes_exact_twelve_byte_tail() {
+        // With the 0x0800 selector true, both clients read exactly twelve
+        // BYTEs. A false selector against the same bytes would leave those
+        // bytes for the following mask branch, so exact validation must reject
+        // it instead of choosing a semantically plausible shorter cursor.
+        let record = inventory_mask_record(
+            0x0800,
+            &[
+                0xAA, 0xBB, 0x10, 0x11, 0x12, 0x13, 0xCC, 0xDD, 0x20, 0x21, 0x22, 0x23,
+            ],
+        );
+
+        let mut bit_cursor = 0usize;
+        let claim =
+            advance_verified_inventory_record(&record, 0, record.len(), &[true], &mut bit_cursor)
+                .expect("0x0800 true branch should claim the twelve read-buffer bytes");
+        assert_eq!(claim.fragment_bits, 1);
+        assert_eq!(bit_cursor, 1);
+
+        let mut false_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[false],
+                &mut false_cursor
+            )
+            .is_none(),
+            "the false selector must not be accepted when the twelve-byte 0x0800 tail is present"
+        );
+        assert_eq!(false_cursor, 0);
+
+        let truncated = inventory_mask_record(0x0800, &[0xAA; 11]);
+        assert!(
+            try_parse_generic_inventory_claim_with_branching(
+                &truncated,
+                0,
+                truncated.len(),
+                0x0800
+            )
+            .is_none(),
+            "the true 0x0800 branch owns exactly twelve bytes, not a short prefix"
+        );
+    }
+
+    #[test]
+    fn inventory_0800_selector_precedes_following_4000_update_bool() {
+        // The 0x0800 selector is consumed before the later 0x4000 row stream.
+        // A `U` row in the 0x4000 stream therefore owns the second fragment
+        // BOOL, never the first one.
+        let mut body = vec![
+            0xAA, 0xBB, 0x10, 0x11, 0x12, 0x13, 0xCC, 0xDD, 0x20, 0x21, 0x22, 0x23,
+        ];
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&[b'U', 0x33, 0x44, 0x55, 0x66, 0x77]);
+        let record = inventory_mask_record(0x4800, &body);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false],
+            &mut bit_cursor,
+        )
+        .expect("0x0800 true selector should precede the 0x4000 `U` row BOOL");
+        assert_eq!(claim.fragment_bits, 2);
+        assert_eq!(bit_cursor, 2);
+
+        let mut missing_update_bool_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true],
+                &mut missing_update_bool_cursor,
+            )
+            .is_none(),
+            "a following 0x4000 `U` row still needs its own BOOL after the 0x0800 selector"
+        );
+        assert_eq!(missing_update_bool_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_1000_consumes_no_bytes_or_bools() {
+        // The decompiled 0x1000 branch is local UI-state work in both clients;
+        // it does not read from the message. It must therefore not add a
+        // fragment bit between 0x0800 and 0x4000 or require any standalone
+        // branch body.
+        let record = inventory_mask_record(0x1000, &[]);
+        let mut bit_cursor = 0usize;
+        let claim =
+            advance_verified_inventory_record(&record, 0, record.len(), &[], &mut bit_cursor)
+                .expect("standalone 0x1000 should exact-claim without cursor movement");
+        assert_eq!(claim.fragment_bits, 0);
+        assert_eq!(bit_cursor, 0);
+
+        let mut body = vec![
+            0xAA, 0xBB, 0x10, 0x11, 0x12, 0x13, 0xCC, 0xDD, 0x20, 0x21, 0x22, 0x23,
+        ];
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&[b'U', 0x33, 0x44, 0x55, 0x66, 0x77]);
+        let combined = inventory_mask_record(0x5800, &body);
+
+        let mut combined_cursor = 0usize;
+        let combined_claim = advance_verified_inventory_record(
+            &combined,
+            0,
+            combined.len(),
+            &[true, true],
+            &mut combined_cursor,
+        )
+        .expect("0x1000 must not insert a phantom BOOL before 0x4000");
+        assert_eq!(combined_claim.fragment_bits, 2);
+        assert_eq!(combined_cursor, 2);
     }
 }
