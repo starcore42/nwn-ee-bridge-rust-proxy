@@ -13,6 +13,8 @@ const LEGACY_CREATURE_UPDATE_C40F_MASK: u32 = 0x0000_C40F;
 const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const VFX_DUR_LOWLIGHTVISION_ROW: u16 = 0x00F3;
+const CREATURE_STATUS_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES: usize = 3;
+const MAX_CREATURE_STATUS_EFFECT_COMPACT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: usize = 1;
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES: [u8; 2] = [0, 0];
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_WOE_BRIDGE_BLOCK_BYTES: [u8; 11] =
     [0, 0, 0, 0, 0x80, 0x3F, 1, 0, 0, 0, 0];
@@ -3660,6 +3662,8 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
         return false;
     }
 
+    let mut compact_target_payload_entries = 0usize;
+    let mut immediate_map_entries = 0usize;
     for _ in 0..count {
         if cursor.advance_read(3).is_none() {
             return false;
@@ -3677,10 +3681,14 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
             {
                 return false;
             }
+            immediate_map_entries = immediate_map_entries.saturating_add(1);
             continue;
         }
 
-        let Some(after_compact_target) = cursor.read_cursor.checked_add(3) else {
+        let Some(after_compact_target) = cursor
+            .read_cursor
+            .checked_add(CREATURE_STATUS_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES)
+        else {
             return false;
         };
         if !super::visual_transform::has_ee_object_visual_transform_identity_at(
@@ -3690,7 +3698,10 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
         ) {
             return false;
         }
-        if cursor.advance_read(3).is_none()
+        compact_target_payload_entries = compact_target_payload_entries.saturating_add(1);
+        if cursor
+            .advance_read(CREATURE_STATUS_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES)
+            .is_none()
             || cursor
                 .advance_read(
                     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
@@ -3699,6 +3710,20 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
         {
             return false;
         }
+    }
+    if compact_target_payload_entries != 0
+        && (compact_target_payload_entries != usize::from(count)
+            || immediate_map_entries != 0
+            || compact_target_payload_entries
+                > MAX_CREATURE_STATUS_EFFECT_COMPACT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA)
+    {
+        // EE `sub_1407B1F00` checks the resolved visualeffects.2da row before
+        // optionally reading this compact OBJECTID+BYTE target payload. Until
+        // proxy2 has row-type state at this cursor, only the single-entry
+        // target-payload shape proven by captures can be exact-owned. Mixed or
+        // multi-entry target lists otherwise make the next row/map boundary a
+        // guess even when the byte cursor can be made to land exactly.
+        return false;
     }
     true
 }

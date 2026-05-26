@@ -600,6 +600,16 @@ Current status:
   now proves mixed rows are neither rewritten nor exact-claimed. Verified with
   `cargo test -q -p hgbridge-proxy2
   mixed_looping_effect_transform_rows_remain_unclaimed -- --nocapture`.~~
+- ~~2026-05-26 `P/05/01` creature status-effect compact-target audit: tightened
+  the combined `U/5` status-effect cursor so EE-shaped rows with the optional
+  compact target payload are exact-owned only for the single-entry shape proven
+  without `visualeffects.2da` row-type state. EE `sub_1407B1F00` reads any
+  row-type target payload before `ObjectVisualTransformData`; mixed target /
+  no-target rows or multi-row target payload lists make the row/map boundary a
+  guess even when the byte cursor can land exactly. Fixture-free public-repo
+  coverage now proves single compact-target acceptance and multi/mixed target rejection.
+  Verified with `cargo test -q -p hgbridge-proxy2 creature_status_effect_ --
+  --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

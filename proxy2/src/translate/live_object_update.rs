@@ -32,6 +32,8 @@ mod creature_add;
 mod cursor;
 mod door;
 mod effects;
+#[cfg(test)]
+mod fixture_free_tests;
 mod fragment_spans;
 mod gui;
 mod inventory;
