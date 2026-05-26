@@ -635,6 +635,14 @@ Current status:
   `cargo test -q -p hgbridge-proxy2
   creature_interleaved_fragment_span_requires_exact_bit_cursor -- --nocapture`,
   plus focused `3967`, `c40f`, and `c44f` capture-backed filters.
+- 2026-05-27 `P/05/01` C40F interleaved-fragment fixture-free audit: fixed the
+  previous cursor-regression seed so it exercises a real promoter-owned
+  `U/5 0xC40F` family instead of returning early on unsupported `0xC408`.
+  The public test now proves both exact inherited-cursor promotion and
+  neighboring shifted-cursor rejection, including the scalar-orientation
+  split of one read-buffer BYTE plus four CNW fragment bits before the
+  status BOOLs. Verified with `cargo test -q -p hgbridge-proxy2
+  creature_interleaved_fragment_span_ -- --nocapture`.
 - ~~2026-05-27 `P/05/01` live GUI `G/S` character-sheet build-mode cursor
   audit: fixed candidate selection so the exact validator no longer accepts the
   first byte-plausible legacy parse when the isolated record's owned fragment

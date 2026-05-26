@@ -242,22 +242,43 @@ fn creature_status_effect_mixed_target_payload_rows_stay_unclaimed_without_2da()
     );
 }
 
-#[test]
-fn creature_interleaved_fragment_span_requires_exact_bit_cursor() {
+fn c40f_creature_update_with_adjacent_fragment_span() -> (Vec<u8>, usize, Vec<bool>, Vec<u8>) {
     let mut live = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
-    live.extend_from_slice(&0x0000_C408u32.to_le_bytes());
+    live.extend_from_slice(&0x0000_C40Fu32.to_le_bytes());
+    live.extend_from_slice(&[0; 6]); // 0x0001 position: WORD, WORD, WORD + 2 bits.
+    live.push(0); // 0x0002 scalar orientation: one BYTE + four bits.
+    live.extend_from_slice(&0u32.to_le_bytes()); // 0x0004 action scalar.
+    live.extend_from_slice(&0u16.to_le_bytes()); // 0x0004 action code.
     live.extend_from_slice(&0u16.to_le_bytes());
-    live.extend_from_slice(&[0; 8]);
+    live.extend_from_slice(&[0; 8]); // 0x0400 four WORD scalar/status values.
     let read_end = live.len();
     let span = super::bits::pack_msb_valid_bits(
         vec![false, false, false, true, false, true],
         super::CNW_FRAGMENT_HEADER_BITS,
     );
     live.extend_from_slice(&span);
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + 18];
+    // Bit order at the decompiled C40F cursor:
+    //   0x0001 owns two residual position bits,
+    //   0x0002 owns scalar-orientation selector + one BYTE + four scalar bits,
+    //   the optional orientation target guard can own one BOOL,
+    //   0x4000 owns seven status BOOLs,
+    //   0x8000 owns three self-visibility BOOLs.
+    // The first scalar bit is true so starting one bit late makes the
+    // orientation selector look like the vector branch and fail exact proof.
+    fragment_bits[super::CNW_FRAGMENT_HEADER_BITS + 3] = true;
+
+    (live, read_end, fragment_bits, span)
+}
+
+#[test]
+fn creature_interleaved_fragment_span_requires_exact_bit_cursor() {
+    let (mut live, read_end, mut fragment_bits, span) =
+        c40f_creature_update_with_adjacent_fragment_span();
     let old_record_end = live.len();
     let mut record_end = old_record_end;
 
-    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + 10];
     let shifted_cursor = super::CNW_FRAGMENT_HEADER_BITS + 1;
     assert!(
         super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
@@ -273,4 +294,28 @@ fn creature_interleaved_fragment_span_requires_exact_bit_cursor() {
     assert_eq!(record_end, old_record_end);
     assert_eq!(live.len(), old_record_end);
     assert_eq!(read_end + span.len(), old_record_end);
+}
+
+#[test]
+fn creature_interleaved_fragment_span_promotes_from_exact_bit_cursor() {
+    let (mut live, read_end, mut fragment_bits, span) =
+        c40f_creature_update_with_adjacent_fragment_span();
+    let old_record_end = live.len();
+    let mut record_end = old_record_end;
+
+    let promoted = super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
+        &mut live,
+        &mut fragment_bits,
+        0,
+        &mut record_end,
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("the C40F span should promote from the exact inherited bit cursor");
+
+    assert_eq!(promoted.read_end, read_end);
+    assert_eq!(promoted.old_record_end, old_record_end);
+    assert_eq!(promoted.bytes_promoted, span.len());
+    assert_eq!(promoted.bits_promoted, 3);
+    assert_eq!(record_end, read_end);
+    assert_eq!(live.len(), read_end);
 }
