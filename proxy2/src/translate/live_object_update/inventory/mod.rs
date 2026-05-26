@@ -228,11 +228,23 @@ pub(super) fn advance_verified_inventory_record(
     }
 
     let candidate = try_get_legacy_live_inventory_claim_candidate(bytes, offset, record_end)?;
-    if candidate.bits > fragment_bits.len().saturating_sub(*bit_cursor)
-        || !candidate.fragment_requirements_match(fragment_bits, *bit_cursor)
+    let candidate = if candidate.bits <= fragment_bits.len().saturating_sub(*bit_cursor)
+        && candidate.fragment_requirements_match(fragment_bits, *bit_cursor)
     {
-        return None;
-    }
+        candidate
+    } else {
+        // Ambiguous generic inventory masks can have multiple byte-valid
+        // candidates with different fragment-BOOL requirements.  The exact
+        // verifier must choose by the decompiled BOOL stream, not by the first
+        // semantically plausible byte cursor.
+        try_get_generic_live_inventory_claim_candidate_matching_fragment_bits(
+            bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            *bit_cursor,
+        )?
+    };
     *bit_cursor = bit_cursor.saturating_add(candidate.bits);
     Some(InventoryRecordClaim {
         fragment_bits: candidate.bits,
@@ -373,6 +385,48 @@ fn try_get_legacy_live_inventory_claim_candidate(
     }
 
     None
+}
+
+fn try_get_generic_live_inventory_claim_candidate_matching_fragment_bits(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<GenericInventoryCandidate> {
+    if record_offset > bytes.len()
+        || record_end > bytes.len()
+        || record_end <= record_offset
+        || record_end - record_offset < 7
+        || bytes.get(record_offset).copied() != Some(b'I')
+    {
+        return None;
+    }
+
+    let object_id = read_u32_le(bytes, record_offset + 1)?;
+    let mask = read_u16_le(bytes, record_offset + 5)?;
+    let object_id_is_legacy_shaped = matches!(object_id, 0xFFFF_FFFD | 0xFFFF_FFFE)
+        || looks_like_legacy_live_object_id_value(object_id)
+        || (mask == 0x0100 && inventory_0100_compact_session_owner_id_is_allowed(object_id))
+        || (mask == 0x2000 && inventory_2000_current_player_owner_id_is_allowed(object_id));
+    if !object_id_is_legacy_shaped || (mask & !GENERIC_INVENTORY_PARSE_MASK) != 0 {
+        return None;
+    }
+    if matches!(
+        mask,
+        0x0400 | 0x0401 | 0x2000 | 0x2400 | 0x2700 | 0x2A00 | 0x2E00 | 0x2E01 | 0xD5FF
+    ) {
+        return None;
+    }
+
+    try_parse_generic_inventory_claim_matching_fragment_bits(
+        bytes,
+        record_offset,
+        record_end,
+        mask,
+        fragment_bits,
+        bit_cursor,
+    )
 }
 
 pub(super) fn try_get_legacy_live_inventory_prefix_claim(

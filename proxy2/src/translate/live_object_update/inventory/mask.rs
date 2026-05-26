@@ -23,6 +23,42 @@ pub(super) fn try_parse_generic_inventory_claim_with_branching(
         .find(|candidate| candidate.cursor == record_end)
 }
 
+pub(super) fn try_parse_generic_inventory_claim_matching_fragment_bits(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    mask: u16,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<GenericInventoryCandidate> {
+    let mut candidates =
+        generic_inventory_candidates_after_mask(bytes, record_offset, record_end, mask)
+            .into_iter()
+            .filter(|candidate| {
+                candidate.cursor == record_end
+                    && candidate.bits <= fragment_bits.len().saturating_sub(bit_cursor)
+                    && candidate.fragment_requirements_match(fragment_bits, bit_cursor)
+            })
+            .collect::<Vec<_>>();
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.cursor,
+            candidate.bits,
+            candidate.required_true_bits,
+            candidate.required_false_bits,
+        )
+    });
+    candidates.dedup_by_key(|candidate| {
+        (
+            candidate.cursor,
+            candidate.bits,
+            candidate.required_true_bits,
+            candidate.required_false_bits,
+        )
+    });
+    (candidates.len() == 1).then(|| candidates[0])
+}
+
 pub(super) fn try_parse_generic_inventory_prefix_with_branching(
     bytes: &[u8],
     record_offset: usize,
@@ -365,6 +401,18 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
 mod tests {
     use super::*;
 
+    fn inventory_0200_record(cells: &[(u8, u8)]) -> Vec<u8> {
+        let mut record = vec![b'I'];
+        record.extend_from_slice(&LEGACY_INVENTORY_CURRENT_PLAYER_OWNER.to_le_bytes());
+        record.extend_from_slice(&0x0200u16.to_le_bytes());
+        record.extend_from_slice(&(cells.len() as u32).to_le_bytes());
+        for (x, y) in cells {
+            record.push(*x);
+            record.push(*y);
+        }
+        record
+    }
+
     fn inventory_4000_record(rows: &[&[u8]]) -> Vec<u8> {
         let mut record = vec![b'I'];
         record.extend_from_slice(&LEGACY_INVENTORY_CURRENT_PLAYER_OWNER.to_le_bytes());
@@ -374,6 +422,78 @@ mod tests {
             record.extend_from_slice(row);
         }
         record
+    }
+
+    #[test]
+    fn inventory_0200_zero_count_dword_branch_allows_either_first_bool() {
+        // Diamond sub_455940 and EE sub_1407B4F70 read two CNW BOOLs before
+        // the 0x0200 branch body. The second BOOL selects the DWORD-count
+        // path when false; with a zero count, the first BOOL owns state but no
+        // additional per-cell BOOLs. Exact validation must therefore choose
+        // the candidate whose BOOL requirements match the fragment stream
+        // instead of always picking the first byte-valid cursor.
+        let record = inventory_0200_record(&[]);
+
+        for first_bool in [false, true] {
+            let mut bit_cursor = 0usize;
+            let claim = advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[first_bool, false],
+                &mut bit_cursor,
+            )
+            .expect("0x0200 zero-count DWORD branch should accept either first BOOL");
+
+            assert_eq!(claim.fragment_bits, 2);
+            assert_eq!(bit_cursor, 2);
+        }
+
+        let mut bit_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, true],
+                &mut bit_cursor
+            )
+            .is_none(),
+            "the second 0x0200 BOOL still selects the byte-mask branch and must reject the DWORD cursor"
+        );
+        assert_eq!(bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_0200_counted_cells_true_first_bool_consumes_no_cell_bools() {
+        // For a nonzero DWORD-count body, the first 0x0200 BOOL chooses whether
+        // each counted two-byte cell owns an additional fragment BOOL. The true
+        // branch is byte-buffer only after the two branch BOOLs.
+        let record = inventory_0200_record(&[(2, 2), (3, 2)]);
+
+        let mut true_first_cursor = 0usize;
+        let true_first_claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false],
+            &mut true_first_cursor,
+        )
+        .expect("first BOOL true should choose the no-cell-BOOL 0x0200 cursor");
+        assert_eq!(true_first_claim.fragment_bits, 2);
+        assert_eq!(true_first_cursor, 2);
+
+        let mut false_first_cursor = 0usize;
+        let false_first_claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[false, false, true, false],
+            &mut false_first_cursor,
+        )
+        .expect("first BOOL false should consume one BOOL for each counted cell");
+        assert_eq!(false_first_claim.fragment_bits, 4);
+        assert_eq!(false_first_cursor, 4);
     }
 
     #[test]

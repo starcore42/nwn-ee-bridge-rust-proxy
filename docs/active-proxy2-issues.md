@@ -483,6 +483,18 @@ Current status:
   bit per `U` row, none for `S`, reject missing row bytes, and reject
   byte-complete records when the owned `U` BOOLs are absent. Verified with
   `cargo test -q -p hgbridge-proxy2 inventory_4000_state_stream -- --nocapture`.
+- 2026-05-26 `P/05/01` generic inventory `0x0200` branch-candidate audit:
+  fixed exact validation so ambiguous generic mask candidates are selected by
+  the owned fragment BOOL requirements instead of the first byte-valid cursor.
+  Diamond `sub_455940` and EE `sub_1407B4F70` read two BOOLs before the branch;
+  the second BOOL selects the DWORD-count path when false, while the first BOOL
+  controls whether counted cells own per-cell BOOLs and can vary on a zero
+  count without moving the read-buffer cursor. Public fixture-free coverage now
+  proves zero-count first BOOL false/true, counted-cell first BOOL true with no
+  cell BOOLs, counted-cell first BOOL false with per-cell BOOLs, and rejection
+  when the second BOOL selects the byte-mask branch. Verified with `cargo test
+  -q -p hgbridge-proxy2 inventory_0200_ -- --nocapture` and `cargo test -q -p
+  hgbridge-proxy2 inventory -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
