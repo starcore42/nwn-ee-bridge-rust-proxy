@@ -3585,6 +3585,10 @@ fn module_static_placeable_row_matches_resource(
     z: f32,
     placeable: &ModuleAreaPlaceable,
 ) -> bool {
+    // The static row itself contains no tag/resref.  Module-backed repair may
+    // only use the GIT row as the missing semantic authority after the packet
+    // proves the decompiled static row shape and the row has appearance plus at
+    // least two matching placement coordinates.
     const TOLERANCE: f32 = 0.01;
     if appearance != placeable.appearance {
         return false;
@@ -7518,6 +7522,118 @@ mod public_static_direction_tests {
         assert_eq!(
             payload, original,
             "ambiguous module matches must not rewrite appearance, position, or direction"
+        );
+    }
+
+    #[test]
+    fn module_static_row_repair_requires_appearance_plus_two_coordinates() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "two_coordinate_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let info = module_info_with_placeables(vec![placeable.clone()]);
+
+        let (mut one_coordinate_payload, one_fragment_offset, one_scan) =
+            static_placeable_source_row_payload(82, 10.0, 99.0, 88.0, 0.0, 0.0, 0.0);
+        legacy_area_source_tail_exact_read_proof(
+            &one_coordinate_payload,
+            one_fragment_offset,
+            &one_scan,
+        )
+        .expect("one-coordinate row still has a decompiled source cursor proof");
+        let one_original = one_coordinate_payload.clone();
+        let one_repairs = repair_module_resource_static_placeable_rows(
+            &mut one_coordinate_payload,
+            one_fragment_offset,
+            &one_scan,
+            &info,
+        )
+        .expect("non-matching row should leave the packet proof intact");
+        assert_eq!(
+            one_repairs, 0,
+            "appearance plus only one coordinate must not authorize a module-backed rewrite"
+        );
+        assert_eq!(
+            one_coordinate_payload, one_original,
+            "weak module matches must not rewrite position or direction bytes"
+        );
+
+        let (mut two_coordinate_payload, two_fragment_offset, two_scan) =
+            static_placeable_source_row_payload(82, 10.0, 20.0, 88.0, 0.0, 0.0, 0.0);
+        let two_proof = legacy_area_source_tail_exact_read_proof(
+            &two_coordinate_payload,
+            two_fragment_offset,
+            &two_scan,
+        )
+        .expect("two-coordinate row should have a decompiled source cursor proof");
+        let two_repairs = repair_module_resource_static_placeable_rows(
+            &mut two_coordinate_payload,
+            two_fragment_offset,
+            &two_scan,
+            &info,
+        )
+        .expect("unique two-coordinate row should be repairable from GIT state");
+        assert_eq!(two_repairs, 1);
+
+        let repaired_proof = legacy_area_source_tail_exact_read_proof(
+            &two_coordinate_payload,
+            two_fragment_offset,
+            &two_scan,
+        )
+        .expect("module repair must preserve the exact source cursor proof");
+        assert_eq!(
+            repaired_proof.static_rows_read_offset,
+            two_proof.static_rows_read_offset
+        );
+        assert_eq!(
+            repaired_proof.static_rows_count,
+            two_proof.static_rows_count
+        );
+        assert_eq!(
+            read_area_f32(
+                &two_coordinate_payload,
+                two_fragment_offset,
+                two_proof.static_rows_read_offset + 14
+            ),
+            Some(placeable.z),
+            "the unmatched third coordinate is repaired only after the two-coordinate proof"
+        );
+        let (expected_x, expected_y, expected_z) =
+            static_placeable_direction_from_bearing(placeable.bearing)
+                .expect("finite module bearing should produce a static direction");
+        assert_eq!(
+            read_area_f32(
+                &two_coordinate_payload,
+                two_fragment_offset,
+                two_proof.static_rows_read_offset + 18
+            ),
+            Some(expected_x)
+        );
+        assert_eq!(
+            read_area_f32(
+                &two_coordinate_payload,
+                two_fragment_offset,
+                two_proof.static_rows_read_offset + 22
+            ),
+            Some(expected_y)
+        );
+        assert_eq!(
+            read_area_f32(
+                &two_coordinate_payload,
+                two_fragment_offset,
+                two_proof.static_rows_read_offset + 26
+            ),
+            Some(expected_z)
         );
     }
 

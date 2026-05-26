@@ -372,6 +372,18 @@ Current status:
   letting a partial prefix seed later live-object diagnostics. Added
   fixture-free coverage for both zero-count tail ownership and non-exact
   post-static trailing bytes.
+- 2026-05-27 `P/04/01` module-backed static-row match audit: no packet behavior
+  changed, but the generalized GIT repair rule now has public fixture-free
+  coverage. Static rows have no tag/resref, so module-backed appearance/
+  position/bearing repair may only run after the decompiled static row cursor is
+  proven and a unique module row matches by appearance plus at least two
+  placement coordinates. The regression proves appearance plus one coordinate
+  leaves bytes untouched, while exactly two matching coordinates can repair the
+  drifted third coordinate and bearing without moving the source cursor.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  module_static_row_repair_requires_appearance_plus_two_coordinates --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2
+  public_static_direction_tests -- --nocapture`.
 - 2026-05-26 `P/05/01` creature full-appearance locstring-name audit: no packet
   behavior changed, but public fixture-free coverage now proves the full
   `P/5` appearance name branch where the outer selector enters the locstring
