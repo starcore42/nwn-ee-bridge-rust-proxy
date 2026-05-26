@@ -624,6 +624,18 @@ Current status:
   coverage now proves single compact-target acceptance and multi/mixed target rejection.
   Verified with `cargo test -q -p hgbridge-proxy2 creature_status_effect_ --
   --nocapture`.~~
+- ~~2026-05-27 `P/05/01` visual-effect target-payload width audit: corrected the
+  prior status-effect target proof from a three-byte compact span to the actual
+  decompiled `DWORD object id + BYTE` branch. Diamond `sub_44ED20` and EE
+  `sub_1407B1F00` both read `BYTE opcode`, `WORD visualeffects.2da row`, then
+  for `Type_FD` `P`/`B` rows read the five-byte target payload before EE's
+  `ObjectVisualTransformData` map. Public fixture-free coverage now accepts the
+  five-byte single-target shape and rejects the stale three-byte shape.
+  Verified with `cargo fmt --all --check`, `git diff --check`,
+  `cargo test -q -p hgbridge-proxy2 creature_status_effect_ -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  looping_effect_target_payload_owns_dword_object_id_plus_byte -- --nocapture`,
+  and `cargo check -q -p hgbridge-proxy2`.~~
 - 2026-05-27 `P/05/01` creature update interleaved-fragment cursor audit:
   removed the last adjacent `bit_cursor +/- 1` retry from the `U/5` compact
   fragment-span promoter. The EE/Diamond live-object dispatcher hands each

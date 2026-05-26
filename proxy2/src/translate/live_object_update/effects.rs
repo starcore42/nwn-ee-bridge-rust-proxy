@@ -12,14 +12,15 @@
 //! identity object-level transform is two zero DWORD map counts. This module
 //! keeps that semantic expansion isolated from the generic update-mask logic.
 //!
-//! Some visual-effect rows take a compact target payload before the EE transform
-//! map. EE `HandleServerToPlayerUpdateVisualEffects` (`sub_1407B1F00`) performs
-//! the row-type check, optionally reads the target payload at
-//! `0x1407B214A..0x1407B2165`, then always checks build `2001/0x0E` and reads
-//! `ObjectVisualTransformData` at `0x1407B218F..0x1407B21AE`. Until resource
-//! state exposes the client `visualeffects.2da` row type, only the exact
-//! single-entry compact-target shape observed in Starcore5 captures is accepted;
-//! multi-entry target-payload lists remain quarantined rather than guessed.
+//! Some visual-effect rows take a target payload before the EE transform map.
+//! EE `HandleServerToPlayerUpdateVisualEffects` (`sub_1407B1F00`) and Diamond
+//! `sub_44ED20` both check `visualeffects.2da` `Type_FD`; `P`/`B` rows read a
+//! DWORD object id plus one BYTE at `0x1407B214A..0x1407B2165`, then EE always
+//! checks build `2001/0x0E` and reads `ObjectVisualTransformData` at
+//! `0x1407B218F..0x1407B21AE`. Until resource state exposes the client
+//! `visualeffects.2da` row type, only the exact single-entry target shape
+//! observed in Starcore5 captures is accepted; multi-entry target-payload lists
+//! remain quarantined rather than guessed.
 
 use super::{
     CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, PLACEABLE_OBJECT_TYPE,
@@ -29,8 +30,8 @@ use super::{
 pub(super) const LOOPING_VISUAL_EFFECT_UPDATE_MASK: u32 = 0x0000_0008;
 const MAX_REASONABLE_LOOPING_EFFECT_CHANGES: u16 = 256;
 const LOOPING_EFFECT_SHORT_ENTRY_BYTES: usize = 3;
-const LOOPING_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES: usize = 3;
-const MAX_COMPACT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: u16 = 1;
+const LOOPING_EFFECT_TARGET_PAYLOAD_BYTES: usize = 5;
+const MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: u16 = 1;
 const LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES: [u8;
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN] =
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES;
@@ -122,13 +123,13 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
     let cursor = offset + LEGACY_UPDATE_HEADER_BYTES + 2;
     try_get_verified_ee_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0)
         .or_else(|| {
-            if count <= MAX_COMPACT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+            if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
                 return try_get_verified_ee_looping_visual_effect_entries_end(
                     bytes,
                     cursor,
                     count,
                     scan_end,
-                    LOOPING_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES,
+                    LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
                 );
             }
             None
@@ -176,13 +177,13 @@ fn parse_looping_visual_effect_body(
         return Some(shape);
     }
 
-    if count <= MAX_COMPACT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+    if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
         return parse_looping_visual_effect_entries(
             bytes,
             cursor,
             count,
             record_end,
-            LOOPING_EFFECT_COMPACT_TARGET_PAYLOAD_BYTES,
+            LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
         );
     }
 
@@ -194,7 +195,7 @@ fn parse_looping_visual_effect_entries(
     mut cursor: usize,
     count: u16,
     record_end: usize,
-    compact_target_payload_bytes: usize,
+    target_payload_bytes: usize,
 ) -> Option<LoopingVisualEffectList> {
     let mut insert_offsets_after_short_entries = Vec::with_capacity(usize::from(count));
     let mut transform_maps_seen = 0usize;
@@ -206,8 +207,8 @@ fn parse_looping_visual_effect_entries(
         }
         read_u16_le(bytes, cursor + 1)?;
         cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
-        if compact_target_payload_bytes != 0 {
-            cursor = cursor.checked_add(compact_target_payload_bytes)?;
+        if target_payload_bytes != 0 {
+            cursor = cursor.checked_add(target_payload_bytes)?;
             if cursor > record_end {
                 return None;
             }
@@ -243,7 +244,7 @@ fn try_get_verified_ee_looping_visual_effect_entries_end(
     mut cursor: usize,
     count: u16,
     scan_end: usize,
-    compact_target_payload_bytes: usize,
+    target_payload_bytes: usize,
 ) -> Option<usize> {
     for _ in 0..usize::from(count) {
         let change_opcode = *bytes.get(cursor)?;
@@ -252,8 +253,8 @@ fn try_get_verified_ee_looping_visual_effect_entries_end(
         }
         read_u16_le(bytes, cursor + 1)?;
         cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
-        if compact_target_payload_bytes != 0 {
-            cursor = cursor.checked_add(compact_target_payload_bytes)?;
+        if target_payload_bytes != 0 {
+            cursor = cursor.checked_add(target_payload_bytes)?;
             if cursor > scan_end {
                 return None;
             }
@@ -354,6 +355,49 @@ mod tests {
         assert!(
             !has_legacy_looping_visual_effect_body_without_mask(&record, 0, record_end),
             "the mixed list must not be treated as the all-legacy Diamond shape"
+        );
+    }
+
+    #[test]
+    fn looping_effect_target_payload_owns_dword_object_id_plus_byte() {
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            b'A',
+            0x34,
+            0x12,
+            0x44,
+            0x33,
+            0x22,
+            0x80,
+            0x66,
+        ];
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+
+        assert!(
+            is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
+            "P/B visualeffects rows own DWORD target id plus one BYTE before the transform map"
+        );
+
+        let mut stale_short_target = record.clone();
+        stale_short_target.drain(18..20);
+        assert!(
+            !is_verified_ee_looping_visual_effect_update_record(
+                &stale_short_target,
+                0,
+                stale_short_target.len()
+            ),
+            "the old three-byte target-payload shape must not exact-claim"
         );
     }
 }
