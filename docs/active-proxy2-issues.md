@@ -487,6 +487,20 @@ Current status:
   model_type_3_item_exact_validator_requires_palette_seeded_ee_table --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 visible_equipment --
   --nocapture`.
+- 2026-05-26 `P/05/01` creature identity/class-row rules-table audit: fixed
+  the `U/5` mask `0x1000` identity branch so a loaded `classes.2da` owns the
+  row optional-byte policy before the stock fallback. EE `sub_140781E80`
+  (`loc_140785330`) and Diamond `sub_44ADD0` both read the fixed
+  class-id/class-level bytes, then conditionally read one spell-option byte
+  from the rules `+0x4F8` flag and two domain bytes from `+0x4F4`; a
+  server-specific merged table can therefore change the cursor width for a
+  stock row id. Public fixture-free tests now prove 2DA parsing for fixed,
+  cleric/domain, wizard/spell-option, and custom spell-option rows; loaded
+  table precedence over stock Wizard fallback; and rejection of absent loaded
+  rows instead of silently falling back. Verified with `cargo test -q -p
+  hgbridge-proxy2 class_row -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 identity -- --nocapture`, `cargo fmt --all --check`, and
+  `cargo check -q -p hgbridge-proxy2`.
 - 2026-05-26 `P/05/01` inventory `0x4000` state-stream cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the
   decompile-backed row bit ownership for Diamond `sub_455940` and EE

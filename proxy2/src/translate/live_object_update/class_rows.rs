@@ -23,24 +23,23 @@ static CLASS_ROW_OPTIONAL_COUNTS: OnceLock<Option<Vec<Option<u8>>>> = OnceLock::
 pub(super) fn creature_identity_row_optional_extra_byte_counts(
     class_id: u8,
 ) -> Option<&'static [u8]> {
-    if let Some(count) = observed_higher_ground_class_row_optional_count(class_id) {
-        return optional_count_slice(count);
-    }
-
-    if let Some(rows) = CLASS_ROW_OPTIONAL_COUNTS
+    let loaded_rows = CLASS_ROW_OPTIONAL_COUNTS
         .get_or_init(load_class_row_optional_counts)
         .as_ref()
-    {
-        if let Some(Some(count)) = rows.get(usize::from(class_id)) {
-            return optional_count_slice(*count);
-        }
-        return None;
-    }
+        .map(Vec::as_slice);
 
-    None
+    class_row_optional_count(loaded_rows, class_id).and_then(optional_count_slice)
 }
 
-fn observed_higher_ground_class_row_optional_count(class_id: u8) -> Option<u8> {
+fn class_row_optional_count(loaded_rows: Option<&[Option<u8>]>, class_id: u8) -> Option<u8> {
+    if let Some(rows) = loaded_rows {
+        return rows.get(usize::from(class_id)).copied().flatten();
+    }
+
+    stock_legacy_class_row_optional_count(class_id)
+}
+
+fn stock_legacy_class_row_optional_count(class_id: u8) -> Option<u8> {
     match class_id {
         // Public stock 1.72 class rows that consume only the fixed class
         // id/level bytes. Server-specific merged tables can still be supplied
@@ -168,4 +167,71 @@ fn parse_class_row_optional_counts_2da(text: &str) -> Option<Vec<Option<u8>>> {
 
 fn is_2da_null(value: &str) -> bool {
     value == "****" || value.eq_ignore_ascii_case("null")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINI_CLASSES_2DA: &str = r#"
+2DA V2.0
+
+      Label      SpellOptTable
+0     Fighter    ****
+2     Cleric     ****
+10    Wizard     cls_spopt_wiz
+42    Custom     custom_spopt
+"#;
+
+    #[test]
+    fn parses_stock_optional_class_row_byte_counts() {
+        let rows = parse_class_row_optional_counts_2da(MINI_CLASSES_2DA)
+            .expect("mini classes.2da should parse");
+
+        assert_eq!(rows.get(0).copied().flatten(), Some(0));
+        assert_eq!(
+            rows.get(2).copied().flatten(),
+            Some(2),
+            "Cleric owns two domain bytes from the decompiled +0x4F4 rule"
+        );
+        assert_eq!(
+            rows.get(10).copied().flatten(),
+            Some(1),
+            "Wizard owns one SpellOptTable byte from the decompiled +0x4F8 rule"
+        );
+        assert_eq!(
+            rows.get(42).copied().flatten(),
+            Some(1),
+            "non-stock classes with a SpellOptTable own the same one-byte option field"
+        );
+    }
+
+    #[test]
+    fn loaded_classes_table_overrides_stock_fallback() {
+        let mut rows = Vec::new();
+        rows.resize(11, None);
+        rows[10] = Some(0);
+
+        assert_eq!(
+            class_row_optional_count(None, 10),
+            Some(1),
+            "without a loaded table the stock Wizard row owns its spell-option byte"
+        );
+        assert_eq!(
+            class_row_optional_count(Some(&rows), 10),
+            Some(0),
+            "a loaded server classes.2da is the reader state and must own the cursor width"
+        );
+    }
+
+    #[test]
+    fn loaded_classes_table_rejects_unknown_rows() {
+        let rows = vec![Some(0)];
+
+        assert_eq!(
+            class_row_optional_count(Some(&rows), 41),
+            None,
+            "once a table is loaded, absent rows are unproven instead of falling back to stock"
+        );
+    }
 }
