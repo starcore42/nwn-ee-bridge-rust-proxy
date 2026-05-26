@@ -316,22 +316,6 @@ fn try_get_legacy_live_inventory_claim_candidate(
         ));
     }
 
-    if mask == 0x0401 {
-        let base_cursor = record_offset.checked_add(7)?.checked_add(10)?;
-        let set_count = try_parse_inventory_0400(bytes, base_cursor, record_end)
-            .or_else(|| try_parse_inventory_0400(bytes, base_cursor.checked_add(2)?, record_end))?;
-        // Diamond `sub_455940` and EE `sub_1407B4F70` both read the 0x0001
-        // branch as SHORT, DWORD, INT, BOOL before immediately continuing into
-        // the 0x0400 equipment delta.  The BOOL is semantic UI/state data, not
-        // a byte-side branch selector; accepting only `false` falsely rejects
-        // valid HG packets such as the sequence-38 `I/0x0401` player inventory
-        // delta before the Town Greeter/Northern Trader live-object burst.
-        return Some(GenericInventoryCandidate::new(
-            record_end,
-            1usize.saturating_add(usize::from(set_count)),
-        ));
-    }
-
     if mask == 0x2400 {
         return try_parse_inventory_2400_slot_update_shape(bytes, record_offset, record_end)
             .map(|bits| GenericInventoryCandidate::new(record_end, bits));
@@ -414,7 +398,7 @@ fn try_get_generic_live_inventory_claim_candidate_matching_fragment_bits(
     }
     if matches!(
         mask,
-        0x0400 | 0x0401 | 0x2000 | 0x2400 | 0x2700 | 0x2A00 | 0x2E00 | 0x2E01 | 0xD5FF
+        0x0400 | 0x2000 | 0x2400 | 0x2700 | 0x2A00 | 0x2E00 | 0x2E01 | 0xD5FF
     ) {
         return None;
     }
@@ -1772,6 +1756,54 @@ use feature25::*;
 use icon_list::*;
 use mask::*;
 use opcode_stream::*;
+
+#[cfg(test)]
+mod compact_0001_handoff_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_0401_compact_handoff_requires_false_0001_bit() {
+        // Diamond sub_455940 (00455AAD..00455D80) and EE sub_1407B4F70
+        // (1407B51ED..1407B559F) both read the 0x0001 branch as SHORT, DWORD,
+        // INT, BOOL. The false BOOL is the compact handoff to 0x0400; the true
+        // BOOL owns an extended tail before later mask branches.
+        let record = [
+            b'I', 0xEC, 0xFF, 0xFF, 0xFF, // owner id
+            0x01, 0x04, // mask 0x0401: 0x0001 state + 0x0400 equipment delta
+            0x95, 0x00, // 0x0001 state SHORT
+            0xD4, 0xD9, 0xE0, 0x05, // 0x0001 state DWORD
+            0xEB, 0x0A, 0x00, 0x00, // 0x0001 state INT
+            0x02, 0x1E, 0x6B, // 0x0400 clear-count and clear slots
+            0x01, 0x6B, // 0x0400 set-count and set slot
+        ];
+
+        let mut compact_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[false, true],
+            &mut compact_cursor,
+        )
+        .expect("false 0x0001 BOOL should compact-hand off to 0x0400");
+        assert_eq!(claim.fragment_bits, 2);
+        assert_eq!(compact_cursor, 2);
+
+        let mut extended_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, true],
+                &mut extended_cursor,
+            )
+            .is_none(),
+            "true 0x0001 BOOL must not compact-hand off directly to 0x0400"
+        );
+        assert_eq!(extended_cursor, 0);
+    }
+}
 
 #[cfg(test)]
 mod current_player_2a00_selector_repair_tests {

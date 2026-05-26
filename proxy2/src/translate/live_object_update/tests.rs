@@ -1199,15 +1199,18 @@ fn inventory_0400_delta_requires_exact_fragment_cursor_consumption() {
 }
 
 #[test]
-fn inventory_0401_delta_accepts_true_state_bool_before_equipment_delta() {
+fn inventory_0401_delta_requires_false_compact_state_bool_before_equipment_delta() {
     // Live HG sequence 38 begins with this player-owned inventory state record
     // before the Town Greeter/Northern Trader creature records:
     //
     //   I ECFFFFFF 0104 9500 D4D9E005 EB0A0000 02 1E6B 01 6B
     //
-    // EE `sub_1407B4F70` and Diamond `sub_455940` both consume the 0x0001
-    // branch as SHORT, DWORD, INT, BOOL.  That BOOL does not select an extra
-    // read-buffer branch; the reader continues into the 0x0400 equipment delta.
+    // EE `sub_1407B4F70` (`1407B51ED..1407B559F`) and Diamond `sub_455940`
+    // (`00455AAD..00455D80`) both consume the 0x0001 branch as SHORT, DWORD,
+    // INT, BOOL. If that BOOL is true, both readers immediately consume an
+    // extended tail starting with another WORD before the 0x0400 equipment
+    // delta. This compact cursor is therefore exact only when the BOOL is
+    // false.
     let live = [
         b'I', 0xEC, 0xFF, 0xFF, 0xFF, // player inventory owner id
         0x01, 0x04, // mask 0x0401: 0x0001 state + 0x0400 equipment delta
@@ -1224,16 +1227,33 @@ fn inventory_0401_delta_accepts_true_state_bool_before_equipment_delta() {
     payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
         vec![
             false, false, false, // CNW fragment header bits
-            true,  // 0x0001 state BOOL: valid true branch, no extra bytes
+            false, // 0x0001 compact-state BOOL: no extended tail
             true,  // 0x0400 set-slot BOOL
         ],
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
 
     let claim = super::claim_payload_if_verified(&payload)
-        .expect("0x0401 inventory delta should accept true state BOOL");
+        .expect("0x0401 inventory delta should accept the compact false state BOOL");
     assert_eq!(claim.inventory_records, 1);
     assert_eq!(claim.inventory_fragment_bits, 2);
+
+    let mut shifted_payload = vec![b'P', 0x05, 0x01];
+    shifted_payload.extend_from_slice(&((7 + live.len()) as u32).to_le_bytes());
+    shifted_payload.extend_from_slice(&live);
+    shifted_payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![
+            false, false, false, // CNW fragment header bits
+            true,  // 0x0001 extended-tail selector
+            true,  // would be misread as 0x0400 set-slot BOOL by the old bypass
+        ],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "a true 0x0001 BOOL must not compact-hand off directly to the 0x0400 delta"
+    );
 }
 
 #[test]

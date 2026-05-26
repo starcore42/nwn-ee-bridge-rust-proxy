@@ -452,6 +452,39 @@ mod tests {
     }
 
     #[test]
+    fn inventory_0001_compact_branch_requires_false_bool() {
+        // Diamond sub_455940 (00455AAD..00455D80) and EE sub_1407B4F70
+        // (1407B51ED..1407B559F) both read 0x0001 as SHORT, DWORD, INT, BOOL.
+        // The false BOOL hands off to the next mask branch; the true BOOL owns
+        // an extended read-buffer tail starting with WORD and is not this
+        // compact ten-byte shape.
+        let record = inventory_mask_record(
+            0x0001,
+            &[0x95, 0x00, 0xD4, 0xD9, 0xE0, 0x05, 0xEB, 0x0A, 0x00, 0x00],
+        );
+
+        let mut false_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[false],
+            &mut false_cursor,
+        )
+        .expect("0x0001 false BOOL should exact-claim the compact branch");
+        assert_eq!(claim.fragment_bits, 1);
+        assert_eq!(false_cursor, 1);
+
+        let mut true_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(&record, 0, record.len(), &[true], &mut true_cursor,)
+                .is_none(),
+            "the true 0x0001 BOOL must not be accepted without its extended tail"
+        );
+        assert_eq!(true_cursor, 0);
+    }
+
+    #[test]
     fn inventory_2000_feature25_counts_only_second_list_bools() {
         // Diamond sub_455940 and EE sub_1407B4F70 read mask 0x2000 as
         // DWORD removal count, removal OBJECTIDs, DWORD second-list count,
