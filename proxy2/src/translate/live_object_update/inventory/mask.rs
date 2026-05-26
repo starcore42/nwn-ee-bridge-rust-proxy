@@ -438,6 +438,132 @@ mod tests {
         record
     }
 
+    fn inventory_2000_body(first_ids: &[u32], second_ids: &[u32]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(first_ids.len() as u32).to_le_bytes());
+        for object_id in first_ids {
+            body.extend_from_slice(&object_id.to_le_bytes());
+        }
+        body.extend_from_slice(&(second_ids.len() as u32).to_le_bytes());
+        for object_id in second_ids {
+            body.extend_from_slice(&object_id.to_le_bytes());
+        }
+        body
+    }
+
+    #[test]
+    fn inventory_2000_feature25_counts_only_second_list_bools() {
+        // Diamond sub_455940 and EE sub_1407B4F70 read mask 0x2000 as
+        // DWORD removal count, removal OBJECTIDs, DWORD second-list count,
+        // second-list OBJECTIDs, then three CNW BOOLs per second-list object.
+        // Removal entries are byte-buffer only.
+        let record = inventory_mask_record(
+            0x2000,
+            &inventory_2000_body(&[0x8000_0041, 0x8000_0042], &[0x8000_0043, 0x8000_0044]),
+        );
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false, true, false, true, false],
+            &mut bit_cursor,
+        )
+        .expect("0x2000 Feature-25 second list should own three BOOLs per object");
+        assert_eq!(claim.fragment_bits, 6);
+        assert_eq!(bit_cursor, 6);
+
+        let mut missing_bit_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, false, true, false, true],
+                &mut missing_bit_cursor,
+            )
+            .is_none(),
+            "a byte-complete 0x2000 row is not exact when a second-list BOOL is missing"
+        );
+        assert_eq!(missing_bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_2000_prefix_hands_off_to_following_0800_selector() {
+        // Mask order is 0x2000 before 0x0800. The Feature-25 block must stop
+        // after its object lists, so the following 0x0800 branch owns the next
+        // fragment BOOL and, when true, the twelve-byte read-buffer tail.
+        let mut body = inventory_2000_body(&[], &[0x8000_0043]);
+        body.extend_from_slice(&[
+            0xAA, 0xBB, 0x10, 0x11, 0x12, 0x13, 0xCC, 0xDD, 0x20, 0x21, 0x22, 0x23,
+        ]);
+        let record = inventory_mask_record(0x2800, &body);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false, true, true],
+            &mut bit_cursor,
+        )
+        .expect("0x2000 should prefix-claim before 0x0800 consumes its selector");
+        assert_eq!(claim.fragment_bits, 4);
+        assert_eq!(bit_cursor, 4);
+
+        let mut missing_0800_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, false, true],
+                &mut missing_0800_cursor,
+            )
+            .is_none(),
+            "the 0x0800 selector must not be counted as a fourth 0x2000 BOOL"
+        );
+        assert_eq!(missing_0800_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_2000_prefix_hands_off_to_following_4000_update_bool() {
+        // A mask may continue from 0x2000 directly to 0x4000. The second-list
+        // Feature-25 BOOLs must be counted before the 0x4000 `U` row owns its
+        // own BOOL at the next fragment-bit position.
+        let mut body = inventory_2000_body(&[], &[0x8000_0043]);
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&[b'U', 0x33, 0x44, 0x55, 0x66, 0x77]);
+        let record = inventory_mask_record(0x6000, &body);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false, true, false],
+            &mut bit_cursor,
+        )
+        .expect("0x4000 update BOOL should follow the three 0x2000 Feature-25 bits");
+        assert_eq!(claim.fragment_bits, 4);
+        assert_eq!(bit_cursor, 4);
+
+        let mut missing_update_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true, false, true],
+                &mut missing_update_cursor,
+            )
+            .is_none(),
+            "a following 0x4000 `U` row still needs its own BOOL after 0x2000"
+        );
+        assert_eq!(missing_update_cursor, 0);
+    }
+
     #[test]
     fn inventory_0200_zero_count_dword_branch_allows_either_first_bool() {
         // Diamond sub_455940 and EE sub_1407B4F70 read two CNW BOOLs before

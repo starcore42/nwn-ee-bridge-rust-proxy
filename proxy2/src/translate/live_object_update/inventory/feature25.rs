@@ -9,7 +9,13 @@ pub(super) fn apply_2000(
 ) -> Vec<GenericInventoryCandidate> {
     let mut next = Vec::with_capacity(candidates.len());
     for candidate in candidates {
+        // Diamond `sub_455940` and EE `sub_1407B4F70` read mask 0x2000
+        // before 0x0800 and 0x4000. The Feature-25 object lists therefore
+        // need a prefix proof here; the generic mask walker will let the
+        // following decompiled branches own any remaining bytes and will still
+        // reject a standalone 0x2000 candidate that does not end exactly.
         let Some(feature25) = try_parse_inventory_2000_at(bytes, candidate.cursor, record_end)
+            .or_else(|| try_parse_inventory_2000_prefix_at(bytes, candidate.cursor, record_end))
         else {
             continue;
         };

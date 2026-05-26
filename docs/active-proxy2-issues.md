@@ -529,6 +529,17 @@ Current status:
   Verified with `cargo test -q -p hgbridge-proxy2 inventory_0100_ --
   --nocapture` and `cargo test -q -p hgbridge-proxy2 inventory --
   --nocapture`.
+- 2026-05-26 `P/05/01` inventory `0x2000` Feature-25 cursor audit: fixed a
+  generalized generic-mask handoff bug. Diamond `sub_455940` and EE
+  `sub_1407B4F70` (`loc_1407B79E6`) read `DWORD first_count`, first-list
+  OBJECTIDs, `DWORD second_count`, second-list OBJECTIDs, then three CNW BOOLs
+  per second-list object; the branch is read before `0x0800` and `0x4000`.
+  Generic combined masks must therefore prefix-claim the `0x2000` object lists
+  and leave following bytes/bits to later decompiled branches instead of
+  requiring `0x2000` to end the record. Public fixture-free tests now prove
+  standalone second-list BOOL ownership, `0x2000 -> 0x0800` selector handoff,
+  and `0x2000 -> 0x4000` update-BOOL handoff. Verified with `cargo test -q -p
+  hgbridge-proxy2 inventory_2000_ -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
