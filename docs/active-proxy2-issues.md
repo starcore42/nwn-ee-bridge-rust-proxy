@@ -458,6 +458,22 @@ Current status:
   -q -p hgbridge-proxy2 active_property_locstring_inline -- --nocapture`,
   `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`, and `cargo check
   -q -p hgbridge-proxy2`.
+- 2026-05-26 `P/05/01` live-object item appearance audit: tightened the shared
+  top-level item-add / GUI item-create EE model-type-3 validator so the
+  19x6 armor/accessory color table must repeat the six Diamond palette bytes
+  immediately before it. A zero-filled table is byte-cursor-valid but loses
+  nonzero palette semantics, so it is no longer accepted as a bridge-owned
+  exact shape. Public fixture-free coverage now proves model-type 0/1/2/3
+  widened high-byte rejection for item-add and item-create records, and
+  model-type-3 zero-table rejection with exact active-property bit order.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  item_add_exact_validator_rejects_nonzero_widened_appearance_high_bytes --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  item_create_exact_validator_rejects_nonzero_widened_appearance_high_bytes --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  model_type_3_item_exact_validator_requires_palette_seeded_ee_table --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 visible_equipment --
+  --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -8106,8 +8106,18 @@ fn has_ee_model_type_3_armor_accessory_table_at(
     if end > record_end || end > bytes.len() {
         return false;
     }
+    let Some(palette_start) = offset.checked_sub(6) else {
+        return false;
+    };
+    let Some(expected_palette) = bytes.get(palette_start..offset) else {
+        return false;
+    };
+    // Diamond owns only the six global armor palette bytes. The bridge-owned
+    // EE build-0x23 table repeats that palette for each armor/accessory row;
+    // accepting an unrelated zero-filled table is cursor-correct but visually
+    // shifts the translated item state.
     let table = &bytes[offset..end];
-    table.iter().all(|byte| *byte == 0) || table.chunks_exact(6).all(|chunk| chunk == &table[..6])
+    table.chunks_exact(6).all(|chunk| chunk == expected_palette)
 }
 
 fn has_ee_object_visual_transform_identity_at(
@@ -8965,6 +8975,182 @@ mod public_tests {
             true,  // third Diamond active-property BOOL.
             false, // fourth Diamond active-property BOOL.
         ]
+    }
+
+    fn push_zero_extended_item_part(bytes: &mut Vec<u8>, value: u8, high_offsets: &mut Vec<usize>) {
+        bytes.push(value);
+        high_offsets.push(bytes.len());
+        bytes.push(0);
+    }
+
+    fn push_ee_item_body(bytes: &mut Vec<u8>, base_item: u32, model_type: i8) -> Vec<usize> {
+        let mut high_offsets = Vec::new();
+        push_u32(bytes, base_item);
+        match model_type {
+            0 => push_zero_extended_item_part(bytes, 0x07, &mut high_offsets),
+            1 => {
+                push_zero_extended_item_part(bytes, 0x07, &mut high_offsets);
+                bytes.extend_from_slice(&[1, 2, 3, 4, 5, 6]);
+            }
+            2 => {
+                for value in [7, 8, 9] {
+                    push_zero_extended_item_part(bytes, value, &mut high_offsets);
+                }
+                bytes.push(0x0A);
+            }
+            3 => {
+                for value in 0..LEGACY_APPEARANCE_BODY_PART_COUNT {
+                    push_zero_extended_item_part(bytes, value, &mut high_offsets);
+                }
+                let palette = [1, 2, 3, 4, 5, 6];
+                bytes.extend_from_slice(&palette);
+                bytes.extend_from_slice(
+                    &ee_model_type_3_armor_accessory_table_from_legacy_palette(palette),
+                );
+            }
+            _ => panic!("unsupported test model type"),
+        }
+        bytes.extend_from_slice(&EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        if base_item == LEGACY_ARMOR_BASE_ITEM {
+            push_u16(bytes, 0x1234);
+        }
+        push_no_name_active_property_tail(bytes);
+        high_offsets
+    }
+
+    fn ee_item_add_record(base_item: u32, model_type: i8) -> (Vec<u8>, Vec<usize>) {
+        let mut bytes = Vec::new();
+        bytes.push(b'A');
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u32(&mut bytes, 2);
+        let high_offsets = push_ee_item_body(&mut bytes, base_item, model_type);
+        (bytes, high_offsets)
+    }
+
+    fn ee_item_create_record(base_item: u32, model_type: i8) -> (Vec<u8>, Vec<usize>) {
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, 0x8000_0042);
+        let high_offsets = push_ee_item_body(&mut bytes, base_item, model_type);
+        (bytes, high_offsets)
+    }
+
+    fn ee_no_name_active_property_bits() -> Vec<bool> {
+        vec![
+            true,  // shared pre-DWORD active-property BOOL.
+            false, // EE-only CanUseItem BOOL inserted by sub_14076BD30.
+            false, // second shared post-DWORD BOOL.
+            true,  // third shared post-DWORD BOOL.
+            false, // fourth shared post-DWORD BOOL.
+        ]
+    }
+
+    fn stock_model_type_cases() -> [(u32, i8); 4] {
+        [
+            (0x38, 0), // shield
+            (0x50, 1), // cloak
+            (0x01, 2), // weapon
+            (LEGACY_ARMOR_BASE_ITEM, 3),
+        ]
+    }
+
+    #[test]
+    fn item_add_exact_validator_rejects_nonzero_widened_appearance_high_bytes() {
+        for (base_item, model_type) in stock_model_type_cases() {
+            let (bytes, high_offsets) = ee_item_add_record(base_item, model_type);
+            let mut bit_cursor = 0usize;
+            let bits = ee_no_name_active_property_bits();
+            assert!(advance_verified_ee_item_add_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ));
+            assert_eq!(bit_cursor, bits.len());
+
+            for high_offset in high_offsets {
+                let mut corrupted = bytes.clone();
+                corrupted[high_offset] = 0x7F;
+                let mut corrupted_cursor = 0usize;
+                assert!(
+                    !advance_verified_ee_item_add_record(
+                        &corrupted,
+                        0,
+                        corrupted.len(),
+                        &bits,
+                        &mut corrupted_cursor,
+                    ),
+                    "model type {model_type} base item {base_item:#X} must reject nonzero widened high byte at offset {high_offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn item_create_exact_validator_rejects_nonzero_widened_appearance_high_bytes() {
+        for (base_item, model_type) in stock_model_type_cases() {
+            let (bytes, high_offsets) = ee_item_create_record(base_item, model_type);
+            let mut bit_cursor = 0usize;
+            let bits = ee_no_name_active_property_bits();
+            assert!(advance_verified_ee_item_create_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ));
+            assert_eq!(bit_cursor, bits.len());
+
+            for high_offset in high_offsets {
+                let mut corrupted = bytes.clone();
+                corrupted[high_offset] = 0x7F;
+                let mut corrupted_cursor = 0usize;
+                assert!(
+                    !advance_verified_ee_item_create_record(
+                        &corrupted,
+                        0,
+                        corrupted.len(),
+                        &bits,
+                        &mut corrupted_cursor,
+                    ),
+                    "model type {model_type} base item {base_item:#X} must reject nonzero widened high byte at offset {high_offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn model_type_3_item_exact_validator_requires_palette_seeded_ee_table() {
+        let (bytes, _) = ee_item_create_record(LEGACY_ARMOR_BASE_ITEM, 3);
+        let bits = ee_no_name_active_property_bits();
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_item_create_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(bit_cursor, bits.len());
+
+        let table = ee_model_type_3_armor_accessory_table_from_legacy_palette([1, 2, 3, 4, 5, 6]);
+        let table_start = bytes
+            .windows(table.len())
+            .position(|window| window == table.as_slice())
+            .expect("test item should contain the EE model-type-3 table");
+        let mut zero_filled = bytes.clone();
+        zero_filled[table_start..table_start + table.len()].fill(0);
+        let mut zero_cursor = 0usize;
+        assert!(
+            !advance_verified_ee_item_create_record(
+                &zero_filled,
+                0,
+                zero_filled.len(),
+                &bits,
+                &mut zero_cursor,
+            ),
+            "a zero-filled EE table is cursor-valid but loses the nonzero Diamond palette semantics"
+        );
     }
 
     #[test]
