@@ -360,3 +360,79 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
         0x0000_1000,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inventory_4000_record(rows: &[&[u8]]) -> Vec<u8> {
+        let mut record = vec![b'I'];
+        record.extend_from_slice(&LEGACY_INVENTORY_CURRENT_PLAYER_OWNER.to_le_bytes());
+        record.extend_from_slice(&0x4000u16.to_le_bytes());
+        record.extend_from_slice(&(rows.len() as u16).to_le_bytes());
+        for row in rows {
+            record.extend_from_slice(row);
+        }
+        record
+    }
+
+    #[test]
+    fn inventory_4000_state_stream_counts_only_update_row_bools() {
+        // EE sub_1407B4F70 reads the 0x4000 row stream as a WORD count, then
+        // per-row opcodes. `S` rows consume only two read-buffer bytes; `U`
+        // rows consume WORD, BOOL, BYTE, WORD in that order. Diamond sub_455940
+        // follows the same row walk, so the proxy must advance one fragment bit
+        // per `U` row and none for `S`.
+        let record = inventory_4000_record(&[
+            &[b'S', 0x11, 0x22],
+            &[b'U', 0x33, 0x44, 0x55, 0x66, 0x77],
+            &[b'U', 0x88, 0x99, 0xAA, 0xBB, 0xCC],
+        ]);
+
+        let candidate =
+            try_parse_generic_inventory_claim_with_branching(&record, 0, record.len(), 0x4000)
+                .expect("0x4000 state stream should parse exact row cursor");
+        assert_eq!(candidate.cursor, record.len());
+        assert_eq!(
+            candidate.bits, 2,
+            "only the two `U` rows own inventory fragment BOOLs"
+        );
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &[true, false],
+            &mut bit_cursor,
+        )
+        .expect("0x4000 state stream should claim with two available BOOLs");
+        assert_eq!(claim.fragment_bits, 2);
+        assert_eq!(bit_cursor, 2);
+
+        let mut short_bit_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[true],
+                &mut short_bit_cursor,
+            )
+            .is_none(),
+            "a byte-complete 0x4000 row stream is not exact when a `U` row BOOL is missing"
+        );
+        assert_eq!(short_bit_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_4000_state_stream_rejects_truncated_update_row() {
+        let record = inventory_4000_record(&[&[b'U', 0x33, 0x44, 0x55, 0x66]]);
+
+        assert!(
+            try_parse_generic_inventory_claim_with_branching(&record, 0, record.len(), 0x4000)
+                .is_none(),
+            "0x4000 `U` rows must own the final WORD after their BOOL/BYTE fields"
+        );
+    }
+}

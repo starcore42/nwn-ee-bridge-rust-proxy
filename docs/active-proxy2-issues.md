@@ -474,6 +474,15 @@ Current status:
   model_type_3_item_exact_validator_requires_palette_seeded_ee_table --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 visible_equipment --
   --nocapture`.
+- 2026-05-26 `P/05/01` inventory `0x4000` state-stream cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the
+  decompile-backed row bit ownership for Diamond `sub_455940` and EE
+  `sub_1407B4F70`. The branch reads a WORD row count; `S` rows consume only two
+  read-buffer bytes, while `U` rows consume WORD, one BOOL, one BYTE, then a
+  final WORD. The exact inventory validator must therefore advance one fragment
+  bit per `U` row, none for `S`, reject missing row bytes, and reject
+  byte-complete records when the owned `U` BOOLs are absent. Verified with
+  `cargo test -q -p hgbridge-proxy2 inventory_4000_state_stream -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
