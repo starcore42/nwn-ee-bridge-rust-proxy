@@ -624,6 +624,17 @@ Current status:
   coverage now proves single compact-target acceptance and multi/mixed target rejection.
   Verified with `cargo test -q -p hgbridge-proxy2 creature_status_effect_ --
   --nocapture`.~~
+- 2026-05-27 `P/05/01` creature update interleaved-fragment cursor audit:
+  removed the last adjacent `bit_cursor +/- 1` retry from the `U/5` compact
+  fragment-span promoter. The EE/Diamond live-object dispatcher hands each
+  record the exact CNW fragment cursor left by the previous reader; a shortened
+  creature update may promote a bounded read-buffer suffix only after the
+  decompile-owned creature reader validates from that exact cursor. Public
+  fixture-free coverage now proves a C408 span that is byte-valid only from the
+  previous neighboring cursor remains unpromoted. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  creature_interleaved_fragment_span_requires_exact_bit_cursor -- --nocapture`,
+  plus focused `3967`, `c40f`, and `c44f` capture-backed filters.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

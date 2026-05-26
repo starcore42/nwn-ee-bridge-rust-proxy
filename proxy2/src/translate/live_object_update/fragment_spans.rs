@@ -55,12 +55,6 @@ const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_UPDATE_8047_MASK: u32 = 0x0000_8047;
 
 #[derive(Debug, Clone, Copy)]
-enum CreatureUpdateFragmentSpanCursorPolicy {
-    Exact,
-    AdjacentRecovery,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(super) struct PromotedInventoryFragmentSpan {
     pub read_end: usize,
     pub old_record_end: usize,
@@ -211,7 +205,6 @@ pub(super) fn promote_creature_update_interleaved_fragment_span_for_ee(
         old_record_end,
         fragment_bits,
         bit_cursor,
-        CreatureUpdateFragmentSpanCursorPolicy::AdjacentRecovery,
     )?;
     let read_end = proof.read_end;
     let promoted_bits = proof.promoted_bits;
@@ -421,7 +414,6 @@ pub(super) fn verified_creature_update_3967_read_end_before_interleaved_fragment
         old_record_end,
         fragment_bits,
         bit_cursor,
-        CreatureUpdateFragmentSpanCursorPolicy::Exact,
     )
     .map(|proof| proof.read_end)
 }
@@ -1107,7 +1099,6 @@ fn find_creature_update_3967_interleaved_fragment_span(
     old_record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-    cursor_policy: CreatureUpdateFragmentSpanCursorPolicy,
 ) -> Option<CreatureUpdateFragmentSpanProof> {
     if offset.checked_add(10)? >= old_record_end
         || old_record_end > live_bytes.len()
@@ -1153,19 +1144,6 @@ fn find_creature_update_3967_interleaved_fragment_span(
         .saturating_sub(MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES)
         .max(min_read_end);
     let mut accepted: Option<CreatureUpdateFragmentSpanProof> = None;
-    let mut candidate_bit_cursors = Vec::with_capacity(3);
-    candidate_bit_cursors.push(bit_cursor);
-    if matches!(
-        cursor_policy,
-        CreatureUpdateFragmentSpanCursorPolicy::AdjacentRecovery
-    ) {
-        if bit_cursor != 0 {
-            candidate_bit_cursors.push(bit_cursor - 1);
-        }
-        if bit_cursor < fragment_bits.len() {
-            candidate_bit_cursors.push(bit_cursor + 1);
-        }
-    }
     for read_end in scan_start..old_record_end {
         let span = live_bytes.get(read_end..old_record_end)?;
         if span.is_empty() || span.len() > MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES {
@@ -1174,52 +1152,47 @@ fn find_creature_update_3967_interleaved_fragment_span(
         let Some(promoted_bits) = unpack_promoted_fragment_span_payload_bits(span) else {
             continue;
         };
-        for candidate_bit_cursor in candidate_bit_cursors.iter().copied() {
-            let mut proof_cursor = candidate_bit_cursor;
-            let accepted_by_exact_parser =
-                creature::advance_verified_noop_creature_update_record_exact_cursor(
-                    live_bytes,
-                    offset,
-                    read_end,
-                    fragment_bits,
-                    &mut proof_cursor,
-                );
-            if !accepted_by_exact_parser {
-                if raw_mask != LEGACY_CREATURE_UPDATE_3967_MASK {
-                    continue;
-                }
-                let mut trial = live_bytes.to_vec();
-                let Some(identity_rewrite) =
-                    creature::rewrite_3967_bare_second_identity_string_for_ee(
-                        &mut trial,
-                        offset,
-                        read_end,
-                        fragment_bits,
-                        candidate_bit_cursor,
-                    )
-                else {
-                    continue;
-                };
-                proof_cursor = identity_rewrite.advanced_bit_cursor;
-                accepted = Some(CreatureUpdateFragmentSpanProof {
-                    read_end,
-                    promoted_bits,
-                    insertion_cursor: proof_cursor,
-                    start_bit_cursor: candidate_bit_cursor,
-                    end_bit_cursor: proof_cursor,
-                    rewrite_bare_second_identity_string: true,
-                });
-                break;
+        let mut proof_cursor = bit_cursor;
+        let accepted_by_exact_parser =
+            creature::advance_verified_noop_creature_update_record_exact_cursor(
+                live_bytes,
+                offset,
+                read_end,
+                fragment_bits,
+                &mut proof_cursor,
+            );
+        if !accepted_by_exact_parser {
+            if raw_mask != LEGACY_CREATURE_UPDATE_3967_MASK {
+                continue;
             }
+            let mut trial = live_bytes.to_vec();
+            let Some(identity_rewrite) = creature::rewrite_3967_bare_second_identity_string_for_ee(
+                &mut trial,
+                offset,
+                read_end,
+                fragment_bits,
+                bit_cursor,
+            ) else {
+                continue;
+            };
+            proof_cursor = identity_rewrite.advanced_bit_cursor;
             accepted = Some(CreatureUpdateFragmentSpanProof {
                 read_end,
                 promoted_bits,
                 insertion_cursor: proof_cursor,
-                start_bit_cursor: candidate_bit_cursor,
+                start_bit_cursor: bit_cursor,
+                end_bit_cursor: proof_cursor,
+                rewrite_bare_second_identity_string: true,
+            });
+        } else {
+            accepted = Some(CreatureUpdateFragmentSpanProof {
+                read_end,
+                promoted_bits,
+                insertion_cursor: proof_cursor,
+                start_bit_cursor: bit_cursor,
                 end_bit_cursor: proof_cursor,
                 rewrite_bare_second_identity_string: false,
             });
-            break;
         }
         if accepted.is_some() {
             break;

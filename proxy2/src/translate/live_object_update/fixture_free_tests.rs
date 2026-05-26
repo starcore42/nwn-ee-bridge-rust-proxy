@@ -57,3 +57,36 @@ fn creature_status_effect_mixed_target_payload_rows_stay_unclaimed_without_2da()
         "without visualeffects.2da row-type proof, mixed target/no-target rows cannot be exact-owned"
     );
 }
+
+#[test]
+fn creature_interleaved_fragment_span_requires_exact_bit_cursor() {
+    let mut live = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
+    live.extend_from_slice(&0x0000_C408u32.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&[0; 8]);
+    let read_end = live.len();
+    let span = super::bits::pack_msb_valid_bits(
+        vec![false, false, false, true, false, true],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    );
+    live.extend_from_slice(&span);
+    let old_record_end = live.len();
+    let mut record_end = old_record_end;
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS + 10];
+    let shifted_cursor = super::CNW_FRAGMENT_HEADER_BITS + 1;
+    assert!(
+        super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
+            &mut live,
+            &mut fragment_bits,
+            0,
+            &mut record_end,
+            shifted_cursor,
+        )
+        .is_none(),
+        "the span promoter must not retry at a neighboring fragment cursor"
+    );
+    assert_eq!(record_end, old_record_end);
+    assert_eq!(live.len(), old_record_end);
+    assert_eq!(read_end + span.len(), old_record_end);
+}
