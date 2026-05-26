@@ -21,6 +21,18 @@ fn live_gui_character_sheet_payload(mask: u32, body: &[u8], owned_bits: Vec<bool
     payload
 }
 
+fn live_gui_read_buffer_payload(live: &[u8]) -> Vec<u8> {
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![false; super::CNW_FRAGMENT_HEADER_BITS],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+    payload
+}
+
 fn push_msb_bits(bits: &mut Vec<bool>, value: u32, width: usize) {
     for shift in (0..width).rev() {
         bits.push(((value >> shift) & 1) != 0);
@@ -50,6 +62,77 @@ fn creature_status_effect_4008_payload(rows: &[(u16, Option<[u8; 3]>)]) -> Vec<u
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
     payload
+}
+
+#[test]
+fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
+    // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
+    // inner opcode, OBJECTID/INT32, SHORT, BYTE. Unlike repository `G R/r U`,
+    // it does not own two trailing DWORDs or any CNW fragment bits.
+    let mut live = vec![b'G', b'I', b'U'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&0x3344u16.to_le_bytes());
+    live.push(0x55);
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("inventory GUI update row should exact-claim at ten bytes");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 10);
+}
+
+#[test]
+fn live_gui_inventory_update_splits_before_following_gui_row() {
+    let mut live = vec![b'G', b'i', b'U'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&0x3344u16.to_le_bytes());
+    live.push(0x55);
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("inventory GUI update should hand off before the following GQ row");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 2);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 13);
+}
+
+#[test]
+fn live_gui_inventory_update_rejects_repository_width_tail() {
+    let mut live = vec![b'G', b'I', b'U'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&0x3344u16.to_le_bytes());
+    live.push(0x55);
+    live.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+
+    let payload = live_gui_read_buffer_payload(&live);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "inventory G I U must not swallow five repository-width tail bytes"
+    );
+}
+
+#[test]
+fn live_gui_repository_update_remains_fifteen_read_buffer_bytes() {
+    let mut live = vec![b'G', b'R', b'U'];
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.extend_from_slice(&0x1122_3344u32.to_le_bytes());
+    live.extend_from_slice(&0x5566_7788u32.to_le_bytes());
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("repository GUI update row should keep the wider exact shape");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 15);
 }
 
 #[test]

@@ -653,6 +653,20 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 live_gui -- --nocapture`, `cargo fmt
   --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`.~~
+- ~~2026-05-27 `P/05/01` live GUI inventory update row cursor audit: fixed the
+  read-buffer-only `G I/i U` validator so it owns exactly ten bytes, not the
+  wider repository update row shape. Diamond `sub_4589A0`
+  (`00458BF1..00458C0B`) and EE `sub_1407B3F30`
+  (`1407B4300..1407B432C`) read the inner `U`, `OBJECTID/INT32`, `SHORT`, and
+  final `BYTE`, with no `ReadBOOL`; only repository `G R/r U` reads object id
+  plus two DWORDs for the fifteen-byte row. Public fixture-free coverage now
+  proves ten-byte inventory update ownership, handoff before a following `G Q`
+  row, rejection of five stale repository-width tail bytes, and preservation of
+  the fifteen-byte repository row. Verified with `cargo test -q -p
+  hgbridge-proxy2 live_gui_inventory_update_ -- --nocapture` and `cargo test
+  -q -p hgbridge-proxy2
+  live_gui_repository_update_remains_fifteen_read_buffer_bytes --
+  --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -52,6 +52,8 @@ const QUICKBAR_ITEM_LINK_SUBOPCODE: u8 = b'Q';
 const QUICKBAR_ITEM_LINK_HEADER_BYTES: usize = 3;
 const QUICKBAR_ITEM_LINK_ROW_BYTES: usize = 9;
 const QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW: usize = 2;
+const GUI_INVENTORY_UPDATE_ROW_BYTES: usize = 10;
+const GUI_REPOSITORY_UPDATE_ROW_BYTES: usize = 15;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 const MAX_GUI_ITEM_FRAGMENT_SPAN_BYTES: usize = 128;
 const MAX_GUI_ZERO_FRAGMENT_STORAGE_BYTES: usize = 8;
@@ -1196,7 +1198,13 @@ fn try_get_inventory_read_buffer_record_end(
 
     match bytes[offset + 2] {
         GUI_DELETE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 3, 7),
-        GUI_UPDATE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 3, 15),
+        // Diamond `sub_4589A0` (`00458BF1..00458C0B`) and EE
+        // `sub_1407B3F30` (`1407B4300..1407B432C`) read `OBJECTID/INT32`,
+        // `SHORT`, then `BYTE` for `G I/i U`. This is the inventory panel row,
+        // not the wider repository `G R/r U` row, and it owns no CNW bits.
+        GUI_UPDATE_INNER_OPCODE => {
+            fixed_gui_object_row_end(bytes, offset, scan_end, 3, GUI_INVENTORY_UPDATE_ROW_BYTES)
+        }
         _ => None,
     }
 }
@@ -1212,7 +1220,9 @@ fn try_get_repository_read_buffer_record_end(
 
     match bytes[offset + 2] {
         GUI_DELETE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 3, 7),
-        GUI_UPDATE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 3, 15),
+        GUI_UPDATE_INNER_OPCODE => {
+            fixed_gui_object_row_end(bytes, offset, scan_end, 3, GUI_REPOSITORY_UPDATE_ROW_BYTES)
+        }
         GUI_MOVE_INNER_OPCODE => fixed_gui_object_row_end(bytes, offset, scan_end, 5, 9),
         _ => None,
     }
