@@ -47,9 +47,14 @@ mod tail_repair;
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod tests;
 mod trigger;
+mod visual_effect_rows;
 pub(crate) mod visual_transform;
 mod world_status;
 mod writer;
+
+pub(crate) fn observe_visual_effect_hak_order_top_first(hak_order_top_first: &[String]) {
+    visual_effect_rows::observe_hak_order_top_first(hak_order_top_first);
+}
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
 const GAME_OBJECT_UPDATE_MAJOR: u8 = 0x05;

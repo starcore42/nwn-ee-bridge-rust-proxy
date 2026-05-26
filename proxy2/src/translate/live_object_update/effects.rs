@@ -24,7 +24,7 @@
 
 use super::{
     CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, PLACEABLE_OBJECT_TYPE,
-    read_u16_le, read_u32_le,
+    read_u16_le, read_u32_le, visual_effect_rows,
 };
 
 pub(super) const LOOPING_VISUAL_EFFECT_UPDATE_MASK: u32 = 0x0000_0008;
@@ -121,6 +121,11 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
     }
 
     let cursor = offset + LEGACY_UPDATE_HEADER_BYTES + 2;
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return try_get_verified_ee_looping_visual_effect_entries_end_with_rows(
+            bytes, cursor, count, scan_end, &rows,
+        );
+    }
     try_get_verified_ee_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0)
         .or_else(|| {
             if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
@@ -173,6 +178,11 @@ fn parse_looping_visual_effect_body(
     }
 
     let cursor = offset + LEGACY_UPDATE_HEADER_BYTES + 2;
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return parse_looping_visual_effect_entries_with_rows(
+            bytes, cursor, count, record_end, &rows,
+        );
+    }
     if let Some(shape) = parse_looping_visual_effect_entries(bytes, cursor, count, record_end, 0) {
         return Some(shape);
     }
@@ -239,6 +249,51 @@ fn parse_looping_visual_effect_entries(
     })
 }
 
+fn parse_looping_visual_effect_entries_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    record_end: usize,
+    rows: &[Option<usize>],
+) -> Option<LoopingVisualEffectList> {
+    let mut insert_offsets_after_short_entries = Vec::with_capacity(usize::from(count));
+    let mut transform_maps_seen = 0usize;
+
+    for _ in 0..usize::from(count) {
+        let change_opcode = *bytes.get(cursor)?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(target_payload_bytes)?;
+        if cursor > record_end {
+            return None;
+        }
+        insert_offsets_after_short_entries.push(cursor);
+
+        if has_identity_transform_at(bytes, cursor, record_end) {
+            cursor = cursor.checked_add(LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES.len())?;
+            transform_maps_seen = transform_maps_seen.saturating_add(1);
+        }
+    }
+
+    if cursor != record_end {
+        return None;
+    }
+
+    let count = usize::from(count);
+    if transform_maps_seen != 0 && transform_maps_seen != count {
+        return None;
+    }
+    Some(LoopingVisualEffectList {
+        insert_offsets_after_short_entries,
+        already_ee_shaped: transform_maps_seen == count,
+    })
+}
+
 fn try_get_verified_ee_looping_visual_effect_entries_end(
     bytes: &[u8],
     mut cursor: usize,
@@ -258,6 +313,37 @@ fn try_get_verified_ee_looping_visual_effect_entries_end(
             if cursor > scan_end {
                 return None;
             }
+        }
+        if !has_identity_transform_at(bytes, cursor, scan_end) {
+            return None;
+        }
+        cursor = cursor.checked_add(LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES.len())?;
+    }
+    if cursor > scan_end {
+        return None;
+    }
+    Some(cursor)
+}
+
+fn try_get_verified_ee_looping_visual_effect_entries_end_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    scan_end: usize,
+    rows: &[Option<usize>],
+) -> Option<usize> {
+    for _ in 0..usize::from(count) {
+        let change_opcode = *bytes.get(cursor)?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(target_payload_bytes)?;
+        if cursor > scan_end {
+            return None;
         }
         if !has_identity_transform_at(bytes, cursor, scan_end) {
             return None;
@@ -398,6 +484,89 @@ mod tests {
                 stale_short_target.len()
             ),
             "the old three-byte target-payload shape must not exact-claim"
+        );
+    }
+
+    #[test]
+    fn loaded_visualeffects_rows_own_mixed_target_boundaries() {
+        let mut rows = vec![None; 0x1235];
+        rows[0x00F3] = Some(0);
+        rows[0x1234] = Some(LOOPING_EFFECT_TARGET_PAYLOAD_BYTES);
+
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x02,
+            0x00,
+            b'A',
+            0xF3,
+            0x00,
+        ];
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+        record.extend_from_slice(&[b'D', 0x34, 0x12, 0x44, 0x33, 0x22, 0x80, 0x66]);
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+
+        let shape = parse_looping_visual_effect_entries_with_rows(
+            &record,
+            LEGACY_UPDATE_HEADER_BYTES + 2,
+            2,
+            record.len(),
+            &rows,
+        )
+        .expect("loaded visualeffects.2da rows should prove mixed target/no-target boundaries");
+        assert!(shape.already_ee_shaped);
+        assert_eq!(
+            try_get_verified_ee_looping_visual_effect_entries_end_with_rows(
+                &record,
+                LEGACY_UPDATE_HEADER_BYTES + 2,
+                2,
+                record.len(),
+                &rows,
+            ),
+            Some(record.len())
+        );
+    }
+
+    #[test]
+    fn loaded_visualeffects_rows_reject_absent_row_policy() {
+        let rows = vec![Some(0)];
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            b'A',
+            0x34,
+            0x12,
+        ];
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+
+        assert!(
+            parse_looping_visual_effect_entries_with_rows(
+                &record,
+                LEGACY_UPDATE_HEADER_BYTES + 2,
+                1,
+                record.len(),
+                &rows,
+            )
+            .is_none(),
+            "once visualeffects.2da is loaded, absent rows are not guessed"
         );
     }
 }

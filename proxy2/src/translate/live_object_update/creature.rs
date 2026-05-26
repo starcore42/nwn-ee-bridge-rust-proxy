@@ -4,7 +4,7 @@
 //! narrow, decompile-backed creature-family rewrites. The top-level dispatcher
 //! still owns packet routing, declared-length repair, and fragment repacking.
 
-use super::{bits, class_rows, read_f32_le, read_u16_le, read_u32_le};
+use super::{bits, class_rows, read_f32_le, read_u16_le, read_u32_le, visual_effect_rows};
 
 const LEGACY_LIVE_CREATURE_UPDATE_ASSOCIATE_MASK: u32 = 0x0000_2000;
 const LEGACY_CREATURE_UPDATE_0067_MASK: u32 = 0x0000_0067;
@@ -3655,6 +3655,58 @@ fn legacy_feature0e_false_effect_row_has_no_target_payload(row: u16) -> bool {
 fn simulate_ee_creature_update_status_effect_helper_cursor(
     cursor: &mut LegacyCreatureUpdateCursor<'_>,
 ) -> bool {
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return simulate_ee_creature_update_status_effect_helper_cursor_with_rows(cursor, &rows);
+    }
+    simulate_ee_creature_update_status_effect_helper_cursor_without_2da(cursor)
+}
+
+fn simulate_ee_creature_update_status_effect_helper_cursor_with_rows(
+    cursor: &mut LegacyCreatureUpdateCursor<'_>,
+    rows: &[Option<usize>],
+) -> bool {
+    let Some(count) = cursor.read_u16() else {
+        return false;
+    };
+    if count > 256 {
+        return false;
+    }
+
+    for _ in 0..count {
+        let Some(change_opcode) = cursor.read_u8() else {
+            return false;
+        };
+        if !matches!(change_opcode, b'A' | b'D') {
+            return false;
+        }
+        let Some(row) = cursor.read_u16() else {
+            return false;
+        };
+        let Some(target_payload_bytes) =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)
+        else {
+            return false;
+        };
+        if target_payload_bytes != 0 && cursor.advance_read(target_payload_bytes).is_none() {
+            return false;
+        }
+        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
+            cursor.bytes,
+            cursor.read_cursor,
+            cursor.record_end,
+        ) || cursor
+            .advance_read(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
+            .is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
+    cursor: &mut LegacyCreatureUpdateCursor<'_>,
+) -> bool {
     let Some(count) = cursor.read_u16() else {
         return false;
     };
@@ -3665,7 +3717,13 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
     let mut target_payload_entries = 0usize;
     let mut immediate_map_entries = 0usize;
     for _ in 0..count {
-        if cursor.advance_read(3).is_none() {
+        let Some(change_opcode) = cursor.read_u8() else {
+            return false;
+        };
+        if !matches!(change_opcode, b'A' | b'D') {
+            return false;
+        }
+        if cursor.read_u16().is_none() {
             return false;
         }
         if super::visual_transform::has_ee_object_visual_transform_identity_at(
@@ -3727,6 +3785,64 @@ fn simulate_ee_creature_update_status_effect_helper_cursor(
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loaded_visualeffects_rows_drive_creature_status_target_payload_width() {
+        let mut rows = vec![None; 0x1235];
+        rows[0x00F3] = Some(0);
+        rows[0x1234] = Some(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES);
+
+        let mut bytes = vec![0x02, 0x00, b'A', 0xF3, 0x00];
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        bytes.extend_from_slice(&[b'D', 0x34, 0x12, 0x44, 0x33, 0x22, 0x80, 0x66]);
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+
+        let mut cursor = LegacyCreatureUpdateCursor {
+            bytes: &bytes,
+            record_end: bytes.len(),
+            read_cursor: 0,
+            bit_cursor: 0,
+            fragment_bits: &[],
+        };
+
+        assert!(
+            simulate_ee_creature_update_status_effect_helper_cursor_with_rows(&mut cursor, &rows,)
+        );
+        assert_eq!(cursor.read_cursor, bytes.len());
+    }
+
+    #[test]
+    fn loaded_visualeffects_rows_reject_missing_creature_status_target_payload() {
+        let mut rows = vec![None; 0x1235];
+        rows[0x1234] = Some(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES);
+
+        let mut bytes = vec![0x01, 0x00, b'A', 0x34, 0x12];
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+
+        let mut cursor = LegacyCreatureUpdateCursor {
+            bytes: &bytes,
+            record_end: bytes.len(),
+            read_cursor: 0,
+            bit_cursor: 0,
+            fragment_bits: &[],
+        };
+
+        assert!(
+            !simulate_ee_creature_update_status_effect_helper_cursor_with_rows(&mut cursor, &rows),
+            "a P/B visualeffects row must own DWORD target id plus one BYTE before the map"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

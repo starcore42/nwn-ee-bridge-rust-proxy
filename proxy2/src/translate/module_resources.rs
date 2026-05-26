@@ -123,6 +123,9 @@ impl ModuleResourceRuntime {
         // active stack for this session.
         crate::translate::baseitems::observe_hak_order_top_first(hak_order_top_first);
         crate::translate::genericdoors::observe_hak_order_top_first(hak_order_top_first);
+        crate::translate::live_object_update::observe_visual_effect_hak_order_top_first(
+            hak_order_top_first,
+        );
         crate::translate::placeables::observe_hak_order_top_first(hak_order_top_first);
 
         let Ok(mut observed) = self.observed_declaration.lock() else {
