@@ -516,6 +516,19 @@ Current status:
   hgbridge-proxy2 inventory_0800_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 inventory_1000_ -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 inventory -- --nocapture`.
+- 2026-05-26 `P/05/01` inventory `0x0100` opcode-stream cursor audit: no
+  packet behavior changed, but public fixture-free coverage now proves this
+  branch is byte-only. Diamond `sub_455940` (`00457939..00457EB3`) and EE
+  `sub_1407B4F70` (`1407B7686..1407B79BA`) read a BYTE row count and one CHAR
+  opcode per row. `D` rows read two WORDs; `S`/`U` rows read two WORDs plus an
+  OBJECTID; `A` rows read two WORDs, optional OBJECTID, optional three FLOATs
+  for item types `0`/`2`/`4`/`12`/`19`, and a trailing DWORD for types `4`/`19`.
+  No `0x0100` row calls `ReadBOOL`; following mask branches own the next CNW
+  fragment bit. Tests now prove no `0x0100` fragment-bit ownership, exact `A`
+  row widths, and aligned handoff to following `0x2000` Feature-25 BOOLs.
+  Verified with `cargo test -q -p hgbridge-proxy2 inventory_0100_ --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 inventory --
+  --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
