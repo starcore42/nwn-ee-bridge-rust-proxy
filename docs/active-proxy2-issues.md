@@ -384,6 +384,14 @@ Current status:
   module_static_row_repair_requires_appearance_plus_two_coordinates --
   --nocapture` and `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`.
+- 2026-05-27 `P/04/01` transition direct-label cursor audit: no packet behavior
+  changed, but public fixture-free coverage now proves the decompiled
+  transition-row CExoString branch owns exactly the visibility BOOL and
+  TLK/direct selector before the direct string bytes. The TLK-only guard BOOL
+  is consumed only on the TLK DWORD branch; an extra bit after a direct label
+  keeps the post-tile tail unclaimed and prevents static-placeable context from
+  being exposed from a shifted cursor. Verified with `cargo test -q -p
+  hgbridge-proxy2 direct_transition -- --nocapture`.
 - 2026-05-26 `P/05/01` creature full-appearance locstring-name audit: no packet
   behavior changed, but public fixture-free coverage now proves the full
   `P/5` appearance name branch where the outer selector enters the locstring
