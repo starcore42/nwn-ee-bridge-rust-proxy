@@ -761,6 +761,14 @@ Current status:
   strict validation. Verified with `cargo test -q -p hgbridge-proxy2
   trigger_update_ -- --nocapture` and `cargo test -q -p hgbridge-proxy2 3967
   -- --nocapture`.
+- 2026-05-27 `P/05/01` trigger add geometry cursor audit: no packet behavior
+  changed, but public fixture-free coverage now proves the decompile-owned
+  `A/7` geometry contract. Diamond `CNWSMessage::AddTriggerGeometryToMessage`
+  and EE's matching trigger-add reader own the BYTE vertex count and complete
+  XYZ FLOAT triples as read-buffer fields only; they consume no CNW fragment
+  BOOLs, and a byte-complete add with any extra fragment bit remains
+  unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
+  trigger_add_geometry -- --nocapture`.
 - 2026-05-27 `P/05/01` door state update cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompile-backed
   `U/10` mask `0x10` state-BOOL handoff. Diamond `sub_44E2C0` owns five door
@@ -799,8 +807,9 @@ Current status:
   to the top-level live-object boundary path: midstream cleanup requires a
   verified three-byte `W`, a bounded CNW-shaped span, and an explicit following
   live-object boundary; terminal cleanup additionally requires the final exact
-  EE payload validator to accept the truncated stream. Verified in the public
-  repo with `cargo test -q -p hgbridge-proxy2 work_remaining -- --nocapture`
+  EE payload validator to accept the truncated stream. Verified with
+  `cargo test -q -p hgbridge-proxy2 work_remaining -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 appearance_update_slot0_visible_equipment_claims_exactly -- --nocapture`,
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/11/02` and `P/11/04` CharList fragment-tail cursor audit:
   tightened the existing decompile-backed character-list proof without changing

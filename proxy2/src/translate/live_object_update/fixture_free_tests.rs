@@ -79,6 +79,20 @@ fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
     live
 }
 
+fn trigger_add_live_bytes(vertex_count: u8) -> Vec<u8> {
+    let mut live = vec![b'A', super::TRIGGER_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&[0; 9]);
+    live.push(vertex_count);
+    for index in 0..vertex_count {
+        let base = f32::from(index) + 1.0;
+        live.extend_from_slice(&base.to_le_bytes());
+        live.extend_from_slice(&(base + 0.25).to_le_bytes());
+        live.extend_from_slice(&(base + 0.5).to_le_bytes());
+    }
+    live
+}
+
 fn door_state_update_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_1234u32.to_le_bytes());
@@ -566,6 +580,41 @@ fn legacy_trigger_update_rewrite_requires_tail_and_position_bits() {
     assert!(
         super::rewrite_update_records_payload_if_possible(&mut short_bits_payload).is_none(),
         "the trigger position branch owns exactly two CNW fragment bits"
+    );
+}
+
+#[test]
+fn trigger_add_geometry_is_read_buffer_only() {
+    // Diamond `CNWSMessage::AddTriggerGeometryToMessage` and EE's matching
+    // trigger-add reader own BYTE vertex count plus XYZ FLOAT triples. They do
+    // not call `ReadBOOL`, so the live-object fragment cursor must not move
+    // between this add record and the next submessage.
+    let live = trigger_add_live_bytes(2);
+    let payload = live_object_payload_with_bits(&live, Vec::new());
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("trigger add geometry should exact-claim as read-buffer-only");
+
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+    assert_eq!(claim.inventory_fragment_bits, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+
+    let shifted = live_object_payload_with_bits(&live, vec![true]);
+    assert!(
+        super::claim_payload_if_verified(&shifted).is_none(),
+        "trigger add geometry must not consume or hide a following fragment bit"
+    );
+}
+
+#[test]
+fn trigger_add_geometry_rejects_truncated_vertex_rows() {
+    let mut live = trigger_add_live_bytes(1);
+    live.truncate(live.len() - 1);
+    let payload = live_object_payload_with_bits(&live, Vec::new());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the trigger vertex count owns complete XYZ FLOAT triples only"
     );
 }
 
