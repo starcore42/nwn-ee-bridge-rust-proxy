@@ -4156,7 +4156,7 @@ fn repair_legacy_zero_sound_counts(
     }
     cursor = cursor.checked_add(2)?;
 
-    let mut repairs = 0u32;
+    let mut repair_count_offsets = Vec::new();
     for _ in 0..sound_count {
         let count_offset = cursor.checked_add(AREA_SOUND_RESREF_COUNT_OFFSET)?;
         let resref_count = read_area_u16(payload, fragment_offset, count_offset)?;
@@ -4166,8 +4166,7 @@ fn repair_legacy_zero_sound_counts(
                 fragment_offset,
                 cursor.checked_add(AREA_SOUND_BASE_BYTES)?,
             ) {
-            write_area_u16(payload, fragment_offset, count_offset, 1)?;
-            repairs = repairs.checked_add(1)?;
+            repair_count_offsets.push(count_offset);
             1usize
         } else {
             usize::from(resref_count)
@@ -4183,6 +4182,31 @@ fn repair_legacy_zero_sound_counts(
             return None;
         }
     }
+
+    let repairs = u32::try_from(repair_count_offsets.len()).ok()?;
+    if repair_count_offsets.is_empty() {
+        return Some(0);
+    }
+
+    // Stage row-local count repairs and then re-run the full post-tile proof.
+    // A zero-count compact sound row is owned only when the repaired row also
+    // lands on the decompiled six-BOOL sound cursor and exact following lists.
+    let mut candidate = payload.to_vec();
+    for count_offset in repair_count_offsets {
+        write_area_u16(&mut candidate, fragment_offset, count_offset, 1)?;
+    }
+    let candidate_scan = scan_area_tile_stream(&candidate, fragment_offset);
+    if !candidate_scan.valid
+        || candidate_scan.tile_end_read_offset != scan.tile_end_read_offset
+        || candidate_scan.width != scan.width
+        || candidate_scan.packet_height != scan.packet_height
+        || candidate_scan.tile_count != scan.tile_count
+        || legacy_area_source_tail_exact_read_proof(&candidate, fragment_offset, &candidate_scan)
+            .is_none()
+    {
+        return None;
+    }
+    payload.copy_from_slice(&candidate);
 
     Some(repairs)
 }
@@ -8036,6 +8060,58 @@ mod public_static_direction_tests {
         assert_eq!(context.light_rows.len(), 0);
         assert_eq!(context.static_rows.len(), 1);
         assert_eq!(context.static_rows[0].appearance, 82);
+    }
+
+    #[test]
+    fn zero_sound_count_repair_requires_exact_sound_fragment_cursor() {
+        let (payload, fragment_offset, _) =
+            real_area_map_pin_zero_count_sound_static_placeable_payload();
+        let mut shifted_payload = payload.clone();
+        shifted_payload.truncate(fragment_offset);
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[false; 7]);
+        shifted_payload.extend_from_slice(
+            &encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted legacy sound bits should encode"),
+        );
+        let shifted_scan = scan_area_tile_stream(&shifted_payload, fragment_offset);
+        assert!(shifted_scan.valid);
+
+        let fragment_bits_available =
+            area_payload_fragment_bits_available(&shifted_payload, fragment_offset)
+                .expect("shifted fragment should expose valid bits");
+        let (_, cursor, _) = advance_area_transition_rows(
+            &shifted_payload,
+            fragment_offset,
+            shifted_scan.tile_end_read_offset,
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS,
+            fragment_bits_available,
+        )
+        .expect("test transition count should advance");
+        let (_, sound_count_offset) =
+            advance_area_map_pin_rows(&shifted_payload, fragment_offset, cursor)
+                .expect("test map pin should advance");
+        let sound_row_count_offset = sound_count_offset + 2 + AREA_SOUND_RESREF_COUNT_OFFSET;
+        assert_eq!(
+            read_area_u16(&shifted_payload, fragment_offset, sound_count_offset),
+            Some(1)
+        );
+        assert_eq!(
+            read_area_u16(&shifted_payload, fragment_offset, sound_row_count_offset),
+            Some(0)
+        );
+
+        let original_shifted_payload = shifted_payload.clone();
+        assert!(
+            repair_legacy_zero_sound_counts(&mut shifted_payload, fragment_offset, &shifted_scan)
+                .is_none(),
+            "zero-count sound repair must not claim a row unless the six sound BOOLs consume the exact fragment cursor"
+        );
+        assert_eq!(
+            shifted_payload, original_shifted_payload,
+            "failed sound-count repair must leave the byte row untouched"
+        );
     }
 
     #[test]

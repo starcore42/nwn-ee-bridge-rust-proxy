@@ -354,6 +354,16 @@ Current status:
   zero_sound_count_repair_uses_shared_map_pin_cursor -- --nocapture` and
   `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
   --nocapture`.
+- 2026-05-28 `P/04/01` zero sound-count staged-repair audit: hardened the same
+  compact sound helper so row-local `0 -> 1` CResRef count fixes are staged
+  first, then accepted only when the full post-tile source proof consumes the
+  exact six sound BOOLs and following lists. A malformed compact row with an
+  extra sound fragment bit is now left untouched instead of being partially
+  mutated before final rejection. Verified with `cargo test -q -p
+  hgbridge-proxy2 zero_sound_count_repair -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 sound -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  exact_ee_area_proof_rejects -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 public_static_direction_tests -- --nocapture`.
 - 2026-05-25 `P/04/01` light-placeable cursor audit: shared the decompile-backed
   light-row walker across the legacy exact proof, EE exact proof, and
   placeable-context collector. Light rows are byte-only after their `WORD`
