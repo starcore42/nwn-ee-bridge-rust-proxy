@@ -875,6 +875,21 @@ Current status:
   cannot expose later map/sound/light/static rows. Verified with `cargo test
   -q -p hgbridge-proxy2 transition -- --nocapture`, plus the final formatting
   and check suite for this run.
+- 2026-05-28 `P/04/01` EE pre-tile inserted-bit audit: no packet behavior
+  changed, but public fixture-free coverage now proves the exact EE
+  `LoadArea` proof rejects drift in the bridge-owned build-36.3/build-36.5
+  pre-tile fields. Legacy rewrites must keep the inserted tileset-options BOOL
+  false, the inserted tileset-options count zero, and the inserted tile-loop
+  BOOL false before tile rows; any true/nonzero branch is unclaimed until a
+  row shape is proven from Diamond/EE decompiles. The same pass extended the
+  exact transition fragment-tail proof to the direct CExoString branch, proving
+  direct labels own only visibility plus selector bits before later lists.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  exact_ee_area_proof_rejects -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 transition -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 public_static_direction_tests -- --nocapture`, `cargo fmt
+  --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity

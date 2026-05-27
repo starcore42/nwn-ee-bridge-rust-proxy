@@ -7302,6 +7302,52 @@ mod public_static_direction_tests {
         payload
     }
 
+    fn ee_area_direct_transition_payload_with_extra_fragment_bits(
+        extra_fragment_bits: usize,
+    ) -> Vec<u8> {
+        let (legacy_payload, legacy_fragment_offset, legacy_scan) =
+            real_area_direct_transition_static_placeable_payload(false);
+        legacy_area_source_tail_exact_read_proof(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_scan,
+        )
+        .expect("direct transition source should have exact post-tile cursor proof");
+        let legacy_layout = area_static_layout(&legacy_payload, legacy_fragment_offset)
+            .expect("direct transition source should expose an area layout");
+        assert_eq!(legacy_layout.dialect, AreaStaticDialect::Legacy169);
+
+        let mut payload = expand_legacy_area_static_header_for_ee(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_layout,
+        )
+        .expect("test payload should expand to the EE static-header dialect");
+        push_u16(&mut payload, 0);
+        push_u16(&mut payload, 0);
+
+        let new_read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        let mut rewritten_fragment =
+            rewrite_area_fragment_bits(&legacy_payload[legacy_fragment_offset..])
+                .expect("test fragment should rewrite to the EE Area_ClientArea bit dialect");
+        if extra_fragment_bits != 0 {
+            let mut bits = decode_cnw_msb_valid_bits(&rewritten_fragment, CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten test fragment should decode");
+            let mut payload_bits = bits.split_off(CNW_FRAGMENT_HEADER_BITS);
+            payload_bits.extend(std::iter::repeat(false).take(extra_fragment_bits));
+            rewritten_fragment = encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted EE area fragment bits should encode");
+        }
+        payload.extend_from_slice(&rewritten_fragment);
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + new_read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic EE payload");
+        payload
+    }
+
     fn ee_area_sound_payload_with_extra_fragment_bits(extra_fragment_bits: usize) -> Vec<u8> {
         let (legacy_payload, legacy_fragment_offset, legacy_scan) =
             real_area_sound_static_placeable_payload(true);
@@ -7412,6 +7458,61 @@ mod public_static_direction_tests {
         assert!(
             ee_area_client_area_exact_read_proof(&nonzero_second).is_none(),
             "the second post-static count is also bridge-owned zero for legacy Area_ClientArea rewrites"
+        );
+    }
+
+    #[test]
+    fn exact_ee_area_proof_rejects_pre_tile_inserted_branch_drift() {
+        let exact = ee_area_static_placeable_payload_with_static_rows(&[], 0);
+        let proof = ee_area_client_area_exact_read_proof(&exact)
+            .expect("minimal EE area should satisfy the exact pre-tile cursor proof");
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+
+        let mut tileset_options_bit = exact.clone();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&tileset_options_bit).expect("test area read window");
+        set_cnw_msb_bit(
+            tileset_options_bit
+                .get_mut(fragment_offset..)
+                .expect("test fragment slice"),
+            EE_AREA_BUILD36_3_TILESET_OPTIONS_BOOL_BIT_INDEX,
+        )
+        .expect("test should set the EE tileset-options BOOL");
+        assert!(
+            ee_area_client_area_exact_read_proof(&tileset_options_bit).is_none(),
+            "EE build-36.3 tileset-options BOOL is an inserted false branch for legacy rewrites"
+        );
+
+        let mut tileset_options_count = exact.clone();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&tileset_options_count).expect("test area read window");
+        let layout = area_static_layout(&tileset_options_count, fragment_offset)
+            .expect("test EE area should expose a static layout");
+        write_area_u32(
+            &mut tileset_options_count,
+            fragment_offset,
+            layout.tileset_read_offset + CRESREF_TEXT_BYTES,
+            1,
+        )
+        .expect("test should set a non-empty tileset-options count");
+        assert!(
+            ee_area_client_area_exact_read_proof(&tileset_options_count).is_none(),
+            "EE build-36.3 tileset-options count is bridge-owned zero until a row shape is proven"
+        );
+
+        let mut tile_loop_bit = exact.clone();
+        let (_, _, fragment_offset, _) =
+            area_client_area_read_window(&tile_loop_bit).expect("test area read window");
+        set_cnw_msb_bit(
+            tile_loop_bit
+                .get_mut(fragment_offset..)
+                .expect("test fragment slice"),
+            EE_AREA_BUILD36_5_TILE_LOOP_BOOL_BIT_INDEX,
+        )
+        .expect("test should set the EE tile-loop BOOL");
+        assert!(
+            ee_area_client_area_exact_read_proof(&tile_loop_bit).is_none(),
+            "EE build-36.5 tile-loop BOOL is an inserted false branch before tile rows"
         );
     }
 
@@ -7647,6 +7748,22 @@ mod public_static_direction_tests {
         assert!(
             ee_area_client_area_exact_read_proof(&shifted).is_none(),
             "EE transition labels own exactly their decompiled locstring bits before map/sound/static lists"
+        );
+
+        let exact_direct = ee_area_direct_transition_payload_with_extra_fragment_bits(0);
+        let direct_proof = ee_area_client_area_exact_read_proof(&exact_direct)
+            .expect("one EE direct transition row and one static row should be exact");
+        assert_eq!(direct_proof.transition_count, 1);
+        assert_eq!(direct_proof.static_count, 1);
+        assert_eq!(
+            direct_proof.fragment_bits_consumed,
+            direct_proof.fragment_bits_available
+        );
+
+        let shifted_direct = ee_area_direct_transition_payload_with_extra_fragment_bits(1);
+        assert!(
+            ee_area_client_area_exact_read_proof(&shifted_direct).is_none(),
+            "EE direct transition labels own only visibility and selector bits before later lists"
         );
     }
 
