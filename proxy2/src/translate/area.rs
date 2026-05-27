@@ -7896,6 +7896,123 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn module_static_row_repair_allows_zero_appearance_only_with_all_coordinates() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "zero_appearance_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let info = module_info_with_placeables(vec![placeable.clone()]);
+
+        let (mut full_match_payload, full_match_fragment_offset, full_match_scan) =
+            static_placeable_source_row_payload(0, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0);
+        let full_match_proof = legacy_area_source_tail_exact_read_proof(
+            &full_match_payload,
+            full_match_fragment_offset,
+            &full_match_scan,
+        )
+        .expect("zero-appearance source row should still have exact static cursor proof");
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut full_match_payload,
+            full_match_fragment_offset,
+            &full_match_scan,
+            &info,
+        )
+        .expect("all-coordinate zero-appearance row should be repairable from GIT state");
+        assert_eq!(repairs, 1);
+        let repaired_proof = legacy_area_source_tail_exact_read_proof(
+            &full_match_payload,
+            full_match_fragment_offset,
+            &full_match_scan,
+        )
+        .expect("zero-appearance repair must preserve the exact static cursor proof");
+        assert_eq!(
+            repaired_proof.static_rows_read_offset,
+            full_match_proof.static_rows_read_offset
+        );
+        assert_eq!(
+            repaired_proof.static_rows_count,
+            full_match_proof.static_rows_count
+        );
+        assert_eq!(
+            read_area_u16(
+                &full_match_payload,
+                full_match_fragment_offset,
+                full_match_proof.static_rows_read_offset + 4,
+            ),
+            Some(placeable.appearance),
+            "a zero appearance WORD may be filled only after all placement coordinates match"
+        );
+        assert!(
+            area_static_placeable_ee_row_shape_valid(
+                &full_match_payload,
+                full_match_fragment_offset,
+                full_match_proof.static_rows_read_offset,
+            ),
+            "module bearing should make the repaired zero-appearance row EE-safe"
+        );
+
+        let (mut partial_match_payload, partial_match_fragment_offset, partial_match_scan) =
+            static_placeable_source_row_payload(0, 10.0, 20.0, 99.0, 0.0, 0.0, 0.0);
+        legacy_area_source_tail_exact_read_proof(
+            &partial_match_payload,
+            partial_match_fragment_offset,
+            &partial_match_scan,
+        )
+        .expect("partial zero-appearance row still has exact static cursor proof");
+        let partial_original = partial_match_payload.clone();
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut partial_match_payload,
+            partial_match_fragment_offset,
+            &partial_match_scan,
+            &info,
+        )
+        .expect("unmatched zero-appearance row should leave the packet proof intact");
+        assert_eq!(
+            repairs, 0,
+            "zero appearance does not relax the placement proof to two coordinates"
+        );
+        assert_eq!(
+            partial_match_payload, partial_original,
+            "weak zero-appearance matches must not rewrite appearance, position, or bearing"
+        );
+
+        let (mut wrong_appearance_payload, wrong_appearance_fragment_offset, wrong_appearance_scan) =
+            static_placeable_source_row_payload(83, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0);
+        legacy_area_source_tail_exact_read_proof(
+            &wrong_appearance_payload,
+            wrong_appearance_fragment_offset,
+            &wrong_appearance_scan,
+        )
+        .expect("wrong-appearance row still has exact static cursor proof");
+        let wrong_original = wrong_appearance_payload.clone();
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut wrong_appearance_payload,
+            wrong_appearance_fragment_offset,
+            &wrong_appearance_scan,
+            &info,
+        )
+        .expect("non-matching appearance should leave the packet proof intact");
+        assert_eq!(
+            repairs, 0,
+            "only a literal zero appearance WORD is treated as a missing value"
+        );
+        assert_eq!(
+            wrong_appearance_payload, wrong_original,
+            "nonzero appearance mismatches must not be repaired from coordinates alone"
+        );
+    }
+
+    #[test]
     fn module_context_state_requires_matching_static_direction_triplet() {
         let placeable = ModuleAreaPlaceable {
             tag: "locked_chest".to_string(),

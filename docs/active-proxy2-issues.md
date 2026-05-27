@@ -391,10 +391,13 @@ Current status:
   two coordinates, but zero appearances are treated as missing only when all
   three placement coordinates match one remaining static GIT placeable. This
   repairs appearance and bearing from module state without accepting a shifted
-  static-row cursor. The local Contest item-area fixture now rewrites to exact
-  EE proof under that generalized rule. Verified with `cargo test -q -p
-  hgbridge-proxy2 local_contest_items_area_uses_split_resref_and_name_fragments
-  -- --nocapture` and `cargo test -q -p hgbridge-proxy2`.
+  static-row cursor. Public fixture-free coverage now proves the accepted
+  zero-appearance/full-coordinate case, the rejected
+  zero-appearance/two-coordinate case, and the rejected nonzero-appearance
+  mismatch case; the local Contest item-area fixture still rewrites to exact
+  EE proof under that generalized rule. Verified with `cargo test -q -p hgbridge-proxy2
+  module_static_row_repair_allows_zero_appearance_only_with_all_coordinates --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 area::tests:: -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable context proof audit: corrected the HG
   Docks zero-sound-count fixture expectation so absent local module proof stays
   absent. The test now supplies an explicit empty module context and proves that
