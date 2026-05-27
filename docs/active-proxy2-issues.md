@@ -742,6 +742,17 @@ Current status:
   mask and one extra fragment bit stays unclaimed. Verified with `cargo test
   -q -p hgbridge-proxy2 live_gui_character_sheet_ -- --nocapture` and
   `cargo test -q -p hgbridge-proxy2 live_gui -- --nocapture`.~~
+- 2026-05-27 `P/05/01` trigger update cursor audit: no packet shape changed,
+  but public fixture-free coverage now proves the decompile-owned `U/7`
+  position update contract. The accepted legacy all-bits trigger row
+  (`0xFFFF_FFF3`) must carry exactly the bounded three-byte legacy trigger tail
+  before it can collapse to EE mask `0x00000001`; the EE position-only row then
+  owns three WORD read-buffer fields plus exactly two CNW fragment bits, and
+  any extra or missing trigger fragment bit remains unclaimed. Removed stale
+  unused `U/5 0x3967` neighboring-cursor helpers that no longer participate in
+  strict validation. Verified with `cargo test -q -p hgbridge-proxy2
+  trigger_update_ -- --nocapture` and `cargo test -q -p hgbridge-proxy2 3967
+  -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

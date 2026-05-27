@@ -106,8 +106,10 @@ pub(super) fn parse_legacy_trigger_update_for_ee(
     // legacy trigger-specific three-byte read tail after the generic position
     // read block. EE's generic `WriteGameObjUpdate_UpdateObject` position path
     // is the common decompile-owned subset: `U`, object type, object id, mask,
-    // then the three packed position floats. Keep this deliberately exact so
-    // any future trigger mask/tail shape is quarantined until researched.
+    // then position mask `0x0001` as three WORD read-buffer fields plus two
+    // CNW fragment bits. Keep this deliberately exact so any future trigger
+    // mask/tail shape is quarantined until researched instead of guessing at a
+    // shifted bit cursor.
     if raw_mask != LEGACY_HG_TRIGGER_UPDATE_MASK_WITH_POSITION_TAIL
         || translated_mask != LEGACY_UPDATE_POSITION_MASK
         || legacy_record_end != record_end

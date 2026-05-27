@@ -22,12 +22,18 @@ fn live_gui_character_sheet_payload(mask: u32, body: &[u8], owned_bits: Vec<bool
 }
 
 fn live_gui_read_buffer_payload(live: &[u8]) -> Vec<u8> {
+    live_object_payload_with_bits(live, Vec::new())
+}
+
+fn live_object_payload_with_bits(live: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {
     let mut payload = vec![b'P', 0x05, 0x01];
     let declared = (super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + live.len()) as u32;
     payload.extend_from_slice(&declared.to_le_bytes());
     payload.extend_from_slice(live);
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    fragment_bits.extend(owned_bits);
     payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
-        vec![false; super::CNW_FRAGMENT_HEADER_BITS],
+        fragment_bits,
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
     payload
@@ -62,6 +68,15 @@ fn creature_status_effect_4008_payload(rows: &[(u16, Option<&[u8]>)]) -> Vec<u8>
         super::CNW_FRAGMENT_HEADER_BITS,
     ));
     payload
+}
+
+fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'U', super::TRIGGER_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&raw_mask.to_le_bytes());
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    live.extend_from_slice(tail);
+    live
 }
 
 #[test]
@@ -184,6 +199,82 @@ fn live_gui_repository_move_rejects_object_id_at_update_offset() {
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "repository move must not treat an object id at the update/delete cursor as a valid row"
+    );
+}
+
+#[test]
+fn legacy_trigger_update_tail_rewrites_to_position_only_exact_shape() {
+    // Trigger updates use the shared Diamond/EE generic position cursor:
+    // mask 0x0001 owns three WORD read-buffer fields plus two CNW fragment
+    // bits. The observed legacy all-bits trigger row is accepted only with
+    // its bounded three-byte legacy trigger tail, then collapsed to that EE
+    // position-only shape.
+    let live = trigger_update_live_bytes(0xFFFF_FFF3, &[0xAA, 0xBB, 0xCC]);
+    let mut payload = live_object_payload_with_bits(&live, vec![true, false]);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the all-bits legacy trigger tail is not already an exact EE update"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("bounded legacy trigger tail should rewrite to EE position-only");
+
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    assert_eq!(rewrite.bytes_removed, 3);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("rewritten declared length") as usize;
+    let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    assert_eq!(live.len(), super::LEGACY_UPDATE_HEADER_BYTES + 6);
+    assert_eq!(
+        super::read_u32_le(live, 6),
+        Some(super::LEGACY_UPDATE_POSITION_MASK)
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten trigger update should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(
+        claim.live_bytes_length,
+        super::LEGACY_UPDATE_HEADER_BYTES + 6
+    );
+}
+
+#[test]
+fn trigger_update_exact_shape_owns_only_position_fragment_bits() {
+    let live = trigger_update_live_bytes(super::LEGACY_UPDATE_POSITION_MASK, &[]);
+    let payload = live_object_payload_with_bits(&live, vec![false, true]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("position-only trigger update should claim exactly");
+
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(
+        claim.live_bytes_length,
+        super::LEGACY_UPDATE_HEADER_BYTES + 6
+    );
+
+    let extra_bit_payload = live_object_payload_with_bits(&live, vec![false, true, false]);
+    assert!(
+        super::claim_payload_if_verified(&extra_bit_payload).is_none(),
+        "a byte-complete trigger update with an extra unowned fragment bit is not exact"
+    );
+}
+
+#[test]
+fn legacy_trigger_update_rewrite_requires_tail_and_position_bits() {
+    let missing_tail = trigger_update_live_bytes(0xFFFF_FFF3, &[]);
+    let mut missing_tail_payload = live_object_payload_with_bits(&missing_tail, vec![false, true]);
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut missing_tail_payload).is_none(),
+        "legacy all-bits trigger updates must carry the bounded three-byte tail before rewrite"
+    );
+
+    let short_bits = trigger_update_live_bytes(0xFFFF_FFF3, &[0xAA, 0xBB, 0xCC]);
+    let mut short_bits_payload = live_object_payload_with_bits(&short_bits, vec![true]);
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut short_bits_payload).is_none(),
+        "the trigger position branch owns exactly two CNW fragment bits"
     );
 }
 
