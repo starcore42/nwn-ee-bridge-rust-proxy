@@ -900,6 +900,17 @@ Current status:
   hgbridge-proxy2 public_static_direction_tests -- --nocapture`, `cargo fmt
   --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` missing-dimension repair cursor audit: hardened the
+  legacy missing width/height repairs so inferred tile dimensions are staged
+  first, then copied back only when the repaired dimension-driven tile loop
+  lands on the exact decompile-owned post-tile byte and fragment cursor. A
+  missing-height or missing-width area with one extra unowned post-tile
+  fragment bit now leaves the dimension DWORDs untouched instead of accepting a
+  semantically plausible tile grid. Verified with `cargo test -q -p
+  hgbridge-proxy2 missing_height_repair_requires_exact_post_tile_fragment_cursor
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  missing_width_repair_requires_exact_post_tile_fragment_cursor --
+  --nocapture`, plus the existing Docks/Voyage positive repair filters.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity

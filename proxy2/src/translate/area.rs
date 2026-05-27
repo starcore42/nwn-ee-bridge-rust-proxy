@@ -3957,11 +3957,25 @@ fn repair_missing_area_height(
     if height_payload_offset > fragment_offset || fragment_offset - height_payload_offset < 4 {
         return false;
     }
-    if write_u32_le(payload, height_payload_offset, scan.inferred_height).is_some() {
-        scan.packet_height = scan.inferred_height;
-        true
-    } else {
+    // Missing dimension repairs are safe only when the inferred width/height
+    // still hand off to the exact decompile-owned post-tile cursor.
+    let mut candidate = payload.to_vec();
+    if write_u32_le(&mut candidate, height_payload_offset, scan.inferred_height).is_none() {
         false
+    } else {
+        let repaired_scan = scan_area_tile_stream(&candidate, fragment_offset);
+        if !repaired_missing_dimension_scan_matches(scan, &repaired_scan)
+            || !legacy_area_source_tail_consumes_read_buffer(
+                &candidate,
+                fragment_offset,
+                &repaired_scan,
+            )
+        {
+            return false;
+        }
+        payload.copy_from_slice(&candidate);
+        *scan = repaired_scan;
+        true
     }
 }
 
@@ -4000,16 +4014,38 @@ fn repair_missing_area_width(
     if width_payload_offset > fragment_offset || fragment_offset - width_payload_offset < 4 {
         return false;
     }
-    if write_u32_le(payload, width_payload_offset, legacy_scan.width).is_none() {
+    let mut candidate = payload.to_vec();
+    if write_u32_le(&mut candidate, width_payload_offset, legacy_scan.width).is_none() {
         return false;
     }
 
-    let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
-    if !repaired_scan.valid {
+    let repaired_scan = scan_area_tile_stream(&candidate, fragment_offset);
+    if !repaired_missing_dimension_scan_matches(&legacy_scan, &repaired_scan)
+        || !legacy_area_source_tail_consumes_read_buffer(
+            &candidate,
+            fragment_offset,
+            &repaired_scan,
+        )
+    {
         return false;
     }
+    payload.copy_from_slice(&candidate);
     *scan = repaired_scan;
     true
+}
+
+fn repaired_missing_dimension_scan_matches(
+    source_scan: &AreaTileStreamScan,
+    repaired_scan: &AreaTileStreamScan,
+) -> bool {
+    repaired_scan.valid
+        && repaired_scan.layout.first_tile_read_offset == source_scan.layout.first_tile_read_offset
+        && repaired_scan.layout.tileset_read_offset == source_scan.layout.tileset_read_offset
+        && repaired_scan.width == source_scan.width
+        && repaired_scan.packet_height == source_scan.inferred_height
+        && repaired_scan.inferred_height == source_scan.inferred_height
+        && repaired_scan.tile_count == source_scan.tile_count
+        && repaired_scan.tile_end_read_offset == source_scan.tile_end_read_offset
 }
 
 fn repair_missing_square_area_dimensions(
@@ -6414,6 +6450,31 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
 fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let bytes = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+fn legacy_area_payload_with_extra_fragment_bits(
+    payload: &[u8],
+    extra_fragment_bits: usize,
+) -> (Vec<u8>, usize) {
+    let (_, _, fragment_offset, _) =
+        area_client_area_read_window(payload).expect("test area read window");
+    let mut bits = decode_cnw_msb_valid_bits(
+        payload
+            .get(fragment_offset..)
+            .expect("test payload should contain a fragment stream"),
+        CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("test fragment should decode");
+    let mut payload_bits = bits.split_off(CNW_FRAGMENT_HEADER_BITS);
+    payload_bits.extend(std::iter::repeat(false).take(extra_fragment_bits));
+
+    let mut shifted = payload[..fragment_offset].to_vec();
+    shifted.extend_from_slice(
+        &encode_cnw_msb_payload_bits(&payload_bits)
+            .expect("shifted legacy area fragment bits should encode"),
+    );
+    (shifted, fragment_offset)
 }
 
 #[cfg(test)]
@@ -9063,6 +9124,38 @@ mod tests {
     }
 
     #[test]
+    fn missing_height_repair_requires_exact_post_tile_fragment_cursor() {
+        let (mut payload, fragment_offset) = legacy_area_payload_with_extra_fragment_bits(
+            DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT,
+            1,
+        );
+        let mut scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 11);
+        assert_eq!(scan.packet_height, 0);
+        assert_eq!(scan.inferred_height, 14);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan).is_none(),
+            "extra post-tile fragment bits must block the legacy source cursor proof"
+        );
+        let layout = area_static_layout(&payload, fragment_offset).expect("test area layout");
+        let original = payload.clone();
+
+        assert!(
+            !repair_missing_area_height(&mut payload, fragment_offset, &mut scan),
+            "height repair must not run unless the inferred dimensions also prove the exact post-tile cursor"
+        );
+        assert_eq!(
+            payload, original,
+            "failed height repair must leave the dimension bytes and fragment stream untouched"
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn docksofascension_rewrite_consumes_exact_ee_area_reader_window() {
         let mut payload = DOCKS_OF_ASCENSION_LEGACY_MISSING_HEIGHT.to_vec();
         let summary = rewrite_area_client_area_payload(&mut payload)
@@ -9242,6 +9335,39 @@ mod tests {
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn missing_width_repair_requires_exact_post_tile_fragment_cursor() {
+        let (mut payload, fragment_offset) =
+            legacy_area_payload_with_extra_fragment_bits(VOYAGE_LEGACY_MISSING_WIDTH, 1);
+        let layout = area_static_layout(&payload, fragment_offset).expect("test area layout");
+        let mut scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(!scan.valid);
+        let legacy_scan =
+            scan_area_tile_stream_allow_legacy_missing_width(&payload, fragment_offset);
+        assert!(legacy_scan.valid);
+        assert_eq!(legacy_scan.width, 4);
+        assert_eq!(legacy_scan.packet_height, 5);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &legacy_scan)
+                .is_none(),
+            "extra post-tile fragment bits must block the legacy source cursor proof"
+        );
+        let original = payload.clone();
+
+        assert!(
+            !repair_missing_area_width(&mut payload, fragment_offset, &mut scan),
+            "width repair must not run unless the inferred dimensions also prove the exact post-tile cursor"
+        );
+        assert_eq!(
+            payload, original,
+            "failed width repair must leave the dimension bytes and fragment stream untouched"
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
     }
 
     #[test]
