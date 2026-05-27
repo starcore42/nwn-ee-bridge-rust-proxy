@@ -844,6 +844,19 @@ Current status:
   response empty-fragment handoff. Keep the broader player-model issue focused
   on live-object current-player appearance unless future evidence shows the
   BIC/CharList source fields are already wrong before the first `P/05/01`.
+- 2026-05-28 `P/05/01` full creature appearance cross-record fence audit:
+  tightened the byte-only `P/5` parser so it no longer assumes a three-bit
+  packetized fragment fence before a following `U/5` record when no fragment
+  proof is available. Cross-record fence bits are now accounted only when the
+  focused following creature-update reader validates at the exact post-fence
+  cursor; otherwise the caller must prove the explicit appearance byte
+  boundary. Public fixture-free coverage proves a full appearance followed by a
+  zero-mask `U/5` remains valid at the explicit boundary while the old no-proof
+  cross-record parse stays rejected. Verified with `cargo test -q -p
+  hgbridge-proxy2 full_appearance_no_proof_requires_explicit_boundary_before_following_u5
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 full_appearance --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

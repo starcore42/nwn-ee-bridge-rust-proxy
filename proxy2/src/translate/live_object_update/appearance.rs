@@ -5427,7 +5427,7 @@ fn parse_creature_appearance_record(
         // false vector/target selector. Do not guess: accept a fence width only
         // when the focused creature-update validator consumes the following
         // `U/5` record exactly at that cursor.
-        let fence_bits = if let Some(proof) = bit_proof {
+        let fence_bits = bit_proof.and_then(|proof| {
             select_following_creature_update_fragment_fence_bits(
                 bytes,
                 cursor,
@@ -5435,9 +5435,7 @@ fn parse_creature_appearance_record(
                 fragment_bits_consumed,
                 ee_extra_fragment_bits,
             )
-        } else {
-            Some(CNW_FRAGMENT_HEADER_BITS)
-        };
+        });
         if let Some(fence_bits) = fence_bits {
             fragment_bits_consumed = fragment_bits_consumed.checked_add(fence_bits)?;
         } else if cursor < limit {
@@ -9334,6 +9332,44 @@ mod public_tests {
                 &mut short_cursor,
             ),
             "the nested active-property tail must not be accepted with a missing source BOOL"
+        );
+    }
+
+    #[test]
+    fn full_appearance_no_proof_requires_explicit_boundary_before_following_u5() {
+        let mut bytes = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
+        let appearance_end = bytes.len();
+        bytes.extend_from_slice(&[b'U', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u32(&mut bytes, 0);
+
+        assert!(
+            parse_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                AppearanceNameShape::CExoString,
+                CreatureAppearanceWireDialect::LegacyDiamond,
+                None,
+            )
+            .is_none(),
+            "cross-record fragment-fence ownership must be proven from the following U/5 cursor, not assumed by a byte-only appearance parse"
+        );
+
+        let exact = parse_creature_appearance_record(
+            &bytes,
+            0,
+            appearance_end,
+            AppearanceNameShape::CExoString,
+            CreatureAppearanceWireDialect::LegacyDiamond,
+            None,
+        )
+        .expect("the same appearance remains valid at its explicit byte boundary");
+        assert_eq!(exact.record_end, appearance_end);
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(appearance_end),
+            "the top-level boundary scan can still prove the appearance end without inventing fence bits"
         );
     }
 
