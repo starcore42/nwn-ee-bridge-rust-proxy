@@ -136,6 +136,71 @@ fn work_remaining_record_is_three_read_buffer_bytes_and_fragment_neutral() {
 }
 
 #[test]
+fn work_remaining_identity_pass_does_not_trim_unproven_read_tail() {
+    // A byte grouped after `W current total` is not part of the Diamond/EE
+    // work-remaining reader. The identity pass must leave it unclaimed unless
+    // the explicit post-`W` fragment-span promoter proves a bounded CNW
+    // fragment-storage stream.
+    let live = [b'W', 0x02, 0x0E, 0x60];
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "extra read-buffer bytes after W must not exact-claim"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "the update pass must not silently trim an unproven post-W byte"
+    );
+    assert_eq!(
+        payload, original,
+        "unproven post-W read bytes must stay visible for quarantine/diagnostics"
+    );
+}
+
+#[test]
+fn work_remaining_midstream_fragment_storage_requires_top_level_following_boundary_proof() {
+    // Local transition captures can carry a bounded CNW fragment-storage byte
+    // after a `W` row and before the next real live-object submessage. That is
+    // not a `W` payload; it may be removed only while the top-level boundary
+    // loop is sitting on the `W` row and the following live-object boundary is
+    // explicit. The final exact claim below proves the emitted stream.
+    let live = [b'W', 0x01, 0x0E, 0xA0, b'W', 0x02, 0x0E];
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the duplicate fragment-storage byte must block the raw exact claim"
+    );
+    let summary = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("bounded midstream post-W fragment storage should be removed");
+    assert_eq!(summary.bytes_removed, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("the post-W collision repair must leave an exact EE stream");
+    assert_eq!(claim.world_status_records, 2);
+}
+
+#[test]
+fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_proof() {
+    let live = [b'W', 0x01, 0x0E, 0xA0];
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "terminal fragment-storage bytes after W must block the raw exact claim"
+    );
+    let summary = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("bounded terminal post-W fragment storage should be removed");
+    assert_eq!(summary.bytes_removed, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("terminal post-W collision repair must leave an exact EE stream");
+    assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
 fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
     // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
     // inner opcode, OBJECTID/INT32, SHORT, BYTE. Unlike repository `G R/r U`,

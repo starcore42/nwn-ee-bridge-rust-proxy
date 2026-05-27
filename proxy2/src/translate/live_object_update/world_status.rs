@@ -15,7 +15,9 @@
 //!
 //! There is therefore no dialect byte rewrite here. The semantic transform is a
 //! verified identity translation: parse the exact `W current total` shape, leave
-//! it unchanged, and consume no CNW fragment bits.
+//! it unchanged, and consume no CNW fragment bits. Captured post-`W` fragment
+//! storage is owned by the explicit fragment-span promoter, not by this identity
+//! record helper.
 
 const WORK_REMAINING_OPCODE: u8 = b'W';
 const WORK_REMAINING_RECORD_BYTES: usize = 3;
@@ -52,26 +54,10 @@ pub(super) fn is_verified_work_remaining_record(
     parse_work_remaining_record(bytes, record_offset, record_end).is_some()
 }
 
-pub(super) fn normalize_record_for_ee(
-    bytes: &mut Vec<u8>,
+pub(super) fn claim_identity_record_for_ee(
+    bytes: &[u8],
     record_offset: usize,
-    record_end: &mut usize,
-) -> Option<usize> {
-    if *record_end < record_offset.checked_add(WORK_REMAINING_RECORD_BYTES)?
-        || bytes.get(record_offset).copied() != Some(WORK_REMAINING_OPCODE)
-    {
-        return None;
-    }
-
-    let legal_end = record_offset + WORK_REMAINING_RECORD_BYTES;
-    let removed = record_end.saturating_sub(legal_end);
-    if removed != 0 {
-        // `W` itself is a three-byte fragment-neutral submessage. Local
-        // captures can still carry unowned fragment-storage bytes immediately
-        // after that record, including terminal tails. The caller's final exact
-        // EE validator must prove the stream after this bounded trim.
-        bytes.drain(legal_end..*record_end);
-        *record_end = legal_end;
-    }
-    Some(removed)
+    record_end: usize,
+) -> bool {
+    is_verified_work_remaining_record(bytes, record_offset, record_end)
 }

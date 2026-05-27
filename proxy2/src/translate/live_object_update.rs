@@ -191,7 +191,6 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub bits_inserted: u32,
     pub bits_removed: u32,
     pub fragment_bits_trimmed: u32,
-    pub world_status_records_normalized: u32,
     pub creature_visual_transform_update_records: u32,
     pub live_gui_missing_add_opcodes_repaired: u32,
     pub live_object_missing_appearance_opcodes_repaired: u32,
@@ -2490,6 +2489,7 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut last_verified_add_record: Option<(usize, u8, u32)> = None;
     let mut last_verified_door_add_fragment_span_record: Option<(usize, u32)> = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
+    let mut terminal_work_remaining_fragment_storage_record: Option<(usize, usize)> = None;
     let mut loop_iterations = 0usize;
     let max_loop_iterations = old_live_bytes_length.saturating_mul(4).saturating_add(64);
     while offset + 2 <= live_bytes.len() {
@@ -2943,15 +2943,35 @@ pub fn rewrite_update_records_payload_if_possible(
             continue;
         }
 
-        if let Some(removed) =
-            world_status::normalize_record_for_ee(&mut live_bytes, offset, &mut record_end)
+        if let Some(bytes_removed) =
+            remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
+                &mut live_bytes,
+                offset,
+                &mut record_end,
+            )
         {
-            if removed != 0 {
-                changed = true;
-                summary.world_status_records_normalized =
-                    summary.world_status_records_normalized.saturating_add(1);
-                summary.bytes_removed = summary.bytes_removed.saturating_add(removed as u32);
+            changed = true;
+            summary.bytes_removed = summary
+                .bytes_removed
+                .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+            terminal_work_remaining_fragment_storage_record = None;
+        }
+
+        if let Some(legal_end) = verified_work_remaining_record_legal_end(&live_bytes, offset) {
+            if record_end == live_bytes.len() && legal_end < record_end {
+                terminal_work_remaining_fragment_storage_record = Some((offset, legal_end));
+                offset = record_end.max(offset + 1);
+                continue;
             }
+        } else {
+            terminal_work_remaining_fragment_storage_record = None;
+        }
+
+        if world_status::claim_identity_record_for_ee(&live_bytes, offset, record_end) {
+            terminal_work_remaining_fragment_storage_record =
+                (record_end == live_bytes.len()).then_some((offset, record_end));
+            last_verified_record_end = record_end;
+            last_verified_record_allows_trailing_fragment_promotion = false;
             offset = record_end;
             continue;
         }
@@ -4361,6 +4381,30 @@ pub fn rewrite_update_records_payload_if_possible(
         }
     }
 
+    if bit_cursor_reliable
+        && bit_cursor >= CNW_FRAGMENT_HEADER_BITS
+        && bit_cursor < fragment_bits.len()
+    {
+        summary.fragment_bits_trimmed = (fragment_bits.len() - bit_cursor) as u32;
+        fragment_bits.truncate(bit_cursor);
+    }
+
+    if let Some((offset, legal_end)) = terminal_work_remaining_fragment_storage_record {
+        if let Some(bytes_removed) =
+            remove_terminal_work_remaining_fragment_storage_with_final_claim(
+                &mut live_bytes,
+                &fragment_bits,
+                offset,
+                legal_end,
+            )
+        {
+            changed = true;
+            summary.bytes_removed = summary
+                .bytes_removed
+                .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+        }
+    }
+
     if !changed {
         return None;
     }
@@ -4371,14 +4415,6 @@ pub fn rewrite_update_records_payload_if_possible(
             fragment_bits.len(),
             live_bytes.len(),
         );
-    }
-
-    if bit_cursor_reliable
-        && bit_cursor >= CNW_FRAGMENT_HEADER_BITS
-        && bit_cursor < fragment_bits.len()
-    {
-        summary.fragment_bits_trimmed = (fragment_bits.len() - bit_cursor) as u32;
-        fragment_bits.truncate(bit_cursor);
     }
 
     let fragment_bytes = bits::pack_msb_valid_bits(fragment_bits, CNW_FRAGMENT_HEADER_BITS);
@@ -4401,6 +4437,124 @@ pub fn rewrite_update_records_payload_if_possible(
     summary.new_fragment_bytes = fragment_bytes.len();
     *payload = rewritten;
     Some(summary)
+}
+
+fn verified_work_remaining_record_legal_end(live_bytes: &[u8], offset: usize) -> Option<usize> {
+    let legal_end = offset.checked_add(3)?;
+    (legal_end <= live_bytes.len()
+        && world_status::is_verified_work_remaining_record(live_bytes, offset, legal_end))
+    .then_some(legal_end)
+}
+
+fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
+    live_bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+) -> Option<usize> {
+    // Only the top-level live-object boundary loop may call this. `W`-shaped
+    // bytes inside appearance, GUI, inventory, or item bodies remain owned by
+    // those nested record parsers.
+    let legal_end = verified_work_remaining_record_legal_end(live_bytes, offset)?;
+    if *record_end <= legal_end || *record_end >= live_bytes.len() {
+        return None;
+    }
+    if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, *record_end)
+        || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..*record_end])
+    {
+        return None;
+    }
+
+    let removed = *record_end - legal_end;
+    trace_work_remaining_fragment_storage_removed(
+        "midstream-top-level",
+        offset,
+        legal_end,
+        *record_end,
+        removed,
+    );
+    live_bytes.drain(legal_end..*record_end);
+    *record_end = legal_end;
+    Some(removed)
+}
+
+fn remove_terminal_work_remaining_fragment_storage_with_final_claim(
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &[bool],
+    offset: usize,
+    legal_end: usize,
+) -> Option<usize> {
+    if verified_work_remaining_record_legal_end(live_bytes, offset)? != legal_end {
+        return None;
+    }
+    if legal_end >= live_bytes.len()
+        || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+    {
+        return None;
+    }
+
+    let mut candidate = live_bytes.clone();
+    let removed = candidate.len().saturating_sub(legal_end);
+    candidate.truncate(legal_end);
+    let payload = live_object_payload_from_parts(&candidate, fragment_bits)?;
+    claim_payload_if_verified(&payload)?;
+    trace_work_remaining_fragment_storage_removed(
+        "terminal",
+        offset,
+        legal_end,
+        live_bytes.len(),
+        removed,
+    );
+    *live_bytes = candidate;
+    Some(removed)
+}
+
+fn trace_work_remaining_fragment_storage_removed(
+    kind: &'static str,
+    offset: usize,
+    legal_end: usize,
+    record_end: usize,
+    removed: usize,
+) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+    eprintln!(
+        "live-object work-remaining fragment-storage removed: kind={kind} offset={offset} legal_end={legal_end} record_end={record_end} bytes_removed={removed}",
+    );
+}
+
+fn looks_like_bounded_cnw_fragment_storage_span(span: &[u8]) -> bool {
+    const MAX_WORK_REMAINING_DUPLICATE_FRAGMENT_STORAGE_BYTES: usize = 64;
+
+    if span.is_empty() || span.len() > MAX_WORK_REMAINING_DUPLICATE_FRAGMENT_STORAGE_BYTES {
+        return false;
+    }
+    bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS)
+        .is_some_and(|decoded| decoded.len() > CNW_FRAGMENT_HEADER_BITS)
+}
+
+fn live_object_payload_from_parts(live_bytes: &[u8], fragment_bits: &[bool]) -> Option<Vec<u8>> {
+    let fragment_bytes =
+        bits::pack_msb_valid_bits(fragment_bits.to_vec(), CNW_FRAGMENT_HEADER_BITS);
+    let declared_usize = HIGH_LEVEL_HEADER_BYTES
+        .checked_add(CNW_LENGTH_BYTES)?
+        .checked_add(live_bytes.len())?;
+    let declared = u32::try_from(declared_usize).ok()?;
+    let payload_length = declared_usize.checked_add(fragment_bytes.len())?;
+    if payload_length > MAX_REASONABLE_LIVE_PAYLOAD_BYTES {
+        return None;
+    }
+
+    let mut payload = Vec::with_capacity(payload_length);
+    payload.extend_from_slice(&[
+        HIGH_LEVEL_ENVELOPE,
+        GAME_OBJECT_UPDATE_MAJOR,
+        LIVE_OBJECT_MINOR,
+    ]);
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(live_bytes);
+    payload.extend_from_slice(&fragment_bytes);
+    Some(payload)
 }
 
 fn trace_claim_accept(
