@@ -7256,6 +7256,50 @@ mod public_static_direction_tests {
         payload
     }
 
+    fn ee_area_sound_payload_with_extra_fragment_bits(extra_fragment_bits: usize) -> Vec<u8> {
+        let (legacy_payload, legacy_fragment_offset, legacy_scan) =
+            real_area_sound_static_placeable_payload(true);
+        legacy_area_source_tail_exact_read_proof(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_scan,
+        )
+        .expect("sound-row source should have exact post-tile cursor proof");
+        let legacy_layout = area_static_layout(&legacy_payload, legacy_fragment_offset)
+            .expect("sound-row source should expose an area layout");
+        assert_eq!(legacy_layout.dialect, AreaStaticDialect::Legacy169);
+
+        let mut payload = expand_legacy_area_static_header_for_ee(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_layout,
+        )
+        .expect("test payload should expand to the EE static-header dialect");
+        push_u16(&mut payload, 0);
+        push_u16(&mut payload, 0);
+
+        let new_read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        let mut rewritten_fragment =
+            rewrite_area_fragment_bits(&legacy_payload[legacy_fragment_offset..])
+                .expect("test fragment should rewrite to the EE Area_ClientArea bit dialect");
+        if extra_fragment_bits != 0 {
+            let mut bits = decode_cnw_msb_valid_bits(&rewritten_fragment, CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten test fragment should decode");
+            let mut payload_bits = bits.split_off(CNW_FRAGMENT_HEADER_BITS);
+            payload_bits.extend(std::iter::repeat(false).take(extra_fragment_bits));
+            rewritten_fragment = encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted EE area fragment bits should encode");
+        }
+        payload.extend_from_slice(&rewritten_fragment);
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + new_read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic EE payload");
+        payload
+    }
+
     #[test]
     fn exact_ee_area_proof_requires_zero_post_static_counts() {
         let zero_tail = ee_area_static_placeable_payload_with_post_static_tail(&[], 0);
@@ -7433,6 +7477,52 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn sound_source_rows_consume_exactly_six_fragment_bits() {
+        let (payload, fragment_offset, scan) = real_area_sound_static_placeable_payload(true);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("sound row with six BOOLs should have exact source cursor proof");
+        assert_eq!(proof.sound_count, 1);
+        assert_eq!(proof.static_rows_count, 1);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS + 6)
+        );
+
+        let mut extra_bit_payload = payload.clone();
+        extra_bit_payload.truncate(fragment_offset);
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[false; 7]);
+        extra_bit_payload.extend_from_slice(
+            &encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted legacy area sound bits should encode"),
+        );
+        let shifted_scan = scan_area_tile_stream(&extra_bit_payload, fragment_offset);
+        assert!(shifted_scan.valid);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(
+                &extra_bit_payload,
+                fragment_offset,
+                &shifted_scan,
+            )
+            .is_none(),
+            "Diamond/EE sound rows own exactly six CNW BOOLs; a seventh bit before light/static rows is unowned"
+        );
+        assert!(
+            collect_area_post_tile_placeable_context(
+                &extra_bit_payload,
+                fragment_offset,
+                "testarea",
+                0x8000_0001,
+                false,
+                None,
+            )
+            .is_none(),
+            "context collection must not expose later rows after an unowned sound-list fragment bit"
+        );
+    }
+
+    #[test]
     fn exact_ee_area_proof_rejects_static_placeable_fragment_tail() {
         let exact = ee_area_static_placeable_payload_with_static_rows(
             &[(82, 10.0, 20.0, 0.0, 0.0, 1.0, 0.0)],
@@ -7466,6 +7556,22 @@ mod public_static_direction_tests {
         assert!(
             ee_area_client_area_exact_read_proof(&shifted).is_none(),
             "EE map-pin rows also own no CNW fragment bits before sound/static lists"
+        );
+    }
+
+    #[test]
+    fn exact_ee_area_proof_rejects_sound_fragment_tail() {
+        let exact = ee_area_sound_payload_with_extra_fragment_bits(0);
+        let proof = ee_area_client_area_exact_read_proof(&exact)
+            .expect("one EE sound row and one static row should be exact");
+        assert_eq!(proof.sound_count, 1);
+        assert_eq!(proof.static_count, 1);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+
+        let shifted = ee_area_sound_payload_with_extra_fragment_bits(1);
+        assert!(
+            ee_area_client_area_exact_read_proof(&shifted).is_none(),
+            "EE sound rows own exactly six CNW BOOLs before light/static lists"
         );
     }
 

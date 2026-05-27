@@ -854,6 +854,18 @@ Current status:
   triplet without consuming CNW fragment BOOLs; one extra fragment bit now
   rejects both the legacy source-tail proof and exact EE `LoadArea` proof, so
   shifted map-pin cursor state cannot expose later placeable context.
+- 2026-05-28 `P/04/01` sound-object fragment-cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the post-tile
+  sound list owns exactly the decompiled six CNW BOOLs per row after the fixed
+  byte body and CResRef list. A sound row with a seventh fragment bit now
+  rejects both legacy source-tail/context proof and exact EE `LoadArea` proof,
+  so shifted sound-list state cannot expose later light/static placeable rows.
+  Verified with `cargo test -q -p hgbridge-proxy2 sound -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 light_placeable -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 map_pin -- --nocapture`, and
+  `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
+  --nocapture`, plus `cargo fmt --all --check`, `git diff --check`, and
+  `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
