@@ -20,7 +20,7 @@ pub(crate) mod camera;
 pub(crate) mod char_list;
 pub(crate) mod chat;
 mod client_area;
-mod client_char_list;
+pub(crate) mod client_char_list;
 pub(crate) mod client_character_sheet;
 pub(crate) mod client_gui_event;
 pub(crate) mod client_gui_inventory;

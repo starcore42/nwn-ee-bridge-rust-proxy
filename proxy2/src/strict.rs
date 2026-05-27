@@ -16,11 +16,11 @@ use crate::{
     },
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
-        area_visual_effect, camera, char_list, chat, client_character_sheet, client_gui_event,
-        client_gui_inventory, client_input, client_login, client_quickbar, client_server_admin,
-        cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event, inventory, journal,
-        live_object_update, login, module, play_module_character_list, player_list, quickbar,
-        safe_projectile, sound,
+        area_visual_effect, camera, char_list, chat, client_char_list, client_character_sheet,
+        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
+        client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
+        inventory, journal, live_object_update, login, module, play_module_character_list,
+        player_list, quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1321,14 +1321,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientArea => {
             high.major == 0x04 && high.minor == 0x03 && empty_high_level_shape_valid(payload)
         }
-        VerifiedFamily::ClientCharList => {
-            high.major == 0x11
-                && match high.minor {
-                    0x01 => empty_high_level_shape_valid(payload),
-                    0x03 => char_list_request_update_char_shape_valid(payload),
-                    _ => false,
-                }
-        }
+        VerifiedFamily::ClientCharList => client_char_list_shape_valid(payload),
         VerifiedFamily::ClientCharacterSheet => {
             high.major == 0x15
                 && high.minor == 0x01
@@ -1684,11 +1677,8 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x10, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(camera::claim_payload_if_verified(payload).is_some())
         }
-        (0x11, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x11, 0x02 | 0x04) => HighPayloadValidation::Exact(char_list_shape_valid(payload)),
-        (0x11, 0x03) => {
-            HighPayloadValidation::Exact(char_list_request_update_char_shape_valid(payload))
-        }
+        (0x11, 0x01 | 0x03) => HighPayloadValidation::Exact(client_char_list_shape_valid(payload)),
         (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
         (0x14, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
@@ -2085,6 +2075,13 @@ fn char_list_shape_valid(payload: &[u8]) -> bool {
     char_list::claim_payload_if_verified(&mut candidate).is_some()
 }
 
+fn client_char_list_shape_valid(payload: &[u8]) -> bool {
+    // Decompile-backed client CharList validation lives in the focused
+    // translator. Reuse it here so strict mode cannot keep an older, looser
+    // view of the optional `GetWriteMessage` empty cursor byte.
+    client_char_list::claim_payload_if_verified(payload).is_some()
+}
+
 fn journal_shape_valid(payload: &[u8]) -> bool {
     // Decompile-backed no-op translator proof:
     // EE's packet-name table maps 0x1C/0x0C to `Journal_Updated`, and the
@@ -2167,29 +2164,6 @@ fn loadbar_shape_valid(payload: &[u8]) -> bool {
 
 fn sound_shape_valid(payload: &[u8]) -> bool {
     sound::claim_payload_if_verified(payload).is_some()
-}
-
-fn char_list_request_update_char_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // `CNWSMessage::HandlePlayerToServerCharListMessage` dispatches minor 3
-    // by reading one byte (`ReadBYTE(8, 1)`) followed by one fixed 16-byte
-    // `CResRef`, then checking `MessageReadUnderflow`. The CNW read window is
-    // therefore exactly high-level tag + declared length + byte + CResRef.
-    //
-    // The observed EE driver-only client packet carries one legacy packetized
-    // fragment byte after that declared window, so strict mode accepts the
-    // exact declared shape with at most that single trailing byte.
-    const DECLARED_BYTES: usize = 3 + 4 + 1 + 16;
-    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 1;
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-
-    declared == DECLARED_BYTES
-        && payload.len() >= declared
-        && payload.len().saturating_sub(declared) <= MAX_OBSERVED_FRAGMENT_BYTES
 }
 
 fn client_side_feedback_shape_valid(payload: &[u8]) -> bool {
@@ -3021,6 +2995,40 @@ mod tests {
     }
 
     #[test]
+    fn strict_client_char_list_uses_focused_fragment_tail_owner() {
+        let request = vec![0x70, 0x11, 0x01];
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientCharList,
+            &request
+        ));
+        assert!(exact_high_payload_shape_valid(&request));
+
+        for tail in [Vec::new(), vec![0x60]] {
+            let payload = build_client_char_list_request_update(&tail);
+            assert!(
+                verified_family_inflated_payload_valid(VerifiedFamily::ClientCharList, &payload),
+                "focused ClientCharList owner accepts tail {tail:02X?}"
+            );
+            assert!(
+                exact_high_payload_shape_valid(&payload),
+                "known-opcode strict validation must share the focused owner for tail {tail:02X?}"
+            );
+        }
+
+        for tail in [vec![0x80], vec![0x60, 0x00]] {
+            let payload = build_client_char_list_request_update(&tail);
+            assert!(
+                !verified_family_inflated_payload_valid(VerifiedFamily::ClientCharList, &payload),
+                "0x11/0x03 has no decompiled BOOL reader for tail {tail:02X?}"
+            );
+            assert!(
+                !exact_high_payload_shape_valid(&payload),
+                "known-opcode strict validation must reject the same unowned tail {tail:02X?}"
+            );
+        }
+    }
+
+    #[test]
     fn verified_client_character_sheet_accepts_exact_status_shape() {
         let payload = [
             0x70, 0x15, 0x01, 0x0C, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0x7C,
@@ -3137,6 +3145,18 @@ mod tests {
 
     fn build_client_input_unmemorize_spell() -> Vec<u8> {
         build_client_input_payload(0x11, &[0, 2, 1])
+    }
+
+    fn build_client_char_list_request_update(fragment_tail: &[u8]) -> Vec<u8> {
+        const DECLARED_BYTES: usize = 3 + 4 + 1 + 16;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x70, 0x11, 0x03]);
+        payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
+        payload.push(0x01);
+        payload.extend_from_slice(b"starcore-druid60");
+        payload.extend_from_slice(fragment_tail);
+        payload
     }
 
     #[test]

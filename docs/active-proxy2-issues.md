@@ -851,6 +851,14 @@ Current status:
   or a multi-byte tail, is no longer accepted as owned by this no-BOOL reader.
   Verified with `cargo test -q -p hgbridge-proxy2 client_char_list --
   --nocapture`.~~
+- ~~2026-05-27 `P/11/03` strict ClientCharList validator reuse audit: fixed the
+  stale strict-mode known-opcode helper that still accepted any single
+  fragment byte after `RequestUpdateChar`. Both `VerifiedFamily::ClientCharList`
+  and ordinary known-high strict validation now delegate to the focused
+  client CharList parser, so only no tail or the empty `GetWriteMessage`
+  cursor byte are owned. Verified with `cargo test -q -p hgbridge-proxy2
+  strict_client_char_list_uses_focused_fragment_tail_owner -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 client_char_list -- --nocapture`.~~
 - ~~2026-05-27 `P/31/03` PlayModuleCharacterList response padding-bit cursor
   audit: tightened the response verifier so it owns only the decompiled result
   BOOL plus any success-branch locstring bits, then rejects nonzero unused
