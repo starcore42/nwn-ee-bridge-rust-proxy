@@ -822,6 +822,17 @@ Current status:
   static_placeable -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`, `cargo fmt --all --check`,
   `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` light-placeable fragment-cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the adjacent
+  light-placeable list uses the same read-buffer-only cursor discipline before
+  static rows. Diamond and EE own only the WORD count plus
+  `OBJECTID + WORD + three FLOAT` rows for light placeables; an extra CNW
+  fragment bit before the static-list count now blocks both legacy source
+  context collection and the exact EE `LoadArea` proof. Verified with
+  `cargo test -q -p hgbridge-proxy2 light_placeable -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
+  `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
