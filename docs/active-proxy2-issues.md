@@ -780,6 +780,18 @@ Current status:
   three-byte tails unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
   low_tail -- --nocapture` and `cargo test -q -p hgbridge-proxy2
   door_placeable -- --nocapture`.
+- 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the Diamond
+  and EE static-placeable row contract around the post-tile lists. The static
+  list owns only the WORD count plus `OBJECTID + WORD + six FLOAT` read-buffer
+  rows; it consumes no CNW fragment BOOLs before the EE bridge-owned two zero
+  post-static WORDs. A byte-exact static row with one extra fragment bit is now
+  explicitly unclaimed on both the legacy source proof and the exact EE
+  `LoadArea` proof, so context collection cannot expose static rows from a
+  shifted bit cursor. Verified with `cargo test -q -p hgbridge-proxy2
+  static_placeable -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  public_static_direction_tests -- --nocapture`, `cargo fmt --all --check`,
+  `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
