@@ -116,6 +116,26 @@ fn scalar_door_placeable_update_bits() -> Vec<bool> {
 }
 
 #[test]
+fn work_remaining_record_is_three_read_buffer_bytes_and_fragment_neutral() {
+    // Diamond `sub_44F160` and EE `sub_1407B85A0` both read only the top-level
+    // `W` opcode plus two BYTE counters, and no CNW fragment BOOLs.
+    let live = [b'W', 0x02, 0x0E];
+    let payload = live_object_payload_with_bits(&live, Vec::new());
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("work-remaining should exact-claim as a three-byte identity record");
+
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+
+    let shifted = live_object_payload_with_bits(&live, vec![true]);
+    assert!(
+        super::claim_payload_if_verified(&shifted).is_none(),
+        "a work-remaining record must not consume or hide a following fragment bit"
+    );
+}
+
+#[test]
 fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
     // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
     // inner opcode, OBJECTID/INT32, SHORT, BYTE. Unlike repository `G R/r U`,

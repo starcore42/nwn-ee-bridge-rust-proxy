@@ -792,6 +792,16 @@ Current status:
   static_placeable -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`, `cargo fmt --all --check`,
   `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-27 `P/05/01` work-remaining `W` cursor audit: public fixture-free
+  coverage now proves the exact decompiled world-status shape. Diamond
+  `sub_44F160` and EE `sub_1407B85A0` both read exactly the `W` opcode plus
+  two BYTE counters and consume no CNW fragment BOOLs. The existing
+  `normalize_record_for_ee` tail trim remains a separate collision repair for
+  captured legacy streams that carry unowned fragment-storage bytes after `W`;
+  keep this open until that trim is moved behind an explicit duplicate-fragment
+  or final-boundary proof instead of living in the identity record helper.
+  Verified with `cargo test -q -p hgbridge-proxy2 work_remaining --
+  --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -66,6 +66,10 @@ pub(super) fn normalize_record_for_ee(
     let legal_end = record_offset + WORK_REMAINING_RECORD_BYTES;
     let removed = record_end.saturating_sub(legal_end);
     if removed != 0 {
+        // `W` itself is a three-byte fragment-neutral submessage. Local
+        // captures can still carry unowned fragment-storage bytes immediately
+        // after that record, including terminal tails. The caller's final exact
+        // EE validator must prove the stream after this bounded trim.
         bytes.drain(legal_end..*record_end);
         *record_end = legal_end;
     }
