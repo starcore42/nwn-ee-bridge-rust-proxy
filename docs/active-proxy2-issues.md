@@ -847,6 +847,13 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
   --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` map-pin fragment-cursor audit: no packet behavior
+  changed, but public fixture-free coverage now proves the decompile-owned
+  post-tile map-pin rows are read-buffer only before sound/light/static lists.
+  Diamond and EE own the DWORD pin id, bounded CExoString label, and XYZ FLOAT
+  triplet without consuming CNW fragment BOOLs; one extra fragment bit now
+  rejects both the legacy source-tail proof and exact EE `LoadArea` proof, so
+  shifted map-pin cursor state cannot expose later placeable context.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
