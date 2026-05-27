@@ -802,6 +802,17 @@ Current status:
   EE payload validator to accept the truncated stream. Verified in the public
   repo with `cargo test -q -p hgbridge-proxy2 work_remaining -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-27 `P/11/02` and `P/11/04` CharList fragment-tail cursor audit:
+  tightened the existing decompile-backed character-list proof without changing
+  valid packet semantics. `CharList_ListResponse` now rejects nonzero padding
+  bits after the exact `ReadCExoLocStringClient` cursor, and
+  `CharList_UpdateCharResponse` must carry the byte-only BIC body followed by
+  the exact empty CNW fragment byte `0x60`; arbitrary post-BIC fragment storage
+  is no longer treated as owned. Public fixture-free tests now cover the list
+  response server-locstring bit cursor, padding-bit rejection, and update
+  response empty-fragment handoff. Keep the broader player-model issue focused
+  on live-object current-player appearance unless future evidence shows the
+  BIC/CharList source fields are already wrong before the first `P/05/01`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

@@ -55,6 +55,7 @@ const C_RESREF_TEXT_BYTES: usize = 16;
 const CLASS_RECORD_BYTES: usize = 5;
 const UPDATE_RESPONSE_STATUS_BYTES: usize = 1;
 const UPDATE_RESPONSE_BIC_SIZE_BYTES: usize = 4;
+const EMPTY_CNW_FRAGMENT_BYTE: u8 = 0x60;
 const UPDATE_RESPONSE_FIXED_PREFIX_BYTES: usize =
     UPDATE_RESPONSE_STATUS_BYTES + C_RESREF_TEXT_BYTES + UPDATE_RESPONSE_BIC_SIZE_BYTES;
 const MAX_REASONABLE_REASSEMBLED_GAMEPLAY_PAYLOAD: usize = 1024 * 1024;
@@ -275,6 +276,23 @@ impl<'a> CharListListResponseReader<'a> {
     fn finished_exactly(&self) -> bool {
         self.cursor == self.declared
             && self.consumed_fragment_bits() == self.meaningful_fragment_bits
+            && self.fragment_padding_zero()
+    }
+
+    fn fragment_padding_zero(&self) -> bool {
+        let consumed = self.consumed_fragment_bits();
+        let Some(total_bits) = self.fragments.len().checked_mul(8) else {
+            return false;
+        };
+        for bit_index in consumed..total_bits {
+            let Some(byte) = self.fragments.get(bit_index / 8).copied() else {
+                return false;
+            };
+            if byte & (0x80 >> (bit_index % 8)) != 0 {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -288,7 +306,8 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_RESPONSE_FIXED_PREFIX_BYTES
         || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_CHAR_LIST_FRAGMENT_BYTES
+        || payload.len() != declared.checked_add(1)?
+        || payload.get(declared).copied() != Some(EMPTY_CNW_FRAGMENT_BYTE)
     {
         return None;
     }
@@ -393,9 +412,13 @@ fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     Some(())
 }
 
-#[cfg(all(test, hgbridge_private_fixtures))]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn append_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
 
     fn push_c_exo_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u32).to_le_bytes());
@@ -438,6 +461,53 @@ mod tests {
         payload
     }
 
+    fn minimal_canonical_bic() -> Vec<u8> {
+        let mut gff = Vec::new();
+        gff.extend_from_slice(b"BIC ");
+        gff.extend_from_slice(b"V3.2");
+        append_u32(&mut gff, 56); // struct offset
+        append_u32(&mut gff, 1); // struct count
+        append_u32(&mut gff, 68); // field offset
+        append_u32(&mut gff, 1); // field count
+        append_u32(&mut gff, 80); // label offset
+        append_u32(&mut gff, 1); // label count
+        append_u32(&mut gff, 96); // field-data offset
+        append_u32(&mut gff, 0); // field-data count
+        append_u32(&mut gff, 96); // field-indices offset
+        append_u32(&mut gff, 0); // field-indices count
+        append_u32(&mut gff, 96); // list-indices offset
+        append_u32(&mut gff, 0); // list-indices count
+
+        append_u32(&mut gff, 0xFFFF_FFFF); // root struct type
+        append_u32(&mut gff, 0); // one direct field id
+        append_u32(&mut gff, 1); // field count
+
+        append_u32(&mut gff, 0); // BYTE field type
+        append_u32(&mut gff, 0); // label index
+        append_u32(&mut gff, 2); // scalar value
+
+        let mut label = [0_u8; C_RESREF_TEXT_BYTES];
+        label[..15].copy_from_slice(b"Appearance_Type");
+        gff.extend_from_slice(&label);
+        gff
+    }
+
+    fn build_update_response_payload(fragment_tail: &[u8]) -> Vec<u8> {
+        let bic = minimal_canonical_bic();
+        let declared = HIGH_LEVEL_HEADER_BYTES
+            + CNW_LENGTH_BYTES
+            + UPDATE_RESPONSE_FIXED_PREFIX_BYTES
+            + bic.len();
+        let mut payload = vec![b'P', CHAR_LIST_MAJOR, UPDATE_CHAR_RESPONSE_MINOR];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(5);
+        payload.extend_from_slice(&[0; C_RESREF_TEXT_BYTES]);
+        payload.extend_from_slice(&(bic.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&bic);
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
     #[test]
     fn claims_list_response_with_server_locstring_fragment_bits() {
         let mut payload = build_list_response_fixture(2, 0b1110_0000);
@@ -473,6 +543,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_list_response_with_nonzero_fragment_padding_bits() {
+        let mut payload = build_list_response_fixture(1, 0b1010_0111);
+
+        assert!(
+            claim_payload_if_verified(&mut payload).is_none(),
+            "unused CharList_ListResponse fragment bits are not owned by the EE reader"
+        );
+    }
+
+    #[test]
+    fn claims_update_response_with_exact_empty_fragment_tail() {
+        let mut payload = build_update_response_payload(&[EMPTY_CNW_FRAGMENT_BYTE]);
+
+        let summary = claim_payload_if_verified(&mut payload).expect(
+            "UpdateCharResponse byte-only BIC body should own only the empty fragment byte",
+        );
+
+        assert_eq!(summary.kind, CharListClaimKind::UpdateCharResponse);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert!(!summary.bic_rewritten);
+        assert_eq!(payload.last().copied(), Some(EMPTY_CNW_FRAGMENT_BYTE));
+    }
+
+    #[test]
+    fn rejects_update_response_without_exact_empty_fragment_tail() {
+        for tail in [
+            Vec::new(),
+            vec![EMPTY_CNW_FRAGMENT_BYTE | 1],
+            vec![EMPTY_CNW_FRAGMENT_BYTE, 0],
+        ] {
+            let mut payload = build_update_response_payload(&tail);
+
+            assert!(
+                claim_payload_if_verified(&mut payload).is_none(),
+                "UpdateCharResponse has no decompiled BOOL reader for tail {tail:02X?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(hgbridge_private_fixtures)]
     fn starcore5_update_response_fixture_canonicalizes_sparse_bic() {
         let mut payload = include_bytes!(
             "../../fixtures/char_list/starcore5_update_char_response_sparse_bic.bin"
