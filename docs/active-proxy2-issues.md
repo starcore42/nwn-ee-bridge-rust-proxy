@@ -861,6 +861,13 @@ Current status:
   play_module_character_list -- --nocapture`, `cargo test -p hgbridge-proxy2
   char_list -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.~~
+- ~~2026-05-27 `P/31/03` PlayModuleCharacterList success-branch class-count
+  audit: fixed the exact response validator to follow the EE client reader's
+  `nNumClasses <= 8` ceiling instead of the ordinary three-class character
+  limit. The same fixture-free coverage now proves the success branch owns the
+  custom-portrait `CResRef(16)` only when the portrait WORD is `>= 0xFFFE` and
+  rejects a missing branch payload. Verified with `cargo test -q -p
+  hgbridge-proxy2 play_module_character_list -- --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

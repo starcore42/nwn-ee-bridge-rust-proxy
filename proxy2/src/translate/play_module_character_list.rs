@@ -11,9 +11,15 @@
 //!   three-byte high-level envelope; this module claims that no-op transform.
 //! - EE `CNWSMessage::SendServerToPlayerPlayModuleCharacterListResponse`
 //!   sends family `0x31`, minor `0x03` after writing a BOOL result bit, a
-//!   DWORD creature/object id, two `WriteCExoLocStringServer` fields, a WORD
-//!   portrait id, an optional fixed 16-byte `CResRef` for custom portraits,
-//!   then a BYTE class count followed by class/level BYTE pairs.
+//!   DWORD creature/object id, and, only on success, two
+//!   `WriteCExoLocStringServer` fields, a WORD portrait id, an optional fixed
+//!   16-byte `CResRef` for custom portraits, then a BYTE class count followed
+//!   by class/level BYTE pairs.
+//! - The EE client reader accepts the same custom-portrait branch when the
+//!   portrait id is `>= 0xFFFE`, then asserts `nNumClasses <= 8` before reading
+//!   class/level BYTE pairs. The validator follows that reader ceiling instead
+//!   of the ordinary NWN three-class character rule so cursor ownership matches
+//!   the original packet reader.
 //!
 //! The server response is currently an identity translation: the captured
 //! 1.69/HG shape matches the EE reader/writer layout above. It is still routed
@@ -35,7 +41,7 @@ const C_RESREF_TEXT_BYTES: usize = 16;
 const CLASS_RECORD_BYTES: usize = 2;
 const MAX_FRAGMENT_BYTES: usize = 8;
 const MAX_STRING_BYTES: usize = 4096;
-const MAX_CLASSES: u8 = 3;
+const MAX_CLASSES: u8 = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PlayModuleCharacterListClaimSummary {
@@ -320,6 +326,41 @@ mod tests {
         payload
     }
 
+    fn append_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    fn success_response_payload(
+        class_count: u8,
+        portrait_id: u16,
+        include_resref: bool,
+    ) -> Vec<u8> {
+        let mut read = Vec::new();
+        read.extend_from_slice(&0x7FFF_FFF9_u32.to_le_bytes());
+        append_string(&mut read, "Starcore");
+        append_string(&mut read, "Druid");
+        read.extend_from_slice(&portrait_id.to_le_bytes());
+        if include_resref {
+            read.extend_from_slice(b"po_custom_demo_");
+            read.push(0);
+        }
+        read.push(class_count);
+        for idx in 0..class_count {
+            read.push(37 + idx);
+            read.push(1 + idx);
+        }
+
+        let declared = READ_CURSOR_START + read.len();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[b'P', PLAY_MODULE_CHARACTER_LIST_MAJOR, RESPONSE_MINOR]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&read);
+        // Final bit count 6, success TRUE, then two inline locstring selectors.
+        payload.push(0b1101_0000);
+        payload
+    }
+
     #[test]
     fn response_failure_owns_one_result_bool_bit() {
         // EE `SendServerToPlayerPlayModuleCharacterListResponse` writes the
@@ -365,6 +406,51 @@ mod tests {
         assert!(
             claim_payload_if_verified(&[b'P', PLAY_MODULE_CHARACTER_LIST_MAJOR, START_MINOR, 0x00])
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn response_success_accepts_ee_reader_eight_class_ceiling() {
+        let payload = success_response_payload(MAX_CLASSES, 42, false);
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("EE PlayModuleCharacterList reader accepts up to eight class rows");
+
+        assert_eq!(summary.kind, PlayModuleCharacterListKind::Response);
+        assert_eq!(summary.success, Some(true));
+        assert_eq!(summary.class_count, Some(MAX_CLASSES));
+    }
+
+    #[test]
+    fn response_success_rejects_class_count_above_ee_reader_ceiling() {
+        let payload = success_response_payload(MAX_CLASSES + 1, 42, false);
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "EE client asserts nNumClasses <= 8 before reading class rows"
+        );
+    }
+
+    #[test]
+    fn response_success_owns_custom_portrait_resref_branch() {
+        for portrait_id in [0xFFFE, 0xFFFF] {
+            let payload = success_response_payload(3, portrait_id, true);
+
+            let summary = claim_payload_if_verified(&payload)
+                .expect("custom portrait response should claim its fixed CResRef");
+
+            assert_eq!(summary.kind, PlayModuleCharacterListKind::Response);
+            assert_eq!(summary.class_count, Some(3));
+        }
+    }
+
+    #[test]
+    fn response_success_rejects_missing_custom_portrait_resref() {
+        let payload = success_response_payload(3, 0xFFFE, false);
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "portrait ids >= 0xFFFE own a fixed 16-byte CResRef before class rows"
         );
     }
 
