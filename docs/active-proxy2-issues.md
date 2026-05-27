@@ -833,6 +833,20 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
   --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` area tile-loop fragment-cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the
+  dimension-driven Diamond/EE tile loop owns only tile read-buffer records
+  before the post-tile list cursor. A tile-complete area with one extra CNW
+  fragment bit is rejected by both the legacy source-tail proof and the exact
+  EE `LoadArea` proof, so shifted tile-loop fragment state cannot be mistaken
+  for transition/map/sound/light/static list state. Verified with `cargo test
+  -q -p hgbridge-proxy2
+  tile_rows_do_not_consume_fragment_bits_before_post_tile_lists --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  exact_ee_area_proof_rejects_tile_loop_fragment_tail -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
+  `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity

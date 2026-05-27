@@ -7379,6 +7379,57 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn tile_rows_do_not_consume_fragment_bits_before_post_tile_lists() {
+        let (payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(0, &[]);
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("tile-only source area should have exact cursor proof");
+        assert_eq!(proof.static_rows_count, 0);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS)
+        );
+
+        let mut shifted_payload = payload.clone();
+        shifted_payload.truncate(fragment_offset);
+        shifted_payload.extend_from_slice(
+            &encode_cnw_msb_payload_bits(&vec![
+                false;
+                LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                    - CNW_FRAGMENT_HEADER_BITS
+                    + 1
+            ])
+            .expect("shifted legacy area bits should encode"),
+        );
+        let shifted_scan = scan_area_tile_stream(&shifted_payload, fragment_offset);
+        assert!(shifted_scan.valid);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(
+                &shifted_payload,
+                fragment_offset,
+                &shifted_scan,
+            )
+            .is_none(),
+            "Diamond area tile rows are dimension-driven read-buffer records; an extra CNW fragment bit before post-tile lists is unowned"
+        );
+    }
+
+    #[test]
+    fn exact_ee_area_proof_rejects_tile_loop_fragment_tail() {
+        let exact = ee_area_static_placeable_payload_with_static_rows(&[], 0);
+        let proof = ee_area_client_area_exact_read_proof(&exact)
+            .expect("tile-only EE area with empty post-static tail should be exact");
+        assert_eq!(proof.static_count, 0);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+
+        let shifted = ee_area_static_placeable_payload_with_static_rows(&[], 1);
+        assert!(
+            ee_area_client_area_exact_read_proof(&shifted).is_none(),
+            "EE area tile rows also own no CNW fragment bits; shifted tile-loop fragments must stay unclaimed"
+        );
+    }
+
+    #[test]
     fn placeable_context_uses_transition_locstring_bits_before_static_rows() {
         let (payload, fragment_offset, scan) = real_area_tlk_transition_static_placeable_payload();
         let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
