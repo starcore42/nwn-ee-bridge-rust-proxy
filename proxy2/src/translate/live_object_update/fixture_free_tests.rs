@@ -86,6 +86,35 @@ fn door_state_update_live_bytes() -> Vec<u8> {
     live
 }
 
+fn door_placeable_low_tail_update_live_bytes(object_type: u8, tail: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_APPEARANCE_MASK
+            | super::LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.push(0x70); // scalar orientation high byte
+    live.extend_from_slice(&0x0042u16.to_le_bytes()); // appearance row
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live.extend_from_slice(tail);
+    live
+}
+
+fn scalar_door_placeable_update_bits() -> Vec<bool> {
+    vec![
+        true, false, // position residual bits
+        false, true, false, true, false, // scalar orientation selector + low bits
+        true, false, true, false, true, // Diamond door/placeable state bits
+    ]
+}
+
 #[test]
 fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
     // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
@@ -273,6 +302,109 @@ fn ee_door_state_update_requires_neutral_sixth_bool_and_no_extra_bits() {
     assert!(
         super::claim_payload_if_verified(&extra_bit_payload).is_none(),
         "a byte-complete door state update with an extra unowned fragment bit is not exact"
+    );
+}
+
+#[test]
+fn ee_door_placeable_update_rejects_low_tail_mask_bits() {
+    // EE `sub_14079C050` plus the door/placeable-specific `sub_140797780`
+    // readers own position, orientation, appearance, scale/state, and the
+    // object state BOOLs. They have no 0x40/0x80 consumer, so an already-EE
+    // byte shape with those low bits still set is not exact.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = door_placeable_low_tail_update_live_bytes(object_type, &[]);
+        let mut bits = scalar_door_placeable_update_bits();
+        bits.push(false); // EE-only neutral state BOOL.
+        let payload = live_object_payload_with_bits(&live, bits);
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "object type {object_type:#04X} must reject Diamond-only 0x40/0x80 update mask bits"
+        );
+    }
+}
+
+#[test]
+fn legacy_low_tail_door_placeable_updates_drop_only_bounded_control_suffix() {
+    // Diamond `sub_467AE0` feeds the same shared generic update prefix for
+    // doors/placeables, while the object-specific readers do not consume the
+    // low 0x40/0x80 bits. The bridge may drop only the bounded WORD + mode
+    // suffix after the prefix and append EE's neutral sixth state BOOL.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = door_placeable_low_tail_update_live_bytes(object_type, &[0x34, 0x12, 0, 0]);
+        let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "legacy low-tail object type {object_type:#04X} is not already exact EE"
+        );
+        let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("bounded low-tail door/placeable update should rewrite");
+
+        assert_eq!(rewrite.update_records_rewritten, 1);
+        assert_eq!(rewrite.masks_translated, 1);
+        assert_eq!(rewrite.bytes_removed, 4);
+        assert_eq!(rewrite.bits_inserted, 1);
+
+        let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+            .expect("rewritten declared length") as usize;
+        let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+        assert_eq!(
+            super::read_u32_le(live, 6),
+            Some(
+                super::LEGACY_UPDATE_POSITION_MASK
+                    | super::LEGACY_UPDATE_ORIENTATION_MASK
+                    | super::LEGACY_UPDATE_SCALE_STATE_MASK
+                    | super::LEGACY_UPDATE_STATE_MASK
+                    | super::LEGACY_UPDATE_APPEARANCE_MASK
+            ),
+            "Diamond-only low tail bits must be removed from the EE mask"
+        );
+        assert_eq!(
+            live.len(),
+            super::LEGACY_UPDATE_HEADER_BYTES
+                + super::LEGACY_UPDATE_POSITION_READ_BYTES
+                + super::EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
+                + super::EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + super::EE_UPDATE_SCALE_STATE_READ_BYTES,
+            "only the bounded legacy control suffix should be removed"
+        );
+
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("rewritten low-tail update should exact-claim");
+        assert_eq!(claim.update_records, 1);
+        let fragment_bits = super::bits::decode_msb_valid_bits(
+            &payload[claim.declared..],
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("rewritten fragment bits");
+        assert_eq!(
+            fragment_bits.len(),
+            super::CNW_FRAGMENT_HEADER_BITS
+                + super::LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + super::EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                + super::LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                + 1
+        );
+        assert!(
+            !fragment_bits[fragment_bits.len() - 1],
+            "EE's extra door/placeable state BOOL must be neutral false"
+        );
+    }
+}
+
+#[test]
+fn legacy_low_tail_door_placeable_rewrite_requires_bounded_suffix() {
+    let live = door_placeable_low_tail_update_live_bytes(super::DOOR_OBJECT_TYPE, &[0x34, 0x12, 0]);
+    let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "three-byte 0x40/0x80 tail has no decompile-backed door/placeable reader boundary"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "malformed low-tail update must remain unclaimed"
     );
 }
 

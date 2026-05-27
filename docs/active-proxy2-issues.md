@@ -761,6 +761,17 @@ Current status:
   exact EE validation rejects a true sixth bit, and any extra fragment bit
   remains unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
   door_state_update -- --nocapture`.
+- 2026-05-27 `P/05/01` door/placeable low-tail cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the shared
+  `U/9`/`U/10` low `0x40/0x80` rule. EE `sub_14079C050` plus
+  `sub_140797780` own only the generic position/orientation/appearance/
+  scale-state prefix and the object state BOOLs; those low mask bits are
+  Diamond-only input unless a bounded 2/4/6-byte legacy control suffix is
+  proven after the prefix. The rewrite removes only the bounded suffix, clears
+  the low mask bits, appends the neutral EE state BOOL, and leaves malformed
+  three-byte tails unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
+  low_tail -- --nocapture` and `cargo test -q -p hgbridge-proxy2
+  door_placeable -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
