@@ -3587,21 +3587,24 @@ fn module_static_placeable_row_matches_resource(
 ) -> bool {
     // The static row itself contains no tag/resref.  Module-backed repair may
     // only use the GIT row as the missing semantic authority after the packet
-    // proves the decompiled static row shape and the row has appearance plus at
-    // least two matching placement coordinates.
+    // proves the decompiled static row shape and the row has enough placement
+    // coordinates to identify one static GIT row. A legacy zero appearance is
+    // treated as missing only when all placement coordinates match; nonzero
+    // appearances must agree with the resource appearance.
     const TOLERANCE: f32 = 0.01;
-    if appearance != placeable.appearance {
-        return false;
-    }
-    let matching_components = [
+    let component_matches = [
         area_float_close(x, placeable.x, TOLERANCE),
         area_float_close(y, placeable.y, TOLERANCE),
         area_float_close(z, placeable.z, TOLERANCE),
-    ]
-    .into_iter()
-    .filter(|matches| *matches)
-    .count();
-    matching_components >= 2
+    ];
+    let matching_components = component_matches
+        .into_iter()
+        .filter(|matches| *matches)
+        .count();
+    if appearance == placeable.appearance {
+        return matching_components >= 2;
+    }
+    appearance == 0 && component_matches.into_iter().all(|matches| matches)
 }
 
 fn area_float_close(actual: f32, expected: f32, tolerance: f32) -> bool {
@@ -8350,9 +8353,20 @@ mod tests {
 
     #[test]
     fn docksofascension_rewrite_repairs_legacy_zero_sound_counts() {
+        let _context_guard = module_context_test_guard();
+        let _module_path_guard =
+            EnvVarTestGuard::set("NWN_BRIDGE_MODULE_PATH", "__hgbridge_no_such_module__.mod");
+        let empty_context = crate::translate::module::ObservedModuleContext {
+            localized_name: String::new(),
+            module_resref: String::new(),
+            areas: Vec::new(),
+        };
         let mut payload = DOCKS_OF_ASCENSION_LEGACY_ZERO_SOUND_COUNTS.to_vec();
-        let summary = rewrite_area_client_area_payload(&mut payload)
-            .expect("legacy zero-sound-count area rewrite");
+        let summary = rewrite_area_client_area_payload_with_module_context(
+            &mut payload,
+            Some(&empty_context),
+        )
+        .expect("legacy zero-sound-count area rewrite");
         let proof = ee_area_client_area_exact_read_proof(&payload)
             .expect("rewritten area should match EE LoadArea cursor proof");
 
@@ -8372,16 +8386,12 @@ mod tests {
         assert_eq!(proof.read_end, summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(
-            summary.placeable_context.static_rows.iter().all(|row| {
-                row.module_state.is_some_and(|state| {
-                    state.static_object
-                        && !state.trap_flag
-                        && state.trap_disarmable
-                        && !state.lockable
-                        && !state.locked
-                })
-            }),
-            "module-backed static context should retain the GIT trap/use/lock state for live-object comparison"
+            summary
+                .placeable_context
+                .static_rows
+                .iter()
+                .all(|row| row.module_state.is_none()),
+            "HG Docks has no proven local module resource in this fixture; static-row context must not invent GIT trap/use/lock state"
         );
         assert!(ee_area_client_area_payload_shape_valid(&payload));
     }

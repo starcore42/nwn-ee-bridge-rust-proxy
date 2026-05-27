@@ -384,6 +384,25 @@ Current status:
   module_static_row_repair_requires_appearance_plus_two_coordinates --
   --nocapture` and `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`.
+- 2026-05-27 `P/04/01` module-backed zero-appearance static-row audit:
+  extended the same GIT repair rule for legacy rows whose appearance WORD is
+  zero while the decompiled static cursor and local module resource prove the
+  row. Nonzero appearances must still match the GIT appearance with at least
+  two coordinates, but zero appearances are treated as missing only when all
+  three placement coordinates match one remaining static GIT placeable. This
+  repairs appearance and bearing from module state without accepting a shifted
+  static-row cursor. The local Contest item-area fixture now rewrites to exact
+  EE proof under that generalized rule. Verified with `cargo test -q -p
+  hgbridge-proxy2 local_contest_items_area_uses_split_resref_and_name_fragments
+  -- --nocapture` and `cargo test -q -p hgbridge-proxy2`.
+- 2026-05-27 `P/04/01` static-placeable context proof audit: corrected the HG
+  Docks zero-sound-count fixture expectation so absent local module proof stays
+  absent. The test now supplies an explicit empty module context and proves that
+  static-row context does not invent GIT trap/use/lock state when no module ARE
+  resource is resolved; module-backed state remains reserved for rows uniquely
+  matched to a proven local resource. Verified with `cargo test -q -p
+  hgbridge-proxy2 docksofascension_rewrite_repairs_legacy_zero_sound_counts --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2`.
 - 2026-05-27 `P/04/01` transition direct-label cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompiled
   transition-row CExoString branch owns exactly the visibility BOOL and
@@ -829,6 +848,19 @@ Current status:
   or a multi-byte tail, is no longer accepted as owned by this no-BOOL reader.
   Verified with `cargo test -q -p hgbridge-proxy2 client_char_list --
   --nocapture`.~~
+- ~~2026-05-27 `P/31/03` PlayModuleCharacterList response padding-bit cursor
+  audit: tightened the response verifier so it owns only the decompiled result
+  BOOL plus any success-branch locstring bits, then rejects nonzero unused
+  fragment padding bits. EE `SendServerToPlayerPlayModuleCharacterListResponse`
+  writes `CreateWriteMessage`, result `WriteBOOL`, OBJECTID `WriteDWORD`,
+  two `WriteCExoLocStringServer` fields only on success, and then
+  `GetWriteMessage`; `GetWriteMessage` stores only the high final-bit-count
+  header. Public fixture-free tests now prove the failed-response one-BOOL
+  shape and padding-bit rejection, while the private Starcore success fixture
+  still claims exactly. Verified with `cargo test -p hgbridge-proxy2
+  play_module_character_list -- --nocapture`, `cargo test -p hgbridge-proxy2
+  char_list -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
+  and `cargo check -q -p hgbridge-proxy2`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

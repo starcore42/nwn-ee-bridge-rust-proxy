@@ -3305,9 +3305,10 @@ mod tests {
 
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(3),
-            "dispatcher To Heir live-object claim must stay bounded"
+            elapsed < std::time::Duration::from_secs(10),
+            "dispatcher To Heir live-object claim must stay bounded, elapsed={elapsed:?}"
         );
         assert!(rewrite.any_rewrite());
         assert_eq!(

@@ -136,6 +136,7 @@ fn claim_response(payload: &[u8]) -> Option<PlayModuleCharacterListClaimSummary>
 
     if reader.cursor != declared
         || reader.consumed_fragment_bits() != reader.meaningful_fragment_bits
+        || !reader.fragment_padding_zero()
     {
         return None;
     }
@@ -265,6 +266,22 @@ impl<'a> ResponseReader<'a> {
     fn consumed_fragment_bits(&self) -> usize {
         self.fragment_cursor * 8 + usize::from(self.fragment_bit)
     }
+
+    fn fragment_padding_zero(&self) -> bool {
+        let consumed = self.consumed_fragment_bits();
+        let Some(total_bits) = self.fragments.len().checked_mul(8) else {
+            return false;
+        };
+        for bit_index in consumed..total_bits {
+            let Some(byte) = self.fragments.get(bit_index / 8).copied() else {
+                return false;
+            };
+            if byte & (0x80 >> (bit_index % 8)) != 0 {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 fn meaningful_fragment_bits(fragment_bytes: &[u8]) -> Option<usize> {
@@ -289,23 +306,48 @@ fn meaningful_fragment_bits(fragment_bytes: &[u8]) -> Option<usize> {
     Some(meaningful_bits)
 }
 
-#[cfg(all(test, hgbridge_private_fixtures))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    fn failure_response_payload(fragment_tail: u8) -> Vec<u8> {
+        let declared = READ_CURSOR_START + OBJECT_ID_BYTES;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[b'P', PLAY_MODULE_CHARACTER_LIST_MAJOR, RESPONSE_MINOR]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x7FFF_FFF9_u32.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
     #[test]
-    fn starcore_response_fixture_matches_decompile_cursor_shape() {
-        let fixture =
-            include_bytes!("../../fixtures/play_module_character_list/starcore_response_jaxxs.bin");
-        let summary = claim_payload_if_verified(fixture).expect("fixture should be claimed");
+    fn response_failure_owns_one_result_bool_bit() {
+        // EE `SendServerToPlayerPlayModuleCharacterListResponse` writes the
+        // result with `WriteBOOL`, then the creature OBJECTID as a DWORD. A
+        // failed response has no locstrings or class rows, so the fragment
+        // cursor owns only the three CNW header bits plus that one BOOL.
+        let payload = failure_response_payload(0b1000_0000);
+
+        let summary = claim_payload_if_verified(&payload)
+            .expect("failed PlayModuleCharacterList response should claim exactly");
 
         assert_eq!(summary.kind, PlayModuleCharacterListKind::Response);
         assert_eq!(summary.packet_name, "PlayModuleCharacterList_Response");
-        assert_eq!(summary.declared, 71);
+        assert_eq!(summary.declared, READ_CURSOR_START + OBJECT_ID_BYTES);
         assert_eq!(summary.fragment_bytes, 1);
         assert_eq!(summary.object_id, Some(0x7FFF_FFF9));
-        assert_eq!(summary.success, Some(true));
-        assert_eq!(summary.class_count, Some(3));
+        assert_eq!(summary.success, Some(false));
+        assert_eq!(summary.class_count, None);
+    }
+
+    #[test]
+    fn response_failure_rejects_unowned_fragment_padding_bits() {
+        let payload = failure_response_payload(0b1000_0001);
+
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "P/31/03 result responses must not claim padding bits after the decompiled BOOL cursor"
+        );
     }
 
     #[test]
@@ -324,5 +366,21 @@ mod tests {
             claim_payload_if_verified(&[b'P', PLAY_MODULE_CHARACTER_LIST_MAJOR, START_MINOR, 0x00])
                 .is_none()
         );
+    }
+
+    #[cfg(hgbridge_private_fixtures)]
+    #[test]
+    fn starcore_response_fixture_matches_decompile_cursor_shape() {
+        let fixture =
+            include_bytes!("../../fixtures/play_module_character_list/starcore_response_jaxxs.bin");
+        let summary = claim_payload_if_verified(fixture).expect("fixture should be claimed");
+
+        assert_eq!(summary.kind, PlayModuleCharacterListKind::Response);
+        assert_eq!(summary.packet_name, "PlayModuleCharacterList_Response");
+        assert_eq!(summary.declared, 71);
+        assert_eq!(summary.fragment_bytes, 1);
+        assert_eq!(summary.object_id, Some(0x7FFF_FFF9));
+        assert_eq!(summary.success, Some(true));
+        assert_eq!(summary.class_count, Some(3));
     }
 }
