@@ -7256,6 +7256,52 @@ mod public_static_direction_tests {
         payload
     }
 
+    fn ee_area_tlk_transition_payload_with_extra_fragment_bits(
+        extra_fragment_bits: usize,
+    ) -> Vec<u8> {
+        let (legacy_payload, legacy_fragment_offset, legacy_scan) =
+            real_area_tlk_transition_static_placeable_payload();
+        legacy_area_source_tail_exact_read_proof(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_scan,
+        )
+        .expect("TLK transition source should have exact post-tile cursor proof");
+        let legacy_layout = area_static_layout(&legacy_payload, legacy_fragment_offset)
+            .expect("TLK transition source should expose an area layout");
+        assert_eq!(legacy_layout.dialect, AreaStaticDialect::Legacy169);
+
+        let mut payload = expand_legacy_area_static_header_for_ee(
+            &legacy_payload,
+            legacy_fragment_offset,
+            &legacy_layout,
+        )
+        .expect("test payload should expand to the EE static-header dialect");
+        push_u16(&mut payload, 0);
+        push_u16(&mut payload, 0);
+
+        let new_read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        let mut rewritten_fragment =
+            rewrite_area_fragment_bits(&legacy_payload[legacy_fragment_offset..])
+                .expect("test fragment should rewrite to the EE Area_ClientArea bit dialect");
+        if extra_fragment_bits != 0 {
+            let mut bits = decode_cnw_msb_valid_bits(&rewritten_fragment, CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten test fragment should decode");
+            let mut payload_bits = bits.split_off(CNW_FRAGMENT_HEADER_BITS);
+            payload_bits.extend(std::iter::repeat(false).take(extra_fragment_bits));
+            rewritten_fragment = encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted EE area fragment bits should encode");
+        }
+        payload.extend_from_slice(&rewritten_fragment);
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + new_read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic EE payload");
+        payload
+    }
+
     fn ee_area_sound_payload_with_extra_fragment_bits(extra_fragment_bits: usize) -> Vec<u8> {
         let (legacy_payload, legacy_fragment_offset, legacy_scan) =
             real_area_sound_static_placeable_payload(true);
@@ -7298,6 +7344,51 @@ mod public_static_direction_tests {
         )
         .expect("declared read size should fit in the synthetic EE payload");
         payload
+    }
+
+    #[test]
+    fn transition_tlk_source_rows_consume_exactly_three_fragment_bits() {
+        let (payload, fragment_offset, scan) = real_area_tlk_transition_static_placeable_payload();
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("TLK transition branch should have exact source cursor proof");
+        assert_eq!(proof.static_rows_count, 1);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS + 3)
+        );
+
+        let mut extra_bit_payload = payload.clone();
+        extra_bit_payload.truncate(fragment_offset);
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[false, true, false, false]);
+        extra_bit_payload.extend_from_slice(
+            &encode_cnw_msb_payload_bits(&payload_bits)
+                .expect("shifted TLK transition bits should encode"),
+        );
+        let shifted_scan = scan_area_tile_stream(&extra_bit_payload, fragment_offset);
+        assert!(shifted_scan.valid);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(
+                &extra_bit_payload,
+                fragment_offset,
+                &shifted_scan,
+            )
+            .is_none(),
+            "Diamond/EE TLK transition labels own exactly visibility, selector, and TLK guard bits"
+        );
+        assert!(
+            collect_area_post_tile_placeable_context(
+                &extra_bit_payload,
+                fragment_offset,
+                "testarea",
+                0x8000_0001,
+                false,
+                None,
+            )
+            .is_none(),
+            "context collection must not expose later rows after an unowned transition-list fragment bit"
+        );
     }
 
     #[test]
@@ -7540,6 +7631,22 @@ mod public_static_direction_tests {
         assert!(
             ee_area_client_area_exact_read_proof(&shifted).is_none(),
             "EE static-placeable rows also own no CNW fragment bits; a byte-exact row with one extra bit must stay unclaimed"
+        );
+    }
+
+    #[test]
+    fn exact_ee_area_proof_rejects_transition_fragment_tail() {
+        let exact = ee_area_tlk_transition_payload_with_extra_fragment_bits(0);
+        let proof = ee_area_client_area_exact_read_proof(&exact)
+            .expect("one EE TLK transition row and one static row should be exact");
+        assert_eq!(proof.transition_count, 1);
+        assert_eq!(proof.static_count, 1);
+        assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
+
+        let shifted = ee_area_tlk_transition_payload_with_extra_fragment_bits(1);
+        assert!(
+            ee_area_client_area_exact_read_proof(&shifted).is_none(),
+            "EE transition labels own exactly their decompiled locstring bits before map/sound/static lists"
         );
     }
 

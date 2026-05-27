@@ -866,6 +866,15 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 public_static_direction_tests --
   --nocapture`, plus `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` transition-list fragment-cursor audit: no packet
+  behavior changed, but public fixture-free coverage now proves the post-tile
+  transition rows reject leftover fragment bits on both legacy source-tail/
+  context proof and exact EE `LoadArea` proof. TLK transition labels own
+  exactly visibility, TLK/direct selector, and TLK guard BOOL bits before the
+  DWORD string ref; an extra fragment bit after that label is unclaimed and
+  cannot expose later map/sound/light/static rows. Verified with `cargo test
+  -q -p hgbridge-proxy2 transition -- --nocapture`, plus the final formatting
+  and check suite for this run.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
