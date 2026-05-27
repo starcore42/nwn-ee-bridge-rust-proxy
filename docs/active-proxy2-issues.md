@@ -753,6 +753,14 @@ Current status:
   strict validation. Verified with `cargo test -q -p hgbridge-proxy2
   trigger_update_ -- --nocapture` and `cargo test -q -p hgbridge-proxy2 3967
   -- --nocapture`.
+- 2026-05-27 `P/05/01` door state update cursor audit: no packet behavior
+  changed, but public fixture-free coverage now proves the decompile-backed
+  `U/10` mask `0x10` state-BOOL handoff. Diamond `sub_44E2C0` owns five door
+  state BOOLs; EE `sub_140797780` owns those same five in order plus one
+  neutral sixth BOOL. The bridge rewrite must insert only that false sixth bit,
+  exact EE validation rejects a true sixth bit, and any extra fragment bit
+  remains unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
+  door_state_update -- --nocapture`.
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed

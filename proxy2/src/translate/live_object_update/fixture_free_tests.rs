@@ -79,6 +79,13 @@ fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
     live
 }
 
+fn door_state_update_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_1234u32.to_le_bytes());
+    live.extend_from_slice(&super::LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+    live
+}
+
 #[test]
 fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
     // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
@@ -199,6 +206,73 @@ fn live_gui_repository_move_rejects_object_id_at_update_offset() {
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "repository move must not treat an object id at the update/delete cursor as a valid row"
+    );
+}
+
+#[test]
+fn legacy_door_state_update_rewrites_five_diamond_bools_to_ee_six_bool_shape() {
+    // Diamond door update `sub_44E2C0` reads five state BOOLs for mask 0x10.
+    // EE door update `sub_140797780` reads those same five in order, then one
+    // EE-only neutral `sam` BOOL. The proxy may insert only that sixth bit.
+    let live = door_state_update_live_bytes();
+    let legacy_state_bits = vec![true, false, true, false, true];
+    let mut payload = live_object_payload_with_bits(&live, legacy_state_bits.clone());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "five Diamond door state bits are not already an exact EE door update"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("door state update should insert EE's neutral sixth BOOL");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.bits_removed, 0);
+    assert_eq!(rewrite.bytes_inserted, 0);
+    assert_eq!(rewrite.bytes_removed, 0);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten door state update should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.live_bytes_length, super::LEGACY_UPDATE_HEADER_BYTES);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("rewritten declared length") as usize;
+    let fragment = &payload[declared..];
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(fragment, super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits should decode");
+    let mut expected_state_bits = legacy_state_bits;
+    expected_state_bits.push(false);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected_state_bits.as_slice(),
+        "door state bits must keep Diamond order and append only the EE neutral bit"
+    );
+}
+
+#[test]
+fn ee_door_state_update_requires_neutral_sixth_bool_and_no_extra_bits() {
+    let live = door_state_update_live_bytes();
+    let exact_payload =
+        live_object_payload_with_bits(&live, vec![true, false, true, false, true, false]);
+    assert!(
+        super::claim_payload_if_verified(&exact_payload).is_some(),
+        "EE door state update owns exactly five legacy state BOOLs plus a false sixth BOOL"
+    );
+
+    let true_sixth_payload =
+        live_object_payload_with_bits(&live, vec![true, false, true, false, true, true]);
+    assert!(
+        super::claim_payload_if_verified(&true_sixth_payload).is_none(),
+        "the EE-only sixth door state BOOL must be neutral false"
+    );
+
+    let extra_bit_payload =
+        live_object_payload_with_bits(&live, vec![true, false, true, false, true, false, false]);
+    assert!(
+        super::claim_payload_if_verified(&extra_bit_payload).is_none(),
+        "a byte-complete door state update with an extra unowned fragment bit is not exact"
     );
 }
 
