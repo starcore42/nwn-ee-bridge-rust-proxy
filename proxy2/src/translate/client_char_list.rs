@@ -15,6 +15,9 @@
 //!   not a variable ASCII identifier string, so NUL padding is legal.
 //! - No EE-only fields were observed or found in this handler path, so the
 //!   bridge validates the exact declared read window and leaves bytes unchanged.
+//!   A trailing CNW fragment byte, when present, is owned only as
+//!   `GetWriteMessage`'s empty final cursor (`0b011xxxxx`); any cursor that
+//!   advertises data bits is not part of this byte-only reader.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -31,6 +34,8 @@ const REQUEST_UPDATE_CHAR_DECLARED_BYTES: usize = HIGH_LEVEL_HEADER_BYTES
     + UPDATE_REQUEST_TYPE_BYTES
     + UPDATE_REQUEST_CRESREF_BYTES;
 const MAX_OBSERVED_REQUEST_UPDATE_CHAR_FRAGMENT_BYTES: usize = 1;
+const CNW_FRAGMENT_CURSOR_MASK: u8 = 0xE0;
+const EMPTY_CNW_FRAGMENT_CURSOR: u8 = 0x60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientCharListClaimSummary {
@@ -68,6 +73,12 @@ fn request_update_char_shape_valid(payload: &[u8]) -> bool {
     {
         return false;
     }
+    let Some(fragment_tail) = payload.get(declared..) else {
+        return false;
+    };
+    if !request_update_char_fragment_tail_valid(fragment_tail) {
+        return false;
+    }
 
     let body_start = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
     let cresref_start = body_start + UPDATE_REQUEST_TYPE_BYTES;
@@ -75,6 +86,14 @@ fn request_update_char_shape_valid(payload: &[u8]) -> bool {
         && payload
             .get(cresref_start..cresref_start + UPDATE_REQUEST_CRESREF_BYTES)
             .is_some()
+}
+
+fn request_update_char_fragment_tail_valid(fragment_tail: &[u8]) -> bool {
+    match fragment_tail {
+        [] => true,
+        [byte] => (byte & CNW_FRAGMENT_CURSOR_MASK) == EMPTY_CNW_FRAGMENT_CURSOR,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -88,7 +107,7 @@ mod tests {
         payload.extend_from_slice(&(REQUEST_UPDATE_CHAR_DECLARED_BYTES as u32).to_le_bytes());
         payload.push(0x01);
         payload.extend_from_slice(b"starcore-druid60");
-        payload.push(0x80);
+        payload.push(0x7F);
 
         let summary = claim_payload_if_verified(&payload)
             .expect("decompile-backed RequestUpdateChar shape should be claimed");
@@ -121,5 +140,28 @@ mod tests {
         payload.extend_from_slice(b"starcore");
 
         assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn rejects_request_update_char_with_unowned_fragment_bits() {
+        let mut data_bit_tail = Vec::new();
+        data_bit_tail.extend_from_slice(&[b'P', CHAR_LIST_MAJOR, REQUEST_UPDATE_CHAR_MINOR]);
+        data_bit_tail.extend_from_slice(&(REQUEST_UPDATE_CHAR_DECLARED_BYTES as u32).to_le_bytes());
+        data_bit_tail.push(0x01);
+        data_bit_tail.extend_from_slice(b"starcore-druid60");
+        data_bit_tail.push(0x80);
+
+        assert!(
+            claim_payload_if_verified(&data_bit_tail).is_none(),
+            "0x11/0x03 reads no BOOLs, so a non-empty fragment cursor is unowned"
+        );
+
+        let mut extra_tail = data_bit_tail;
+        *extra_tail.last_mut().unwrap() = EMPTY_CNW_FRAGMENT_CURSOR;
+        extra_tail.push(0);
+        assert!(
+            claim_payload_if_verified(&extra_tail).is_none(),
+            "only one optional empty cursor byte is proven for RequestUpdateChar"
+        );
     }
 }

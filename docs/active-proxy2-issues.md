@@ -822,6 +822,13 @@ Current status:
   response empty-fragment handoff. Keep the broader player-model issue focused
   on live-object current-player appearance unless future evidence shows the
   BIC/CharList source fields are already wrong before the first `P/05/01`.
+- ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
+  tightened the client-to-server character-list verifier so the byte-only
+  `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
+  cursor byte (`0b011xxxxx`) only. A tail that advertises fragment data bits,
+  or a multi-byte tail, is no longer accepted as owned by this no-BOOL reader.
+  Verified with `cargo test -q -p hgbridge-proxy2 client_char_list --
+  --nocapture`.~~
 
 Most likely packet families to audit:
 - `P/04/01 Area_ClientArea`: static placeable rows and module-resource-backed
