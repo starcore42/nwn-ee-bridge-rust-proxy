@@ -4109,33 +4109,63 @@ fn repair_missing_square_area_dimensions(
             continue;
         }
 
-        if write_area_u32(payload, fragment_offset, layout.width_read_offset, side).is_none()
-            || write_area_u32(payload, fragment_offset, layout.height_read_offset, side).is_none()
+        let mut candidate = payload.to_vec();
+        if write_area_u32(
+            &mut candidate,
+            fragment_offset,
+            layout.width_read_offset,
+            side,
+        )
+        .is_none()
+            || write_area_u32(
+                &mut candidate,
+                fragment_offset,
+                layout.height_read_offset,
+                side,
+            )
+            .is_none()
         {
-            let _ = write_area_u32(payload, fragment_offset, layout.width_read_offset, 0);
-            let _ = write_area_u32(payload, fragment_offset, layout.height_read_offset, 0);
             return false;
         }
 
-        let repaired_scan = scan_area_tile_stream(payload, fragment_offset);
-        if repaired_scan.valid
-            && repaired_scan.width == side
-            && repaired_scan.packet_height == side
-            && legacy_area_source_tail_consumes_read_buffer(
-                payload,
-                fragment_offset,
-                &repaired_scan,
-            )
-        {
+        let repaired_scan = scan_area_tile_stream(&candidate, fragment_offset);
+        if repaired_missing_square_dimension_scan_matches(
+            &layout,
+            tile_count,
+            cursor,
+            side,
+            &repaired_scan,
+        ) && legacy_area_source_tail_consumes_read_buffer(
+            &candidate,
+            fragment_offset,
+            &repaired_scan,
+        ) {
+            payload.copy_from_slice(&candidate);
             *scan = repaired_scan;
             return true;
         }
-
-        let _ = write_area_u32(payload, fragment_offset, layout.width_read_offset, 0);
-        let _ = write_area_u32(payload, fragment_offset, layout.height_read_offset, 0);
     }
 
     false
+}
+
+fn repaired_missing_square_dimension_scan_matches(
+    source_layout: &AreaStaticLayout,
+    source_tile_count: u32,
+    source_tile_end_read_offset: usize,
+    side: u32,
+    repaired_scan: &AreaTileStreamScan,
+) -> bool {
+    repaired_scan.valid
+        && repaired_scan.layout.width_read_offset == source_layout.width_read_offset
+        && repaired_scan.layout.height_read_offset == source_layout.height_read_offset
+        && repaired_scan.layout.tileset_read_offset == source_layout.tileset_read_offset
+        && repaired_scan.layout.first_tile_read_offset == source_layout.first_tile_read_offset
+        && repaired_scan.width == side
+        && repaired_scan.packet_height == side
+        && repaired_scan.inferred_height == side
+        && repaired_scan.tile_count == source_tile_count
+        && repaired_scan.tile_end_read_offset == source_tile_end_read_offset
 }
 
 fn perfect_square_root(value: u32) -> Option<u32> {
@@ -6504,6 +6534,63 @@ mod public_static_direction_tests {
         bytes.resize(HIGH_LEVEL_HEADER_BYTES + read_offset, 0);
     }
 
+    fn fixed_name_square_dimension_payload() -> (Vec<u8>, usize) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        let mut name = [0u8; DIAMOND_LEGACY_AREA_NAME_BYTES];
+        name[..9].copy_from_slice(b"BW167Demo");
+        payload.extend_from_slice(&name);
+        let name_end = AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 0);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 0);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1); // tile id
+        push_u32(&mut payload, 0); // orientation
+        push_u32(&mut payload, 0); // height
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]); // source light bytes
+
+        push_u32(&mut payload, 0); // transition rows
+        push_u32(&mut payload, 0); // map-pin rows
+        push_u16(&mut payload, 0); // sound rows
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, 0); // static-placeable rows
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic area payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        (payload, fragment_offset)
+    }
+
     fn angle_delta(actual: f32, expected: f32) -> f32 {
         let two_pi = std::f32::consts::PI * 2.0;
         (actual - expected + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI
@@ -8387,6 +8474,65 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn square_dimension_repair_commits_only_after_exact_tail_proof() {
+        let (mut exact, fragment_offset) = fixed_name_square_dimension_payload();
+        let layout = area_static_layout(&exact, fragment_offset).expect("synthetic area layout");
+        assert_eq!(layout.area_name_encoding, AreaNameEncoding::DiamondFixed20);
+        let mut scan = scan_area_tile_stream(&exact, fragment_offset);
+        assert!(!scan.valid);
+
+        assert!(
+            repair_missing_square_area_dimensions(&mut exact, fragment_offset, &mut scan),
+            "exact one-tile square source should accept the inferred 1x1 dimensions"
+        );
+        assert!(scan.valid);
+        assert_eq!(
+            read_area_u32(&exact, fragment_offset, layout.width_read_offset),
+            Some(1)
+        );
+        assert_eq!(
+            read_area_u32(&exact, fragment_offset, layout.height_read_offset),
+            Some(1)
+        );
+
+        let (source, _) = fixed_name_square_dimension_payload();
+        let (mut shifted, shifted_fragment_offset) =
+            legacy_area_payload_with_extra_fragment_bits(&source, 1);
+        let shifted_layout =
+            area_static_layout(&shifted, shifted_fragment_offset).expect("shifted area layout");
+        let mut shifted_scan = scan_area_tile_stream(&shifted, shifted_fragment_offset);
+        let original_shifted = shifted.clone();
+        assert!(
+            !repair_missing_square_area_dimensions(
+                &mut shifted,
+                shifted_fragment_offset,
+                &mut shifted_scan,
+            ),
+            "one unowned post-tile fragment bit must block the inferred square dimensions"
+        );
+        assert_eq!(
+            shifted, original_shifted,
+            "rejected square-dimension candidates must not rewrite the source bytes"
+        );
+        assert_eq!(
+            read_area_u32(
+                &shifted,
+                shifted_fragment_offset,
+                shifted_layout.width_read_offset,
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(
+                &shifted,
+                shifted_fragment_offset,
+                shifted_layout.height_read_offset,
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn module_static_row_repair_uses_resource_bearing_for_unsafe_direction() {
         let placeable = ModuleAreaPlaceable {
             tag: "bearing_chest".to_string(),
@@ -9366,6 +9512,44 @@ mod tests {
         );
         assert_eq!(
             read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn missing_square_dimension_repair_requires_exact_post_tile_fragment_cursor() {
+        let (mut payload, fragment_offset) =
+            legacy_area_payload_with_extra_fragment_bits(LOCAL_DIAMOND_BW167DEMO_FIXED_NAME, 1);
+        let layout = area_static_layout(&payload, fragment_offset).expect("test area layout");
+        assert_eq!(layout.dialect, AreaStaticDialect::Legacy169);
+        assert_eq!(layout.area_name_encoding, AreaNameEncoding::DiamondFixed20);
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
+            Some(0)
+        );
+
+        let mut scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(!scan.valid);
+        let original = payload.clone();
+
+        assert!(
+            !repair_missing_square_area_dimensions(&mut payload, fragment_offset, &mut scan),
+            "square-dimension repair must not commit inferred dimensions when a post-tile fragment bit remains unowned"
+        );
+        assert_eq!(
+            payload, original,
+            "failed square-dimension repair must leave the dimension bytes and fragment stream untouched"
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
             Some(0)
         );
     }

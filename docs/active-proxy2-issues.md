@@ -911,6 +911,15 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   missing_width_repair_requires_exact_post_tile_fragment_cursor --
   --nocapture`, plus the existing Docks/Voyage positive repair filters.
+- 2026-05-28 `P/04/01` square-dimension repair cursor audit: hardened the
+  legacy fixed-name square-dimension repair to stage trial width/height DWORDs
+  and commit them only after the repaired scan proves the same layout, tile
+  count, tile-end cursor, and exact post-tile legacy source proof. A BW167 demo
+  square-area seed with one extra post-tile fragment bit now leaves both
+  dimension DWORDs and the fragment stream untouched. Verified with
+  `cargo test -q -p hgbridge-proxy2 square_dimension -- --nocapture`, the
+  existing BW167 positive rewrite filter, `cargo fmt --all --check`,
+  `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
