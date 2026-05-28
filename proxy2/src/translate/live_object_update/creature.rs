@@ -373,6 +373,74 @@ pub(super) struct CreatureC408CountRepair {
     pub bytes_rewritten: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CreatureStatusEffectZeroCountRepair {
+    pub bytes_inserted: usize,
+}
+
+fn infer_compact_legacy_status_effect_row_count(
+    bytes: &[u8],
+    mut cursor: usize,
+    entries_end: usize,
+) -> Option<u16> {
+    if cursor >= entries_end || entries_end > bytes.len() {
+        return None;
+    }
+
+    let loaded_rows = visual_effect_rows::loaded_visual_effect_target_payload_bytes();
+    let mut count = 0u16;
+    while cursor < entries_end {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        if loaded_rows.as_ref().is_some_and(|rows| {
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row) != Some(0)
+        }) {
+            return None;
+        }
+        cursor = cursor.checked_add(3)?;
+        if cursor > entries_end {
+            return None;
+        }
+        count = count.checked_add(1)?;
+    }
+
+    (count > 0 && count <= 256).then_some(count)
+}
+
+fn repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+    raw_mask: u32,
+    suffix_read_bytes: usize,
+) -> Option<CreatureC408CountRepair> {
+    if offset + 12 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(0x05)
+        || read_u32_le(bytes, offset + 6) != Some(raw_mask)
+        || read_u16_le(bytes, offset + 10) != Some(0)
+    {
+        return None;
+    }
+
+    let entries_start = offset.checked_add(12)?;
+    let entries_end = record_end.checked_sub(suffix_read_bytes)?;
+    if entries_end < entries_start {
+        return None;
+    }
+    let inferred_count =
+        infer_compact_legacy_status_effect_row_count(bytes, entries_start, entries_end)?;
+    bytes[offset + 10..offset + 12].copy_from_slice(&inferred_count.to_le_bytes());
+    Some(CreatureC408CountRepair {
+        entries: inferred_count,
+        bytes_rewritten: 2,
+    })
+}
+
 pub(super) fn repair_legacy_effect_only_visual_effect_count_for_ee(
     bytes: &mut [u8],
     offset: usize,
@@ -428,34 +496,18 @@ pub(super) fn repair_legacy_4408_visual_effect_count_for_ee(
     //   0x0400: four signed SHORT scalar/status values.
     //   0x4000: fragment BOOL status suffix.
     //
-    // The source record carries the single `A/F3` effect entry already proven
-    // in prior 0x4408 fixtures, but leaves the preceding count as zero. A zero
-    // count shifts that effect entry into the 0x0400 scalar reader and strands
-    // the following inventory row. Repair only this exact one-entry shape; the
-    // caller still has to insert EE's per-effect identity map and prove the
-    // final live-object cursor exactly.
-    const XP2_4408_SINGLE_EFFECT_ENTRY: [u8; 3] = [b'A', 0xF3, 0x00];
-    const XP2_4408_SINGLE_EFFECT_COUNT: u16 = 1;
-    const LEGACY_4408_ZERO_COUNT_RECORD_BYTES: usize = 23;
-
-    if offset + LEGACY_4408_ZERO_COUNT_RECORD_BYTES != record_end
-        || record_end > bytes.len()
-        || bytes.get(offset).copied() != Some(b'U')
-        || bytes.get(offset + 1).copied() != Some(0x05)
-        || read_u32_le(bytes, offset + 6) != Some(0x0000_4408)
-        || read_u16_le(bytes, offset + 10) != Some(0)
-        || bytes.get(offset + 12..offset + 15)? != XP2_4408_SINGLE_EFFECT_ENTRY
-    {
-        return None;
-    }
-
-    let count_bytes = XP2_4408_SINGLE_EFFECT_COUNT.to_le_bytes();
-    bytes[offset + 10] = count_bytes[0];
-    bytes[offset + 11] = count_bytes[1];
-    Some(CreatureC408CountRepair {
-        entries: XP2_4408_SINGLE_EFFECT_COUNT,
-        bytes_rewritten: 2,
-    })
+    // The malformed source record leaves the preceding count as zero. A zero
+    // count shifts the compact effect rows into the 0x0400 scalar reader and
+    // strands the following record. Repair the general compact no-target row
+    // rule before the four-WORD scalar/status suffix; the caller still inserts
+    // EE's per-effect identity maps and proves the final live-object cursor.
+    repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee(
+        bytes,
+        offset,
+        record_end,
+        0x0000_4408,
+        8,
+    )
 }
 
 pub(super) fn repair_legacy_c408_visual_effect_count_for_ee(
@@ -470,46 +522,80 @@ pub(super) fn repair_legacy_c408_visual_effect_count_for_ee(
     //   0x4000: five BOOLs, optional dominated/master details, then two BOOLs.
     //   0x8000: three visibility BOOLs.
     //
-    // The seq36 HG quarantine contains the same three looping-effect entries
-    // seen in the earlier valid fixture, but its count WORD is zero. That is
-    // invalid for both stock writers: a zero count would leave the three
-    // entry triplets to be misread as scalar fields and shift the following
-    // `I` inventory record. Repair only this proven malformed shape, then let
-    // the normal exact EE-shaped validator consume the record.
-    const HG_C408_THREE_EFFECT_ENTRIES: [u8; 9] =
-        [b'A', 0xB6, 0x00, b'A', 0xB1, 0x00, b'A', 0xFE, 0x07];
-    const HG_C408_THREE_EFFECT_COUNT: u16 = 3;
+    // Count-zero C408 captures prove the same malformed family as 0x4408, with
+    // an extra visibility suffix in the CNW fragment stream. The read-buffer
+    // repair is still only the compact effect-row count before the four-WORD
+    // scalar/status suffix; exact EE validation owns the later fragment BOOLs.
+    repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee(
+        bytes,
+        offset,
+        record_end,
+        0x0000_C408,
+        8,
+    )
+}
 
-    if offset + 10 > record_end
-        || record_end > bytes.len()
-        || bytes.get(offset).copied() != Some(b'U')
-        || bytes.get(offset + 1).copied() != Some(0x05)
-        || read_u32_le(bytes, offset + 6) != Some(0x0000_C408)
-    {
+pub(super) fn repair_legacy_zero_count_status_effect_record_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<CreatureStatusEffectZeroCountRepair> {
+    let mut candidate = bytes.clone();
+    let candidate_count_repair =
+        repair_legacy_c408_visual_effect_count_for_ee(&mut candidate, offset, *record_end)
+            .or_else(|| {
+                repair_legacy_4408_visual_effect_count_for_ee(&mut candidate, offset, *record_end)
+            })
+            .or_else(|| {
+                repair_legacy_effect_only_visual_effect_count_for_ee(
+                    &mut candidate,
+                    offset,
+                    *record_end,
+                )
+            })?;
+
+    let mut exact_bit_cursor = bit_cursor;
+    if advance_verified_noop_creature_update_record_exact_cursor(
+        &candidate,
+        offset,
+        *record_end,
+        fragment_bits,
+        &mut exact_bit_cursor,
+    ) {
+        *bytes = candidate;
+        return Some(CreatureStatusEffectZeroCountRepair { bytes_inserted: 0 });
+    }
+
+    let mut candidate_record_end = *record_end;
+    let transform_rewrite =
+        insert_compact_legacy_creature_update_status_effect_identity_maps_for_ee(
+            &mut candidate,
+            offset,
+            &mut candidate_record_end,
+            fragment_bits,
+            bit_cursor,
+        )?;
+    if transform_rewrite.entries != candidate_count_repair.entries {
         return None;
     }
 
-    let mut cursor = offset.checked_add(10)?;
-    let count = usize::from(read_u16_le(bytes, cursor)?);
-    if count != 0 {
-        return None;
-    }
-    cursor = cursor.checked_add(2)?;
-    let entries_end = cursor.checked_add(HG_C408_THREE_EFFECT_ENTRIES.len())?;
-    let scalar_end = entries_end.checked_add(8)?;
-    if scalar_end != record_end || scalar_end > bytes.len() {
-        return None;
-    }
-    if bytes.get(cursor..entries_end)? != HG_C408_THREE_EFFECT_ENTRIES {
+    let mut exact_bit_cursor = bit_cursor;
+    if !advance_verified_noop_creature_update_record_exact_cursor(
+        &candidate,
+        offset,
+        candidate_record_end,
+        fragment_bits,
+        &mut exact_bit_cursor,
+    ) {
         return None;
     }
 
-    let count_bytes = HG_C408_THREE_EFFECT_COUNT.to_le_bytes();
-    bytes[offset + 10] = count_bytes[0];
-    bytes[offset + 11] = count_bytes[1];
-    Some(CreatureC408CountRepair {
-        entries: HG_C408_THREE_EFFECT_COUNT,
-        bytes_rewritten: 2,
+    *bytes = candidate;
+    *record_end = candidate_record_end;
+    Some(CreatureStatusEffectZeroCountRepair {
+        bytes_inserted: transform_rewrite.bytes_inserted,
     })
 }
 
@@ -975,6 +1061,96 @@ pub(super) fn insert_creature_update_status_effect_identity_maps_for_ee(
     })
 }
 
+fn insert_compact_legacy_creature_update_status_effect_identity_maps_for_ee(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<CreatureStatusEffectTransformRewrite> {
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    if (raw_mask & 0x0000_0008) == 0 {
+        return None;
+    }
+
+    let start_states = legacy_creature_update_status_effect_start_states(
+        bytes,
+        offset,
+        *record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    let mut accepted: Option<(Vec<u8>, usize, u16, usize)> = None;
+
+    for state in start_states {
+        let count = read_u16_le(bytes, state.read_cursor)?;
+        if count == 0 || count > 256 {
+            continue;
+        }
+        let insert_offset_plans = compact_legacy_creature_status_effect_identity_map_insert_plans(
+            bytes,
+            state.read_cursor.checked_add(2)?,
+            count,
+            *record_end,
+        );
+        if insert_offset_plans.is_empty() {
+            continue;
+        }
+
+        for insert_offsets in insert_offset_plans {
+            let mut candidate = bytes.clone();
+            let mut candidate_record_end = *record_end;
+            for insert_at in insert_offsets.iter().rev().copied() {
+                candidate.splice(
+                    insert_at..insert_at,
+                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+                );
+                candidate_record_end = candidate_record_end
+                    .checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+            }
+
+            let mut candidate_bit_cursor = bit_cursor;
+            if !advance_verified_noop_creature_update_record_exact_cursor(
+                &candidate,
+                offset,
+                candidate_record_end,
+                fragment_bits,
+                &mut candidate_bit_cursor,
+            ) {
+                continue;
+            }
+
+            let bytes_inserted =
+                insert_offsets.len() * EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
+            if let Some((
+                accepted_candidate,
+                accepted_record_end,
+                accepted_count,
+                accepted_inserted,
+            )) = accepted.as_ref()
+            {
+                if *accepted_record_end == candidate_record_end
+                    && *accepted_count == count
+                    && *accepted_inserted == bytes_inserted
+                    && accepted_candidate == &candidate
+                {
+                    continue;
+                }
+                return None;
+            }
+            accepted = Some((candidate, candidate_record_end, count, bytes_inserted));
+        }
+    }
+
+    let (candidate, candidate_record_end, entries, bytes_inserted) = accepted?;
+    *bytes = candidate;
+    *record_end = candidate_record_end;
+    Some(CreatureStatusEffectTransformRewrite {
+        entries,
+        bytes_inserted,
+    })
+}
+
 fn legacy_creature_status_effect_identity_map_insert_plans(
     bytes: &[u8],
     cursor: usize,
@@ -1082,6 +1258,93 @@ fn legacy_creature_status_effect_identity_map_insert_plan_with_rows(
         return None;
     }
     Some(insert_offsets)
+}
+
+fn compact_legacy_creature_status_effect_identity_map_insert_plans(
+    bytes: &[u8],
+    cursor: usize,
+    count: u16,
+    record_end: usize,
+) -> Vec<Vec<usize>> {
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return compact_legacy_creature_status_effect_identity_map_insert_plan_with_rows(
+            bytes, cursor, count, record_end, &rows,
+        )
+        .into_iter()
+        .collect();
+    }
+
+    let mut plans = Vec::new();
+    if let Some(plan) =
+        compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+            bytes, cursor, count, record_end, 0,
+        )
+    {
+        plans.push(plan);
+    }
+    if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+        if let Some(plan) =
+            compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+                bytes,
+                cursor,
+                count,
+                record_end,
+                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
+            )
+        {
+            if !plans.contains(&plan) {
+                plans.push(plan);
+            }
+        }
+    }
+    plans
+}
+
+fn compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    record_end: usize,
+    target_payload_bytes: usize,
+) -> Option<Vec<usize>> {
+    let mut insert_offsets = Vec::with_capacity(usize::from(count));
+    for _ in 0..usize::from(count) {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
+            return None;
+        }
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > record_end {
+            return None;
+        }
+        insert_offsets.push(cursor);
+    }
+    (!insert_offsets.is_empty()).then_some(insert_offsets)
+}
+
+fn compact_legacy_creature_status_effect_identity_map_insert_plan_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    record_end: usize,
+    rows: &[Option<usize>],
+) -> Option<Vec<usize>> {
+    let mut insert_offsets = Vec::with_capacity(usize::from(count));
+    for _ in 0..usize::from(count) {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > record_end {
+            return None;
+        }
+        insert_offsets.push(cursor);
+    }
+    (!insert_offsets.is_empty()).then_some(insert_offsets)
 }
 
 fn creature_update_record_valid_before_adjacent_fragment_span(

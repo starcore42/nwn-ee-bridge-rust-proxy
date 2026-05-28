@@ -1050,6 +1050,18 @@ Current status:
   creature_status_effect -- --nocapture` and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --nocapture`, plus the serial full
   `cargo test -q -p hgbridge-proxy2 -- --test-threads=1` suite.
+- 2026-05-28 `P/05/01` zero-count creature status-effect repair audit:
+  generalized the malformed `U/5 0x4408`/`0xC408` count repair from captured
+  row literals to compact no-target `A`/`D` row triplets before the fixed
+  four-WORD scalar suffix. The production rewrite is now transactional: stage
+  the count, insert EE ObjectVisualTransformData maps at compact-row cursors
+  even when the following zero scalar suffix resembles an identity map, then
+  commit only after the exact creature-update reader owns the final read and
+  fragment-bit cursor. A missing final `0x4000` status BOOL now leaves the
+  payload untouched. Verified with `cargo test -q -p hgbridge-proxy2
+  creature_4408_zero_count -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 creature_status_effect -- --nocapture`, and `cargo test -q
+  -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

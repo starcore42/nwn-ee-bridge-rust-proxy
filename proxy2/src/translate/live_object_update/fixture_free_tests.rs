@@ -70,6 +70,31 @@ fn creature_status_effect_4008_payload(rows: &[(u16, Option<&[u8]>)]) -> Vec<u8>
     payload
 }
 
+fn legacy_zero_count_creature_4408_payload(
+    rows: &[(u8, u16)],
+    extra_before_scalar: &[u8],
+) -> Vec<u8> {
+    legacy_zero_count_creature_4408_payload_with_bits(rows, extra_before_scalar, vec![false; 7])
+}
+
+fn legacy_zero_count_creature_4408_payload_with_bits(
+    rows: &[(u8, u16)],
+    extra_before_scalar: &[u8],
+    owned_bits: Vec<bool>,
+) -> Vec<u8> {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x05, 0x55, 0x00, 0x00, 0x80]);
+    live.extend_from_slice(&0x0000_4408u32.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    for (opcode, row) in rows {
+        live.push(*opcode);
+        live.extend_from_slice(&row.to_le_bytes());
+    }
+    live.extend_from_slice(extra_before_scalar);
+    live.extend_from_slice(&[0; 8]);
+    live_object_payload_with_bits(&live, owned_bits)
+}
+
 fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
     let mut live = vec![b'U', super::TRIGGER_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -936,6 +961,75 @@ fn creature_status_effect_mixed_target_payload_rows_stay_unclaimed_without_2da()
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "without visualeffects.2da row-type proof, mixed target/no-target rows cannot be exact-owned"
+    );
+}
+
+#[test]
+fn creature_4408_zero_count_repair_infers_compact_status_row_count() {
+    let mut payload =
+        legacy_zero_count_creature_4408_payload(&[(b'A', 0x00F3), (b'D', 0x00B6)], &[]);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "count-zero 0x4408 input must not exact-claim before the compact row count is repaired"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("zero-count compact 0x4408 status rows should rewrite through the typed path");
+    assert_eq!(
+        rewrite.bytes_inserted, 16,
+        "two compact rows should receive two EE identity transform maps"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("repaired 0x4408 status rows should exact-claim");
+    let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..claim.declared];
+    assert_eq!(
+        super::read_u16_le(live, super::LEGACY_UPDATE_HEADER_BYTES),
+        Some(2),
+        "the repaired count comes from the compact row list, not a captured row table"
+    );
+    assert_eq!(claim.creature_update_records, 1);
+}
+
+#[test]
+fn creature_4408_zero_count_repair_rejects_non_triplet_status_rows() {
+    let payload = legacy_zero_count_creature_4408_payload(&[(b'A', 0x00F3)], &[0xAA]);
+    let declared =
+        usize::try_from(super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap())
+            .unwrap();
+    let mut live =
+        payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared].to_vec();
+    let original = live.clone();
+
+    assert!(
+        super::creature::repair_legacy_4408_visual_effect_count_for_ee(
+            &mut live,
+            0,
+            original.len()
+        )
+        .is_none(),
+        "a shifted status-effect row body must not rewrite the count"
+    );
+    assert_eq!(live, original);
+}
+
+#[test]
+fn creature_4408_zero_count_repair_rejects_without_partial_payload_write() {
+    let mut payload = legacy_zero_count_creature_4408_payload_with_bits(
+        &[(b'A', 0x00F3), (b'D', 0x00B6)],
+        &[],
+        vec![false; 6],
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "zero-count repair must not commit unless the final 0x4000 BOOL cursor is exact"
+    );
+    assert_eq!(
+        payload, original,
+        "failed staged count/map repair must leave the source payload untouched"
     );
 }
 

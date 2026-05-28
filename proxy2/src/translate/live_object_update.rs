@@ -3956,32 +3956,22 @@ pub fn rewrite_update_records_payload_if_possible(
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                 }
-                if creature::repair_legacy_c408_visual_effect_count_for_ee(
-                    &mut live_bytes,
-                    offset,
-                    record_end,
-                )
-                .or_else(|| {
-                    creature::repair_legacy_4408_visual_effect_count_for_ee(
+                if let Some(zero_count_rewrite) =
+                    creature::repair_legacy_zero_count_status_effect_record_for_ee(
                         &mut live_bytes,
                         offset,
-                        record_end,
+                        &mut record_end,
+                        &fragment_bits,
+                        bit_cursor,
                     )
-                })
-                .or_else(|| {
-                    creature::repair_legacy_effect_only_visual_effect_count_for_ee(
-                        &mut live_bytes,
-                        offset,
-                        record_end,
-                    )
-                })
-                .is_some()
                 {
                     changed = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
-                }
-                if let Some(status_effect_rewrite) =
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(zero_count_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                    );
+                } else if let Some(status_effect_rewrite) =
                     creature::insert_creature_update_status_effect_identity_maps_for_ee(
                         &mut live_bytes,
                         offset,
