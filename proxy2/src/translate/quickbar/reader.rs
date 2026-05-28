@@ -454,7 +454,9 @@ fn legacy_quickbar_trailing_command_tail_is_discardable(read_buffer: &[u8], curs
     // Diamond command-line quickbar record that was not part of the 36 slots
     // selected by the typed scorer. The decompile-owned command shape is type
     // 18 followed by two CExoString fields; existing code already treats the
-    // final four-byte HG suffix after that shape as a boundary-only artifact.
+    // final four-byte HG suffix after that shape as a boundary-only empty
+    // string-length artifact. Do not discard an arbitrary DWORD here: Diamond
+    // `sub_469FD0` and EE `sub_14079DB00` own only the two command CExoStrings.
     // General command buttons are never emitted raw by this translator, so this
     // exact tail may be consumed only to prove the SetAllButtons boundary.
     let mut probe = QuickbarPacketReader {
@@ -471,11 +473,14 @@ fn legacy_quickbar_trailing_command_tail_is_discardable(read_buffer: &[u8], curs
     if probe.skip_string().is_none() || probe.skip_string().is_none() {
         return false;
     }
-    probe.cursor == read_buffer.len()
-        || probe
-            .cursor
-            .checked_add(CNW_LENGTH_BYTES)
-            .is_some_and(|end| end == read_buffer.len())
+    if probe.cursor == read_buffer.len() {
+        return true;
+    }
+    probe
+        .cursor
+        .checked_add(CNW_LENGTH_BYTES)
+        .is_some_and(|end| end == read_buffer.len())
+        && read_u32_le(read_buffer, probe.cursor) == Some(0)
 }
 
 fn parse_legacy_quickbar_non_item_from_reader(
@@ -706,5 +711,48 @@ pub(super) fn legacy_quickbar_int_payload_is_valid_for_ee(ty: u8, value: u32) ->
         // are consumed and emitted as an empty slot instead of raw passthrough.
         8 => value < EE_QUICKBAR_ANIMATION_ICON_COUNT,
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command_tail_with_optional_suffix(suffix: &[u8]) -> Vec<u8> {
+        let mut read_buffer = vec![18];
+        read_buffer.extend_from_slice(&0u32.to_le_bytes());
+        read_buffer.extend_from_slice(&0u32.to_le_bytes());
+        read_buffer.extend_from_slice(suffix);
+        read_buffer
+    }
+
+    #[test]
+    fn quickbar_command_tail_allows_exact_command_shape_without_suffix() {
+        let read_buffer = command_tail_with_optional_suffix(&[]);
+
+        assert!(legacy_quickbar_trailing_command_tail_is_discardable(
+            &read_buffer,
+            0
+        ));
+    }
+
+    #[test]
+    fn quickbar_command_tail_allows_only_empty_suffix_length() {
+        let read_buffer = command_tail_with_optional_suffix(&0u32.to_le_bytes());
+
+        assert!(legacy_quickbar_trailing_command_tail_is_discardable(
+            &read_buffer,
+            0
+        ));
+    }
+
+    #[test]
+    fn quickbar_command_tail_rejects_nonzero_suffix_dword() {
+        let read_buffer = command_tail_with_optional_suffix(&1u32.to_le_bytes());
+
+        assert!(
+            !legacy_quickbar_trailing_command_tail_is_discardable(&read_buffer, 0),
+            "command-tail compatibility must not discard arbitrary read-buffer DWORDs"
+        );
     }
 }

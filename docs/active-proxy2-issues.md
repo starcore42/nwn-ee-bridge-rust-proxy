@@ -523,6 +523,12 @@ Current status:
   -q -p hgbridge-proxy2 active_property_locstring_inline -- --nocapture`,
   `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`, and `cargo check
   -q -p hgbridge-proxy2`.
+- 2026-05-29 `P/1E/01` quickbar command-tail cursor audit: hardened the compact
+  item recovery boundary so the trailing command-line compatibility tail accepts
+  only the decompiled type-18 two-CExoString command shape with no suffix or a
+  single zero DWORD empty-string-length artifact. It no longer discards an
+  arbitrary four-byte read-buffer suffix after the two strings. Verified with
+  `cargo test -q -p hgbridge-proxy2 quickbar_command_tail -- --nocapture`.
 - 2026-05-26 `P/05/01` live-object item appearance audit: tightened the shared
   top-level item-add / GUI item-create EE model-type-3 validator so the
   19x6 armor/accessory color table must repeat the six Diamond palette bytes
