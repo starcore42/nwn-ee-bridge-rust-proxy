@@ -1031,6 +1031,15 @@ Current status:
   record boundary. Verified with the focused
   `looping_effect_stream_boundary_rejects_ambiguous_target_fallback` and
   `loaded_visualeffects` cargo test filters.
+- 2026-05-28 `P/05/01` legacy visual-effect target-payload boundary audit:
+  extended the same no-row-policy ambiguity rule to pre-rewrite Diamond/HG
+  effect rows. A five-byte target payload can itself begin with bytes that look
+  like a zero-row live GUI `G/Q` record; without loaded `visualeffects.2da`
+  `Type_FD` proof, the transport scanner now refuses to split at that shorter
+  no-target cursor when the target-width cursor also lands on a real boundary.
+  Verified with `cargo test -q -p hgbridge-proxy2 effect_target_payload --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 looping_effect --
+  --nocapture`, and the full `cargo test -q -p hgbridge-proxy2` suite.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

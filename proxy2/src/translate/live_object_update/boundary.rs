@@ -15,6 +15,13 @@ use super::{
     trigger,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportBoundary {
+    Proven(usize),
+    Ambiguous,
+    Floor(usize),
+}
+
 pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     bytes: &[u8],
     offset: usize,
@@ -24,6 +31,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     if offset >= scan_end {
         return scan_end;
     }
+    let mut scan_floor_override = None;
 
     if bytes.get(offset).copied() == Some(b'G') {
         if let Some(record_end) = gui::try_get_legacy_live_gui_record_end(bytes, offset, scan_end) {
@@ -73,6 +81,15 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     if bytes.get(offset).copied() == Some(b'U') && bytes.get(offset + 1).copied() == Some(0x05) {
+        if let Some(boundary) =
+            try_get_looping_visual_effect_update_record_end_for_transport(bytes, offset, scan_end)
+        {
+            match boundary {
+                TransportBoundary::Proven(record_end) => return record_end,
+                TransportBoundary::Ambiguous => return scan_end,
+                TransportBoundary::Floor(floor) => scan_floor_override = Some(floor),
+            }
+        }
         if let Some(record_end) =
             try_get_ee_creature_update_record_end_for_transport(bytes, offset, scan_end)
         {
@@ -179,6 +196,15 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             Some(PLACEABLE_OBJECT_TYPE) | Some(DOOR_OBJECT_TYPE)
         )
     ) {
+        if let Some(boundary) =
+            try_get_looping_visual_effect_update_record_end_for_transport(bytes, offset, scan_end)
+        {
+            match boundary {
+                TransportBoundary::Proven(record_end) => return record_end,
+                TransportBoundary::Ambiguous => return scan_end,
+                TransportBoundary::Floor(floor) => scan_floor_override = Some(floor),
+            }
+        }
         if let Some(record_end) =
             try_get_legacy_door_placeable_inline_name_update_record_end(bytes, offset, scan_end)
         {
@@ -196,7 +222,13 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         }
     }
 
-    let start = scan_end.min(offset + minimum_legacy_live_object_record_length_at(bytes, offset));
+    let start = scan_end
+        .min(offset + minimum_legacy_live_object_record_length_at(bytes, offset))
+        .max(
+            scan_floor_override
+                .map(|floor| floor.min(scan_end))
+                .unwrap_or(offset),
+        );
     let inventory_record = bytes.get(offset).copied() == Some(b'I');
     let mut suppress_inline_string_boundaries = bytes.get(offset).copied() != Some(b'I');
     if bytes.len().saturating_sub(offset) >= 10
@@ -699,6 +731,39 @@ fn missing_opcode_update_body_read_end(
 
 fn record_end_lands_on_boundary(bytes: &[u8], record_end: usize, scan_end: usize) -> bool {
     record_end == scan_end || looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+}
+
+fn try_get_looping_visual_effect_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<TransportBoundary> {
+    let candidates = effects::legacy_looping_visual_effect_update_record_end_candidates(
+        bytes, offset, scan_end,
+    )?;
+    let mut candidates = candidates;
+    if let Some(end) = effects::try_get_verified_ee_looping_visual_effect_update_record_end(
+        bytes, offset, scan_end,
+    ) {
+        if !candidates.contains(&end) {
+            candidates.push(end);
+        }
+    }
+    let floor = candidates.iter().copied().min()?;
+    let mut proven_end = None;
+    for candidate in candidates {
+        if !record_end_lands_on_boundary(bytes, candidate, scan_end) {
+            continue;
+        }
+        proven_end = match proven_end {
+            Some(existing) if existing != candidate => return Some(TransportBoundary::Ambiguous),
+            Some(existing) => Some(existing),
+            None => Some(candidate),
+        };
+    }
+    proven_end
+        .map(TransportBoundary::Proven)
+        .or(Some(TransportBoundary::Floor(floor)))
 }
 
 const LEGACY_PLACEABLE_EMPTY_NAME_PREFIX_SCAN_BYTES: usize = 8;
@@ -1648,6 +1713,82 @@ mod tests {
             LEGACY_UPDATE_HEADER_BYTES
                 + EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES
                 + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        );
+    }
+
+    #[test]
+    fn effect_target_payload_gui_prefix_is_ambiguous_without_row_policy() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+        live.extend_from_slice(&effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK.to_le_bytes());
+        live.extend_from_slice(&1u16.to_le_bytes());
+        live.extend_from_slice(&[b'A', 0x34, 0x12]);
+        let short_row_end = live.len();
+        live.extend_from_slice(&[b'G', b'Q', 0x00, 0xAA, 0xBB]);
+        let target_row_end = live.len();
+        live.extend_from_slice(&[b'D', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, short_row_end),
+            "the target payload prefix intentionally resembles an empty G/Q row"
+        );
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, target_row_end),
+            "the five-byte target payload is also followed by a real boundary"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            live.len(),
+            "without visualeffects.2da row proof, target/no-target ambiguity must stay unowned"
+        );
+    }
+
+    #[test]
+    fn effect_target_payload_boundary_uses_target_width_when_unambiguous() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+        live.extend_from_slice(&effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK.to_le_bytes());
+        live.extend_from_slice(&1u16.to_le_bytes());
+        live.extend_from_slice(&[b'A', 0x34, 0x12]);
+        let short_row_end = live.len();
+        live.extend_from_slice(&[0x44, 0x33, 0x22, 0x80, 0x66]);
+        let target_row_end = live.len();
+        live.extend_from_slice(&[b'D', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+
+        assert!(
+            !looks_like_legacy_live_object_sub_message_boundary(&live, short_row_end),
+            "the target payload prefix does not prove a no-target row boundary"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            target_row_end,
+            "a single target-payload row may claim its five-byte width only when no shorter boundary also fits"
+        );
+    }
+
+    #[test]
+    fn effect_boundary_keeps_already_ee_identity_map_width() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+        live.extend_from_slice(&effects::LOOPING_VISUAL_EFFECT_UPDATE_MASK.to_le_bytes());
+        live.extend_from_slice(&1u16.to_le_bytes());
+        live.extend_from_slice(&[b'A', 0xF3, 0x00]);
+        live.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        let ee_row_end = live.len();
+        live.extend_from_slice(&[b'D', 0x05]);
+        live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            ee_row_end,
+            "already-EE-shaped effect rows must keep the post-map boundary"
         );
     }
 

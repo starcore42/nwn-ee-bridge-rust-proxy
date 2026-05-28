@@ -153,6 +153,58 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
     }
 }
 
+pub(super) fn legacy_looping_visual_effect_update_record_end_candidates(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<Vec<usize>> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end || scan_end > bytes.len() {
+        return None;
+    }
+    if bytes.get(offset).copied()? != b'U'
+        || !matches!(
+            bytes.get(offset + 1).copied()?,
+            PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE | CREATURE_OBJECT_TYPE
+        )
+        || read_u32_le(bytes, offset + 6)? != LOOPING_VISUAL_EFFECT_UPDATE_MASK
+    {
+        return None;
+    }
+
+    let count = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES)?;
+    if count > MAX_REASONABLE_LOOPING_EFFECT_CHANGES {
+        return None;
+    }
+
+    let cursor = offset + LEGACY_UPDATE_HEADER_BYTES + 2;
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return legacy_looping_visual_effect_entries_end_with_rows(
+            bytes, cursor, count, scan_end, &rows,
+        )
+        .map(|end| vec![end]);
+    }
+
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(end) = legacy_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0) {
+        candidates.push(end);
+    }
+    if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+        if let Some(end) = legacy_looping_visual_effect_entries_end(
+            bytes,
+            cursor,
+            count,
+            scan_end,
+            LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
+        ) {
+            if !candidates.contains(&end) {
+                candidates.push(end);
+            }
+        }
+    }
+
+    (!candidates.is_empty()).then_some(candidates)
+}
+
 fn parse_looping_visual_effect_update(
     bytes: &[u8],
     offset: usize,
@@ -333,6 +385,54 @@ fn try_get_verified_ee_looping_visual_effect_entries_end(
     }
     if cursor > scan_end {
         return None;
+    }
+    Some(cursor)
+}
+
+fn legacy_looping_visual_effect_entries_end(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    scan_end: usize,
+    target_payload_bytes: usize,
+) -> Option<usize> {
+    for _ in 0..usize::from(count) {
+        let change_opcode = *bytes.get(cursor)?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        read_u16_le(bytes, cursor + 1)?;
+        cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
+        if target_payload_bytes != 0 {
+            cursor = cursor.checked_add(target_payload_bytes)?;
+        }
+        if cursor > scan_end {
+            return None;
+        }
+    }
+    Some(cursor)
+}
+
+fn legacy_looping_visual_effect_entries_end_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    scan_end: usize,
+    rows: &[Option<usize>],
+) -> Option<usize> {
+    for _ in 0..usize::from(count) {
+        let change_opcode = *bytes.get(cursor)?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        cursor = cursor.checked_add(LOOPING_EFFECT_SHORT_ENTRY_BYTES)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(target_payload_bytes)?;
+        if cursor > scan_end {
+            return None;
+        }
     }
     Some(cursor)
 }
