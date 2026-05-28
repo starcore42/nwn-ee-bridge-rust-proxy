@@ -656,26 +656,23 @@ Current status:
   `inventory_ten_bit_group` filters, full `cargo test -q -p hgbridge-proxy2
   inventory -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
-- 2026-05-28 `P/05/01` inventory `0xD5FF` midstream fragment-cursor audit:
-  tightened the D5FF creature-equipment/state verifier so the terminal
-  fragment-tail fallback can no longer drain later live-object BOOLs from a
-  midstream compact-id D5FF record. Midstream D5FF rows now consume only the
-  decompile-owned inventory branch bits proved by the byte cursor and then hand
-  off to following records; only a D5FF row that reaches the end of the
-  live-object read window may consume the remaining terminal fragment storage.
-  Public fixture-free coverage proves a D5FF row followed by `W` owns exactly
-  the compact `0x0001` branch BOOL and leaves the next bit for later records.
-  Verified with `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture` and
-  `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
-  Follow-up hardening now gives exact terminal D5FF rows a normal candidate-bit
-  handoff, rejects sub-byte terminal residue such as a one-bit cursor shift, and
-  only allows the terminal compatibility drain when at least one full residual
-  storage byte remains after a proved D5FF byte/read-buffer shape. Public
-  coverage proves both the one-bit rejection and full-byte terminal storage
-  acceptance.
-  Remaining audit item: the terminal D5FF fallback still needs a fuller typed
-  account of the large trailing BOOL body from Diamond/EE decompiles; keep it
-  terminal-only until that row-level bit model is proven.
+- ~~2026-05-28 `P/05/01` inventory `0xD5FF` terminal fragment-cursor audit:
+  removed the terminal compatibility drain. Diamond `sub_455940` and EE
+  `sub_1407B4F70` return to the caller after the enabled inventory mask
+  branches; no decompiled post-`0x4000` terminal storage byte owner exists.
+  D5FF rows now consume only candidate bits proven by typed branch counts,
+  whether terminal or midstream; residual terminal bits are not treated as
+  inventory-owned and exact claim rejects them. For terminal legacy captures,
+  the rewrite pass trims the transport fragment storage only after the live
+  records advance with a reliable decompile-backed cursor and the final
+  rewritten payload exact-claims. Public coverage rejects one-bit and full-byte
+  D5FF reader residue, and fixture coverage now proves both Starcore5 and
+  private XP2 terminal D5FF storage rewrite to exact EE-shaped payloads instead
+  of being drained by the inventory validator. Verified with
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p
+  hgbridge-proxy2 local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact_claim
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture`,
+  and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.~~
 - ~~2026-05-26 `P/05/01` looping visual-effect update mixed-map audit: fixed
   exact ownership so a `U/* 0x00000008` row list may be all Diamond/HG short
   rows or all EE build-0x23 rows with `ObjectVisualTransformData`, but not a

@@ -3119,20 +3119,35 @@ fn hg_starc5_self_d5ff_gui_rows_seq49_rewrites_and_claims_exactly() {
 }
 
 #[test]
-fn hg_starc5_area_entry_d5ff_creature_inventory_candidate_claims_exactly() {
+fn hg_starc5_area_entry_d5ff_creature_inventory_terminal_tail_rewrites_to_exact_claim() {
     // Starcore5 driver-only 2026-05-17 area-entry capture, quarantined after
     // the live-object rewrite inserted EE creature-add visual-transform bytes
     // but before the exact validator could claim the self creature inventory
     // `I/0xD5FF` record. This fixture keeps the fix packet-family owned:
     // Diamond `sub_455940` and EE `sub_1407B4F70` both drive the inventory
     // mask branches, so the record must be parsed as typed inventory rather
-    // than relaxed as raw zlib or a generic live-object blob.
-    let payload = include_bytes!(
+    // than relaxed as raw zlib or a generic live-object blob. The terminal
+    // fragment tail is transport storage, not a D5FF reader branch: raw exact
+    // claim must reject it, then the rewrite pass trims it and proves the final
+    // EE-shaped payload.
+    let mut payload = include_bytes!(
         "../../../fixtures/live_object/hg_starc5_area_entry_d5ff_creature_inventory_20260517_rejected.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw terminal D5FF storage must not be accepted as reader-owned bits"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("typed D5FF terminal storage should be removed by the rewrite pass");
+    assert!(
+        rewrite.fragment_bits_trimmed > 0,
+        "D5FF terminal storage should be trimmed after typed cursor proof: {rewrite:?}"
     );
 
-    let _claim = super::claim_payload_if_verified(payload)
-        .expect("area-entry D5FF creature inventory stream should claim exactly");
+    let _claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten area-entry D5FF creature inventory stream should claim exactly");
 }
 
 #[test]
@@ -3972,12 +3987,25 @@ fn local_xp2_seq34_zero_mask_creature_updates_rewrite_and_lifecycle_clean() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_xp2_seq26_current_player_d5ff_inventory_consumes_terminal_fragment_tail() {
-    let payload = include_bytes!(
+fn local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact_claim() {
+    let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_seq26_lifecycle_unverified_combined_20260522.bin"
+    )
+    .to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw current-player D5FF terminal storage must not be reader-owned"
     );
-    let claim = super::claim_payload_if_verified(payload)
-        .expect("current-player D5FF inventory should own the terminal fragment tail");
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("current-player D5FF terminal storage should rewrite after typed proof");
+    assert!(
+        rewrite.fragment_bits_trimmed > 0,
+        "current-player D5FF terminal storage should be trimmed: {rewrite:?}"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten current-player D5FF inventory should claim exactly");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.creature_appearance_records, 1);
     assert_eq!(claim.creature_update_records, 1);
@@ -3990,7 +4018,7 @@ fn local_xp2_seq26_current_player_d5ff_inventory_consumes_terminal_fragment_tail
             .any(|mention| mention.opcode == b'I' && mention.object_id == 0xFFFF_FFFE)
     );
 
-    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
+    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
         .expect("preceding A/5 materializes current player before D5FF inventory");
     assert_eq!(lifecycle_claim.inventory_records, 1);
 }

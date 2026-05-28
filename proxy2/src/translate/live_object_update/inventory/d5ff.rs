@@ -29,7 +29,6 @@ const D5FF_CREATURE_STATE_RICH_CATEGORY_COUNT: usize = 3;
 const D5FF_CREATURE_STATE_RICH_FIRST_ENTRY_BYTES: usize = 8;
 const D5FF_CREATURE_STATE_RICH_SECOND_ENTRY_BYTES: usize = 7;
 const D5FF_CREATURE_STATE_EXPECTED_RICH_EQUIPMENT_ROWS: u16 = 33;
-const D5FF_MIN_TERMINAL_FRAGMENT_STORAGE_BITS: usize = 8;
 
 pub(super) fn d5ff_live_stream_object_id_is_allowed(object_id: u32) -> bool {
     // CNWSMessage/CNWMessage read this field as an OBJECTID; the stricter
@@ -216,30 +215,20 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
 
     if record_end != bytes.len() {
         // Midstream D5FF rows hand off fragment ownership exactly like other
-        // inventory records. The terminal-tail fallback below is capture
-        // evidence for a final D5FF creature-state body only; applying it to a
-        // compact-id row before another live-object submessage can silently
-        // drain the next record's BOOL cursor.
+        // inventory records. Applying terminal-style recovery before another
+        // live-object submessage can silently drain the next record's BOOL
+        // cursor.
         *bit_cursor = bit_cursor.saturating_add(candidate.bits);
         return Some(InventoryRecordClaim {
             fragment_bits: candidate.bits,
         });
     }
 
-    let extra_tail_bits = remaining_bits.checked_sub(candidate.bits)?;
-    if extra_tail_bits < D5FF_MIN_TERMINAL_FRAGMENT_STORAGE_BITS {
-        return None;
-    }
-
-    // Captured terminal D5FF rows carry a byte-packed fragment storage block
-    // after the typed inventory branches. Keep the compatibility path
-    // terminal-only and require at least one full residual storage byte so a
-    // one-bit cursor shift cannot be silently absorbed. The remaining active
-    // audit item is to split this storage into a typed row-level BOOL model.
-    *bit_cursor = fragment_bits.len();
-    Some(InventoryRecordClaim {
-        fragment_bits: remaining_bits,
-    })
+    // Diamond sub_455940 and EE sub_1407B4F70 return to the caller after the
+    // enabled inventory mask branches; neither reader has a generic terminal
+    // fragment-storage drain after 0x4000. Any terminal residual bits must be
+    // owned by branch-specific counts already reflected in candidate.bits.
+    None
 }
 
 fn advance_d5ff_ten_bit_value_groups(
@@ -451,20 +440,21 @@ mod tests {
     }
 
     #[test]
-    fn d5ff_terminal_storage_fallback_requires_full_residual_byte() {
+    fn d5ff_terminal_residual_byte_rejects_without_typed_owner() {
         let record = d5ff_standard_reader_order_record(D5FF_MASK);
 
         let mut bit_cursor = 0usize;
-        let claim = advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
-            &record,
-            0,
-            record.len(),
-            &[false, true, false, true, false, true, false, true, false],
-            &mut bit_cursor,
-        )
-        .expect("terminal D5FF storage fallback should accept a full residual byte");
-
-        assert_eq!(claim.fragment_bits, 9);
-        assert_eq!(bit_cursor, 9);
+        assert!(
+            advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
+                &record,
+                0,
+                record.len(),
+                &[false, true, false, true, false, true, false, true, false],
+                &mut bit_cursor,
+            )
+            .is_none(),
+            "terminal D5FF must not drain residual fragment bytes without a typed branch owner"
+        );
+        assert_eq!(bit_cursor, 0);
     }
 }
