@@ -3423,12 +3423,13 @@ fn normalize_legacy_static_placeable_directions(
         return Some(0);
     }
 
+    let mut candidate = payload.to_vec();
     let mut normalized = 0u32;
     let mut cursor = proof.static_rows_read_offset;
     for _ in 0..proof.static_rows_count {
-        let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
-        let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
-        let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
+        let dir_x = read_area_f32(&candidate, fragment_offset, cursor + 18)?;
+        let dir_y = read_area_f32(&candidate, fragment_offset, cursor + 22)?;
+        let dir_z = read_area_f32(&candidate, fragment_offset, cursor + 26)?;
         if static_placeable_direction_is_ee_safe(dir_x, dir_y, dir_z) {
             cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
             continue;
@@ -3446,21 +3447,23 @@ fn normalize_legacy_static_placeable_directions(
             // transform. Preserve the decompiled yaw semantics by writing a
             // canonical horizontal unit vector with the same atan2(-x, y)
             // result before the EE LoadArea reader sees the row.
-            write_area_f32(payload, fragment_offset, cursor + 18, new_x)?;
-            write_area_f32(payload, fragment_offset, cursor + 22, new_y)?;
-            write_area_f32(payload, fragment_offset, cursor + 26, new_z)?;
+            write_area_f32(&mut candidate, fragment_offset, cursor + 18, new_x)?;
+            write_area_f32(&mut candidate, fragment_offset, cursor + 22, new_y)?;
+            write_area_f32(&mut candidate, fragment_offset, cursor + 26, new_z)?;
             normalized = normalized.checked_add(1)?;
         }
         cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
     }
 
-    let repaired_proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    let repaired_proof =
+        legacy_area_source_tail_exact_read_proof(&candidate, fragment_offset, scan)?;
     if repaired_proof.static_rows_read_offset != proof.static_rows_read_offset
         || repaired_proof.static_rows_count != proof.static_rows_count
         || repaired_proof.zero_static_placeable_rows != proof.zero_static_placeable_rows
     {
         return None;
     }
+    payload.copy_from_slice(&candidate);
 
     Some(normalized)
 }
@@ -3523,75 +3526,93 @@ fn repair_module_resource_static_placeable_rows(
         cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
     }
 
+    let mut candidate = payload.to_vec();
     let mut repaired = 0u32;
     for (cursor, placeable_index) in matches {
         let placeable = static_placeables[placeable_index];
         let (dir_x, dir_y, dir_z) = static_placeable_direction_from_bearing(placeable.bearing)?;
-        let changed = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?
+        let changed = read_area_u16(&candidate, fragment_offset, cursor.checked_add(4)?)?
             != placeable.appearance
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(6)?)?,
                 placeable.x,
             )
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(10)?)?,
                 placeable.y,
             )
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(14)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(14)?)?,
                 placeable.z,
             )
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(18)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(18)?)?,
                 dir_x,
             )
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(22)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(22)?)?,
                 dir_y,
             )
             || !same_f32_bits(
-                read_area_f32(payload, fragment_offset, cursor.checked_add(26)?)?,
+                read_area_f32(&candidate, fragment_offset, cursor.checked_add(26)?)?,
                 dir_z,
             );
         write_area_u16(
-            payload,
+            &mut candidate,
             fragment_offset,
             cursor.checked_add(4)?,
             placeable.appearance,
         )?;
         write_area_f32(
-            payload,
+            &mut candidate,
             fragment_offset,
             cursor.checked_add(6)?,
             placeable.x,
         )?;
         write_area_f32(
-            payload,
+            &mut candidate,
             fragment_offset,
             cursor.checked_add(10)?,
             placeable.y,
         )?;
         write_area_f32(
-            payload,
+            &mut candidate,
             fragment_offset,
             cursor.checked_add(14)?,
             placeable.z,
         )?;
-        write_area_f32(payload, fragment_offset, cursor.checked_add(18)?, dir_x)?;
-        write_area_f32(payload, fragment_offset, cursor.checked_add(22)?, dir_y)?;
-        write_area_f32(payload, fragment_offset, cursor.checked_add(26)?, dir_z)?;
+        write_area_f32(
+            &mut candidate,
+            fragment_offset,
+            cursor.checked_add(18)?,
+            dir_x,
+        )?;
+        write_area_f32(
+            &mut candidate,
+            fragment_offset,
+            cursor.checked_add(22)?,
+            dir_y,
+        )?;
+        write_area_f32(
+            &mut candidate,
+            fragment_offset,
+            cursor.checked_add(26)?,
+            dir_z,
+        )?;
         if changed {
             repaired = repaired.checked_add(1)?;
         }
     }
 
-    let repaired_proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
+    let repaired_proof =
+        legacy_area_source_tail_exact_read_proof(&candidate, fragment_offset, scan)?;
     if repaired_proof.static_rows_read_offset != proof.static_rows_read_offset
         || repaired_proof.static_rows_count != proof.static_rows_count
         || repaired_proof.zero_static_placeable_rows != proof.zero_static_placeable_rows
     {
         return None;
     }
+    payload.copy_from_slice(&candidate);
 
     Some(repaired)
 }
@@ -4323,19 +4344,21 @@ fn drop_legacy_zero_static_placeable_trailing_rows(
     // "repair" them into semantic rows.  Instead, trim the unclaimed legacy tail
     // before emitting the exact EE packet and keep the drop explicit in the
     // rewrite summary/logs.
-    let fragment = payload.get(fragment_offset..)?.to_vec();
-    payload.truncate(HIGH_LEVEL_HEADER_BYTES.checked_add(proof.static_rows_read_offset)?);
-    payload.extend_from_slice(&fragment);
+    let mut candidate = payload.clone();
+    let fragment = candidate.get(fragment_offset..)?.to_vec();
+    candidate.truncate(HIGH_LEVEL_HEADER_BYTES.checked_add(proof.static_rows_read_offset)?);
+    candidate.extend_from_slice(&fragment);
     let new_declared = (HIGH_LEVEL_HEADER_BYTES + proof.static_rows_read_offset) as u32;
-    write_u32_le(payload, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
+    write_u32_le(&mut candidate, HIGH_LEVEL_HEADER_BYTES, new_declared)?;
 
     let new_fragment_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(proof.static_rows_read_offset)?;
-    let trimmed_scan = scan_area_tile_stream(payload, new_fragment_offset);
+    let trimmed_scan = scan_area_tile_stream(&candidate, new_fragment_offset);
     let trimmed_proof =
-        legacy_area_source_tail_exact_read_proof(payload, new_fragment_offset, &trimmed_scan)?;
+        legacy_area_source_tail_exact_read_proof(&candidate, new_fragment_offset, &trimmed_scan)?;
     if trimmed_proof.zero_static_placeable_rows != 0 || trimmed_proof.static_rows_count != 0 {
         return None;
     }
+    *payload = candidate;
 
     Some(u32::from(proof.zero_static_placeable_rows))
 }
@@ -8631,6 +8654,27 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn static_direction_normalization_rejects_later_zero_vector_without_partial_write() {
+        let (mut payload, fragment_offset, scan) = static_placeable_source_rows_payload(&[
+            (82, 10.0, 20.0, 0.0, 2.0, 0.0, 3.0),
+            (83, 30.0, 40.0, 0.0, 0.0, 0.0, 0.0),
+        ]);
+        legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("synthetic multi-row source should have an exact legacy cursor proof");
+        let original = payload.clone();
+
+        assert_eq!(
+            normalize_legacy_static_placeable_directions(&mut payload, fragment_offset, &scan),
+            None,
+            "one unrepairable static direction row must reject the whole staged normalization"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected static-direction normalization must leave earlier rows untouched"
+        );
+    }
+
+    #[test]
     fn square_dimension_repair_commits_only_after_exact_tail_proof() {
         let (mut exact, fragment_offset) = fixed_name_square_dimension_payload();
         let layout = area_static_layout(&exact, fragment_offset).expect("synthetic area layout");
@@ -8775,6 +8819,63 @@ mod public_static_direction_tests {
                 proof.static_rows_read_offset + 26
             ),
             Some(expected_z)
+        );
+    }
+
+    #[test]
+    fn module_static_row_repair_rejects_nonfinite_bearing_without_partial_write() {
+        let placeables = vec![
+            ModuleAreaPlaceable {
+                tag: "valid_bearing_chest".to_string(),
+                appearance: 82,
+                x: 10.0,
+                y: 20.0,
+                z: 0.0,
+                bearing: std::f32::consts::FRAC_PI_2,
+                static_object: true,
+                useable: true,
+                trap_flag: false,
+                trap_disarmable: false,
+                lockable: true,
+                locked: true,
+            },
+            ModuleAreaPlaceable {
+                tag: "invalid_bearing_chest".to_string(),
+                appearance: 83,
+                x: 30.0,
+                y: 40.0,
+                z: 0.0,
+                bearing: f32::NAN,
+                static_object: true,
+                useable: true,
+                trap_flag: false,
+                trap_disarmable: false,
+                lockable: true,
+                locked: true,
+            },
+        ];
+        let info = module_info_with_placeables(placeables);
+        let (mut payload, fragment_offset, scan) = static_placeable_source_rows_payload(&[
+            (82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0),
+            (83, 30.0, 40.0, 0.0, 0.0, 0.0, 0.0),
+        ]);
+        legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("synthetic multi-row source should have an exact legacy cursor proof");
+        let original = payload.clone();
+
+        assert_eq!(
+            repair_module_resource_static_placeable_rows(
+                &mut payload,
+                fragment_offset,
+                &scan,
+                &info,
+            ),
+            None,
+            "one module row without a finite bearing must reject the whole staged static repair"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected module static-row repair must not partially rewrite earlier rows"
         );
     }
 

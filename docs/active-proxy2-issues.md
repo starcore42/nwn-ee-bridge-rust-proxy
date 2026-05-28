@@ -930,6 +930,18 @@ Current status:
   untouched. Verified with `cargo test -q -p hgbridge-proxy2
   compact_post_tile_tail_repair_requires_exact_fragment_cursor --
   --nocapture`.
+- 2026-05-28 `P/04/01` static-row staged-repair audit: hardened the remaining
+  static-placeable row mutators so direction normalization, module GIT-backed
+  appearance/position/bearing repair, and zero-count tail dropping commit only
+  after a candidate buffer preserves the exact decompile-owned post-tile source
+  cursor. Public fixture-free regressions now prove that an unrepairable later
+  zero direction vector or non-finite module bearing rejects the whole repair
+  without partially rewriting earlier static rows. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  static_direction_normalization_rejects_later_zero_vector_without_partial_write
+  -- --nocapture` and `cargo test -q -p hgbridge-proxy2
+  module_static_row_repair_rejects_nonfinite_bearing_without_partial_write --
+  --nocapture`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity
@@ -965,6 +977,18 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 full_appearance --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   -- --nocapture`.
+- 2026-05-28 `P/05/01` pending seq31 live-object exact-claim regression:
+  during the P/04 static-row staged-repair run, the unrelated fixture test
+  `pending_seq31_stream_rewrites_to_exact_live_object_claim` failed both in the
+  full suite and in isolation after the existing staged live-object rewrite
+  pipeline reached the final exact claim. Treat this as a generalized pending
+  add/update stream boundary or fragment-ownership issue, not as a fixture-only
+  failure. Next pass should dump `target/pending-seq31-steps`, identify the
+  first unclaimed record after each typed rewrite pass, and prove the Diamond
+  and EE cursor contract before adjusting the live-object boundary machinery.
+  Evidence: `cargo test -q -p hgbridge-proxy2
+  pending_seq31_stream_rewrites_to_exact_live_object_claim -- --nocapture`
+  failed at `proxy2/src/translate/live_object.rs:4804`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
