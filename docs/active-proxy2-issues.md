@@ -667,6 +667,12 @@ Current status:
   the compact `0x0001` branch BOOL and leaves the next bit for later records.
   Verified with `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture` and
   `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+  Follow-up hardening now gives exact terminal D5FF rows a normal candidate-bit
+  handoff, rejects sub-byte terminal residue such as a one-bit cursor shift, and
+  only allows the terminal compatibility drain when at least one full residual
+  storage byte remains after a proved D5FF byte/read-buffer shape. Public
+  coverage proves both the one-bit rejection and full-byte terminal storage
+  acceptance.
   Remaining audit item: the terminal D5FF fallback still needs a fuller typed
   account of the large trailing BOOL body from Diamond/EE decompiles; keep it
   terminal-only until that row-level bit model is proven.
