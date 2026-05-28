@@ -562,6 +562,30 @@ fn legacy_low_tail_door_placeable_rewrite_requires_bounded_suffix() {
 }
 
 #[test]
+fn legacy_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_bit() {
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = door_placeable_low_tail_update_live_bytes(object_type, &[0x34, 0x12, 0, 0]);
+        let mut bits = scalar_door_placeable_update_bits();
+        bits.push(true);
+        let mut payload = live_object_payload_with_bits(&live, bits);
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "terminal low-tail object type {object_type:#04X} must not trim an unowned fragment bit"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected terminal low-tail repair must leave the source payload untouched"
+        );
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "terminal low-tail residual bits must remain unclaimed"
+        );
+    }
+}
+
+#[test]
 fn legacy_trigger_update_tail_rewrites_to_position_only_exact_shape() {
     // Trigger updates use the shared Diamond/EE generic position cursor:
     // mask 0x0001 owns three WORD read-buffer fields plus two CNW fragment
@@ -634,6 +658,26 @@ fn legacy_trigger_update_rewrite_requires_tail_and_position_bits() {
     assert!(
         super::rewrite_update_records_payload_if_possible(&mut short_bits_payload).is_none(),
         "the trigger position branch owns exactly two CNW fragment bits"
+    );
+}
+
+#[test]
+fn legacy_trigger_update_rewrite_rejects_terminal_extra_fragment_bit() {
+    let live = trigger_update_live_bytes(0xFFFF_FFF3, &[0xAA, 0xBB, 0xCC]);
+    let mut payload = live_object_payload_with_bits(&live, vec![true, false, true]);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "terminal legacy trigger update must not trim an unowned third fragment bit"
+    );
+    assert_eq!(
+        payload, original,
+        "rejected terminal trigger repair must leave the source payload untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "terminal trigger residual bits must remain unclaimed"
     );
 }
 

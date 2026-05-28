@@ -110,10 +110,13 @@ pub(super) fn parse_legacy_trigger_update_for_ee(
     // CNW fragment bits. Keep this deliberately exact so any future trigger
     // mask/tail shape is quarantined until researched instead of guessing at a
     // shifted bit cursor.
+    let remaining_fragment_bits = bits.len().saturating_sub(bit_cursor);
+    let terminal_record = record_end == bytes.len();
     if raw_mask != LEGACY_HG_TRIGGER_UPDATE_MASK_WITH_POSITION_TAIL
         || translated_mask != LEGACY_UPDATE_POSITION_MASK
         || legacy_record_end != record_end
-        || bits.len().saturating_sub(bit_cursor) < LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        || remaining_fragment_bits < LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        || (terminal_record && remaining_fragment_bits != LEGACY_UPDATE_POSITION_FRAGMENT_BITS)
     {
         return None;
     }

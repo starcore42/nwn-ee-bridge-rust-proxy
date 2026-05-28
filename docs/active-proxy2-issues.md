@@ -879,6 +879,22 @@ Current status:
   three-byte tails unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
   low_tail -- --nocapture` and `cargo test -q -p hgbridge-proxy2
   door_placeable -- --nocapture`.
+- 2026-05-29 `P/05/01` terminal trigger/low-tail residual-bit audit: hardened
+  the legacy `U/7 0xFFFF_FFF3` trigger repair and shared `U/9`/`U/10`
+  no-name low-tail repairs so a terminal record may not use the outer
+  live-object fragment trim to discard unowned residual source bits. Midstream
+  records may still hand off later fragment bits to the following proven
+  record, but a terminal trigger update must own exactly the two decompiled
+  position BOOLs, and a terminal name-free door/placeable low-tail repair must
+  end exactly after the typed position/orientation/state bits plus any proven
+  Diamond-only low-tail BOOL removals. Public regressions now prove one extra
+  terminal fragment bit rejects the repair and leaves the payload unchanged.
+  Name-bearing low-tail updates remain covered by the separate legacy
+  name/drop cursor path. Verified with
+  `cargo test -q -p hgbridge-proxy2 terminal_extra_fragment_bit --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 trigger_update --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 low_tail --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
