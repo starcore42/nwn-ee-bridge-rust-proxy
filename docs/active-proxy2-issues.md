@@ -920,6 +920,16 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 square_dimension -- --nocapture`, the
   existing BW167 positive rewrite filter, `cargo fmt --all --check`,
   `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/04/01` compact post-tile repair cursor audit: tightened the
+  module-backed compact transition/map-note plus sound-tail repair so a staged
+  candidate must preserve the original area layout, dimensions, tile count, and
+  tile-end cursor before the exact legacy post-tile source proof can commit it.
+  Public synthetic coverage now proves a compact direct-label transition row
+  plus sound row owns exactly the two transition label bits and six sound BOOLs;
+  one extra fragment bit rejects the repair and leaves the source payload
+  untouched. Verified with `cargo test -q -p hgbridge-proxy2
+  compact_post_tile_tail_repair_requires_exact_fragment_cursor --
+  --nocapture`.
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity

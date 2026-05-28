@@ -2247,8 +2247,10 @@ fn repair_compact_post_tile_tail_for_ee(
         .is_some()
         {
             let candidate_scan = scan_area_tile_stream(&candidate, fragment_offset);
-            if candidate_scan.valid
-                && candidate_scan.tile_end_read_offset == scan.tile_end_read_offset
+            // Compact post-tile repair rewrites list counts/strings only.  The
+            // inferred module rows must not be allowed to change which tile
+            // bytes the decompiled area reader owned before the tail handoff.
+            if repaired_compact_post_tile_scan_matches(scan, &candidate_scan)
                 && legacy_area_source_tail_exact_read_proof(
                     &candidate,
                     fragment_offset,
@@ -2262,6 +2264,22 @@ fn repair_compact_post_tile_tail_for_ee(
         }
     }
     false
+}
+
+fn repaired_compact_post_tile_scan_matches(
+    source_scan: &AreaTileStreamScan,
+    repaired_scan: &AreaTileStreamScan,
+) -> bool {
+    repaired_scan.valid
+        && repaired_scan.layout.width_read_offset == source_scan.layout.width_read_offset
+        && repaired_scan.layout.height_read_offset == source_scan.layout.height_read_offset
+        && repaired_scan.layout.tileset_read_offset == source_scan.layout.tileset_read_offset
+        && repaired_scan.layout.first_tile_read_offset == source_scan.layout.first_tile_read_offset
+        && repaired_scan.width == source_scan.width
+        && repaired_scan.packet_height == source_scan.packet_height
+        && repaired_scan.inferred_height == source_scan.inferred_height
+        && repaired_scan.tile_count == source_scan.tile_count
+        && repaired_scan.tile_end_read_offset == source_scan.tile_end_read_offset
 }
 
 fn repair_compact_map_note_tail_for_ee(
@@ -7170,6 +7188,99 @@ mod public_static_direction_tests {
         (payload, fragment_offset, scan)
     }
 
+    fn compact_map_note_sound_tail_payload(
+        extra_fragment_bits: usize,
+    ) -> (Vec<u8>, usize, AreaTileStreamScan, ModuleAreaResourceInfo) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0); // area CExoString length
+        let name_end = AREA_NAME_READ_OFFSET + EE_CEXO_STRING_LENGTH_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 1);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, "ttr01");
+
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 0x000C);
+        payload.extend_from_slice(&[0, 0]);
+
+        push_u32(&mut payload, 0); // compact transition/map-note count placeholder
+        push_u32(&mut payload, 0x8000_0099);
+        push_f32(&mut payload, 3.0);
+        push_f32(&mut payload, 4.0);
+        push_f32(&mut payload, 0.0);
+        let label = b"soundpin";
+        push_u32(&mut payload, 0); // compact zero-length string header
+        payload.extend_from_slice(label);
+        push_u32(&mut payload, 0); // map-pin rows after repaired transition rows
+        push_u16(&mut payload, 1); // sound rows
+        push_test_sound_row(&mut payload, "al_mg_portal1");
+        push_u16(&mut payload, 0); // light-placeable rows
+        push_u16(&mut payload, 0); // static-placeable rows
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let mut payload_bits =
+            vec![false; LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS];
+        payload_bits.extend_from_slice(&[true, false]); // visible direct transition label
+        payload_bits.extend_from_slice(&[false; 6]); // sound-object BOOLs
+        payload_bits.extend(std::iter::repeat(false).take(extra_fragment_bits));
+        let fragment =
+            encode_cnw_msb_payload_bits(&payload_bits).expect("test fragment should encode");
+        payload.extend_from_slice(&fragment);
+
+        let info = ModuleAreaResourceInfo {
+            resref: "testarea".to_string(),
+            name: "Test Area".to_string(),
+            width: 1,
+            height: 1,
+            tileset: "ttr01".to_string(),
+            tiles: Vec::new(),
+            map_notes: vec![ModuleAreaMapNote {
+                text: "soundpin".to_string(),
+                x: 3.0,
+                y: 4.0,
+                z: 0.0,
+            }],
+            sounds: vec![ModuleAreaSound {
+                tag: "test_sound".to_string(),
+                x: 3.0,
+                y: 4.0,
+                z: 0.0,
+                resrefs: vec!["al_mg_portal1".to_string()],
+            }],
+            placeables: Vec::new(),
+        };
+
+        let scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(scan.valid);
+        assert_eq!(scan.width, 1);
+        assert_eq!(scan.packet_height, 1);
+        (payload, fragment_offset, scan, info)
+    }
+
     fn real_area_light_static_placeable_payload(
         light_object_id: u32,
     ) -> (Vec<u8>, usize, AreaTileStreamScan) {
@@ -8259,6 +8370,52 @@ mod public_static_direction_tests {
         assert_eq!(
             shifted_payload, original_shifted_payload,
             "failed sound-count repair must leave the byte row untouched"
+        );
+    }
+
+    #[test]
+    fn compact_post_tile_tail_repair_requires_exact_fragment_cursor() {
+        let (mut payload, fragment_offset, scan, info) = compact_map_note_sound_tail_payload(0);
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan).is_none(),
+            "compact map-note tails are unclaimed until the transition count and CExoString header are repaired"
+        );
+        assert!(repair_compact_post_tile_tail_for_ee(
+            &mut payload,
+            fragment_offset,
+            &scan,
+            &info,
+        ));
+        let repaired_scan = scan_area_tile_stream(&payload, fragment_offset);
+        assert!(repaired_compact_post_tile_scan_matches(
+            &scan,
+            &repaired_scan
+        ));
+        let proof =
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &repaired_scan)
+                .expect("repaired compact post-tile tail should consume the exact source cursor");
+        assert_eq!(proof.sound_count, 1);
+        assert_eq!(proof.static_rows_count, 0);
+        assert_eq!(
+            area_payload_fragment_bits_available(&payload, fragment_offset),
+            Some(LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS + 2 + 6)
+        );
+
+        let (mut shifted_payload, shifted_fragment_offset, shifted_scan, shifted_info) =
+            compact_map_note_sound_tail_payload(1);
+        let original_shifted_payload = shifted_payload.clone();
+        assert!(
+            !repair_compact_post_tile_tail_for_ee(
+                &mut shifted_payload,
+                shifted_fragment_offset,
+                &shifted_scan,
+                &shifted_info,
+            ),
+            "compact post-tile repair must reject a tail with one unowned transition/sound fragment bit"
+        );
+        assert_eq!(
+            shifted_payload, original_shifted_payload,
+            "failed compact post-tile repair must leave the source payload untouched"
         );
     }
 
