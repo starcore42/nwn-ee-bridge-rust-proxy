@@ -93,6 +93,24 @@ fn trigger_add_live_bytes(vertex_count: u8) -> Vec<u8> {
     live
 }
 
+fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A'];
+    live.extend_from_slice(&0x8001_69DCu32.to_le_bytes());
+    live.extend_from_slice(&0x10u32.to_le_bytes());
+    live.extend_from_slice(&0x01u32.to_le_bytes()); // base item with model type 2.
+    for part in [0x17u16, 0x3Fu16, 0x17u16] {
+        live.extend_from_slice(&part.to_le_bytes());
+    }
+    live.push(0);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live.extend_from_slice(&0x0000_380Au32.to_le_bytes()); // token-shaped item name.
+    live.extend_from_slice(&0x0000_0670u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&[0, 0, 0xFF]);
+    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live
+}
+
 fn door_state_update_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_1234u32.to_le_bytes());
@@ -616,6 +634,103 @@ fn trigger_add_geometry_rejects_truncated_vertex_rows() {
         super::claim_payload_if_verified(&payload).is_none(),
         "the trigger vertex count owns complete XYZ FLOAT triples only"
     );
+}
+
+#[test]
+fn top_level_item_add_token_name_repair_rewrites_selector_prefix_only() {
+    // Top-level visible-equipment item adds use the same item body reader as
+    // nested P/5 equipment rows. EE/Diamond read the item-name selector before
+    // the active-property BOOLs, so a byte-proven token name must resize only
+    // that selector prefix before exact validation advances the final cursor.
+    let live = top_level_model_type2_token_name_item_add_live_bytes();
+    let mut payload = live_object_payload_with_bits(&live, vec![false; 6]);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "stale direct-name bits must not exact-claim a token-shaped item add"
+    );
+
+    let rewrite = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload)
+        .expect("token-shaped item add should repair stale name selector bits");
+    assert_eq!(rewrite.add_records_repaired, 1);
+    assert_eq!(rewrite.bits_inserted, 2);
+    assert_eq!(rewrite.bits_removed, 0);
+
+    let claim =
+        super::claim_payload_if_verified(&payload).expect("repaired item add should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[true, true, false, false, false, false, false, false],
+        "repair must materialize token selector bits before active-property bits"
+    );
+}
+
+#[test]
+fn update_rewrite_does_not_repeat_repair_exact_top_level_item_add() {
+    // The update-family pass can run after the add-name pass on mixed streams.
+    // Once a top-level visible-equipment add already validates at the current
+    // cursor, the update pass must advance over it before trying legacy item
+    // expansion; otherwise it can insert a second active-property/name repair
+    // and shift the following live-object fragment cursor.
+    let mut live = top_level_model_type2_token_name_item_add_live_bytes();
+    live.extend_from_slice(&[b'U', super::CREATURE_OBJECT_TYPE]);
+    let exact_item_bits = vec![true, true, false, false, false, false, false, false];
+    let mut payload = live_object_payload_with_bits(&live, exact_item_bits);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "trailing truncated update keeps the mixed stream from exact-claiming"
+    );
+
+    let before = payload.clone();
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "no update-family rewrite is valid after the exact add and truncated update"
+    );
+    assert_eq!(
+        payload, before,
+        "an already exact top-level item add must not be repaired a second time"
+    );
+}
+
+#[test]
+fn update_rewrite_can_repair_top_level_item_add_name_bits_midstream() {
+    // Mixed live-object streams can expose add records only after an update
+    // pass repairs earlier records. The same byte-proven item-name selector
+    // repair used by the add-name pass must therefore be available here too.
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'W', 0x00, 0x0E]);
+    live.extend_from_slice(&top_level_model_type2_token_name_item_add_live_bytes());
+    live.extend_from_slice(&[b'W', 0x01, 0x0E]);
+    let mut payload = live_object_payload_with_bits(&live, vec![false; 6]);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("update pass should repair the stale top-level item-add selector bits");
+    assert_eq!(rewrite.bits_inserted, 2);
+    assert_eq!(rewrite.bits_removed, 0);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[true, true, false, false, false, false, false, false],
+        "update pass must rewrite only the item-name selector prefix"
+    );
+    let claim =
+        super::claim_payload_if_verified(&payload).expect("repaired mixed stream should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.world_status_records, 2);
 }
 
 #[test]

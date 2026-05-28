@@ -1521,6 +1521,73 @@ pub(super) fn advance_verified_ee_item_add_record(
     false
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(super) struct ItemAddNameFragmentBitRepair {
+    pub next_bit_cursor: usize,
+    pub bits_inserted: usize,
+    pub bits_removed: usize,
+}
+
+pub(super) fn repair_verified_ee_item_add_name_fragment_bits(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: usize,
+) -> Option<ItemAddNameFragmentBitRepair> {
+    let original_fragment_bits = fragment_bits.clone();
+    let mut accepted: Option<(Vec<bool>, ItemAddNameFragmentBitRepair)> = None;
+
+    for record in parse_legacy_item_add_record_candidates(bytes, offset, record_end) {
+        if record.name_fragment_proof == LegacyItemNameFragmentProof::None
+            || record
+                .name_fragment_proof
+                .matches(&original_fragment_bits, bit_cursor)
+            || !record.ee_extra_byte_inserts.is_empty()
+        {
+            continue;
+        }
+
+        let mut trial_bits = original_fragment_bits.clone();
+        let delta = apply_item_name_fragment_proof_rewrite(
+            &mut trial_bits,
+            bit_cursor,
+            record.name_fragment_proof,
+        )?;
+        if trial_bits == original_fragment_bits {
+            continue;
+        }
+
+        let mut probe_cursor = bit_cursor;
+        if !advance_verified_ee_item_add_record(
+            bytes,
+            offset,
+            record_end,
+            &trial_bits,
+            &mut probe_cursor,
+        ) {
+            continue;
+        }
+
+        let repair = ItemAddNameFragmentBitRepair {
+            next_bit_cursor: probe_cursor,
+            bits_inserted: delta.inserted,
+            bits_removed: delta.removed,
+        };
+        if let Some((existing_bits, existing_repair)) = &accepted {
+            if existing_bits != &trial_bits || existing_repair != &repair {
+                return None;
+            }
+        } else {
+            accepted = Some((trial_bits, repair));
+        }
+    }
+
+    let (trial_bits, repair) = accepted?;
+    *fragment_bits = trial_bits;
+    Some(repair)
+}
+
 pub(super) fn insert_ee_item_add_extras_for_ee(
     bytes: &mut Vec<u8>,
     offset: usize,

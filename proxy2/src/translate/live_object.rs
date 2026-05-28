@@ -5182,7 +5182,6 @@ mod embedded_nul_placeable_name_tests {
 
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod local_diamond_live_object_tests {
-    use super::*;
     use crate::translate::live_object_update as live_update;
 
     #[test]
@@ -5192,16 +5191,13 @@ mod local_diamond_live_object_tests {
         )
         .to_vec();
 
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
-        let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
-        let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
+        assert!(
+            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                &mut payload,
+                None,
+            ),
+            "BW167 demo initial live-object stream must rewrite through the bounded exact adapter"
+        );
 
         let claim = live_update::claim_payload_if_verified(&payload)
             .expect("local Diamond bw167demo initial live-object stream must be exact-claimable");

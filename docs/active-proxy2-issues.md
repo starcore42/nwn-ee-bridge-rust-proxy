@@ -977,18 +977,24 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 full_appearance --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   -- --nocapture`.
-- 2026-05-28 `P/05/01` pending seq31 live-object exact-claim regression:
-  during the P/04 static-row staged-repair run, the unrelated fixture test
-  `pending_seq31_stream_rewrites_to_exact_live_object_claim` failed both in the
-  full suite and in isolation after the existing staged live-object rewrite
-  pipeline reached the final exact claim. Treat this as a generalized pending
-  add/update stream boundary or fragment-ownership issue, not as a fixture-only
-  failure. Next pass should dump `target/pending-seq31-steps`, identify the
-  first unclaimed record after each typed rewrite pass, and prove the Diamond
-  and EE cursor contract before adjusting the live-object boundary machinery.
-  Evidence: `cargo test -q -p hgbridge-proxy2
-  pending_seq31_stream_rewrites_to_exact_live_object_claim -- --nocapture`
-  failed at `proxy2/src/translate/live_object.rs:4804`.
+- ~~2026-05-28 `P/05/01` pending seq31 live-object exact-claim regression:
+  resolved 2026-05-28. The first unclaimed rows were top-level `A` item adds
+  whose read-buffer body matched the visible-equipment item body and was already
+  EE-shaped (widened model parts plus EE visual transform), and whose item name
+  bytes proved the locstring-token branch, but whose CNW fragment stream still
+  held the shorter direct-name selector before the active-property BOOLs. Reused
+  the decompile-backed item-name selector rewrite for top-level item adds, and
+  made the update pass skip already exact add rows before legacy item expansion
+  while refusing later cursor mutations after an unproven add cursor. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  top_level_item_add_token_name_repair_rewrites_selector_prefix_only --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  update_rewrite_does_not_repeat_repair_exact_top_level_item_add --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  update_rewrite_can_repair_top_level_item_add_name_bits_midstream --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2
+  pending_seq31_stream_rewrites_to_exact_live_object_claim --
+  --nocapture`.~~
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
