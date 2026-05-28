@@ -15,6 +15,8 @@ const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const VFX_DUR_LOWLIGHTVISION_ROW: u16 = 0x00F3;
 const CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES: usize = 5;
 const MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: usize = 1;
+const EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN: usize =
+    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES: [u8; 2] = [0, 0];
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_WOE_BRIDGE_BLOCK_BYTES: [u8; 11] =
     [0, 0, 0, 0, 0x80, 0x3F, 1, 0, 0, 0, 0];
@@ -531,36 +533,18 @@ pub(super) fn try_get_ee_creature_update_c408_record_end(
         return None;
     }
 
-    let count = usize::from(read_u16_le(bytes, offset + 10)?);
+    let count = read_u16_le(bytes, offset + 10)?;
     if count == 0 || count > 256 {
         return None;
     }
 
-    let mut cursor = offset.checked_add(12)?;
-    for _ in 0..count {
-        if scan_end.saturating_sub(cursor)
-            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        {
-            return None;
-        }
-        let change_opcode = bytes.get(cursor).copied()?;
-        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
-            return None;
-        }
-        cursor = cursor.checked_add(3)?;
-        let after_visual_transform = cursor
-            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            bytes,
-            cursor,
-            after_visual_transform,
-        ) {
-            return None;
-        }
-        cursor = after_visual_transform;
-    }
-
-    cursor = cursor.checked_add(8)?;
+    let cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        offset.checked_add(12)?,
+        count,
+        scan_end,
+    )?;
+    let cursor = cursor.checked_add(8)?;
     (cursor <= scan_end).then_some(cursor)
 }
 
@@ -584,35 +568,17 @@ pub(super) fn try_get_ee_creature_update_4008_record_end(
         return None;
     }
 
-    let count = usize::from(read_u16_le(bytes, offset + 10)?);
+    let count = read_u16_le(bytes, offset + 10)?;
     if count == 0 || count > 256 {
         return None;
     }
 
-    let mut cursor = offset.checked_add(12)?;
-    for _ in 0..count {
-        if scan_end.saturating_sub(cursor)
-            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        {
-            return None;
-        }
-        let change_opcode = bytes.get(cursor).copied()?;
-        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
-            return None;
-        }
-        cursor = cursor.checked_add(3)?;
-        let after_visual_transform = cursor
-            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            bytes,
-            cursor,
-            after_visual_transform,
-        ) {
-            return None;
-        }
-        cursor = after_visual_transform;
-    }
-
+    let cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        offset.checked_add(12)?,
+        count,
+        scan_end,
+    )?;
     (cursor <= scan_end).then_some(cursor)
 }
 
@@ -640,35 +606,113 @@ pub(super) fn try_get_ee_creature_update_8008_record_end(
         return None;
     }
 
-    let count = usize::from(read_u16_le(bytes, offset + 10)?);
+    let count = read_u16_le(bytes, offset + 10)?;
     if count == 0 || count > 256 {
         return None;
     }
 
-    let mut cursor = offset.checked_add(12)?;
-    for _ in 0..count {
-        if scan_end.saturating_sub(cursor)
-            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        {
-            return None;
-        }
+    let cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        offset.checked_add(12)?,
+        count,
+        scan_end,
+    )?;
+    (cursor <= scan_end).then_some(cursor)
+}
+
+fn try_get_ee_creature_status_effect_entries_end(
+    bytes: &[u8],
+    cursor: usize,
+    count: u16,
+    scan_end: usize,
+) -> Option<usize> {
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return try_get_ee_creature_status_effect_entries_end_with_rows(
+            bytes, cursor, count, scan_end, &rows,
+        );
+    }
+    try_get_ee_creature_status_effect_entries_end_without_2da(bytes, cursor, count, scan_end)
+}
+
+fn try_get_ee_creature_status_effect_entries_end_without_2da(
+    bytes: &[u8],
+    cursor: usize,
+    count: u16,
+    scan_end: usize,
+) -> Option<usize> {
+    let no_target_end = try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
+        bytes, cursor, count, scan_end, 0,
+    );
+    let target_end =
+        if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+            try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
+                bytes,
+                cursor,
+                count,
+                scan_end,
+                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
+            )
+        } else {
+            None
+        };
+
+    match (no_target_end, target_end) {
+        (Some(no_target_end), Some(target_end)) if no_target_end != target_end => None,
+        (Some(end), _) | (_, Some(end)) => Some(end),
+        (None, None) => None,
+    }
+}
+
+fn try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    scan_end: usize,
+    target_payload_bytes: usize,
+) -> Option<usize> {
+    for _ in 0..usize::from(count) {
         let change_opcode = bytes.get(cursor).copied()?;
         if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
             return None;
         }
-        cursor = cursor.checked_add(3)?;
-        let after_visual_transform = cursor
-            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            bytes,
-            cursor,
-            after_visual_transform,
-        ) {
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > scan_end
+            || !super::visual_transform::has_ee_object_visual_transform_identity_at(
+                bytes, cursor, scan_end,
+            )
+        {
             return None;
         }
-        cursor = after_visual_transform;
+        cursor = cursor.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
     }
+    (cursor <= scan_end).then_some(cursor)
+}
 
+fn try_get_ee_creature_status_effect_entries_end_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    scan_end: usize,
+    rows: &[Option<usize>],
+) -> Option<usize> {
+    for _ in 0..usize::from(count) {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > scan_end
+            || !super::visual_transform::has_ee_object_visual_transform_identity_at(
+                bytes, cursor, scan_end,
+            )
+        {
+            return None;
+        }
+        cursor = cursor.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+    }
     (cursor <= scan_end).then_some(cursor)
 }
 
@@ -771,34 +815,17 @@ fn try_get_ee_creature_status_effect_suffix_record_end(
     if status_start + 2 > scan_end {
         return None;
     }
-    let count = usize::from(read_u16_le(bytes, status_start)?);
+    let count = read_u16_le(bytes, status_start)?;
     if count == 0 || count > 256 {
         return None;
     }
 
-    let mut cursor = status_start.checked_add(2)?;
-    for _ in 0..count {
-        if scan_end.saturating_sub(cursor)
-            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        {
-            return None;
-        }
-        let change_opcode = bytes.get(cursor).copied()?;
-        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
-            return None;
-        }
-        cursor = cursor.checked_add(3)?;
-        let after_visual_transform = cursor
-            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            bytes,
-            cursor,
-            after_visual_transform,
-        ) {
-            return None;
-        }
-        cursor = after_visual_transform;
-    }
+    let mut cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        status_start.checked_add(2)?,
+        count,
+        scan_end,
+    )?;
 
     cursor = cursor.checked_add(extra_read_bytes_before_scalar_suffix)?;
     cursor = cursor.checked_add(8)?;
@@ -859,94 +886,84 @@ pub(super) fn insert_creature_update_status_effect_identity_maps_for_ee(
         if count == 0 || count > 256 {
             continue;
         }
-        let mut cursor = state.read_cursor.checked_add(2)?;
-        let mut insert_offsets = Vec::with_capacity(usize::from(count));
-        let mut already_ee_shaped = false;
-        for _ in 0..usize::from(count) {
-            if (*record_end).saturating_sub(cursor) < 3 {
-                insert_offsets.clear();
-                break;
-            }
-            cursor = cursor.checked_add(3)?;
-            if super::visual_transform::has_ee_object_visual_transform_identity_at(
-                bytes,
-                cursor,
-                *record_end,
-            ) {
-                cursor = cursor.checked_add(
-                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
-                )?;
-                already_ee_shaped = true;
-                continue;
-            }
-            insert_offsets.push(cursor);
-        }
-        if insert_offsets.is_empty() || already_ee_shaped {
+        let insert_offset_plans = legacy_creature_status_effect_identity_map_insert_plans(
+            bytes,
+            state.read_cursor.checked_add(2)?,
+            count,
+            *record_end,
+        );
+        if insert_offset_plans.is_empty() {
             continue;
         }
-        if debug_creature_update_cursor_trace_enabled(raw_mask) {
-            eprintln!(
-                "live-object creature status-effect identity-map rewrite trial: raw_mask=0x{raw_mask:08X} insert_offsets={insert_offsets:?}"
-            );
-        }
 
-        let mut candidate = bytes.clone();
-        let mut candidate_record_end = *record_end;
-        for insert_at in insert_offsets.iter().rev().copied() {
-            candidate.splice(
-                insert_at..insert_at,
-                super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
-            );
-            candidate_record_end = candidate_record_end.checked_add(
-                super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
-            )?;
-        }
+        for insert_offsets in insert_offset_plans {
+            if debug_creature_update_cursor_trace_enabled(raw_mask) {
+                eprintln!(
+                    "live-object creature status-effect identity-map rewrite trial: raw_mask=0x{raw_mask:08X} insert_offsets={insert_offsets:?}"
+                );
+            }
 
-        let mut candidate_bit_cursor = bit_cursor;
-        let exact_full_record = advance_verified_noop_creature_update_record_exact_cursor(
-            &candidate,
-            offset,
-            candidate_record_end,
-            fragment_bits,
-            &mut candidate_bit_cursor,
-        );
-        let exact_before_adjacent_span = !exact_full_record
-            && matches!(
-                raw_mask,
-                LEGACY_CREATURE_UPDATE_3967_MASK
-                    | LEGACY_CREATURE_UPDATE_C40F_MASK
-                    | LEGACY_CREATURE_UPDATE_C44F_MASK
-            )
-            && creature_update_record_valid_before_adjacent_fragment_span(
+            let mut candidate = bytes.clone();
+            let mut candidate_record_end = *record_end;
+            for insert_at in insert_offsets.iter().rev().copied() {
+                candidate.splice(
+                    insert_at..insert_at,
+                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+                );
+                candidate_record_end = candidate_record_end
+                    .checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+            }
+
+            let mut candidate_bit_cursor = bit_cursor;
+            let exact_full_record = advance_verified_noop_creature_update_record_exact_cursor(
                 &candidate,
                 offset,
                 candidate_record_end,
                 fragment_bits,
-                bit_cursor,
+                &mut candidate_bit_cursor,
             );
-        if !exact_full_record && !exact_before_adjacent_span {
-            if debug_creature_update_cursor_trace_enabled(raw_mask) {
-                eprintln!(
-                    "live-object creature status-effect identity-map rewrite rejected: raw_mask=0x{raw_mask:08X} candidate_record_end={candidate_record_end}"
+            let exact_before_adjacent_span = !exact_full_record
+                && matches!(
+                    raw_mask,
+                    LEGACY_CREATURE_UPDATE_3967_MASK
+                        | LEGACY_CREATURE_UPDATE_C40F_MASK
+                        | LEGACY_CREATURE_UPDATE_C44F_MASK
+                )
+                && creature_update_record_valid_before_adjacent_fragment_span(
+                    &candidate,
+                    offset,
+                    candidate_record_end,
+                    fragment_bits,
+                    bit_cursor,
                 );
-            }
-            continue;
-        }
-        let bytes_inserted = insert_offsets.len()
-            * super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
-        if let Some((accepted_candidate, accepted_record_end, accepted_count, accepted_inserted)) =
-            accepted.as_ref()
-        {
-            if *accepted_record_end == candidate_record_end
-                && *accepted_count == count
-                && *accepted_inserted == bytes_inserted
-                && accepted_candidate == &candidate
-            {
+            if !exact_full_record && !exact_before_adjacent_span {
+                if debug_creature_update_cursor_trace_enabled(raw_mask) {
+                    eprintln!(
+                        "live-object creature status-effect identity-map rewrite rejected: raw_mask=0x{raw_mask:08X} candidate_record_end={candidate_record_end}"
+                    );
+                }
                 continue;
             }
-            return None;
+            let bytes_inserted =
+                insert_offsets.len() * EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
+            if let Some((
+                accepted_candidate,
+                accepted_record_end,
+                accepted_count,
+                accepted_inserted,
+            )) = accepted.as_ref()
+            {
+                if *accepted_record_end == candidate_record_end
+                    && *accepted_count == count
+                    && *accepted_inserted == bytes_inserted
+                    && accepted_candidate == &candidate
+                {
+                    continue;
+                }
+                return None;
+            }
+            accepted = Some((candidate, candidate_record_end, count, bytes_inserted));
         }
-        accepted = Some((candidate, candidate_record_end, count, bytes_inserted));
     }
 
     let (candidate, candidate_record_end, entries, bytes_inserted) = accepted?;
@@ -956,6 +973,115 @@ pub(super) fn insert_creature_update_status_effect_identity_maps_for_ee(
         entries,
         bytes_inserted,
     })
+}
+
+fn legacy_creature_status_effect_identity_map_insert_plans(
+    bytes: &[u8],
+    cursor: usize,
+    count: u16,
+    record_end: usize,
+) -> Vec<Vec<usize>> {
+    if let Some(rows) = visual_effect_rows::loaded_visual_effect_target_payload_bytes() {
+        return legacy_creature_status_effect_identity_map_insert_plan_with_rows(
+            bytes, cursor, count, record_end, &rows,
+        )
+        .into_iter()
+        .collect();
+    }
+
+    let mut plans = Vec::new();
+    if let Some(plan) =
+        legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+            bytes, cursor, count, record_end, 0,
+        )
+    {
+        plans.push(plan);
+    }
+    if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+        if let Some(plan) =
+            legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+                bytes,
+                cursor,
+                count,
+                record_end,
+                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
+            )
+        {
+            if !plans.contains(&plan) {
+                plans.push(plan);
+            }
+        }
+    }
+    plans
+}
+
+fn legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    record_end: usize,
+    target_payload_bytes: usize,
+) -> Option<Vec<usize>> {
+    let mut insert_offsets = Vec::with_capacity(usize::from(count));
+    let mut transform_maps_seen = 0usize;
+    for _ in 0..usize::from(count) {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
+            return None;
+        }
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > record_end {
+            return None;
+        }
+        if super::visual_transform::has_ee_object_visual_transform_identity_at(
+            bytes, cursor, record_end,
+        ) {
+            cursor = cursor.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+            transform_maps_seen = transform_maps_seen.saturating_add(1);
+            continue;
+        }
+        insert_offsets.push(cursor);
+    }
+    if insert_offsets.is_empty() || transform_maps_seen != 0 {
+        return None;
+    }
+    Some(insert_offsets)
+}
+
+fn legacy_creature_status_effect_identity_map_insert_plan_with_rows(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: u16,
+    record_end: usize,
+    rows: &[Option<usize>],
+) -> Option<Vec<usize>> {
+    let mut insert_offsets = Vec::with_capacity(usize::from(count));
+    let mut transform_maps_seen = 0usize;
+    for _ in 0..usize::from(count) {
+        let change_opcode = bytes.get(cursor).copied()?;
+        if !matches!(change_opcode, b'A' | b'D') {
+            return None;
+        }
+        let row = read_u16_le(bytes, cursor + 1)?;
+        let target_payload_bytes =
+            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)?;
+        cursor = cursor.checked_add(3)?.checked_add(target_payload_bytes)?;
+        if cursor > record_end {
+            return None;
+        }
+        if super::visual_transform::has_ee_object_visual_transform_identity_at(
+            bytes, cursor, record_end,
+        ) {
+            cursor = cursor.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
+            transform_maps_seen = transform_maps_seen.saturating_add(1);
+            continue;
+        }
+        insert_offsets.push(cursor);
+    }
+    if insert_offsets.is_empty() || transform_maps_seen != 0 {
+        return None;
+    }
+    Some(insert_offsets)
 }
 
 fn creature_update_record_valid_before_adjacent_fragment_span(
@@ -2729,49 +2855,24 @@ fn advance_verified_creature_update_c408(
     let Some(count_word) = read_u16_le(bytes, cursor) else {
         return false;
     };
-    let count = usize::from(count_word);
-    if count > 256 {
+    if count_word > 256 {
         return false;
     }
     let Some(after_count) = cursor.checked_add(2) else {
         return false;
     };
-    cursor = after_count;
-    for _ in 0..count {
-        if record_end.saturating_sub(cursor)
-            < 3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        {
-            return false;
-        }
-        let Some(change_opcode) = bytes.get(cursor).copied() else {
-            return false;
-        };
-        if !matches!(change_opcode, b'A' | b'D') || read_u16_le(bytes, cursor + 1).is_none() {
-            return false;
-        }
-        let Some(after_status_entry) = cursor.checked_add(3) else {
-            return false;
-        };
-        cursor = after_status_entry;
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            bytes, cursor, record_end,
-        ) {
-            return false;
-        }
-        let Some(after_visual_transform) = cursor
-            .checked_add(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
-        else {
-            return false;
-        };
-        cursor = after_visual_transform;
-    }
-    let Some(remaining) = record_end.checked_sub(cursor) else {
+    let Some(status_end) = record_end.checked_sub(8) else {
         return false;
     };
-    if remaining != 8 {
+    let Some(status_cursor) =
+        try_get_ee_creature_status_effect_entries_end(bytes, after_count, count_word, status_end)
+    else {
+        return false;
+    };
+    if status_cursor != status_end {
         return false;
     }
-    let Some(after_scalars) = cursor.checked_add(8) else {
+    let Some(after_scalars) = status_cursor.checked_add(8) else {
         return false;
     };
     cursor = after_scalars;
@@ -3538,35 +3639,16 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_with_rows(
         return false;
     }
 
-    for _ in 0..count {
-        let Some(change_opcode) = cursor.read_u8() else {
-            return false;
-        };
-        if !matches!(change_opcode, b'A' | b'D') {
-            return false;
-        }
-        let Some(row) = cursor.read_u16() else {
-            return false;
-        };
-        let Some(target_payload_bytes) =
-            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row)
-        else {
-            return false;
-        };
-        if target_payload_bytes != 0 && cursor.advance_read(target_payload_bytes).is_none() {
-            return false;
-        }
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            cursor.bytes,
-            cursor.read_cursor,
-            cursor.record_end,
-        ) || cursor
-            .advance_read(super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)
-            .is_none()
-        {
-            return false;
-        }
-    }
+    let Some(read_cursor) = try_get_ee_creature_status_effect_entries_end_with_rows(
+        cursor.bytes,
+        cursor.read_cursor,
+        count,
+        cursor.record_end,
+        rows,
+    ) else {
+        return false;
+    };
+    cursor.read_cursor = read_cursor;
     true
 }
 
@@ -3580,82 +3662,39 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
         return false;
     }
 
-    let mut target_payload_entries = 0usize;
-    let mut immediate_map_entries = 0usize;
-    for _ in 0..count {
-        let Some(change_opcode) = cursor.read_u8() else {
-            return false;
-        };
-        if !matches!(change_opcode, b'A' | b'D') {
-            return false;
-        }
-        if cursor.read_u16().is_none() {
-            return false;
-        }
-        if super::visual_transform::has_ee_object_visual_transform_identity_at(
-            cursor.bytes,
-            cursor.read_cursor,
-            cursor.record_end,
-        ) {
-            if cursor
-                .advance_read(
-                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
-                )
-                .is_none()
-            {
-                return false;
-            }
-            immediate_map_entries = immediate_map_entries.saturating_add(1);
-            continue;
-        }
-
-        let Some(after_target_payload) = cursor
-            .read_cursor
-            .checked_add(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES)
-        else {
-            return false;
-        };
-        if !super::visual_transform::has_ee_object_visual_transform_identity_at(
-            cursor.bytes,
-            after_target_payload,
-            cursor.record_end,
-        ) {
-            return false;
-        }
-        target_payload_entries = target_payload_entries.saturating_add(1);
-        if cursor
-            .advance_read(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES)
-            .is_none()
-            || cursor
-                .advance_read(
-                    super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN,
-                )
-                .is_none()
-        {
-            return false;
-        }
-    }
-    if target_payload_entries != 0
-        && (target_payload_entries != usize::from(count)
-            || immediate_map_entries != 0
-            || target_payload_entries
-                > MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA)
-    {
+    let Some(read_cursor) = try_get_ee_creature_status_effect_entries_end_without_2da(
+        cursor.bytes,
+        cursor.read_cursor,
+        count,
+        cursor.record_end,
+    ) else {
         // EE `sub_1407B1F00` and Diamond `sub_44ED20` check the resolved
         // visualeffects.2da row before optionally reading a DWORD object id
         // plus one BYTE for `Type_FD` `P`/`B` rows. Until proxy2 has row-type
-        // state at this cursor, only the single-entry target-payload shape
-        // proven by captures can be exact-owned. Mixed or multi-entry target
-        // lists otherwise make the next row/map boundary a guess even when the
-        // byte cursor can be made to land exactly.
+        // state at this cursor, only a single unambiguous target-payload shape
+        // can be exact-owned. Mixed, multi-entry target, or same-row no-target
+        // versus target/map ambiguity stays unclaimed.
         return false;
-    }
+    };
+    cursor.read_cursor = read_cursor;
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn creature_4008_live_bytes_with_status_row(target_payload: Option<&[u8]>) -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
+        bytes.extend_from_slice(&0x0000_4008u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.push(b'A');
+        bytes.extend_from_slice(&0x1234u16.to_le_bytes());
+        if let Some(payload) = target_payload {
+            bytes.extend_from_slice(payload);
+        }
+        bytes
+    }
 
     #[test]
     fn loaded_visualeffects_rows_drive_creature_status_target_payload_width() {
@@ -3708,6 +3747,92 @@ mod tests {
             !simulate_ee_creature_update_status_effect_helper_cursor_with_rows(&mut cursor, &rows),
             "a P/B visualeffects row must own DWORD target id plus one BYTE before the map"
         );
+    }
+
+    #[test]
+    fn creature_status_effect_boundary_accepts_unambiguous_target_payload_without_2da() {
+        let mut bytes =
+            creature_4008_live_bytes_with_status_row(Some(&[0x44, 0x33, 0x22, 0x80, 0x66]));
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+
+        assert_eq!(
+            try_get_ee_creature_update_4008_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "with no row table, a single unambiguous P/B-shaped status row may own the five-byte target payload before the map"
+        );
+    }
+
+    #[test]
+    fn creature_status_effect_boundary_rejects_same_row_target_map_ambiguity_without_2da() {
+        let mut bytes = creature_4008_live_bytes_with_status_row(Some(&[0, 0, 0, 0, 0]));
+        bytes.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+
+        assert_eq!(
+            try_get_ee_creature_update_4008_record_end(&bytes, 0, bytes.len()),
+            None,
+            "without row proof, zero target bytes plus the EE map can also look like an immediate no-target map"
+        );
+    }
+
+    #[test]
+    fn creature_status_effect_rewrite_inserts_map_after_target_payload_cursor() {
+        let mut bytes =
+            creature_4008_live_bytes_with_status_row(Some(&[0x44, 0x33, 0x22, 0x80, 0x66]));
+        let mut record_end = bytes.len();
+        let fragment_bits = vec![false; 7];
+
+        let rewrite = insert_creature_update_status_effect_identity_maps_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &fragment_bits,
+            0,
+        )
+        .expect("single unambiguous target-payload row should receive the EE map after the target cursor");
+
+        assert_eq!(rewrite.entries, 1);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+        );
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            try_get_ee_creature_update_4008_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+        assert_eq!(
+            bytes.get(20..28),
+            Some(
+                super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES
+                    .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn creature_status_effect_rewrite_rejects_ambiguous_target_payload_cursor_without_2da() {
+        let mut bytes = creature_4008_live_bytes_with_status_row(Some(&[0, 0, 0, 0, 0]));
+        let original = bytes.clone();
+        let mut record_end = bytes.len();
+        let fragment_bits = vec![false; 7];
+
+        assert!(
+            insert_creature_update_status_effect_identity_maps_for_ee(
+                &mut bytes,
+                0,
+                &mut record_end,
+                &fragment_bits,
+                0,
+            )
+            .is_none(),
+            "same-row no-target/target ambiguity must stay unrewritten without visualeffects.2da row proof"
+        );
+        assert_eq!(bytes, original);
+        assert_eq!(record_end, original.len());
     }
 }
 

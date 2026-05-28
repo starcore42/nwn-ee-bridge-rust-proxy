@@ -1040,6 +1040,16 @@ Current status:
   Verified with `cargo test -q -p hgbridge-proxy2 effect_target_payload --
   --nocapture`, `cargo test -q -p hgbridge-proxy2 looping_effect --
   --nocapture`, and the full `cargo test -q -p hgbridge-proxy2` suite.
+- 2026-05-28 `P/05/01` creature status-effect target-payload cursor audit:
+  carried the same decompile-backed `visualeffects.2da` target-payload rule
+  into creature status-effect boundary scans, exact C408 validation, and legacy
+  identity-map insertion. Boundary helpers now account for `DWORD object id +
+  BYTE` before the EE transform map, and without row-type proof reject a
+  same-row no-target/target ambiguity instead of splitting on the shorter
+  zero-looking map cursor. Verified with `cargo test -q -p hgbridge-proxy2
+  creature_status_effect -- --nocapture` and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --nocapture`, plus the serial full
+  `cargo test -q -p hgbridge-proxy2 -- --test-threads=1` suite.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
