@@ -194,15 +194,6 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
     fragment_bits: &[bool],
     bit_cursor: &mut usize,
 ) -> Option<InventoryRecordClaim> {
-    let object_id = read_u32_le(bytes, record_offset.checked_add(1)?)?;
-    if object_id == LEGACY_INVENTORY_CURRENT_PLAYER_OWNER && record_end != bytes.len() {
-        // The current-player sentinel also appears in self-inventory streams
-        // followed by GUI rows in the same `P 05 01` read window.  Those rows
-        // own later fragment storage, so the current-player D5FF terminal-tail
-        // claim is valid only when this inventory row reaches the end of the
-        // live-object byte window.
-        return None;
-    }
     let candidate = try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
         bytes,
         record_offset,
@@ -215,14 +206,26 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
         return None;
     }
 
+    if record_end != bytes.len() {
+        // Midstream D5FF rows hand off fragment ownership exactly like other
+        // inventory records. The terminal-tail fallback below is capture
+        // evidence for a final D5FF creature-state body only; applying it to a
+        // compact-id row before another live-object submessage can silently
+        // drain the next record's BOOL cursor.
+        *bit_cursor = bit_cursor.saturating_add(candidate.bits);
+        return Some(InventoryRecordClaim {
+            fragment_bits: candidate.bits,
+        });
+    }
+
     // The captured D5FF creature state is terminal in its `P 05 01` read
     // buffer.  All remaining CNW fragment storage therefore belongs to this
-    // inventory record; leaving it unconsumed makes the exact live-object proof
-    // fail even though no following submessage can own those bits.  This is
-    // deliberately tied to the byte-exact D5FF shape above.  A future typed
-    // model should split the table-owned BOOLs by subobject family, but until
-    // then we still keep ownership explicit instead of treating the tail as
-    // unclassified padding.
+    // terminal inventory record; leaving it unconsumed makes the exact
+    // live-object proof fail even though no following submessage can own those
+    // bits.  This is deliberately tied to the byte-exact D5FF shape above.  A
+    // future typed model should split the table-owned BOOLs by subobject
+    // family, but until then the fallback is terminal-only rather than a
+    // midstream cursor drain.
     *bit_cursor = fragment_bits.len();
     Some(InventoryRecordClaim {
         fragment_bits: remaining_bits,
@@ -352,11 +355,10 @@ fn advance_d5ff_legacy_icon_list(
 mod tests {
     use super::*;
 
-    #[test]
-    fn d5ff_standard_shape_uses_generic_reader_order_without_named_capture_values() {
+    fn d5ff_standard_reader_order_record(mask: u16) -> Vec<u8> {
         let mut record = vec![b'I'];
         record.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
-        record.extend_from_slice(&D5FF_MASK.to_le_bytes());
+        record.extend_from_slice(&mask.to_le_bytes());
         record.extend_from_slice(&[0; 10]); // 0x0001 compact body
         record.extend_from_slice(&[0; 4]); // 0x0002
         record.extend_from_slice(&[0; 4]); // 0x0008
@@ -369,6 +371,12 @@ mod tests {
         record.extend_from_slice(&[0; 4]); // 0x0004 icon lists
         record.push(0); // 0x0100 opcode stream
         record.extend_from_slice(&[0; 2]); // 0x4000 state stream
+        record
+    }
+
+    #[test]
+    fn d5ff_standard_shape_uses_generic_reader_order_without_named_capture_values() {
+        let record = d5ff_standard_reader_order_record(D5FF_MASK);
 
         let candidate =
             try_parse_inventory_d5ff_standard_reader_order_shape(&record, 0, record.len())
@@ -379,25 +387,37 @@ mod tests {
 
     #[test]
     fn d5ff_standard_shape_repairs_missing_low_mask_after_full_cursor_proof() {
-        let mut record = vec![b'I'];
-        record.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
-        record.extend_from_slice(&D500_MISSING_LOW_D5FF_MASK.to_le_bytes());
-        record.extend_from_slice(&[0; 10]);
-        record.extend_from_slice(&[0; 4]);
-        record.extend_from_slice(&[0; 4]);
-        record.extend_from_slice(&[0; 12]);
-        record.push(0);
-        record.extend_from_slice(&[0; 12]);
-        record.extend_from_slice(&[0; 12]);
-        record.push(0);
-        record.extend_from_slice(&[0, 0]);
-        record.extend_from_slice(&[0; 4]);
-        record.push(0);
-        record.extend_from_slice(&[0; 2]);
+        let mut record = d5ff_standard_reader_order_record(D500_MISSING_LOW_D5FF_MASK);
 
         let len = record.len();
         repair_d500_missing_low_d5ff_mask_for_ee(&mut record, 0, len)
             .expect("D500 header should repair only after standard D5FF cursor proof");
         assert_eq!(read_u16_le(&record, 5), Some(D5FF_MASK));
+    }
+
+    #[test]
+    fn d5ff_midstream_claim_consumes_only_decompiled_inventory_bits() {
+        let mut stream = d5ff_standard_reader_order_record(D5FF_MASK);
+        let record_end = stream.len();
+        stream.extend_from_slice(&[b'W', 0x01, 0x0E]);
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
+            &stream,
+            0,
+            record_end,
+            &[false, true],
+            &mut bit_cursor,
+        )
+        .expect("midstream D5FF should claim the proven inventory cursor");
+
+        assert_eq!(
+            claim.fragment_bits, 1,
+            "0x0001 compact branch owns one BOOL; following records own later bits"
+        );
+        assert_eq!(
+            bit_cursor, 1,
+            "midstream D5FF must not drain terminal-only fragment tail bits"
+        );
     }
 }

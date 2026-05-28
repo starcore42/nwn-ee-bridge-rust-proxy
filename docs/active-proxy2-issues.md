@@ -656,6 +656,20 @@ Current status:
   `inventory_ten_bit_group` filters, full `cargo test -q -p hgbridge-proxy2
   inventory -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/05/01` inventory `0xD5FF` midstream fragment-cursor audit:
+  tightened the D5FF creature-equipment/state verifier so the terminal
+  fragment-tail fallback can no longer drain later live-object BOOLs from a
+  midstream compact-id D5FF record. Midstream D5FF rows now consume only the
+  decompile-owned inventory branch bits proved by the byte cursor and then hand
+  off to following records; only a D5FF row that reaches the end of the
+  live-object read window may consume the remaining terminal fragment storage.
+  Public fixture-free coverage proves a D5FF row followed by `W` owns exactly
+  the compact `0x0001` branch BOOL and leaves the next bit for later records.
+  Verified with `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+  Remaining audit item: the terminal D5FF fallback still needs a fuller typed
+  account of the large trailing BOOL body from Diamond/EE decompiles; keep it
+  terminal-only until that row-level bit model is proven.
 - ~~2026-05-26 `P/05/01` looping visual-effect update mixed-map audit: fixed
   exact ownership so a `U/* 0x00000008` row list may be all Diamond/HG short
   rows or all EE build-0x23 rows with `ObjectVisualTransformData`, but not a
