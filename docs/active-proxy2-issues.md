@@ -895,6 +895,20 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2 trigger_update --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 low_tail --
   --nocapture`.
+- 2026-05-29 `P/05/01` named door/placeable low-tail terminal-bit audit:
+  extended the same terminal residual-bit guard to legacy `U/9`/`U/10`
+  low-tail records that also carry Diamond's input-only name bit. The source
+  reader owns the position/state BOOLs plus the low-tail/name BOOLs, then the
+  EE writer clears the low-tail/name bits, drops the direct CExoString/name
+  bytes, and appends the neutral door/placeable state BOOL; any additional
+  terminal fragment bit is now rejected before the outer live-object pass can
+  trim it as transport residue. Plain legacy name/drop updates without low-tail
+  bits and older all-bits tail9 facing/scale/state records remain on their
+  separate established cursor paths. Verified with `cargo test -q -p
+  hgbridge-proxy2 legacy_named_low_tail -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 terminal_extra_fragment_bit --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`,
+  and `cargo test -q -p hgbridge-proxy2 trigger_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

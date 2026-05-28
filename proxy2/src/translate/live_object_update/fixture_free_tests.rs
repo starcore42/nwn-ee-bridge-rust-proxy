@@ -175,6 +175,22 @@ fn door_placeable_low_tail_update_live_bytes(object_type: u8, tail: &[u8]) -> Ve
     live
 }
 
+fn door_placeable_named_low_tail_update_live_bytes(object_type: u8, name: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_NAME_MASK
+            | super::LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live
+}
+
 fn scalar_door_placeable_update_bits() -> Vec<bool> {
     vec![
         true, false, // position residual bits
@@ -581,6 +597,46 @@ fn legacy_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_bit() 
         assert!(
             super::claim_payload_if_verified(&payload).is_none(),
             "terminal low-tail residual bits must remain unclaimed"
+        );
+    }
+}
+
+#[test]
+fn legacy_named_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_bit() {
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = door_placeable_named_low_tail_update_live_bytes(object_type, b"Box");
+        let mut exact_bits = vec![
+            true, false, // position residual bits
+            true, false, true, false, true, // Diamond door/placeable state bits
+            true, // legacy name branch consumed by Diamond but not EE.
+        ];
+        let mut payload = live_object_payload_with_bits(&live, exact_bits.clone());
+        let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("bounded named low-tail door/placeable update should rewrite");
+        assert_eq!(rewrite.update_records_rewritten, 1);
+        assert_eq!(rewrite.masks_translated, 1);
+        assert_eq!(rewrite.bytes_removed, 7);
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 1);
+        assert!(
+            super::claim_payload_if_verified(&payload).is_some(),
+            "rewritten named low-tail update should exact-claim with no residual bits"
+        );
+
+        exact_bits.push(true);
+        let mut shifted_payload = live_object_payload_with_bits(&live, exact_bits);
+        let original = shifted_payload.clone();
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+            "terminal named low-tail object type {object_type:#04X} must not trim an unowned fragment bit"
+        );
+        assert_eq!(
+            shifted_payload, original,
+            "rejected terminal named low-tail repair must leave the source payload untouched"
+        );
+        assert!(
+            super::claim_payload_if_verified(&shifted_payload).is_none(),
+            "terminal named low-tail residual bits must remain unclaimed"
         );
     }
 }

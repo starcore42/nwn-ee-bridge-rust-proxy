@@ -1017,14 +1017,16 @@ pub(super) fn rewrite_update_record_for_ee(
                 u32::try_from(legacy_low_tail_fragment_bits_to_remove).unwrap_or(u32::MAX),
             );
         }
+        // The older all-bits tail9 converter has its own named-tail cursor;
+        // this terminal residual check is only for direct low-tail suffix repairs.
         if *record_end == live_bytes.len()
             && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-            && (raw_mask & LEGACY_UPDATE_NAME_MASK) == 0
+            && !tail_ready
             && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
             && rewritten_bit_cursor != rewritten_bits.len()
         {
             debug_update_record_reject(
-                "terminal-low-tail-residual-fragment-bits",
+                "terminal-door-placeable-low-tail-residual-fragment-bits",
                 live_bytes,
                 record_offset,
                 *record_end,
