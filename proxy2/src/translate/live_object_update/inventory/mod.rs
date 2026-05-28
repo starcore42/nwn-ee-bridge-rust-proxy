@@ -679,8 +679,9 @@ mod inventory_2000_current_player_tests {
         assert_eq!(claim.bits, 0);
 
         let mut record_end = prefix.read_end;
-        let rewrite = rewrite_legacy_inventory_record_for_ee(&mut stream, 0, &mut record_end)
-            .expect("legacy Feature-25 object tail should normalize away for EE");
+        let rewrite =
+            rewrite_legacy_inventory_record_for_ee(&mut stream, 0, &mut record_end, &[], 0)
+                .expect("legacy Feature-25 object tail should normalize away for EE");
         assert_eq!(rewrite.bytes_removed, 8);
         assert_eq!(record_end, 15);
         assert_eq!(
@@ -898,6 +899,8 @@ pub(super) fn rewrite_legacy_inventory_record_for_ee(
     bytes: &mut Vec<u8>,
     record_offset: usize,
     record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
 ) -> Option<InventoryRecordRewrite> {
     if record_offset > bytes.len()
         || *record_end > bytes.len()
@@ -910,7 +913,13 @@ pub(super) fn rewrite_legacy_inventory_record_for_ee(
 
     let mask = read_u16_le(bytes, record_offset + 5)?;
     if mask == 0xD500 {
-        repair_d500_missing_low_d5ff_mask_for_ee(bytes, record_offset, *record_end)?;
+        repair_d500_missing_low_d5ff_mask_for_ee(
+            bytes,
+            record_offset,
+            *record_end,
+            fragment_bits,
+            bit_cursor,
+        )?;
         return Some(InventoryRecordRewrite {
             bytes_inserted: 0,
             bytes_removed: 0,

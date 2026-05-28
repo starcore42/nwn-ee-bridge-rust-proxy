@@ -4289,6 +4289,8 @@ pub fn rewrite_update_records_payload_if_possible(
                 &mut live_bytes,
                 offset,
                 &mut record_end,
+                &fragment_bits,
+                bit_cursor,
             ) {
                 changed = true;
                 summary.bytes_inserted = summary.bytes_inserted.saturating_add(

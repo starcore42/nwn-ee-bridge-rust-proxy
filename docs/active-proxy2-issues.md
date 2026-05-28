@@ -690,6 +690,20 @@ Current status:
   hgbridge-proxy2 local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact_claim
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture`,
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.~~
+- ~~2026-05-29 `P/05/01` inventory `0xD500` missing-low D5FF mask repair
+  audit: resolved 2026-05-29. The `0xD500 -> 0xD5FF` repair now requires the
+  same typed inventory cursor advance used by the live-object rewrite loop
+  before mutating the mask byte: Diamond `sub_455940` and EE `sub_1407B4F70`
+  both read the compact `0x0001` branch BOOL first, and this repaired shape
+  owns that BOOL as false. Terminal residual fragment storage is still trimmed
+  only after that reliable typed cursor proof. A byte-complete D500 body with a
+  true compact-branch bit now rejects and leaves the legacy mask untouched
+  instead of turning a shifted cursor into an apparently valid D5FF row.
+  Verified with `cargo test -q -p hgbridge-proxy2 d5ff -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  local_winds_eremor_seq22_placeable_stream_rewrites_to_exact_shape --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --nocapture`.~~
 - ~~2026-05-26 `P/05/01` looping visual-effect update mixed-map audit: fixed
   exact ownership so a `U/* 0x00000008` row list may be all Diamond/HG short
   rows or all EE build-0x23 rows with `ObjectVisualTransformData`, but not a

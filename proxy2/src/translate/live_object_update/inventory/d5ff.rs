@@ -60,6 +60,8 @@ pub(super) fn repair_d500_missing_low_d5ff_mask_for_ee(
     bytes: &mut [u8],
     record_offset: usize,
     record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
 ) -> Option<()> {
     if record_offset > bytes.len()
         || record_end > bytes.len()
@@ -75,17 +77,24 @@ pub(super) fn repair_d500_missing_low_d5ff_mask_for_ee(
     // (`0xD500`) while the following byte body is the decompile-owned D5FF
     // creature inventory state: compact 0x0001, 0x0002, 0x0008, 0x8000,
     // 0x0080, 0x0010, 0x0020, 0x0040, 0x0400, 0x0004, 0x0100, and 0x4000.
-    // Mutate only after the standard D5FF reader-order parser proves that full
-    // cursor.
-    let original = *bytes.get(record_offset + 5)?;
+    // Mutate only after the same inventory cursor advance used by the
+    // live-object rewrite loop proves both the full read-buffer cursor and the
+    // owned compact-branch BOOL at the caller's current fragment cursor. A
+    // byte-only proof can hide a shifted true compact branch and corrupt every
+    // later inventory mask branch. Terminal residual fragment storage is still
+    // handled by the top-level rewrite trim after this reliable cursor proof.
+    let mut candidate = bytes.to_vec();
+    candidate[record_offset + 5] = 0xFF;
+    let mut proof_cursor = bit_cursor;
+    advance_verified_inventory_record(
+        &candidate,
+        record_offset,
+        record_end,
+        fragment_bits,
+        &mut proof_cursor,
+    )?;
+
     bytes[record_offset + 5] = 0xFF;
-    let accepted =
-        try_parse_inventory_d5ff_standard_reader_order_shape(bytes, record_offset, record_end)
-            .is_some();
-    if !accepted {
-        bytes[record_offset + 5] = original;
-        return None;
-    }
     Some(())
 }
 
@@ -389,9 +398,25 @@ mod tests {
         let mut record = d5ff_standard_reader_order_record(D500_MISSING_LOW_D5FF_MASK);
 
         let len = record.len();
-        repair_d500_missing_low_d5ff_mask_for_ee(&mut record, 0, len)
+        repair_d500_missing_low_d5ff_mask_for_ee(&mut record, 0, len, &[false], 0)
             .expect("D500 header should repair only after standard D5FF cursor proof");
         assert_eq!(read_u16_le(&record, 5), Some(D5FF_MASK));
+    }
+
+    #[test]
+    fn d5ff_missing_low_mask_repair_requires_compact_branch_false_bit() {
+        let mut record = d5ff_standard_reader_order_record(D500_MISSING_LOW_D5FF_MASK);
+
+        let len = record.len();
+        assert!(
+            repair_d500_missing_low_d5ff_mask_for_ee(&mut record, 0, len, &[true], 0).is_none(),
+            "D500 repair must not accept a shifted true compact-branch BOOL"
+        );
+        assert_eq!(
+            read_u16_le(&record, 5),
+            Some(D500_MISSING_LOW_D5FF_MASK),
+            "failed repair should leave the legacy mask untouched"
+        );
     }
 
     #[test]
