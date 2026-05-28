@@ -1205,7 +1205,8 @@ fn repair_inline_door_add_name_bit(
     if !creature::has_ee_identity_visual_transform_map_at(live_bytes, visual_offset, record_end) {
         return None;
     }
-    let name_offset = visual_offset + 40;
+    let name_offset = visual_offset
+        .checked_add(visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?;
     let inline_end = locstring::inline_cexo_string_end(live_bytes, name_offset)?;
     if inline_end > name_offset + CNW_LENGTH_BYTES
         && fragment_bits.get(*bit_cursor).copied().unwrap_or(false)
@@ -2088,7 +2089,8 @@ fn verified_record_name(
                 visual_offset,
                 record_end,
             ) {
-                visual_offset.checked_add(40)?
+                visual_offset
+                    .checked_add(visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN)?
             } else {
                 visual_offset
             }

@@ -995,6 +995,21 @@ Current status:
   --nocapture`, and `cargo test -q -p hgbridge-proxy2
   pending_seq31_stream_rewrites_to_exact_live_object_claim --
   --nocapture`.~~
+- 2026-05-28 `P/05/01` door-add visual-map cursor audit: fixed two stale
+  door-add name call sites that advanced past an EE object visual-transform
+  identity as if it were the legacy 40-byte scalar identity. EE
+  `AddDoorAppearanceToMessage` owns only the two-DWORD `ObjectVisualTransformData`
+  empty map before the name/state tail; the add-name bit repair and verified
+  record diagnostics now use the same 8-byte cursor as the boundary walker,
+  add validator, and fragment cursor proof. Public fixture-free tests prove the
+  exact direct-name six-bit branch reports the inline name and that a stale
+  locstring-helper bit is collapsed to the direct-name selector after the
+  eight-byte map. Verified with `cargo test -q -p hgbridge-proxy2
+  door_add_name -- --nocapture`, `cargo test -q -p hgbridge-proxy2 door_add --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 add_guard --
+  --nocapture`, plus `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
+  `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

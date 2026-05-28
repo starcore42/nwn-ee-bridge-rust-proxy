@@ -111,6 +111,17 @@ fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
     live
 }
 
+fn ee_door_add_with_inline_name_live_bytes(name: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'A', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_3300u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live
+}
+
 fn door_state_update_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_1234u32.to_le_bytes());
@@ -670,6 +681,59 @@ fn top_level_item_add_token_name_repair_rewrites_selector_prefix_only() {
         &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
         &[true, true, false, false, false, false, false, false],
         "repair must materialize token selector bits before active-property bits"
+    );
+}
+
+#[test]
+fn door_add_name_diagnostic_uses_ee_visual_map_width() {
+    // EE door adds carry the object visual-transform map as two DWORD counts,
+    // not the old 40-byte scalar transform. The final claim diagnostics must
+    // resolve the inline name immediately after those eight bytes.
+    let live = ee_door_add_with_inline_name_live_bytes(b"Door");
+    let payload = live_object_payload_with_bits(&live, vec![false; 6]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("EE door add should exact-claim at the direct-name cursor");
+
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.mentions.len(), 1);
+    assert_eq!(claim.mentions[0].name.as_deref(), Some("Door"));
+    assert_eq!(
+        claim.mentions[0].fragment_bit_end - claim.mentions[0].fragment_bit_start,
+        6,
+        "door add direct-name branch owns one selector bit plus the fixed five tail bits"
+    );
+}
+
+#[test]
+fn door_add_name_bit_repair_uses_ee_visual_map_width() {
+    // A stale legacy locstring-helper bit before a direct inline CExoString
+    // must be removed at the door-name cursor. That cursor is after EE's
+    // eight-byte object visual-transform map; treating it as the legacy
+    // 40-byte scalar identity rejects the otherwise decompile-owned repair.
+    let live = ee_door_add_with_inline_name_live_bytes(b"Door");
+    let mut payload =
+        live_object_payload_with_bits(&live, vec![true, false, false, false, false, false, false]);
+
+    let rewrite = super::rewrite_add_name_fragment_bits_payload_if_possible(&mut payload)
+        .expect("direct-name door add should repair the stale helper bit");
+    assert_eq!(rewrite.add_records_repaired, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
+    assert_eq!(rewrite.bits_removed, 1);
+
+    let claim =
+        super::claim_payload_if_verified(&payload).expect("repaired door add should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.mentions[0].name.as_deref(), Some("Door"));
+
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[false, false, false, false, false, false],
+        "repair must collapse the two-bit locstring helper to EE's direct-name selector"
     );
 }
 
