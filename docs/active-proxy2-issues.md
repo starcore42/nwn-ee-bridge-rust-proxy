@@ -1010,6 +1010,18 @@ Current status:
   --nocapture`, plus `cargo test -q -p hgbridge-proxy2 live_object_update --
   --nocapture`, `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-28 `P/05/01` door/placeable add legacy-scalar visual-map audit:
+  no packet shape changed, but public fixture-free coverage now proves the
+  adjacent legacy 40-byte `CAurObjectVisualTransformData` identity replacement
+  path. Raw door/placeable `A` rows carrying that scalar at the decompiled
+  visual-transform cursor do not exact-claim as EE; the bridge rewrites exactly
+  those 40 bytes to EE's two-DWORD `ObjectVisualTransformData` empty map, leaves
+  the name/tail cursor immediately after the eight-byte map, and then exact EE
+  add-fragment validation owns the final bit cursor. The same pass removed
+  dormant live-object add/update suppression bookkeeping so missing door models
+  or static-overlap diagnostics cannot revive an object-deletion workaround.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  legacy_scalar_visual_transform -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
