@@ -107,11 +107,30 @@ pub(in crate::translate::quickbar) fn ee_set_all_buttons_slot_types_if_valid(
     let consumed_fragment_bytes = reader.fragment_cursor + usize::from(reader.fragment_bit != 0);
     if consumed_fragment_bytes == reader.fragments.len()
         && reader.final_fragment_bits == u8::try_from(consumed_fragment_bits % 8).unwrap_or(0)
+        && quickbar_fragment_padding_zero(reader.fragments, consumed_fragment_bits)
     {
         Some(slot_types)
     } else {
         None
     }
+}
+
+fn quickbar_fragment_padding_zero(fragments: &[u8], consumed_fragment_bits: usize) -> bool {
+    let Some(total_bits) = fragments.len().checked_mul(8) else {
+        return false;
+    };
+    if consumed_fragment_bits > total_bits {
+        return false;
+    }
+    for bit_index in consumed_fragment_bits..total_bits {
+        let Some(byte) = fragments.get(bit_index / 8).copied() else {
+            return false;
+        };
+        if byte & (0x80 >> (bit_index % 8)) != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_ee_quickbar_item_object(
@@ -255,4 +274,27 @@ fn validate_ee_quickbar_active_item_properties(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_quickbar_validator_rejects_nonzero_fragment_padding_bits() {
+        let mut payload = build_blank_set_all_buttons_payload(b'P')
+            .expect("blank quickbar placeholder should build");
+        let declared = usize::try_from(read_u32_le(&payload, HIGH_LEVEL_HEADER_BYTES).unwrap())
+            .expect("declared length should fit usize");
+        let final_fragment = payload
+            .get_mut(declared)
+            .expect("blank quickbar has one fragment byte");
+
+        *final_fragment |= 0x01;
+
+        assert!(
+            !ee_set_all_buttons_payload_shape_valid(&payload),
+            "unused quickbar fragment padding bits are not owned by EE's SetAllButtons reader"
+        );
+    }
 }

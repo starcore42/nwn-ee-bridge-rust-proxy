@@ -529,6 +529,17 @@ Current status:
   single zero DWORD empty-string-length artifact. It no longer discards an
   arbitrary four-byte read-buffer suffix after the two strings. Verified with
   `cargo test -q -p hgbridge-proxy2 quickbar_command_tail -- --nocapture`.
+- 2026-05-29 `P/1E/01` quickbar exact-validator padding audit: hardened the
+  EE `SetAllButtons` shape validator so, after the 36-slot read-buffer cursor
+  and final CNW fragment bit cursor are exact, every unused low bit in the
+  final fragment byte must be zero. This is intentionally limited to the
+  bridge-emitted EE validator: legacy source captures can carry nonzero
+  fragment storage bytes, but those bytes are not proof for accepted EE output.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  exact_quickbar_validator_rejects_nonzero_fragment_padding_bits --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`
+  using `CARGO_TARGET_DIR=C:\nwnbridge\codex-target\nwn-ee-bridge` to avoid
+  Google Drive target-cache stalls.
 - 2026-05-26 `P/05/01` live-object item appearance audit: tightened the shared
   top-level item-add / GUI item-create EE model-type-3 validator so the
   19x6 armor/accessory color table must repeat the six Diamond palette bytes
