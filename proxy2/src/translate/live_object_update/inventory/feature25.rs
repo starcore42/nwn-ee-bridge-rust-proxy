@@ -6,6 +6,7 @@ pub(super) fn apply_2000(
     bytes: &[u8],
     candidates: &[GenericInventoryCandidate],
     record_end: usize,
+    allow_terminal_legacy_tail: bool,
 ) -> Vec<GenericInventoryCandidate> {
     let mut next = Vec::with_capacity(candidates.len());
     for candidate in candidates {
@@ -14,11 +15,13 @@ pub(super) fn apply_2000(
         // need a prefix proof here; the generic mask walker will let the
         // following decompiled branches own any remaining bytes and will still
         // reject a standalone 0x2000 candidate that does not end exactly.
-        let Some(feature25) = try_parse_inventory_2000_at(bytes, candidate.cursor, record_end)
-            .or_else(|| try_parse_inventory_2000_prefix_at(bytes, candidate.cursor, record_end))
-        else {
-            continue;
+        let feature25 = if allow_terminal_legacy_tail {
+            try_parse_inventory_2000_at(bytes, candidate.cursor, record_end)
+                .or_else(|| try_parse_inventory_2000_prefix_at(bytes, candidate.cursor, record_end))
+        } else {
+            try_parse_inventory_2000_prefix_at(bytes, candidate.cursor, record_end)
         };
+        let Some(feature25) = feature25 else { continue };
         next.push(
             candidate.advanced(
                 feature25.block_end,

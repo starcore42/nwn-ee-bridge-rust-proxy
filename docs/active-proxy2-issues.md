@@ -704,6 +704,17 @@ Current status:
   local_winds_eremor_seq22_placeable_stream_rewrites_to_exact_shape --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --nocapture`.~~
+- ~~2026-05-29 `P/05/01` inventory `0x2000` Feature-25 terminal-tail audit:
+  resolved 2026-05-29. The generic inventory mask walker no longer lets the
+  standalone legacy zero-first/sentinel-tail compatibility shape claim bytes
+  when later mask branches still exist. Diamond `sub_455940` and EE
+  `sub_1407B4F70` both process `0x2000` before `0x0800`/`0x4000`; therefore
+  combined masks must parse Feature-25 as a prefix and hand off to the later
+  branch BOOL/read-buffer contract. Public fixture-free coverage proves a
+  sentinel-looking tail cannot be swallowed as `0x2000` before an `0x0800`
+  branch. Verified with `cargo test -q -p hgbridge-proxy2 inventory_2000 -- --
+  nocapture`, `cargo test -q -p hgbridge-proxy2 inventory -- --nocapture`, and
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.~~
 - ~~2026-05-26 `P/05/01` looping visual-effect update mixed-map audit: fixed
   exact ownership so a `U/* 0x00000008` row list may be all Diamond/HG short
   rows or all EE build-0x23 rows with `ObjectVisualTransformData`, but not a

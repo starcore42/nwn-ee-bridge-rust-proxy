@@ -161,7 +161,8 @@ fn generic_inventory_candidates_after_mask(
         trace_inventory_stage(mask, "0100", &candidates);
     }
     if (mask & 0x2000) != 0 {
-        candidates = apply_2000(bytes, &candidates, record_end);
+        let allow_terminal_legacy_tail = (mask & (0x0800 | 0x4000)) == 0;
+        candidates = apply_2000(bytes, &candidates, record_end, allow_terminal_legacy_tail);
         trace_inventory_stage(mask, "2000", &candidates);
     }
     if (mask & 0x0800) != 0 {
@@ -762,6 +763,34 @@ mod tests {
             "the 0x0800 selector must not be counted as a fourth 0x2000 BOOL"
         );
         assert_eq!(missing_0800_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_2000_sentinel_tail_is_terminal_only_before_0800() {
+        // The legacy zero-first/sentinel tail compatibility shape is a
+        // standalone 0x2000 repair source. When the mask also carries 0x0800,
+        // Diamond sub_455940 and EE sub_1407B4F70 hand off to the 0x0800 BOOL
+        // branch instead of letting 0x2000 swallow tail-shaped read bytes.
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u32.to_le_bytes()); // 0x2000 first_count
+        body.extend_from_slice(&0x8000_0043u32.to_le_bytes());
+        body.extend_from_slice(&0x8000_0044u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // sentinel-looking tail
+        let record = inventory_mask_record(0x2800, &body);
+
+        let mut false_cursor = 0usize;
+        assert!(
+            advance_verified_inventory_record(
+                &record,
+                0,
+                record.len(),
+                &[false],
+                &mut false_cursor
+            )
+            .is_none(),
+            "0x2000 must not reinterpret bytes needed by the following 0x0800 branch"
+        );
+        assert_eq!(false_cursor, 0);
     }
 
     #[test]

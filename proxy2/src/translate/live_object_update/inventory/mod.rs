@@ -1135,7 +1135,7 @@ fn try_parse_inventory_2700_zero_count_feature25_shape(
                 .collect::<Vec<_>>()
         );
     }
-    let candidates = apply_2000(bytes, &candidates, record_end);
+    let candidates = apply_2000(bytes, &candidates, record_end, true);
     if trace {
         eprintln!(
             "inventory 2700 stage: after_2000 candidates={:?}",
