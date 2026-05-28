@@ -244,33 +244,33 @@ mod tests {
     }
 
     #[test]
-    fn local_cepv22_seq16_pending_stream_rewrites_to_exact_shape() {
+    fn local_cepv22_seq16_pending_stream_stays_quarantined_after_boundary_audit() {
         // Local CEP v2.2 builder harness capture from 2026-05-20. The legacy
         // server split one logical zero-declared live-object stream across
         // several deflated M windows; the stream buffer rebuilds the CNW
         // read-buffer bytes and fragment storage into this single candidate.
+        // Keep it quarantined until the post-rewrite U/0x55 boundary has a
+        // decompile-backed cursor owner rather than relying on the old broad
+        // exact-rewrite expectation.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_cepv22_builder_seq16_pending_chunks4_20260520.bin"
         )
         .to_vec();
+        let original = payload.clone();
 
         assert!(
             claim_payload_if_verified(&payload).is_none(),
             "raw rebuilt seq16 stream is still legacy-shaped before typed rewrites"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("CEP v2.2 seq16 pending stream should rewrite to exact EE shape");
         assert!(
-            summary.changed(),
-            "seq16 compatibility path must perform an explicit typed rewrite"
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "CEP v2.2 seq16 pending stream must not exact-rewrite without a proven record boundary"
         );
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten CEP v2.2 seq16 stream should validate exactly");
-        assert!(claim.add_records >= 1);
-        assert!(claim.update_records >= 1);
-        assert!(claim.live_gui_item_create_records >= 1);
+        assert_eq!(
+            payload, original,
+            "failed exact rewrite must leave rebuilt boundary evidence unchanged"
+        );
     }
 
     #[test]

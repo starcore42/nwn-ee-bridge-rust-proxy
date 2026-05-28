@@ -3325,15 +3325,18 @@ mod tests {
 
     #[cfg(hgbridge_private_fixtures)]
     #[test]
-    fn dispatcher_claims_local_cepv23_starter_lance_lute_patron_live_object() {
+    fn dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit()
+     {
         // Local CEP v2.3 starter seq17 from 2026-05-23: NPC/placeable add
         // records for Lance, Lute, and Tavern Patron arrive as a declared
-        // P/05/01 stream whose compact Diamond add rows must be rewritten into
-        // exact EE live-object records before strict dispatch accepts them.
+        // P/05/01 stream. The current typed passes make progress inside the
+        // stream, but the U/6 handoff and terminal tail still lack a
+        // decompile-backed owner, so strict dispatch must leave it unclaimed.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"
         )
         .to_vec();
+        let original = payload.clone();
 
         let started = std::time::Instant::now();
         let rewrite = dispatch_live_object_fixture(&mut payload);
@@ -3341,15 +3344,18 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(3),
             "dispatcher CEP v2.3 starter live-object claim must stay bounded"
         );
-        assert!(rewrite.any_rewrite());
-        assert_eq!(
-            rewrite.verified_family(),
-            VerifiedFamily::GameObjUpdateLiveObject
+        assert!(
+            !rewrite.any_rewrite(),
+            "dispatcher must not claim CEP v2.3 starter live-object without exact boundary proof"
         );
-        let claim = crate::translate::live_object_update::claim_payload_if_verified(&payload)
-            .expect("dispatcher-owned CEP v2.3 starter payload must be exact EE live-object shape");
-        assert!(claim.add_records >= 1);
-        assert_eq!(claim.declared, payload.len() - claim.fragment_bytes);
+        assert_eq!(
+            payload, original,
+            "failed dispatcher claim must leave CEP v2.3 boundary evidence unchanged"
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "raw CEP v2.3 starter payload should remain unclaimed active evidence"
+        );
     }
 
     #[cfg(hgbridge_private_fixtures)]

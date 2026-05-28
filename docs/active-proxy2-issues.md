@@ -934,12 +934,33 @@ Current status:
   boundary to prove alignment; an isolated terminal record with one extra
   fragment bit is left untouched and unclaimed rather than letting the extra
   bit alter how many bits are borrowed from the name bytes. Verified with
-  `cargo test -q -p hgbridge-proxy2 inline_name -- --nocapture`. The older
-  post-door compact placeable/door transition fixtures have been demoted from
-  exact-claim positives to active evidence because, after visual-map insertion,
-  their terminal `U/9`/`U/10` inline-name updates still carry one unowned final
-  fragment bit; keep them quarantined unless a decompile trace proves another
-  terminal bit owner.
+  `cargo test -q -p hgbridge-proxy2 inline_name -- --nocapture`. The XP2 seq19
+  post-door compact placeable/door GUI stream is not the terminal inline-name
+  case after the later terminal-trim audit: its final residue is owned by a
+  terminal GUI item-create record and exact-rewrites through that GUI-specific
+  proof. The Chapter1 seq19 door/placeable stream is likewise not the same
+  case: its final residue is owned by a terminal `W` fragment storage span and
+  still exact-rewrites through that W-specific proof.
+- 2026-05-29 `P/05/01` live-object terminal trim ownership gate: narrowed the
+  outer update pass so terminal fragment bits are trimmed only when the final
+  cursor is tied to the family that owns the terminal storage: typed
+  inventory/D5FF storage, terminal GUI item-create storage proven by exact
+  item-create validation, promoted fragment-storage spans, exact creature
+  update tails, terminal `W` storage, or a door/placeable update record whose
+  typed bit path proves a non-state terminal cursor. A prior rewrite earlier
+  in the same live-object stream no longer justifies trimming after later
+  fragment-neutral GUI/delete records. Public coverage now proves a trigger
+  rewrite followed by a read-buffer-only GUI row rejects a final unowned bit,
+  and state-only `U/9`/`U/10` door/placeable updates reject a seventh terminal
+  bit after the five Diamond state BOOLs plus EE's neutral sixth BOOL.
+  Captures demoted to active evidence until a decompile-backed terminal owner
+  or record-boundary handoff is found: To Heir `U/5 0x4408 + I/0x2A00 +
+  GUI/delete`, XP1 single-WORD `I/0x2A00 + GQ`, XP2 Chapter2 seq16, CEP v2.2
+  builder seq16 rebuilt pending stream (post-rewrite `U/0x55` boundary), and
+  CEP v2.3 starter seq17 Lance/Lute/Patron live-object stream (`U/6` handoff
+  plus terminal tail).
+  Verified with
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

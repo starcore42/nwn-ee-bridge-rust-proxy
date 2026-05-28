@@ -240,6 +240,30 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
     None
 }
 
+pub(super) fn d5ff_terminal_fragment_storage_trim_allowed(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    start_bit_cursor: usize,
+    end_bit_cursor: usize,
+) -> bool {
+    if record_end != bytes.len() || end_bit_cursor >= fragment_bits.len() {
+        return false;
+    }
+    let Some(candidate) = try_parse_inventory_d5ff_hg_creature_equipment_state_shape(
+        bytes,
+        record_offset,
+        record_end,
+    ) else {
+        return false;
+    };
+    if candidate.bits == 0 || start_bit_cursor.saturating_add(candidate.bits) != end_bit_cursor {
+        return false;
+    }
+    candidate.fragment_requirements_match(fragment_bits, start_bit_cursor)
+}
+
 fn advance_d5ff_ten_bit_value_groups(
     bytes: &[u8],
     mut cursor: usize,

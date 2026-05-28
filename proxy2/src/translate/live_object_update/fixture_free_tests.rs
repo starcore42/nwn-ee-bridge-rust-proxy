@@ -147,11 +147,15 @@ fn ee_door_add_with_inline_name_live_bytes(name: &[u8]) -> Vec<u8> {
     live
 }
 
-fn door_state_update_live_bytes() -> Vec<u8> {
-    let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
+fn door_placeable_state_update_live_bytes(object_type: u8) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_1234u32.to_le_bytes());
     live.extend_from_slice(&super::LEGACY_UPDATE_STATE_MASK.to_le_bytes());
     live
+}
+
+fn door_state_update_live_bytes() -> Vec<u8> {
+    door_placeable_state_update_live_bytes(super::DOOR_OBJECT_TYPE)
 }
 
 fn door_placeable_low_tail_update_live_bytes(object_type: u8, tail: &[u8]) -> Vec<u8> {
@@ -475,6 +479,34 @@ fn ee_door_state_update_requires_neutral_sixth_bool_and_no_extra_bits() {
 }
 
 #[test]
+fn legacy_door_placeable_state_update_rewrite_rejects_terminal_extra_fragment_bit() {
+    // Diamond door/placeable state updates own exactly five state BOOLs in
+    // `sub_44E2C0`/the matching placeable reader. EE consumes those same five
+    // plus one neutral object-specific BOOL. No terminal reader owns a seventh
+    // bit, so the top-level live-object trim gate must not hide it after the
+    // state rewrite inserts EE's neutral branch.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = door_placeable_state_update_live_bytes(object_type);
+        let mut payload =
+            live_object_payload_with_bits(&live, vec![true, false, true, false, true, true]);
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "terminal state-only object type {object_type:#04X} must not trim an unowned bit"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected terminal state-only repair must leave the source payload untouched"
+        );
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "terminal state-only residual bits must remain unclaimed"
+        );
+    }
+}
+
+#[test]
 fn ee_door_placeable_update_rejects_low_tail_mask_bits() {
     // EE `sub_14079C050` plus the door/placeable-specific `sub_140797780`
     // readers own position, orientation, appearance, scale/state, and the
@@ -734,6 +766,45 @@ fn legacy_trigger_update_rewrite_rejects_terminal_extra_fragment_bit() {
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "terminal trigger residual bits must remain unclaimed"
+    );
+}
+
+#[test]
+fn final_fragment_trim_requires_family_owned_terminal_storage() {
+    let trigger = trigger_update_live_bytes(0xFFFF_FFF3, &[0xAA, 0xBB, 0xCC]);
+    let trigger_end = trigger.len();
+    let mut live = trigger;
+    let mut gui = vec![b'G', b'I', b'U'];
+    gui.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    gui.extend_from_slice(&0x3344u16.to_le_bytes());
+    gui.push(0x55);
+    live.extend_from_slice(&gui);
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        trigger_end,
+        "the trigger rewrite must hand off to the following GUI record before the terminal bit is considered"
+    );
+
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, // trigger position residual bits.
+            true,  // terminal bit after the GUI record has no decompiled reader.
+        ],
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "an unrelated trigger rewrite must not trim terminal bits after a fragment-neutral GUI record"
+    );
+    assert_eq!(
+        payload, original,
+        "unowned terminal fragment bits must leave the source payload untouched"
     );
 }
 

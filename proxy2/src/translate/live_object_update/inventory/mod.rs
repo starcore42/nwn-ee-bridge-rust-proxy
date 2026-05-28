@@ -157,6 +157,24 @@ pub(super) fn owns_fragment_tail(opcode: u8) -> bool {
     matches!(opcode, b'I' | b'G')
 }
 
+pub(super) fn terminal_fragment_storage_trim_allowed(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    start_bit_cursor: usize,
+    end_bit_cursor: usize,
+) -> bool {
+    d5ff_terminal_fragment_storage_trim_allowed(
+        bytes,
+        record_offset,
+        record_end,
+        fragment_bits,
+        start_bit_cursor,
+        end_bit_cursor,
+    )
+}
+
 pub(super) fn advance_verified_inventory_record(
     bytes: &[u8],
     offset: usize,

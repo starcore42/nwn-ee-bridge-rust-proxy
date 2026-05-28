@@ -1906,7 +1906,7 @@ fn local_diamond_auto_inventory_u5_4408_gui_rows_stream_rewrites_to_exact_shape(
 }
 
 #[test]
-fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
+fn local_to_heir_u5_4408_inventory_2a00_word_list_stays_quarantined_after_terminal_bit_audit() {
     // Local To Heir harness capture from 2026-05-19 after Area_ClientArea was
     // repaired from the module ARE. The stream starts with the decompile-owned
     // compact `U/5 0x00004408` self/status record, then an `I/0x2A00` current
@@ -1921,19 +1921,16 @@ fn local_to_heir_u5_4408_inventory_2a00_word_list_rewrites_to_exact_shape() {
         super::claim_payload_if_verified(&payload).is_none(),
         "raw To Heir 0x4408 + 0x2A00 stream is still legacy-shaped"
     );
+    let original = payload.clone();
 
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("To Heir 0x4408 + inventory stream should rewrite");
     assert!(
-        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
-        "To Heir 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "To Heir 0x4408 + inventory/delete stream must not trim a terminal tail without a family owner"
     );
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten To Heir inventory stream should validate exactly");
-    assert!(claim.creature_update_records >= 1);
-    assert!(claim.inventory_records >= 1);
-    assert!(claim.live_gui_read_buffer_records >= 1);
+    assert_eq!(
+        payload, original,
+        "failed exact rewrite must leave terminal-tail evidence unchanged"
+    );
 }
 
 #[test]
@@ -2039,7 +2036,7 @@ fn local_chapter2_current_player_appearance_preserves_full_body_semantics() {
 }
 
 #[test]
-fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
+fn local_xp1_u5_4408_inventory_2a00_single_word_list_stays_quarantined_after_terminal_bit_audit() {
     // Local XP1-Chapter 1 harness capture from 2026-05-22. The stream starts
     // with compact `U/5 0x00004408`, then current-player `I/0x2A00` where the
     // 0x0200 branch uses a single WORD list entry before Feature-25 and the
@@ -2055,18 +2052,15 @@ fn local_xp1_u5_4408_inventory_2a00_single_word_list_rewrites_to_exact_shape() {
         "raw XP1 0x4408 + 0x2A00 stream is still legacy-shaped"
     );
 
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("XP1 0x4408 + inventory stream should rewrite");
+    let original = payload.clone();
     assert!(
-        rewrite.update_records_rewritten >= 1 || rewrite.bytes_inserted > 0,
-        "XP1 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "XP1 0x4408 + inventory/GQ stream must not trim a terminal bit without a family owner"
     );
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten XP1 current-player inventory stream should validate exactly");
-    assert!(claim.creature_update_records >= 1);
-    assert!(claim.inventory_records >= 1);
-    assert!(claim.live_gui_read_buffer_records >= 1);
+    assert_eq!(
+        payload, original,
+        "failed exact rewrite must leave the one-bit terminal-tail evidence unchanged"
+    );
 }
 
 #[cfg(hgbridge_private_fixtures)]
@@ -4147,7 +4141,7 @@ fn local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape() {
+fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape_after_terminal_gui_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_seq19_door_placeable_gui_stream_20260522_unclaimed.bin"
     )
@@ -4162,8 +4156,17 @@ fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape() {
     assert!(claim.add_records >= 1);
     assert!(claim.update_records >= 1);
     assert!(
-        claim.live_gui_item_create_records >= 1,
-        "fixture should retain the GUI-row item-create suffix"
+        claim.live_gui_item_create_records >= 1 && claim.live_gui_fragment_bits > 0,
+        "XP2 seq19 terminal trim must be owned by exact GUI item-create fragment storage"
+    );
+    assert_eq!(
+        claim.last_live_gui_item_record_end,
+        Some(claim.live_bytes_length),
+        "terminal GUI item-create row must own the final live-byte cursor"
+    );
+    assert!(
+        claim.last_live_gui_item_fragment_bit_end.is_some(),
+        "terminal GUI item-create row must own a nonempty final fragment span"
     );
 }
 
@@ -4424,13 +4427,6 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
             .as_slice(),
         ),
         (
-            "seq16",
-            include_bytes!(
-                "../../../fixtures/live_object/local_xp2_chapter2_seq16_liveobject_20260522_unclaimed.bin"
-            )
-            .as_slice(),
-        ),
-        (
             "seq38",
             include_bytes!(
                 "../../../fixtures/live_object/local_xp2_chapter2_seq38_inventory_creature_stream_20260522_unclaimed.bin"
@@ -4470,6 +4466,27 @@ fn local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape() {
             );
         }
     }
+
+    let mut seq16 = include_bytes!(
+        "../../../fixtures/live_object/local_xp2_chapter2_seq16_liveobject_20260522_unclaimed.bin"
+    )
+    .to_vec();
+    let original = seq16.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&seq16).is_none(),
+        "seq16 raw XP2 Chapter 2 stream should document the unclaimed Diamond shape"
+    );
+    assert!(
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut seq16, None
+        ),
+        "seq16 still ends with terminal fragment bits that no parsed live-object family owns"
+    );
+    assert_eq!(
+        seq16, original,
+        "failed exact rewrite must leave terminal-tail evidence unchanged"
+    );
 }
 
 #[cfg(hgbridge_private_fixtures)]

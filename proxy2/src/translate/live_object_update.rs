@@ -211,6 +211,8 @@ pub struct LiveObjectUpdateClaimSummary {
     pub live_gui_read_buffer_records: u32,
     pub live_gui_item_create_records: u32,
     pub live_gui_fragment_bits: u32,
+    pub last_live_gui_item_record_end: Option<usize>,
+    pub last_live_gui_item_fragment_bit_end: Option<usize>,
     pub materialized_item_object_ids: Vec<u32>,
     pub world_status_records: u32,
     pub read_buffer_only_records: u32,
@@ -549,6 +551,10 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             if gui_claim.item_create {
                 summary.live_gui_item_create_records =
                     summary.live_gui_item_create_records.saturating_add(1);
+                summary.last_live_gui_item_record_end = Some(record_end);
+                if gui_claim.fragment_bits > 0 {
+                    summary.last_live_gui_item_fragment_bit_end = Some(bit_cursor);
+                }
             } else {
                 summary.live_gui_read_buffer_records =
                     summary.live_gui_read_buffer_records.saturating_add(1);
@@ -2511,6 +2517,10 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut last_verified_add_record: Option<(usize, u8, u32)> = None;
     let mut last_verified_door_add_fragment_span_record: Option<(usize, u32)> = None;
     let mut last_verified_record_allows_trailing_fragment_promotion = false;
+    let mut terminal_family_fragment_trim_cursor: Option<usize> = None;
+    let mut terminal_creature_update_trim_cursor: Option<usize> = None;
+    let mut terminal_live_gui_item_fragment_trim_cursor: Option<usize> = None;
+    let mut terminal_promoted_fragment_trim_cursor: Option<usize> = None;
     let mut terminal_work_remaining_fragment_storage_record: Option<(usize, usize)> = None;
     let mut loop_iterations = 0usize;
     let max_loop_iterations = old_live_bytes_length.saturating_mul(4).saturating_add(64);
@@ -4015,6 +4025,12 @@ pub fn rewrite_update_records_payload_if_possible(
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     bit_cursor = promotion.end_bit_cursor;
+                    terminal_promoted_fragment_trim_cursor =
+                        promoted_fragment_storage_trim_cursor(
+                            promotion.start_bit_cursor,
+                            promotion.end_bit_cursor,
+                            promotion.bits_promoted,
+                        );
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end = None;
@@ -4051,6 +4067,12 @@ pub fn rewrite_update_records_payload_if_possible(
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
+                    terminal_promoted_fragment_trim_cursor =
+                        promoted_fragment_storage_trim_cursor(
+                            promotion.start_bit_cursor,
+                            promotion.end_bit_cursor,
+                            promotion.bits_promoted,
+                        );
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end =
@@ -4090,6 +4112,11 @@ pub fn rewrite_update_records_payload_if_possible(
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
+                    terminal_promoted_fragment_trim_cursor = promoted_fragment_storage_trim_cursor(
+                        promotion.start_bit_cursor,
+                        promotion.end_bit_cursor,
+                        promotion.bits_promoted,
+                    );
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end =
@@ -4110,6 +4137,9 @@ pub fn rewrite_update_records_payload_if_possible(
                     &mut advanced_cursor,
                 ) {
                     bit_cursor = advanced_cursor;
+                    if bit_cursor < fragment_bits.len() {
+                        terminal_creature_update_trim_cursor = Some(bit_cursor);
+                    }
                     pending_creature_p_tail_repair = None;
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
@@ -4243,15 +4273,14 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
-                if gui::advance_verified_live_gui_record(
+                let gui_claim = gui::advance_verified_live_gui_record(
                     &live_bytes,
                     offset,
                     record_end,
                     &fragment_bits,
                     &mut bit_cursor,
-                )
-                .is_none()
-                {
+                );
+                if gui_claim.is_none() {
                     trace_update_rewrite_cursor_unreliable(
                         "live-gui-cursor-advance-failed",
                         &live_bytes,
@@ -4260,6 +4289,11 @@ pub fn rewrite_update_records_payload_if_possible(
                         bit_cursor,
                     );
                     bit_cursor_reliable = false;
+                } else if record_end == live_bytes.len()
+                    && gui_claim.is_some_and(|claim| claim.item_create && claim.fragment_bits > 0)
+                    && bit_cursor < fragment_bits.len()
+                {
+                    terminal_live_gui_item_fragment_trim_cursor = Some(bit_cursor);
                 } else if let Some(bytes_removed) =
                     gui::remove_zero_fragment_storage_after_verified_live_gui_item_record_for_ee(
                         &mut live_bytes,
@@ -4302,6 +4336,8 @@ pub fn rewrite_update_records_payload_if_possible(
             }
 
             if bit_cursor_reliable {
+                let inventory_start_bit_cursor = bit_cursor;
+                let mut inventory_promotion_bits: Option<usize> = None;
                 if let Some(promotion) =
                     fragment_spans::promote_inventory_interleaved_fragment_span_for_ee(
                         &mut live_bytes,
@@ -4328,17 +4364,17 @@ pub fn rewrite_update_records_payload_if_possible(
                     summary.bits_inserted = summary
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+                    inventory_promotion_bits = Some(promotion.bits_promoted);
                 }
 
-                if inventory::advance_verified_inventory_record(
+                let inventory_claim = inventory::advance_verified_inventory_record(
                     &live_bytes,
                     offset,
                     record_end,
                     &fragment_bits,
                     &mut bit_cursor,
-                )
-                .is_none()
-                {
+                );
+                if inventory_claim.is_none() {
                     if last_verified_creature_0047_fragment_prefix_record_end == Some(offset) {
                         if let Some(promotion) = fragment_spans::
                             promote_creature_0047_following_add_boundary_collision_fragment_span_for_ee(
@@ -4380,6 +4416,26 @@ pub fn rewrite_update_records_payload_if_possible(
                         bit_cursor,
                     );
                     bit_cursor_reliable = false;
+                }
+                if let Some(bits_promoted) = inventory_promotion_bits {
+                    terminal_promoted_fragment_trim_cursor = promoted_fragment_storage_trim_cursor(
+                        inventory_start_bit_cursor,
+                        bit_cursor,
+                        bits_promoted,
+                    );
+                }
+                if record_end == live_bytes.len()
+                    && bit_cursor < fragment_bits.len()
+                    && inventory::terminal_fragment_storage_trim_allowed(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        inventory_start_bit_cursor,
+                        bit_cursor,
+                    )
+                {
+                    terminal_family_fragment_trim_cursor = Some(bit_cursor);
                 }
             }
             last_verified_record_end = record_end;
@@ -4446,6 +4502,14 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
+        let followed_only_by_terminal_work_remaining = record_end < live_bytes.len()
+            && terminal_work_remaining_suffix_legal_end(&live_bytes, record_end).is_some();
+        if record_rewrite.terminal_fragment_trim_allowed
+            && (record_end == live_bytes.len() || followed_only_by_terminal_work_remaining)
+            && bit_cursor < fragment_bits.len()
+        {
+            terminal_family_fragment_trim_cursor = Some(bit_cursor);
+        }
         last_verified_record_end = record_end;
         last_verified_record_allows_trailing_fragment_promotion = false;
         offset = record_end.max(offset + 1);
@@ -4476,6 +4540,9 @@ pub fn rewrite_update_records_payload_if_possible(
             summary.bytes_removed = summary
                 .bytes_removed
                 .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
+            if promotion.bits_promoted > 0 {
+                terminal_promoted_fragment_trim_cursor = Some(bit_cursor);
+            }
         }
     }
 
@@ -4483,6 +4550,52 @@ pub fn rewrite_update_records_payload_if_possible(
         && bit_cursor >= CNW_FRAGMENT_HEADER_BITS
         && bit_cursor < fragment_bits.len()
     {
+        // Terminal trimming is allowed only when the family that advanced the
+        // final cursor also proves the remaining bits are chunk-local fragment
+        // storage. A prior rewrite in the stream is not enough evidence after
+        // fragment-neutral GUI/delete/W records can take over the tail.
+        let terminal_work_remaining_trim_allowed =
+            terminal_work_remaining_fragment_bits_trim_allowed(
+                &live_bytes,
+                &fragment_bits,
+                bit_cursor,
+                terminal_work_remaining_fragment_storage_record,
+            );
+        let terminal_promoted_fragment_trim_allowed =
+            terminal_promoted_fragment_trim_cursor == Some(bit_cursor);
+        let terminal_creature_update_trim_allowed = terminal_creature_update_trim_cursor
+            == Some(bit_cursor)
+            || terminal_exact_creature_update_trim_allowed(&live_bytes, &fragment_bits, bit_cursor);
+        let terminal_live_gui_item_trim_allowed = terminal_live_gui_item_fragment_trim_cursor
+            == Some(bit_cursor)
+            && terminal_live_gui_item_trim_exact_claim_allowed(
+                &live_bytes,
+                &fragment_bits,
+                bit_cursor,
+            );
+        let terminal_family_fragment_trim_allowed =
+            terminal_family_fragment_trim_cursor == Some(bit_cursor);
+        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            eprintln!(
+                "live-object terminal fragment trim gate: bit_cursor={bit_cursor} fragment_bits={} family_cursor={terminal_family_fragment_trim_cursor:?} family_allowed={terminal_family_fragment_trim_allowed} creature_cursor={terminal_creature_update_trim_cursor:?} creature_allowed={terminal_creature_update_trim_allowed} live_gui_item_cursor={terminal_live_gui_item_fragment_trim_cursor:?} live_gui_item_allowed={terminal_live_gui_item_trim_allowed} promoted_cursor={terminal_promoted_fragment_trim_cursor:?} promoted_allowed={terminal_promoted_fragment_trim_allowed} work_remaining_record={terminal_work_remaining_fragment_storage_record:?} work_remaining_allowed={terminal_work_remaining_trim_allowed}",
+                fragment_bits.len()
+            );
+        }
+        if !terminal_family_fragment_trim_allowed
+            && !terminal_creature_update_trim_allowed
+            && !terminal_live_gui_item_trim_allowed
+            && !terminal_work_remaining_trim_allowed
+            && !terminal_promoted_fragment_trim_allowed
+        {
+            trace_update_rewrite_cursor_unreliable(
+                "terminal-fragment-bits-unowned-after-rewrite",
+                &live_bytes,
+                last_verified_record_end.min(live_bytes.len()),
+                live_bytes.len(),
+                bit_cursor,
+            );
+            return None;
+        }
         summary.fragment_bits_trimmed = (fragment_bits.len() - bit_cursor) as u32;
         fragment_bits.truncate(bit_cursor);
     }
@@ -4542,6 +4655,17 @@ fn verified_work_remaining_record_legal_end(live_bytes: &[u8], offset: usize) ->
     (legal_end <= live_bytes.len()
         && world_status::is_verified_work_remaining_record(live_bytes, offset, legal_end))
     .then_some(legal_end)
+}
+
+fn terminal_work_remaining_suffix_legal_end(live_bytes: &[u8], offset: usize) -> Option<usize> {
+    let legal_end = verified_work_remaining_record_legal_end(live_bytes, offset)?;
+    if legal_end == live_bytes.len()
+        || looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+    {
+        Some(legal_end)
+    } else {
+        None
+    }
 }
 
 fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
@@ -4604,6 +4728,90 @@ fn remove_terminal_work_remaining_fragment_storage_with_final_claim(
     );
     *live_bytes = candidate;
     Some(removed)
+}
+
+fn terminal_work_remaining_fragment_bits_trim_allowed(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    terminal_record: Option<(usize, usize)>,
+) -> bool {
+    let Some((offset, legal_end)) = terminal_record else {
+        return false;
+    };
+    if bit_cursor >= fragment_bits.len()
+        || legal_end > live_bytes.len()
+        || verified_work_remaining_record_legal_end(live_bytes, offset) != Some(legal_end)
+    {
+        return false;
+    }
+
+    let live_candidate = if legal_end == live_bytes.len() {
+        live_bytes.to_vec()
+    } else {
+        if !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..]) {
+            return false;
+        }
+        live_bytes[..legal_end].to_vec()
+    };
+    terminal_fragment_trim_exact_claim_allowed(&live_candidate, fragment_bits, bit_cursor)
+}
+
+fn promoted_fragment_storage_trim_cursor(
+    start_bit_cursor: usize,
+    end_bit_cursor: usize,
+    bits_promoted: usize,
+) -> Option<usize> {
+    let consumed_bits = end_bit_cursor.checked_sub(start_bit_cursor)?;
+    (bits_promoted > consumed_bits).then_some(end_bit_cursor)
+}
+
+fn terminal_fragment_trim_exact_claim_allowed(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    let mut candidate_bits = fragment_bits.to_vec();
+    candidate_bits.truncate(bit_cursor);
+    live_object_payload_from_parts(live_bytes, &candidate_bits)
+        .and_then(|payload| claim_payload_if_verified(&payload))
+        .is_some()
+}
+
+fn terminal_exact_creature_update_trim_allowed(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    let mut candidate_bits = fragment_bits.to_vec();
+    candidate_bits.truncate(bit_cursor);
+    let Some(claim) = live_object_payload_from_parts(live_bytes, &candidate_bits)
+        .and_then(|payload| claim_payload_if_verified(&payload))
+    else {
+        return false;
+    };
+    claim.mentions.last().is_some_and(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == CREATURE_OBJECT_TYPE
+            && mention.fragment_bit_end == bit_cursor
+            && mention.record_end == live_bytes.len()
+    })
+}
+
+fn terminal_live_gui_item_trim_exact_claim_allowed(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    let mut candidate_bits = fragment_bits.to_vec();
+    candidate_bits.truncate(bit_cursor);
+    let Some(claim) = live_object_payload_from_parts(live_bytes, &candidate_bits)
+        .and_then(|payload| claim_payload_if_verified(&payload))
+    else {
+        return false;
+    };
+    claim.last_live_gui_item_record_end == Some(live_bytes.len())
+        && claim.last_live_gui_item_fragment_bit_end == Some(bit_cursor)
 }
 
 fn trace_work_remaining_fragment_storage_removed(

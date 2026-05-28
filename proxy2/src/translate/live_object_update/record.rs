@@ -22,6 +22,7 @@ pub(super) struct RecordRewrite {
     pub(super) rewritten: bool,
     pub(super) mask_changed: bool,
     pub(super) bits_changed: bool,
+    pub(super) terminal_fragment_trim_allowed: bool,
     pub(super) bytes_inserted: u32,
     pub(super) bytes_removed: u32,
     pub(super) bits_inserted: u32,
@@ -1122,6 +1123,15 @@ pub(super) fn rewrite_update_record_for_ee(
         || rewrite.bits_inserted != 0
         || rewrite.bits_removed != 0
         || rewrite.bits_changed;
+    // A state-only door/placeable update owns exactly the five Diamond state
+    // BOOLs and EE's inserted neutral sixth BOOL; no terminal reader owns a
+    // seventh bit. Broader legacy door/placeable repairs keep the existing
+    // top-level trim gate only after their typed byte/bit paths above have
+    // proven the record-specific cursor.
+    rewrite.terminal_fragment_trim_allowed = rewrite.rewritten
+        && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && update_bits_present
+        && translated_mask != LEGACY_UPDATE_STATE_MASK;
     let ee_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
         .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, translated_mask))
         .flatten();
