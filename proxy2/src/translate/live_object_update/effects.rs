@@ -126,19 +126,31 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
             bytes, cursor, count, scan_end, &rows,
         );
     }
-    try_get_verified_ee_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0)
-        .or_else(|| {
-            if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
-                return try_get_verified_ee_looping_visual_effect_entries_end(
-                    bytes,
-                    cursor,
-                    count,
-                    scan_end,
-                    LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
-                );
-            }
+    let no_target_end =
+        try_get_verified_ee_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0);
+    let target_end = if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+        try_get_verified_ee_looping_visual_effect_entries_end(
+            bytes,
+            cursor,
+            count,
+            scan_end,
+            LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
+        )
+    } else {
+        None
+    };
+
+    match (no_target_end, target_end) {
+        (Some(no_target_end), Some(target_end)) if no_target_end != target_end => {
+            // Without visualeffects.2da row proof, a stream boundary that can be
+            // both "no target + map" and "five-byte target + map" is not owned
+            // by either decompiled branch. Exact record validation still accepts
+            // either shape when the caller has already proven the record end.
             None
-        })
+        }
+        (Some(end), _) | (_, Some(end)) => Some(end),
+        (None, None) => None,
+    }
 }
 
 fn parse_looping_visual_effect_update(
@@ -484,6 +496,39 @@ mod tests {
                 stale_short_target.len()
             ),
             "the old three-byte target-payload shape must not exact-claim"
+        );
+    }
+
+    #[test]
+    fn looping_effect_stream_boundary_rejects_ambiguous_target_fallback() {
+        let mut record = vec![
+            b'U',
+            CREATURE_OBJECT_TYPE,
+            0x0F,
+            0x00,
+            0x00,
+            0x80,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            b'A',
+            0x34,
+            0x12,
+        ];
+        record.extend_from_slice(&[0; LOOPING_EFFECT_TARGET_PAYLOAD_BYTES]);
+        record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
+
+        assert!(
+            is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
+            "exact record validation can still own the one-target row shape"
+        );
+        assert_eq!(
+            try_get_verified_ee_looping_visual_effect_update_record_end(&record, 0, record.len()),
+            None,
+            "stream boundary scanning must not choose between no-target and target cursors without row proof"
         );
     }
 

@@ -1022,6 +1022,15 @@ Current status:
   or static-overlap diagnostics cannot revive an object-deletion workaround.
   Verified with `cargo test -q -p hgbridge-proxy2
   legacy_scalar_visual_transform -- --nocapture`.
+- 2026-05-28 `P/05/01` looping visual-effect stream-boundary audit:
+  tightened only the no-`visualeffects.2da` stream-boundary probe. When a
+  single `U/* 0x00000008` row can be split as either no target plus EE identity
+  map or five-byte target payload plus EE identity map, the scanner now refuses
+  to choose a record end without row-type proof. Exact record validation still
+  accepts either decompile-owned shape after a caller has already proven the
+  record boundary. Verified with the focused
+  `looping_effect_stream_boundary_rejects_ambiguous_target_fallback` and
+  `loaded_visualeffects` cargo test filters.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
