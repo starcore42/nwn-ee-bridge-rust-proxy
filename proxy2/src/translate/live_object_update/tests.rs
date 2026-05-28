@@ -443,6 +443,65 @@ fn diamond_inline_name_door_update_drops_only_legacy_name_branch() {
 }
 
 #[test]
+fn diamond_inline_name_door_placeable_update_rejects_terminal_extra_fragment_bit() {
+    for (object_type, object_id, name, state_word) in [
+        (
+            super::DOOR_OBJECT_TYPE,
+            [0xD1, 0x34, 0x00, 0x80],
+            b"Door".as_slice(),
+            0x0016u16,
+        ),
+        (
+            super::PLACEABLE_OBJECT_TYPE,
+            [0xC8, 0x35, 0x00, 0x80],
+            b"Chest".as_slice(),
+            0x0049u16,
+        ),
+    ] {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', object_type]);
+        live.extend_from_slice(&object_id);
+        live.extend_from_slice(&0x0008_0017u32.to_le_bytes());
+        live.extend_from_slice(&[0x8E, 0x12, 0xD4, 0x10, 0xEE, 0x0E]);
+        live.push(0xD1);
+        live.extend_from_slice(&1.0f32.to_le_bytes());
+        live.extend_from_slice(&state_word.to_le_bytes());
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+
+        let mut fragment_bits = vec![
+            false, false, false, // CNW fragment length header, rewritten by pack.
+            false, true, // position low bits retained from the Diamond stream.
+            false, false, false, false, false, // five Diamond object state bits.
+            false, // Diamond-only name-presence branch.
+        ];
+        fragment_bits.push(true);
+
+        let mut payload = vec![b'P', 0x05, 0x01];
+        payload.extend_from_slice(&((7 + live.len()) as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+            fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        ));
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "terminal inline-name object type {object_type:#04X} must not trim an unowned fragment bit"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected terminal inline-name repair must leave the source payload untouched"
+        );
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "terminal inline-name residual bits must remain unclaimed"
+        );
+    }
+}
+
+#[test]
 fn raw_legacy_all_bits_door_update_is_not_exactly_claimed() {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x0A, 0xD1, 0x34, 0x00, 0x80, 0xF7, 0xFF, 0xFF, 0xFF]);

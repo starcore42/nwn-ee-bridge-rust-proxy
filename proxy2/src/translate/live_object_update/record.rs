@@ -183,6 +183,7 @@ pub(super) fn rewrite_update_record_for_ee(
     let mut tail_ready = false;
     let mut tail_needs_empty_name = false;
     let mut inline_name_drop_begin = None;
+    let mut inline_name_compact_proven = false;
     let mut low_prefix_interleaved_fragment_span_begin = None;
     let mut fragment_source_mask = raw_mask;
     let mut legacy_low_tail_fragment_bits_to_remove = 0usize;
@@ -347,6 +348,7 @@ pub(super) fn rewrite_update_record_for_ee(
         {
             debug_assert_eq!(inline_name.name_end, *record_end);
             inline_name_drop_begin = Some(inline_name.read_without_name_end);
+            inline_name_compact_proven = true;
             can_translate_read_buffer = true;
             if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
                 let orientation_bit_cursor = *bit_cursor
@@ -798,6 +800,27 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     if let Some(span_begin) = low_prefix_interleaved_fragment_span_begin {
+        if *record_end == live_bytes.len()
+            && inline_name_drop_begin == Some(span_begin)
+            && !inline_name_compact_proven
+            && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+        {
+            // The compact inline-name path above owns the terminal Diamond
+            // name-drop shape when the source fragment bits are exact. If an
+            // isolated terminal record instead needs to borrow bits from the
+            // inline-name read body, there is no following record to prove that
+            // the remaining source bitstream is aligned.
+            debug_update_record_reject(
+                "terminal-door-placeable-inline-name-interleaved-fragment-span",
+                live_bytes,
+                record_offset,
+                *record_end,
+                raw_mask,
+                translated_mask,
+                *bit_cursor,
+            );
+            return None;
+        }
         let required_source_bits =
             low_prefix_door_placeable_update_source_fragment_bits(fragment_source_mask);
         let available_bits = bits.len().saturating_sub(*bit_cursor);
@@ -919,6 +942,24 @@ pub(super) fn rewrite_update_record_for_ee(
         {
             debug_update_record_reject(
                 "terminal-door-placeable-tail9-residual-fragment-bits",
+                live_bytes,
+                record_offset,
+                *record_end,
+                raw_mask,
+                translated_mask,
+                *bit_cursor,
+            );
+            return None;
+        }
+        if *record_end == live_bytes.len()
+            && inline_name_drop_begin.is_some()
+            && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+            && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+            && (translated_mask & LEGACY_UPDATE_NAME_MASK) == 0
+            && *rewritten_bit_cursor != rewritten_bits.len()
+        {
+            debug_update_record_reject(
+                "terminal-door-placeable-inline-name-residual-fragment-bits",
                 live_bytes,
                 record_offset,
                 *record_end,

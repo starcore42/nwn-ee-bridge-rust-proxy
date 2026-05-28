@@ -4942,7 +4942,7 @@ mod hg_mixed_door_placeable_translation_tests {
     }
 
     #[test]
-    fn hg_post_door_placeable_transition_compact_payload_rewrites_to_exact_ee_claim() {
+    fn hg_post_door_placeable_transition_compact_payload_leaves_terminal_name_residual_unclaimed() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/hg_post_door_placeable_transition_compact_after_update.bin"
         )
@@ -4959,13 +4959,13 @@ mod hg_mixed_door_placeable_translation_tests {
         let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         assert!(
-            live_update::claim_payload_if_verified(&payload).is_some(),
-            "post-door compact placeable add/update payload must be exact-claimable"
+            live_update::claim_payload_if_verified(&payload).is_none(),
+            "post-door compact placeable add/update payload still carries unowned terminal U/9 inline-name fragment bits"
         );
     }
 
     #[test]
-    fn hg_post_door_door_transition_compact_payload_rewrites_to_exact_ee_claim() {
+    fn hg_post_door_door_transition_compact_payload_leaves_terminal_name_residual_unclaimed() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/hg_post_door_door_transition_compact_after_update.bin"
         )
@@ -4981,8 +4981,8 @@ mod hg_mixed_door_placeable_translation_tests {
         let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         assert!(
-            live_update::claim_payload_if_verified(&payload).is_some(),
-            "post-door compact door add/update payload must be exact-claimable"
+            live_update::claim_payload_if_verified(&payload).is_none(),
+            "post-door compact door add/update payload still carries unowned terminal U/10 inline-name fragment bits"
         );
     }
 

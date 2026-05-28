@@ -924,6 +924,22 @@ Current status:
   trimming. Verify with `cargo test -q -p hgbridge-proxy2 legacy_all_bits --
   --nocapture` and `cargo test -q -p hgbridge-proxy2 door_placeable --
   --nocapture`.
+- 2026-05-29 `P/05/01` inline-name door/placeable terminal-bit audit:
+  tightened the plain legacy `U/9`/`U/10` name-drop path adjacent to the
+  low-tail/tail9 guards. Terminal inline-name repairs may now proceed only
+  through the compact decompile-owned source fragment cursor: position BOOLs,
+  five state BOOLs, and Diamond's input-only name BOOL before the direct
+  CExoString bytes are dropped. If the record would instead need the
+  read-body interleaved-fragment fallback, it must have a following live-object
+  boundary to prove alignment; an isolated terminal record with one extra
+  fragment bit is left untouched and unclaimed rather than letting the extra
+  bit alter how many bits are borrowed from the name bytes. Verified with
+  `cargo test -q -p hgbridge-proxy2 inline_name -- --nocapture`. The older
+  post-door compact placeable/door transition fixtures have been demoted from
+  exact-claim positives to active evidence because, after visual-map insertion,
+  their terminal `U/9`/`U/10` inline-name updates still carry one unowned final
+  fragment bit; keep them quarantined unless a decompile trace proves another
+  terminal bit owner.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
