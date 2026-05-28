@@ -4987,7 +4987,7 @@ mod hg_mixed_door_placeable_translation_tests {
     }
 
     #[test]
-    fn hg_door_transition_ascension_west_mixed_payload_rewrites_to_exact_ee_claim() {
+    fn hg_door_transition_ascension_west_mixed_payload_leaves_terminal_tail9_residual_unclaimed() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/hg_door_transition_ascension_west_mixed_liveobject.bin"
         )
@@ -5004,8 +5004,8 @@ mod hg_mixed_door_placeable_translation_tests {
         let _ = rewrite_creature_add_visual_transform_maps_if_possible(&mut payload, None);
         let _ = live_update::rewrite_update_records_payload_if_possible(&mut payload);
         assert!(
-            live_update::claim_payload_if_verified(&payload).is_some(),
-            "door-transition Ascension West mixed live-object burst must be exact-claimable"
+            live_update::claim_payload_if_verified(&payload).is_none(),
+            "door-transition Ascension West mixed live-object burst still carries unowned terminal U/9 tail9 fragment bits"
         );
     }
 

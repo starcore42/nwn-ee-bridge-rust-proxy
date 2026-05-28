@@ -909,6 +909,21 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 terminal_extra_fragment_bit --
   --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`,
   and `cargo test -q -p hgbridge-proxy2 trigger_update -- --nocapture`.
+- 2026-05-29 `P/05/01` all-bits door/placeable tail9 terminal-bit audit:
+  extended the terminal residual-bit guard to the older `U/9`/`U/10`
+  `0xFFFFFFF7` tail9 converter. The proven Diamond-owned source cursor is
+  position residual bits, five state BOOLs, and the legacy name BOOL; the EE
+  writer inserts scalar-orientation bits and one neutral door/placeable state
+  BOOL, but any remaining terminal fragment bit is unowned until a decompile
+  trace proves another reader. Public synthetic coverage now proves a terminal
+  door/placeable tail9 update with one extra bit rejects without mutating the
+  source. The live Ascension West mixed-burst fixture remains active evidence:
+  after the compact `A/9` visual-map rewrite, its final `U/9 0xFFFFFFF7`
+  tail9 row still has residual fragment bits and no following record to own
+  them, so it is now kept unclaimed instead of relying on outer live-object
+  trimming. Verify with `cargo test -q -p hgbridge-proxy2 legacy_all_bits --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 door_placeable --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

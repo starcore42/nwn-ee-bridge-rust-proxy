@@ -638,6 +638,69 @@ fn legacy_all_bits_placeable_update_preserves_orientation_mask_when_rewritten() 
 }
 
 #[test]
+fn legacy_all_bits_door_placeable_tail9_rejects_terminal_extra_fragment_bit() {
+    for (object_type, object_id, tail, name) in [
+        (
+            super::DOOR_OBJECT_TYPE,
+            [0xD1, 0x34, 0x00, 0x80],
+            [
+                0x8E, 0x12, 0xD4, 0x10, 0xEE, 0x0E, 0x00, 0x2E, 0x02, 0x00, 0x00, 0x80, 0x3F, 0x16,
+                0x00,
+            ],
+            b"Door".as_slice(),
+        ),
+        (
+            super::PLACEABLE_OBJECT_TYPE,
+            [0xC8, 0x35, 0x00, 0x80],
+            [
+                0xC4, 0x22, 0x84, 0x03, 0xA9, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x49,
+                0x00,
+            ],
+            b"Portal to Loot Testing".as_slice(),
+        ),
+    ] {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', object_type]);
+        live.extend_from_slice(&object_id);
+        live.extend_from_slice(&[0xF7, 0xFF, 0xFF, 0xFF]);
+        live.extend_from_slice(&tail);
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+
+        let mut fragment_bits = vec![
+            false, false, false, // CNW fragment length header, rewritten by pack.
+            false, true, // position low bits retained.
+            false, false, false, false, false, // five legacy object state bits.
+            false, // Diamond name-presence BOOL removed with the legacy name branch.
+        ];
+        fragment_bits.push(true);
+
+        let mut payload = vec![b'P', 0x05, 0x01];
+        let declared = (7 + live.len()) as u32;
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+            fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        ));
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "terminal tail9 object type {object_type:#04X} must not trim an unowned fragment bit"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected terminal tail9 repair must leave the source payload untouched"
+        );
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "terminal tail9 residual bits must remain unclaimed"
+        );
+    }
+}
+
+#[test]
 fn low_bits_placeable_update_drops_bounded_tail_before_ee_claim() {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x09, 0x07, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);

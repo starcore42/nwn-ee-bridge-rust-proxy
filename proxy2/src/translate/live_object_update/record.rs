@@ -907,6 +907,29 @@ pub(super) fn rewrite_update_record_for_ee(
         None
     };
 
+    // The tail9 converter owns Diamond's name BOOL and EE's inserted scalar/
+    // state bits only; a terminal extra bit has no following record to claim it.
+    if let Some((rewritten_bits, rewritten_bit_cursor, _)) = bit_rewrite_candidate.as_ref() {
+        if *record_end == live_bytes.len()
+            && tail_ready
+            && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+            && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+            && (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0
+            && *rewritten_bit_cursor != rewritten_bits.len()
+        {
+            debug_update_record_reject(
+                "terminal-door-placeable-tail9-residual-fragment-bits",
+                live_bytes,
+                record_offset,
+                *record_end,
+                raw_mask,
+                translated_mask,
+                *bit_cursor,
+            );
+            return None;
+        }
+    }
+
     if tail_ready
         && (translated_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK))
             != 0
