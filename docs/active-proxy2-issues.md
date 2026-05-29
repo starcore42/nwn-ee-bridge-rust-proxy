@@ -1158,6 +1158,15 @@ Current status:
   live_object_update -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   live_object -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-30 `P/05/01` short GUI/delete declared-tail audit: generalized the
+  aligned short-read-boundary guard that was added for `W current total`.
+  Zero-row `GQ` and six-byte delete rows can also be shorter than the broad
+  ambiguous-tail scanner while their bytes still decode as compact CNW fragment
+  storage. Stale-declared repair now treats aligned short `W`, GUI read-buffer,
+  and delete rows as live-object read boundaries, and the read-prefix walker can
+  advance over short `GQ` rows instead of requiring an object-id-bearing GUI
+  shape. Verified with `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

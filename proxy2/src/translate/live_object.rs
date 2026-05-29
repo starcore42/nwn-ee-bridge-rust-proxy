@@ -721,12 +721,11 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
         return false;
     }
 
-    if is_work_remaining_record_at(bytes, tail_start) {
-        // Diamond `sub_44F160` and EE `sub_1407B85A0` consume `W current
-        // total` as exactly three read-buffer bytes. It is too short for the
-        // broad ambiguous-tail scanner below, but an aligned `W` at the
-        // proposed CNW tail start is still a live-object read boundary, not
-        // fragment storage.
+    if fragment_tail_starts_with_aligned_short_live_object_read_boundary(bytes, tail_start) {
+        // Diamond/EE short read-buffer rows such as `W current total`, zero-row
+        // `GQ`, and delete records are shorter than the broad ambiguous-tail
+        // scanner below. When one starts exactly at the proposed CNW tail, the
+        // split is still a live-object read boundary, not fragment storage.
         return true;
     }
 
@@ -740,6 +739,41 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
         offset += 1;
     }
     false
+}
+
+fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    if tail_start >= bytes.len()
+        || bytes.len().saturating_sub(tail_start) >= MIN_AMBIGUOUS_TAIL_READ_BYTES
+    {
+        return false;
+    }
+
+    if is_work_remaining_record_at(bytes, tail_start) {
+        return true;
+    }
+
+    if let Some(gui_end) =
+        crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
+            bytes,
+            tail_start,
+            bytes.len(),
+            &[],
+            0,
+        )
+    {
+        if gui_end > tail_start && gui_end <= bytes.len() {
+            return true;
+        }
+    }
+
+    let Some(delete_end) = tail_start.checked_add(6) else {
+        return false;
+    };
+    delete_end <= bytes.len()
+        && legacy_live_delete_fragment_bit_count(bytes, tail_start, delete_end).is_some()
 }
 
 fn is_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
@@ -1529,6 +1563,20 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
         return scan_end;
     }
 
+    if bytes.get(offset).copied() == Some(b'G') {
+        if let Some(record_end) =
+            crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
+                bytes,
+                offset,
+                scan_end,
+                &[],
+                0,
+            )
+        {
+            return record_end;
+        }
+    }
+
     if bytes.get(offset).copied() == Some(b'A')
         && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
     {
@@ -1988,6 +2036,19 @@ fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usiz
         && bytes[offset + 5] == 0xFF;
     if matches!(opcode, b'A' | b'D' | b'U' | b'P')
         && (typed_object_boundary || legacy_type5_sentinel_boundary)
+    {
+        return true;
+    }
+
+    if opcode == b'G'
+        && crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
+            bytes,
+            offset,
+            bytes.len(),
+            &[],
+            0,
+        )
+        .is_some()
     {
         return true;
     }
@@ -4450,6 +4511,102 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned W read record"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_gui_read_record_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&[b'G', b'Q', 0x00]);
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "zero-row GQ can masquerade as compact CNW fragment storage"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned GQ remains a read-buffer GUI record, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short GUI record"
+        );
+    }
+
+    #[test]
+    fn declared_length_read_prefix_walks_through_short_gui_record() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+        live.extend_from_slice(&[b'G', b'Q', 0x00]);
+
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "zero-row GQ is a complete read-buffer GUI row inside the live-object prefix"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(
+                &live,
+                live.len() - 3,
+                live.len()
+            ),
+            live.len(),
+            "the transport walker must advance over the whole short GUI row"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_delete_read_record_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&[b'D', TRIGGER_OBJECT_TYPE]);
+        payload.extend_from_slice(&0x8000_1007u32.to_le_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "read-buffer delete bytes can masquerade as compact CNW fragment storage"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned D/7 remains a read-buffer delete record, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short delete record"
         );
     }
 
