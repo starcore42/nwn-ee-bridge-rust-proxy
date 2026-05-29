@@ -1084,6 +1084,19 @@ Current status:
   dispatcher ownership proven without letting old semantically shifted EE-byte
   dumps become positive fixtures. Verified with `cargo test -q -p
   hgbridge-proxy2 server_dispatch -- --nocapture`.
+- 2026-05-29 `P/05/01` door/placeable mask-`0x17` stale absent-appearance
+  terminal-bit audit: hardened the byte-gap repair so removing the two stale
+  bytes at the absent mask-`0x20` appearance cursor no longer grants terminal
+  fragment-trim ownership. Diamond `sub_467AE0` and EE `sub_14079C050` still
+  require scale/state immediately after the scalar orientation byte when
+  mask `0x20` is absent; the repair may exact-claim only when the source owns
+  the position, scalar-orientation, five state, and EE-neutral sixth state bits.
+  An extra terminal fragment bit now rejects and leaves the evidence payload
+  unchanged. This closes the stale-gap-specific trim leak but does not resolve
+  the remaining terminal `U/9 mask=0x37` fragment shortage before `W`/stream
+  boundary. Verified with `cargo test -q -p hgbridge-proxy2
+  stale_absent_appearance_gap_repair_rejects_terminal_extra_fragment_bit --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

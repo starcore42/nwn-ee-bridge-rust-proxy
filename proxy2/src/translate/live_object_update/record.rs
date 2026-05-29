@@ -1178,6 +1178,7 @@ pub(super) fn rewrite_update_record_for_ee(
         }
     }
 
+    let repaired_stale_absent_appearance_gap = byte_gap_drop_range.is_some();
     if let Some((drop_begin, drop_end)) = byte_gap_drop_range {
         if drop_begin < drop_end && drop_end <= *record_end {
             let removed = drop_end - drop_begin;
@@ -1295,6 +1296,11 @@ pub(super) fn rewrite_update_record_for_ee(
     rewrite.terminal_fragment_trim_allowed = rewrite.rewritten
         && matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && update_bits_present
+        // The mask-0x17 stale absent-appearance repair removes bytes that no
+        // Diamond/EE reader owns. It may produce an exact stream when the
+        // source bits are complete, but that byte-gap proof cannot also own a
+        // later terminal fragment bit.
+        && !repaired_stale_absent_appearance_gap
         && translated_mask != LEGACY_UPDATE_STATE_MASK;
     let ee_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
         .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, translated_mask))
