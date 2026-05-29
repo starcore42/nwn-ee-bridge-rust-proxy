@@ -1515,6 +1515,16 @@ pub(crate) fn legacy_live_gui_record_end_for_transport(
     )
 }
 
+pub(crate) fn legacy_live_gui_character_sheet_read_boundary_without_fragment_proof(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> bool {
+    gui::looks_like_legacy_character_sheet_read_boundary_without_fragment_proof(
+        live_bytes, offset, scan_end,
+    )
+}
+
 pub(crate) fn advance_legacy_live_gui_fragment_cursor_for_transport(
     live_bytes: &[u8],
     offset: usize,

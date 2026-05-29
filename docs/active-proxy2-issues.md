@@ -1167,6 +1167,16 @@ Current status:
   advance over short `GQ` rows instead of requiring an object-id-bearing GUI
   shape. Verified with `cargo test -q -p hgbridge-proxy2 declared_length_ --
   --nocapture`.
+- 2026-05-30 `P/05/01` character-sheet declared-tail audit: extended the same
+  stale-declared tail guard to short `G S` character-sheet rows that own CNW
+  BOOLs. EE `sub_1407B2740` reads mask `0x20` as one read-buffer BYTE followed
+  by one fragment BOOL; that 11-byte read row can start with bytes that decode
+  as compact fragment storage, so a proposed CNW tail beginning at aligned
+  `G S` must stay a live GUI read-boundary ambiguity until the normal exact
+  GUI reader proves the record. Verified with `cargo test -q -p
+  hgbridge-proxy2 character_sheet -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 declared_length_ -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

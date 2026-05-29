@@ -769,6 +769,14 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         }
     }
 
+    if crate::translate::live_object_update::legacy_live_gui_character_sheet_read_boundary_without_fragment_proof(
+        bytes,
+        tail_start,
+        bytes.len(),
+    ) {
+        return true;
+    }
+
     let Some(delete_end) = tail_start.checked_add(6) else {
         return false;
     };
@@ -4548,6 +4556,46 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short GUI record"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_character_sheet_read_record_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&[b'G', b'S']);
+        payload.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        payload.extend_from_slice(&0x0000_0020u32.to_le_bytes());
+        payload.push(0x7A);
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short G/S bytes can masquerade as compact CNW fragment storage"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned G/S remains a live GUI read record even when it owns a fragment BOOL"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short character-sheet record"
         );
     }
 

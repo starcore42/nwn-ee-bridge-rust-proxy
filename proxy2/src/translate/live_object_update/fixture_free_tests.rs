@@ -1533,6 +1533,26 @@ fn live_gui_character_sheet_effect_icons_word_ids_require_changed_row_bool() {
 }
 
 #[test]
+fn live_gui_character_sheet_mask20_owns_one_fragment_bool() {
+    // EE `sub_1407B2740` reads the mask 0x20 character-sheet branch as one
+    // read-buffer BYTE followed by one CNW BOOL. It is a short `G S` row, but
+    // still not read-buffer-only.
+    let payload = live_gui_character_sheet_payload(0x0000_0020, &[0x7A], vec![true]);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("short character-sheet mask 0x20 row should exact-claim");
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_item_create_records, 0);
+    assert_eq!(claim.live_gui_fragment_bits, 1);
+
+    let shifted = live_gui_character_sheet_payload(0x0000_0020, &[0x7A], Vec::new());
+    assert!(
+        super::claim_payload_if_verified(&shifted).is_none(),
+        "the mask 0x20 character-sheet row must not claim without its BOOL"
+    );
+}
+
+#[test]
 fn live_gui_character_sheet_combat_build_8193_35_owns_five_bit_actions() {
     // EE build 8193.35 widened the second combat-info list action field from
     // four bits to five. The byte window is identical to the legacy shape, so

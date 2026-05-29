@@ -263,29 +263,10 @@ fn try_get_live_gui_character_sheet_claim(
     // combat list ids; newer EE builds have decompiled word/five-bit branches,
     // so both exact build shapes are modeled here without guessing at record
     // boundaries.
-    let modes = [
-        CharacterSheetParseMode {
-            combat: CharacterSheetCombatBuildMode::Legacy,
-            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
-        },
-        CharacterSheetParseMode {
-            combat: CharacterSheetCombatBuildMode::Build8193_35,
-            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
-        },
-        CharacterSheetParseMode {
-            combat: CharacterSheetCombatBuildMode::Legacy,
-            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
-        },
-        CharacterSheetParseMode {
-            combat: CharacterSheetCombatBuildMode::Build8193_35,
-            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
-        },
-    ];
-
     let mut boundary_candidates = Vec::new();
     let mut full_record_candidates = Vec::new();
 
-    for mode in modes {
+    for mode in character_sheet_parse_modes() {
         let mut cursor = CharacterSheetCursor::new(
             bytes,
             offset.checked_add(2)?,
@@ -343,6 +324,72 @@ fn try_get_live_gui_character_sheet_claim(
         .iter()
         .copied()
         .find(|claim| claim.next_bit_cursor == fragment_bits.len())
+}
+
+fn character_sheet_parse_modes() -> [CharacterSheetParseMode; 4] {
+    [
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Legacy,
+            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Build8193_35,
+            effect_icons: CharacterSheetEffectIconMode::LegacyByteIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Legacy,
+            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
+        },
+        CharacterSheetParseMode {
+            combat: CharacterSheetCombatBuildMode::Build8193_35,
+            effect_icons: CharacterSheetEffectIconMode::Build8193_37WordIds,
+        },
+    ]
+}
+
+pub(super) fn looks_like_legacy_character_sheet_read_boundary_without_fragment_proof(
+    bytes: &[u8],
+    offset: usize,
+    search_end: usize,
+) -> bool {
+    let scan_end = search_end.min(bytes.len());
+    if scan_end.saturating_sub(offset) < CHARACTER_SHEET_RECORD_HEADER_BYTES
+        || bytes.get(offset).copied() != Some(LIVE_GUI_OPCODE)
+        || bytes.get(offset + 1).copied() != Some(GUI_CHARACTER_SHEET_SUBOPCODE)
+    {
+        return false;
+    }
+
+    // Stale-declared live-object repair sometimes asks whether bytes at the
+    // proposed CNW fragment-tail start could instead be live-object read bytes.
+    // For `G S` rows we may not have the real fragment bitstream yet, so this is
+    // only an ambiguity detector: if the decompiled character-sheet byte cursor
+    // can parse a supported row with enough placeholder BOOL capacity, the split
+    // must not treat those bytes as pure fragment storage.
+    let placeholder_bits = [false; 256];
+    character_sheet_parse_modes().into_iter().any(|mode| {
+        let Some(mut cursor) =
+            CharacterSheetCursor::new(bytes, offset + 2, scan_end, &placeholder_bits, 0)
+        else {
+            return false;
+        };
+        let Some(object_id) = cursor.read_u32() else {
+            return false;
+        };
+        if !looks_like_character_sheet_object_id(object_id) {
+            return false;
+        }
+        let Some(mask) = cursor.read_u32() else {
+            return false;
+        };
+        if mask & !CHARACTER_SHEET_SUPPORTED_MASK != 0
+            || mask & CHARACTER_SHEET_UNSUPPORTED_SKILLS_MASK != 0
+        {
+            return false;
+        }
+        parse_live_gui_character_sheet_body(&mut cursor, mask, mode).is_some()
+            && cursor.cursor <= scan_end
+    })
 }
 
 fn looks_like_following_live_gui_character_sheet_boundary(
