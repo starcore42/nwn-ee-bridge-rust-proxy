@@ -985,6 +985,19 @@ Current status:
   handoff is proven. Verified with `cargo test -q -p hgbridge-proxy2
   inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit --
   --nocapture`.
+- 2026-05-29 `P/05/01` item `U/6` 0x40 transactional cursor audit: hardened
+  the item update rewrite so legacy mask/tail edits are staged and committed
+  only after the exact EE item validator owns the read cursor and fragment
+  cursor. Diamond `sub_459700` reads the live-object opcode/object-id/mask
+  envelope, then `sub_451AF0` owns the item update branches; the `0x40` item
+  branch carries a six-byte Diamond read-buffer tail plus one hidden-state
+  BOOL, while EE owns only the BOOL at that point. Public unit coverage now
+  proves the tail collapses only with the BOOL present and a missing BOOL
+  leaves both the bytes and record end untouched, preventing a failed item
+  rewrite from corrupting later records in the same stream. This does not
+  resolve the active CEP v2.3 `U/6` handoff/terminal-tail capture; it removes
+  one unsupported partial-mutation path before continuing that boundary audit.
+  Verified with `cargo test -q -p hgbridge-proxy2 item_update_40 -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

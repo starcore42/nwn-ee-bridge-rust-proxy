@@ -87,15 +87,17 @@ pub(super) fn rewrite_update_record_for_ee(
     )?;
 
     if raw_mask == DIAMOND_ITEM_FULL_UPDATE_MASK {
-        write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
+        let mut candidate = live_bytes.clone();
+        write_u32_le(&mut candidate, record_offset + 6, translated_mask)?;
         let verified_next = advance_verified_ee_item_update_record(
-            live_bytes,
+            &candidate,
             record_offset,
             *record_end,
             fragment_bits,
             bit_cursor,
         )?;
 
+        *live_bytes = candidate;
         return Some(ItemUpdateRewrite {
             rewritten: translated_mask != raw_mask,
             mask_changed: translated_mask != raw_mask,
@@ -105,6 +107,8 @@ pub(super) fn rewrite_update_record_for_ee(
     }
 
     let mut bytes_removed = 0usize;
+    let mut candidate = live_bytes.clone();
+    let mut candidate_record_end = *record_end;
     if (raw_mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
         let legacy_tail_end = diamond_item_update_40_tail_end(
             live_bytes,
@@ -112,24 +116,31 @@ pub(super) fn rewrite_update_record_for_ee(
             *record_end,
             (raw_mask & LEGACY_ITEM_IGNORED_LOW_80_MASK) != 0,
         )?;
-        bytes_removed = bytes_removed.saturating_add((*record_end).saturating_sub(common.read_end));
-        live_bytes.drain(common.read_end..legacy_tail_end);
-        *record_end = common.read_end;
+        bytes_removed =
+            bytes_removed.saturating_add(legacy_tail_end.saturating_sub(common.read_end));
+        // Diamond `sub_459700` hands object type/id/mask to item update
+        // `sub_451AF0`; the 0x40 branch owns this read-buffer tail plus one
+        // fragment BOOL. Commit tail removal only after the EE item validator
+        // proves the final read cursor and fragment cursor.
+        candidate.drain(common.read_end..legacy_tail_end);
+        candidate_record_end = common.read_end;
     } else if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
         return None;
     } else if common.read_end != *record_end {
         return None;
     }
 
-    write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
+    write_u32_le(&mut candidate, record_offset + 6, translated_mask)?;
     let verified_next = advance_verified_ee_item_update_record(
-        live_bytes,
+        &candidate,
         record_offset,
-        *record_end,
+        candidate_record_end,
         fragment_bits,
         bit_cursor,
     )?;
 
+    *live_bytes = candidate;
+    *record_end = candidate_record_end;
     Some(ItemUpdateRewrite {
         rewritten: bytes_removed != 0 || translated_mask != raw_mask,
         mask_changed: translated_mask != raw_mask,
@@ -367,6 +378,54 @@ fn diamond_item_update_40_tail_end(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_hidden_item_update_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+        live.extend_from_slice(&EE_ITEM_UPDATE_HIDDEN_MASK.to_le_bytes());
+        live.extend_from_slice(&[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A]);
+        live
+    }
+
+    #[test]
+    fn item_update_40_legacy_tail_rewrites_after_bool_proof() {
+        let mut live = legacy_hidden_item_update_live_bytes();
+        let mut record_end = live.len();
+
+        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[true], 0)
+            .expect("legacy item 0x40 tail should collapse after its hidden BOOL is present");
+
+        assert!(rewrite.rewritten);
+        assert!(!rewrite.mask_changed);
+        assert_eq!(rewrite.bytes_removed, 6);
+        assert_eq!(rewrite.next_bit_cursor, 1);
+        assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(live.len(), LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(
+            read_u32_le(&live, 6),
+            Some(EE_ITEM_UPDATE_HIDDEN_MASK),
+            "mask stays semantic while the Diamond-only read tail is removed"
+        );
+    }
+
+    #[test]
+    fn item_update_40_missing_bool_does_not_partially_remove_tail() {
+        let mut live = legacy_hidden_item_update_live_bytes();
+        let original = live.clone();
+        let mut record_end = live.len();
+
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[], 0).is_none(),
+            "Diamond item 0x40 tail removal needs the following hidden-state BOOL"
+        );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
+    }
 }
 
 fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
