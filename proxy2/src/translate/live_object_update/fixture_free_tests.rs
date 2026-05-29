@@ -104,6 +104,15 @@ fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
     live
 }
 
+fn item_update_name_live_bytes(raw_mask: u32, name: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&raw_mask.to_le_bytes());
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live
+}
+
 fn inventory_2a00_word_list_live_bytes(
     word_entries: &[u16],
     feature25_second_ids: &[u32],
@@ -793,6 +802,57 @@ fn trigger_update_exact_shape_owns_only_position_fragment_bits() {
     assert!(
         super::claim_payload_if_verified(&extra_bit_payload).is_none(),
         "a byte-complete trigger update with an extra unowned fragment bit is not exact"
+    );
+}
+
+#[test]
+fn item_update_name_cursor_owns_selector_before_hidden_bool() {
+    // Diamond `sub_451AF0` proves item-name mask 0x80000 as one selector BOOL
+    // followed by either locstring-helper data or direct `ReadCExoString(32)`.
+    // EE item body reader `sub_14076BD30` uses the same selector before the next
+    // item-state BOOL, so combined name+hidden updates must advance in that
+    // order and reject any shifted terminal residue.
+    let mask = super::LEGACY_UPDATE_NAME_MASK | 0x0000_0040;
+    let live = item_update_name_live_bytes(mask, b"Lance");
+
+    let direct_payload = live_object_payload_with_bits(&live, vec![false, true]);
+    let direct_claim = super::claim_payload_if_verified(&direct_payload)
+        .expect("direct item-name plus hidden BOOL should exact-claim");
+    assert_eq!(direct_claim.update_records, 1);
+    assert_eq!(direct_claim.live_bytes_length, live.len());
+
+    let loc_inline_payload = live_object_payload_with_bits(&live, vec![true, false, false]);
+    let loc_inline_claim = super::claim_payload_if_verified(&loc_inline_payload)
+        .expect("inline locstring item-name plus hidden BOOL should exact-claim");
+    assert_eq!(loc_inline_claim.update_records, 1);
+    assert_eq!(loc_inline_claim.live_bytes_length, live.len());
+
+    let missing_hidden = live_object_payload_with_bits(&live, vec![false]);
+    assert!(
+        super::claim_payload_if_verified(&missing_hidden).is_none(),
+        "combined name+hidden updates must not claim without the hidden-state BOOL"
+    );
+
+    let extra_terminal = live_object_payload_with_bits(&live, vec![false, true, false]);
+    assert!(
+        super::claim_payload_if_verified(&extra_terminal).is_none(),
+        "item-name direct branch must not hide a terminal fragment bit after hidden state"
+    );
+}
+
+#[test]
+fn item_update_name_without_hidden_owns_only_name_selector_bits() {
+    let live = item_update_name_live_bytes(super::LEGACY_UPDATE_NAME_MASK, b"Lute");
+
+    let direct_payload = live_object_payload_with_bits(&live, vec![false]);
+    let claim = super::claim_payload_if_verified(&direct_payload)
+        .expect("direct item-name update should exact-claim with one selector BOOL");
+    assert_eq!(claim.update_records, 1);
+
+    let extra_bit = live_object_payload_with_bits(&live, vec![false, true]);
+    assert!(
+        super::claim_payload_if_verified(&extra_bit).is_none(),
+        "sub_451AF0's post-name overflow check must not be modeled as a fragment BOOL"
     );
 }
 

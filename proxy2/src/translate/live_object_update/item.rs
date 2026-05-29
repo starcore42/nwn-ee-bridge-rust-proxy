@@ -113,10 +113,9 @@ pub(super) fn rewrite_update_record_for_ee(
             diamond_item_update_40_tail_end(live_bytes, common.read_end, *record_end)?;
         bytes_removed =
             bytes_removed.saturating_add(legacy_tail_end.saturating_sub(common.read_end));
-        // Diamond `sub_459700` hands object type/id/mask to item update
-        // `sub_451AF0`; the 0x40 branch owns this read-buffer tail plus one
-        // fragment BOOL. Commit tail removal only after the EE item validator
-        // proves the final read cursor and fragment cursor.
+        // Keep the legacy 0x40 tail rewrite transactional: the Diamond reader
+        // tail is removed only after the EE item validator proves the final
+        // read cursor and fragment cursor.
         candidate.drain(common.read_end..legacy_tail_end);
         candidate_record_end = common.read_end;
     } else if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
@@ -313,6 +312,10 @@ fn advance_verified_ee_item_tail(
     let mut fragment_cursor = bit_cursor;
 
     if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        // Diamond item update `sub_451AF0` tests mask 0x80000, reads one BOOL,
+        // then either a locstring helper (`sub_53E700`) or `ReadCExoString(32)`.
+        // The following `sub_4FBB40` call is an overflow check, not another
+        // fragment bit owner.
         let uses_locstring = fragment_bits.get(fragment_cursor).copied()?;
         fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
         if uses_locstring {

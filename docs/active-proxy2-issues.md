@@ -988,19 +988,21 @@ Current status:
 - 2026-05-29 `P/05/01` item `U/6` 0x40 transactional cursor audit: hardened
   the item update rewrite so legacy mask/tail edits are staged and committed
   only after the exact EE item validator owns the read cursor and fragment
-  cursor. Diamond `sub_459700` reads the live-object opcode/object-id/mask
-  envelope, then `sub_451AF0` owns the item update branches; the `0x40` item
-  branch carries a six-byte Diamond read-buffer tail plus one hidden-state
-  BOOL, while EE owns only the BOOL at that point. Public unit coverage now
-  proves the tail collapses only with the BOOL present and a missing BOOL
-  leaves both the bytes and record end untouched, preventing a failed item
-  rewrite from corrupting later records in the same stream. This does not
-  resolve the active CEP v2.3 `U/6` handoff/terminal-tail capture; it removes
-  one unsupported partial-mutation path before continuing that boundary audit.
+  cursor. Follow-up re-audit corrected the decompile pointer: Diamond
+  `sub_459700` reads the live-object opcode/object-id/mask envelope and
+  dispatches object type `0x06` to `sub_451AF0`, but `sub_451AF0` proves the
+  item-name `0x80000` branch, not the `0x40` tail; its post-name
+  `sub_4FBB40` call is an overflow check. The guarded legacy `0x40` tail
+  rewrite remains transactional, but the exact Diamond owner for the six-byte
+  tail plus hidden BOOL still needs a recorded decompile pointer before this
+  capture family can be considered closed. Public unit coverage still proves
+  the rewrite is all-or-nothing and a missing BOOL leaves both bytes and record
+  end untouched. This does not resolve the active CEP v2.3 `U/6`
+  handoff/terminal-tail capture.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_40 -- --nocapture`.
 - 2026-05-29 `P/05/01` item `U/6` low-`0x80` read-tail audit: tightened the
   same item-update path so raw mask `0x80` is not allowed to extend the
-  decompile-owned `0x40` read-buffer tail with padding-like zero bytes.
+  guarded legacy `0x40` read-buffer tail with padding-like zero bytes.
   Re-auditing Diamond `sub_459700` -> item helper `sub_451AF0` showed no
   separate item `0x80` read-buffer owner; `0x80` may still be dropped from the
   emitted mask when the record otherwise lands exactly, but any extra bytes
@@ -1013,6 +1015,19 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`,
   private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`,
   and private `local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape`.
+- 2026-05-29 `P/05/01` item `U/6` name-selector cursor audit: no packet
+  behavior changed, but public fixture-free coverage now pins the decompiled
+  name branch bit order. Diamond `sub_451AF0` tests mask `0x80000`, reads one
+  selector BOOL, then either `sub_53E700` locstring data or
+  `ReadCExoString(32)`; EE item body reader `sub_14076BD30` uses the same
+  selector before the next item-state BOOL. Tests now prove name-only updates
+  own only the selector bits, combined name+hidden updates consume the hidden
+  BOOL after the name branch, and terminal extra bits reject instead of being
+  mistaken for the Diamond overflow check. The CEP v2.3 `U/6`
+  handoff/terminal-tail capture remains active pending the exact `0x40` tail
+  owner and final `U/9`/`W` terminal-tail proof.
+  Verified with `cargo test -q -p hgbridge-proxy2 item_update_name -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
