@@ -1225,6 +1225,15 @@ Current status:
   declared_length_window_rejects_short_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 declared_length_ -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` short inventory/add declared-tail audit: extended the
+  same stale-declared tail guard to aligned sub-16-byte live-object read
+  records outside `U`. A short `I/0x0002` inventory scalar row and the 15-byte
+  compact Diamond `A/09` placeable add (`OBJECTID + legacy name/token DWORD +
+  BYTE/WORD/WORD tail`) can both decode as compact CNW fragment storage. They
+  now remain live-object read-boundary ambiguity until the focused inventory or
+  add translator proves the real cursor, rather than letting declared-length
+  repair steal those bytes as a fragment tail. Verified with `cargo test -q -p
+  hgbridge-proxy2 declared_length_window_rejects_ -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

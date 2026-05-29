@@ -768,6 +768,14 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         return true;
     }
 
+    if fragment_tail_starts_with_aligned_short_inventory_read_boundary(bytes, tail_start) {
+        return true;
+    }
+
+    if fragment_tail_starts_with_aligned_short_add_read_boundary(bytes, tail_start) {
+        return true;
+    }
+
     if let Some(gui_end) =
         crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
             bytes,
@@ -791,6 +799,36 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
     };
     delete_end <= bytes.len()
         && legacy_live_delete_fragment_bit_count(bytes, tail_start, delete_end).is_some()
+}
+
+fn fragment_tail_starts_with_aligned_short_inventory_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    bytes.get(tail_start).copied() == Some(b'I')
+        && crate::translate::live_object_update::legacy_inventory_fragment_bit_count_for_transport(
+            bytes,
+            tail_start,
+            bytes.len(),
+        )
+        .is_some()
+}
+
+fn fragment_tail_starts_with_aligned_short_add_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    // Compact Diamond placeable adds can be only 15 read-buffer bytes:
+    // `A/09 + OBJECTID + four-byte legacy name/token + BYTE/WORD/WORD tail`.
+    // The focused add translator owns the fragment guards and EE visual-map
+    // insertion later; stale-declared repair must not first classify those
+    // bytes as CNW fragment storage merely because the record is below the
+    // broad ambiguous-tail floor.
+    crate::translate::live_object_update::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+        bytes,
+        tail_start,
+        bytes.len(),
+    ) == Some(bytes.len())
 }
 
 fn fragment_tail_starts_with_aligned_short_update_read_boundary(
@@ -4571,6 +4609,24 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn compact_inventory_scalar_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&0x8000_342Au32.to_le_bytes());
+        live.extend_from_slice(&0x0002u16.to_le_bytes());
+        live.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        live
+    }
+
+    fn compact_placeable_short_name_add_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_347Eu32.to_le_bytes());
+        live.extend_from_slice(&0x0000_38F2u32.to_le_bytes());
+        live.push(0x05);
+        live.extend_from_slice(&0x0003u16.to_le_bytes());
+        live.extend_from_slice(&0x0000u16.to_le_bytes());
+        live
+    }
+
     #[test]
     fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
         let mut live = Vec::new();
@@ -4646,6 +4702,88 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short GUI record"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_inventory_read_record_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&compact_inventory_scalar_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short I/0x0002 bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_inventory_read_boundary(&payload, split),
+            "aligned I/0x0002 remains a decompile-owned inventory read record"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned short inventory remains a read-buffer row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short inventory record"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_compact_placeable_add_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&compact_placeable_short_name_add_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "15-byte compact A/9 bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_add_read_boundary(&payload, split),
+            "aligned compact A/9 remains a decompile-owned placeable add record"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned compact A/9 remains a live-object add row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned compact A/9 add"
         );
     }
 
