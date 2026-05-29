@@ -782,11 +782,70 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         }
     }
 
+    if fragment_tail_starts_with_aligned_short_update_read_boundary(bytes, tail_start) {
+        return true;
+    }
+
     let Some(delete_end) = tail_start.checked_add(6) else {
         return false;
     };
     delete_end <= bytes.len()
         && legacy_live_delete_fragment_bit_count(bytes, tail_start, delete_end).is_some()
+}
+
+fn fragment_tail_starts_with_aligned_short_update_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    if bytes.get(tail_start).copied() != Some(b'U') {
+        return false;
+    }
+    let Some(min_end) = tail_start.checked_add(LEGACY_UPDATE_HEADER_BYTES) else {
+        return false;
+    };
+    if min_end > bytes.len() {
+        return false;
+    }
+
+    // These calls are ambiguity detectors, not claims. A stale-declared split
+    // has not yet exposed the real fragment stream, so use false placeholder
+    // bits only to ask whether a focused update reader can own the short
+    // read-buffer bytes. Exact emit still requires the real final validator.
+    let placeholder_bits = vec![false; 64];
+    let max_end = tail_start
+        .checked_add(MIN_AMBIGUOUS_TAIL_READ_BYTES.saturating_sub(1))
+        .unwrap_or(bytes.len())
+        .min(bytes.len());
+    for record_end in min_end..=max_end {
+        let object_type = bytes.get(tail_start + 1).copied();
+        if object_type == Some(CREATURE_OBJECT_TYPE) {
+            let mut bit_cursor = 0usize;
+            if crate::translate::live_object_update::advance_verified_creature_update_fragment_cursor_for_ee(
+                bytes,
+                tail_start,
+                record_end,
+                &placeholder_bits,
+                &mut bit_cursor,
+            ) {
+                return true;
+            }
+        } else if matches!(
+            object_type,
+            Some(ITEM_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        ) {
+            let mut bit_cursor = 0usize;
+            if crate::translate::live_object_update::advance_verified_door_placeable_update_fragment_cursor_for_ee(
+                bytes,
+                tail_start,
+                record_end,
+                &placeholder_bits,
+                &mut bit_cursor,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
@@ -4486,6 +4545,32 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn door_placeable_state_update_live_bytes(object_type: u8) -> Vec<u8> {
+        let object_id: u32 = match object_type {
+            PLACEABLE_OBJECT_TYPE => 0x8000_3409,
+            DOOR_OBJECT_TYPE => 0x8000_340A,
+            _ => 0x8000_3400,
+        };
+        let mut live = vec![b'U', object_type];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+        live
+    }
+
+    fn item_hidden_update_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_3406u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+        live
+    }
+
+    fn creature_zero_update_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live
+    }
+
     #[test]
     fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
         let mut live = Vec::new();
@@ -4561,6 +4646,136 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short GUI record"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_door_placeable_state_update_as_fragment_tail() {
+        for object_type in [PLACEABLE_OBJECT_TYPE, DOOR_OBJECT_TYPE] {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.extend_from_slice(&door_placeable_state_update_live_bytes(object_type));
+
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "short U/{object_type:#04X} state update bytes can masquerade as compact CNW fragment storage"
+            );
+            assert_eq!(
+                crate::translate::live_object_update::try_get_verified_door_placeable_update_record_end_for_transport(
+                    &payload,
+                    split,
+                    payload.len(),
+                ),
+                Some(payload.len()),
+                "aligned U/{object_type:#04X} state-only update is a decompile-owned read-buffer row"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "aligned U/{object_type:#04X} state-only update remains a read-buffer row, not a CNW tail"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not steal an aligned short U/{object_type:#04X} state update"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_item_hidden_update_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&item_hidden_update_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short U/6 hidden-state update bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_update_read_boundary(&payload, split),
+            "aligned U/6 hidden-state update is a decompile-owned short read-buffer row"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned U/6 hidden-state update remains a read-buffer row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short U/6 hidden-state update"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_zero_update_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&creature_zero_update_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short U/5 zero-mask update bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_update_read_boundary(&payload, split),
+            "aligned U/5 zero-mask update is a decompile-owned short read-buffer row"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned U/5 zero-mask update remains a read-buffer row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short U/5 zero-mask update"
         );
     }
 

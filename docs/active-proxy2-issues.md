@@ -1214,6 +1214,17 @@ Current status:
   --nocapture`, `cargo fmt --all --check`, `git diff --check`, `cargo check
   -q -p hgbridge-proxy2`, and the full serial `cargo test -q -p
   hgbridge-proxy2 -- --test-threads=1` suite.
+- 2026-05-30 `P/05/01` short update declared-tail audit: generalized the
+  stale-declared tail guard for aligned sub-16-byte `U` update rows whose
+  decompiled readers own a short read-buffer header and then fragment BOOLs or
+  no body. `U/6` item hidden-state, `U/9`/`U/10` door/placeable state-only, and
+  `U/5` zero-mask update bytes can all decode as compact CNW fragment storage;
+  the declared-length classifier now treats them as live-object read-boundary
+  ambiguity until the focused update validator owns the real fragment cursor.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 declared_length_ -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
