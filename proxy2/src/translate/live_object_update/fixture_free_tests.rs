@@ -1015,6 +1015,47 @@ fn final_fragment_trim_requires_family_owned_terminal_storage() {
 }
 
 #[test]
+fn terminal_delete_rows_do_not_inherit_prior_trim_owner() {
+    // This reduces the To Heir U/5 + I/0x2A00 + GUI/delete evidence to a
+    // packet-family rule. A prior typed rewrite can prove an earlier cursor,
+    // but later read-buffer-only GUI rows and D/5 one-BOOL deletes must own
+    // their own cursors and cannot turn final storage-looking bits into
+    // family-owned terminal residue.
+    let mut live = trigger_update_live_bytes(0xFFFF_FFF3, &[0xAA, 0xBB, 0xCC]);
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+    for object_id in [0x8000_001Eu32, 0x8000_000Fu32, 0x8000_000Bu32] {
+        live.extend_from_slice(&[b'D', super::CREATURE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+    }
+
+    let mut owned_bits = vec![true, false]; // trigger position residual bits.
+    owned_bits.extend([true, false, true]); // D/5 delete BOOLs.
+
+    let mut exact_payload = live_object_payload_with_bits(&live, owned_bits.clone());
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("valid trigger/GQ/delete stream should rewrite before exact claim");
+    assert!(rewrite.update_records_rewritten >= 1);
+    let claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("rewritten trigger/GQ/delete stream should exact-claim");
+    assert_eq!(claim.delete_records, 3);
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+
+    let mut shifted_bits = owned_bits;
+    shifted_bits.extend([false, true, false, false, true, false, true, false]);
+    let mut shifted_payload = live_object_payload_with_bits(&live, shifted_bits);
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "terminal bits after GUI/delete rows must stay unowned without a family-specific terminal storage proof"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "failed terminal-tail rewrite must leave the evidence payload untouched"
+    );
+}
+
+#[test]
 fn inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit() {
     let mut live = inventory_2a00_word_list_live_bytes(
         &[0x0303],

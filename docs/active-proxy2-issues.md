@@ -973,6 +973,14 @@ Current status:
   accidental generic trim owner. Verified with `cargo test -q -p
   hgbridge-proxy2 live_object_delete_records_own_exact_fragment_bits --
   --nocapture`.
+- 2026-05-29 `P/05/01` GUI/delete terminal handoff audit: no packet behavior
+  changed, but public fixture-free coverage now pins the multi-record form of
+  the To Heir terminal-tail evidence. A prior typed rewrite may prove an earlier
+  cursor, but a following read-buffer-only `GQ` row plus `D/5` delete rows own
+  only their decompiled delete BOOLs; they do not inherit a previous terminal
+  trim owner or turn final storage-looking bits into family-owned residue.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  terminal_delete_rows_do_not_inherit_prior_trim_owner -- --nocapture`.
 - 2026-05-29 `P/05/01` inventory/GQ terminal-bit audit: no packet behavior
   changed, but public fixture-free coverage now proves the generalized
   `I/0x2A00` word-list branch before `GQ` cursor rule behind the XP1/To Heir
