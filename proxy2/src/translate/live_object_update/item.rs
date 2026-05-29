@@ -24,8 +24,6 @@ const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_APPEARANCE_MASK
     | EE_ITEM_UPDATE_HIDDEN_MASK
     | LEGACY_UPDATE_NAME_MASK;
-const DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES: usize = 6;
-const DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES: usize = 4;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ItemUpdateRewrite {
@@ -105,22 +103,18 @@ pub(super) fn rewrite_update_record_for_ee(
         });
     }
 
-    let mut bytes_removed = 0usize;
     let mut candidate = live_bytes.clone();
-    let mut candidate_record_end = *record_end;
-    if (raw_mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
-        let legacy_tail_end =
-            diamond_item_update_40_tail_end(live_bytes, common.read_end, *record_end)?;
-        bytes_removed =
-            bytes_removed.saturating_add(legacy_tail_end.saturating_sub(common.read_end));
-        // Keep the legacy 0x40 tail rewrite transactional: the Diamond reader
-        // tail is removed only after the EE item validator proves the final
-        // read cursor and fragment cursor.
-        candidate.drain(common.read_end..legacy_tail_end);
-        candidate_record_end = common.read_end;
-    } else if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+    if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
         return None;
-    } else if common.read_end != *record_end {
+    }
+
+    // Re-audit: Diamond client `sub_459700` dispatches item updates through the
+    // shared generic reader `sub_467AE0`, then item helper `sub_451AF0`.
+    // `sub_467AE0` owns only generic low bits 0x1/0x2/0x4/0x8/0x20, and
+    // `sub_451AF0` owns only item-name mask 0x80000. No Diamond/EE reader owns
+    // extra read-buffer bytes for item low 0x40, so 0x40 can mean EE hidden
+    // state only when the record is already byte-exact after any 0x80 mask drop.
+    if common.read_end != *record_end {
         return None;
     }
 
@@ -128,18 +122,17 @@ pub(super) fn rewrite_update_record_for_ee(
     let verified_next = advance_verified_ee_item_update_record(
         &candidate,
         record_offset,
-        candidate_record_end,
+        *record_end,
         fragment_bits,
         bit_cursor,
     )?;
 
     *live_bytes = candidate;
-    *record_end = candidate_record_end;
     Some(ItemUpdateRewrite {
-        rewritten: bytes_removed != 0 || translated_mask != raw_mask,
+        rewritten: translated_mask != raw_mask,
         mask_changed: translated_mask != raw_mask,
-        bytes_removed: u32::try_from(bytes_removed).unwrap_or(u32::MAX),
         next_bit_cursor: verified_next,
+        ..ItemUpdateRewrite::default()
     })
 }
 
@@ -338,31 +331,6 @@ fn advance_verified_ee_item_tail(
     Some((read_cursor, fragment_cursor))
 }
 
-fn diamond_item_update_40_tail_end(
-    bytes: &[u8],
-    tail_offset: usize,
-    record_end: usize,
-) -> Option<usize> {
-    let fixed_end = tail_offset.checked_add(DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES)?;
-    if fixed_end > record_end {
-        return None;
-    }
-
-    // Diamond item update mask `0x40` writes WORD, BYTE, WORD, BYTE, one
-    // fragment BOOL, then an optional object id only when the first BYTE is 2.
-    let first_mode_byte = *bytes.get(tail_offset + 2)?;
-    let decompile_tail_end = if first_mode_byte == 2 {
-        fixed_end.checked_add(DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES)?
-    } else {
-        fixed_end
-    };
-    if decompile_tail_end > record_end {
-        return None;
-    }
-
-    (decompile_tail_end == record_end).then_some(record_end)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,7 +339,6 @@ mod tests {
         let mut live = vec![b'U', ITEM_OBJECT_TYPE];
         live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
         live.extend_from_slice(&EE_ITEM_UPDATE_HIDDEN_MASK.to_le_bytes());
-        live.extend_from_slice(&[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A]);
         live
     }
 
@@ -384,24 +351,29 @@ mod tests {
     }
 
     #[test]
-    fn item_update_40_legacy_tail_rewrites_after_bool_proof() {
-        let mut live = legacy_hidden_item_update_live_bytes();
+    fn item_update_40_exact_ee_hidden_claims_without_tail() {
+        let live = legacy_hidden_item_update_live_bytes();
+        let next = advance_verified_ee_item_update_record(&live, 0, live.len(), &[true], 0)
+            .expect("EE item hidden-state update owns exactly one BOOL and no read tail");
+
+        assert_eq!(next, 1);
+    }
+
+    #[test]
+    fn item_update_40_read_tail_is_not_decompile_owned() {
+        let mut live = legacy_hidden_item_update_with_mask(
+            EE_ITEM_UPDATE_HIDDEN_MASK,
+            &[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A],
+        );
+        let original = live.clone();
         let mut record_end = live.len();
 
-        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[true], 0)
-            .expect("legacy item 0x40 tail should collapse after its hidden BOOL is present");
-
-        assert!(rewrite.rewritten);
-        assert!(!rewrite.mask_changed);
-        assert_eq!(rewrite.bytes_removed, 6);
-        assert_eq!(rewrite.next_bit_cursor, 1);
-        assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
-        assert_eq!(live.len(), LEGACY_UPDATE_HEADER_BYTES);
-        assert_eq!(
-            read_u32_le(&live, 6),
-            Some(EE_ITEM_UPDATE_HIDDEN_MASK),
-            "mask stays semantic while the Diamond-only read tail is removed"
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[true], 0).is_none(),
+            "Diamond item readers do not own a low-0x40 read-buffer tail"
         );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
     }
 
     #[test]
@@ -412,14 +384,14 @@ mod tests {
 
         assert!(
             rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[], 0).is_none(),
-            "Diamond item 0x40 tail removal needs the following hidden-state BOOL"
+            "EE item hidden-state updates must not claim without the hidden-state BOOL"
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
     }
 
     #[test]
-    fn item_update_40_optional_object_id_tail_rewrites_after_bool_proof() {
+    fn item_update_40_optional_object_id_tail_is_not_decompile_owned() {
         let mut live = legacy_hidden_item_update_with_mask(
             EE_ITEM_UPDATE_HIDDEN_MASK,
             &[
@@ -430,16 +402,15 @@ mod tests {
                 0x44, 0x33, 0x22, 0x80, // optional OBJECTID
             ],
         );
+        let original = live.clone();
         let mut record_end = live.len();
 
-        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[false], 0)
-            .expect("mode-2 legacy item 0x40 tail should include the optional object id");
-
-        assert!(rewrite.rewritten);
-        assert_eq!(rewrite.bytes_removed, 10);
-        assert_eq!(rewrite.next_bit_cursor, 1);
-        assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
-        assert_eq!(live.len(), LEGACY_UPDATE_HEADER_BYTES);
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[false], 0).is_none(),
+            "optional object-id-looking bytes after item 0x40 are not Diamond-reader-owned"
+        );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
     }
 
     #[test]
@@ -466,7 +437,7 @@ mod tests {
     fn item_update_40_low80_exact_tail_translates_mask_only() {
         let mut live = legacy_hidden_item_update_with_mask(
             EE_ITEM_UPDATE_HIDDEN_MASK | LEGACY_ITEM_IGNORED_LOW_80_MASK,
-            &[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A],
+            &[],
         );
         let mut record_end = live.len();
 
@@ -475,7 +446,7 @@ mod tests {
 
         assert!(rewrite.rewritten);
         assert!(rewrite.mask_changed);
-        assert_eq!(rewrite.bytes_removed, 6);
+        assert_eq!(rewrite.bytes_removed, 0);
         assert_eq!(rewrite.next_bit_cursor, 1);
         assert_eq!(read_u32_le(&live, 6), Some(EE_ITEM_UPDATE_HIDDEN_MASK));
         assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);

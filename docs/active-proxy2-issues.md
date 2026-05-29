@@ -992,13 +992,18 @@ Current status:
   `sub_459700` reads the live-object opcode/object-id/mask envelope and
   dispatches object type `0x06` to `sub_451AF0`, but `sub_451AF0` proves the
   item-name `0x80000` branch, not the `0x40` tail; its post-name
-  `sub_4FBB40` call is an overflow check. The guarded legacy `0x40` tail
-  rewrite remains transactional, but the exact Diamond owner for the six-byte
-  tail plus hidden BOOL still needs a recorded decompile pointer before this
-  capture family can be considered closed. Public unit coverage still proves
-  the rewrite is all-or-nothing and a missing BOOL leaves both bytes and record
-  end untouched. This does not resolve the active CEP v2.3 `U/6`
-  handoff/terminal-tail capture.
+  `sub_4FBB40` call is an overflow check. Follow-up 2026-05-29 re-audited
+  Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE item state handling:
+  Diamond's shared generic reader owns only low `0x1/0x2/0x4/0x8/0x20`, while
+  `sub_451AF0` owns only the name selector/data. The prior six-byte plus
+  optional-OBJECTID low-`0x40` read-tail claim had no Diamond client owner, so
+  proxy2 now rejects it instead of collapsing it into EE's one hidden-state
+  BOOL. Exact EE-shaped item hidden-state updates still own one BOOL and no
+  read tail, and raw low `0x80` is still dropped only as a mask-only translation
+  when no extra bytes are attributed to it. This does not resolve the active CEP
+  v2.3 `U/6` handoff/terminal-tail capture; any low-`0x40` tail bytes in that
+  evidence are now unclaimed unless a separate server/client handoff owner is
+  proven.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_40 -- --nocapture`.
 - 2026-05-29 `P/05/01` item `U/6` low-`0x80` read-tail audit: tightened the
   same item-update path so raw mask `0x80` is not allowed to extend the
@@ -1024,8 +1029,9 @@ Current status:
   own only the selector bits, combined name+hidden updates consume the hidden
   BOOL after the name branch, and terminal extra bits reject instead of being
   mistaken for the Diamond overflow check. The CEP v2.3 `U/6`
-  handoff/terminal-tail capture remains active pending the exact `0x40` tail
-  owner and final `U/9`/`W` terminal-tail proof.
+  handoff/terminal-tail capture remains active pending the final cross-record
+  handoff or `U/9`/`W` terminal-tail proof; the low-`0x40` item tail is now
+  recorded as unowned by the Diamond client reader.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_name -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
