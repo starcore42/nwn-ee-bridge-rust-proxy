@@ -1104,6 +1104,19 @@ Current status:
   orientation/state BOOLs for an otherwise EE-ordered row. The final CEP v2.3
   starter-style `U/9` shortage before `W` therefore stays quarantined until a
   real update-family owner or stream-boundary artifact is proven.
+- 2026-05-30 `P/05/01` declared-length `W` tail boundary audit: hardened
+  stale-declared split classification so a candidate whose CNW tail starts with
+  aligned `W current total` is treated as an ambiguous live-object read boundary,
+  even though the three bytes can masquerade as compact CNW fragment storage.
+  Diamond `sub_44F160` and EE `sub_1407B85A0` consume `W` as exactly three
+  read-buffer bytes with no fragment bits. `W` remains a suffix only after a
+  family-owned read window; it is not a fragment-tail start and still cannot
+  repair the CEP `U/9 mask=0x37` shortage before `W`. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_w_current_total_as_fragment_tail --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 work_remaining --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

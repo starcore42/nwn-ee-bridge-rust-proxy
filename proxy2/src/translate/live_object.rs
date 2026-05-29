@@ -710,6 +710,15 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
         return false;
     }
 
+    if is_work_remaining_record_at(bytes, tail_start) {
+        // Diamond `sub_44F160` and EE `sub_1407B85A0` consume `W current
+        // total` as exactly three read-buffer bytes. It is too short for the
+        // broad ambiguous-tail scanner below, but an aligned `W` at the
+        // proposed CNW tail start is still a live-object read boundary, not
+        // fragment storage.
+        return true;
+    }
+
     let mut offset = tail_start;
     while offset + 1 < bytes.len() {
         if bytes.len().saturating_sub(offset) >= MIN_AMBIGUOUS_TAIL_READ_BYTES
@@ -720,6 +729,15 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
         offset += 1;
     }
     false
+}
+
+fn is_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
+    matches!(bytes.get(offset), Some(&b'W'))
+        && bytes
+            .get(offset + 1)
+            .copied()
+            .is_some_and(|marker| marker <= 0x0F)
+        && bytes.get(offset + 2) == Some(&0x0E)
 }
 
 pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
@@ -1987,7 +2005,7 @@ fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usiz
         return true;
     }
 
-    opcode == b'W' && bytes.len() - offset >= 3 && marker <= 0x0F && bytes[offset + 2] == 0x0E
+    is_work_remaining_record_at(bytes, offset)
 }
 
 fn looks_like_legacy_creature_add_transform_fields(
@@ -4327,6 +4345,63 @@ mod door_add_visual_transform_tests {
             "rewritten door add must exact-claim at the EE object-map cursor"
         );
         assert_eq!(verified_cursor, bit_cursor);
+    }
+}
+
+#[cfg(test)]
+mod declared_length_repair_tests {
+    use super::*;
+
+    fn append_legacy_door_add(live: &mut Vec<u8>, object_id: u32, second_dword: u32) {
+        live.push(b'A');
+        live.push(DOOR_OBJECT_TYPE);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.extend_from_slice(&second_dword.to_le_bytes());
+        live.extend_from_slice(&4u32.to_le_bytes());
+        live.extend_from_slice(b"Door");
+        live.extend_from_slice(&0x0016u16.to_le_bytes());
+    }
+
+    #[test]
+    fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "the three W bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&payload, LEGACY_LIVE_BYTES_OFFSET, split),
+            "the read side is a complete decompile-owned live-object prefix"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned W current-total bytes remain a read-buffer record"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned W read record"
+        );
     }
 }
 
