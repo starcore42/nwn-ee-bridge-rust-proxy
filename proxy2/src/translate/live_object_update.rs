@@ -56,6 +56,26 @@ pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -
     world_status::is_work_remaining_record_at(bytes, offset)
 }
 
+pub(crate) fn try_get_verified_trigger_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    trigger::trigger_update_record_end_for_transport(bytes, offset, scan_end)
+}
+
+pub(crate) fn advance_legacy_trigger_update_fragment_cursor_for_transport(
+    bytes: &[u8],
+    bits: &[bool],
+    offset: usize,
+    record_end: usize,
+    bit_cursor: &mut usize,
+) -> bool {
+    trigger::advance_trigger_update_fragment_cursor_for_transport(
+        bytes, offset, record_end, bits, bit_cursor,
+    )
+}
+
 pub(crate) fn observe_visual_effect_hak_order_top_first(hak_order_top_first: &[String]) {
     visual_effect_rows::observe_hak_order_top_first(hak_order_top_first);
 }

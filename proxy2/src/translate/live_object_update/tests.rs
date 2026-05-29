@@ -1116,6 +1116,43 @@ fn no_fragment_low_bits_placeable_update_inserts_neutral_source_bits() {
 }
 
 #[test]
+fn no_fragment_low_bits_placeable_update_before_work_remaining_stays_unclaimed() {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x09, 0x7F, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00]);
+    live.extend_from_slice(&[
+        0x89, 0x39, 0x02, 0x0D, 0x30, 0x10, // position
+        0x9A, // scalar orientation high byte
+        0x76, 0x00, // stale appearance word; absent from the scalar EE prefix
+        0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, // scale/state
+        0x18, 0x16, 0x00, 0x00, // legacy low-bit control WORD + zero WORD
+    ]);
+    live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (7 + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(&live);
+    payload.extend_from_slice(&super::bits::pack_msb_valid_bits(
+        vec![false; super::CNW_FRAGMENT_HEADER_BITS],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    ));
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "fragment-neutral W cannot own missing low-tail U/9 bits"
+    );
+    assert_eq!(
+        payload, original,
+        "rejected W-suffix low-tail repair must leave evidence unchanged"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "U/9 before W remains unclaimed until a real fragment owner is proven"
+    );
+}
+
+#[test]
 fn no_fragment_empty_placeable_add_inserts_neutral_ee_guard_bits() {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'A', 0x09, 0x85, 0x00, 0x00, 0x80]);

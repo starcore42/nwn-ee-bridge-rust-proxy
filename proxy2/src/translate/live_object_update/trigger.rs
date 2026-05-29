@@ -129,6 +129,57 @@ pub(super) fn parse_legacy_trigger_update_for_ee(
     })
 }
 
+pub(super) fn trigger_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > bytes.len()
+        || bytes.get(offset).copied() != Some(b'U')
+        || bytes.get(offset + 1).copied() != Some(TRIGGER_OBJECT_TYPE)
+        || !boundary::looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    let position_read_end = offset
+        .checked_add(LEGACY_UPDATE_HEADER_BYTES)?
+        .checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
+    let record_end = match raw_mask {
+        LEGACY_UPDATE_POSITION_MASK => position_read_end,
+        LEGACY_HG_TRIGGER_UPDATE_MASK_WITH_POSITION_TAIL => {
+            position_read_end.checked_add(LEGACY_HG_TRIGGER_UPDATE_EXTRA_READ_BYTES)?
+        }
+        _ => return None,
+    };
+
+    if record_end <= scan_end.min(bytes.len()) {
+        Some(record_end)
+    } else {
+        None
+    }
+}
+
+pub(super) fn advance_trigger_update_fragment_cursor_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    if trigger_update_record_end_for_transport(bytes, offset, record_end) != Some(record_end) {
+        return false;
+    }
+
+    let next_bit_cursor = bit_cursor.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+    if next_bit_cursor > bits.len() {
+        return false;
+    }
+    *bit_cursor = next_bit_cursor;
+    true
+}
+
 pub(super) fn advance_verified_ee_trigger_update_record(
     bytes: &[u8],
     offset: usize,

@@ -501,6 +501,17 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     return false;
                 }
             }
+            (b'U', TRIGGER_OBJECT_TYPE) => {
+                if !crate::translate::live_object_update::advance_legacy_trigger_update_fragment_cursor_for_transport(
+                    bytes,
+                    bits,
+                    offset,
+                    record_end,
+                    &mut bit_cursor,
+                ) {
+                    return false;
+                }
+            }
             (b'D', object_type) if matches!(object_type, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => {
                 let Some(bit_count) =
                     legacy_live_delete_fragment_bit_count(bytes, offset, record_end)
@@ -1342,6 +1353,20 @@ fn live_object_read_prefix_walks_to(bytes: &[u8], start: usize, end: usize) -> b
 }
 
 fn declared_repair_read_record_end_for_transport(bytes: &[u8], offset: usize, end: usize) -> usize {
+    if bytes.get(offset).copied() == Some(b'U')
+        && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
+    {
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_verified_trigger_update_record_end_for_transport(
+                bytes,
+                offset,
+                bytes.len(),
+            )
+        {
+            return record_end;
+        }
+    }
+
     let record_end =
         find_next_legacy_live_object_sub_message_boundary_after(bytes, offset, end).min(end);
     if bytes.get(offset).copied() == Some(HIGH_LEVEL_ENVELOPE)
@@ -1466,10 +1491,12 @@ fn looks_like_salvageable_legacy_live_object_record_at(
             .is_some()
         }
         b'U' if object_type == TRIGGER_OBJECT_TYPE => {
-            // No exact trigger-update transport boundary proof exists yet. Keep
-            // this out of partial-leadin salvage until a typed trigger parser
-            // owns the shape; the semantic path can still quarantine/log it for
-            // decompile-backed implementation.
+            // The trigger `U/7` decompile proof owns only the aligned
+            // transport row: exact EE `0x00000001`, or legacy HG all-bits
+            // `0xFFFF_FFF3` including its bounded three-byte tail. That is
+            // enough for declared-length repair and boundary scanning once the
+            // live-object cursor is already aligned, but it does not prove that
+            // an arbitrary shifted byte run may be discarded before the `U/7`.
             false
         }
         b'D' if matches!(object_type, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => {
@@ -1634,6 +1661,25 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
                 scan_end,
             )
         {
+            return record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'U')
+        && bytes.get(offset + 1).copied() == Some(TRIGGER_OBJECT_TYPE)
+    {
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_verified_trigger_update_record_end_for_transport(
+                bytes,
+                offset,
+                scan_end,
+            )
+        {
+            // Trigger `U/7` rows are not name-bearing streams. The supported
+            // legacy HG all-bits row owns a bounded three-byte trigger tail
+            // after the shared position fields; those bytes can decode as a CNW
+            // fragment storage header, so the transport scanner must not split
+            // inside them before the trigger translator sees the complete row.
             return record_end;
         }
     }
@@ -4357,6 +4403,15 @@ mod declared_length_repair_tests {
         live.extend_from_slice(&0x0016u16.to_le_bytes());
     }
 
+    fn legacy_trigger_update_with_tail(tail: [u8; 3]) -> Vec<u8> {
+        let mut live = vec![b'U', TRIGGER_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_1007u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+        live.extend_from_slice(&[0x8E, 0x12, 0xD4, 0x10, 0xEE, 0x0E]);
+        live.extend_from_slice(&tail);
+        live
+    }
+
     #[test]
     fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
         let mut live = Vec::new();
@@ -4395,6 +4450,60 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned W read record"
+        );
+    }
+
+    #[test]
+    fn trigger_update_tail_bytes_stay_inside_transport_record() {
+        // Diamond/HG trigger update tail proof:
+        // `U/7 0xFFFF_FFF3` owns the generic position read fields, two
+        // position fragment bits, then a bounded three-byte legacy trigger tail
+        // that is removed before EE emission. Those tail bytes can also decode
+        // as a compact CNW fragment-storage stream; they are not a stale
+        // declared-length split point.
+        let live = legacy_trigger_update_with_tail([0xA0, 0x00, 0x00]);
+        let tail_start = LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES;
+        assert!(
+            decode_cnw_msb_valid_bits(&live[tail_start..]).is_some(),
+            "the trigger tail is deliberately shaped like compact fragment storage"
+        );
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            live.len(),
+            "the transport scanner must not split inside the legacy trigger tail"
+        );
+        assert!(
+            !live_object_read_prefix_walks_to(&live, 0, tail_start),
+            "a stale declared read window ending before the trigger tail is incomplete"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "the complete trigger update row is a valid transport prefix"
+        );
+
+        let mut bits = vec![false, false, false, true, false];
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(&live, 0, live.len(), &bits),
+            "the transport capacity proof must account for the two trigger position bits"
+        );
+        bits.pop();
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(&live, 0, live.len(), &bits),
+            "one trigger position bit is not enough to own the update cursor"
+        );
+
+        let declared = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + tail_start;
+        let mut stale_payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        stale_payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        stale_payload.extend_from_slice(&live);
+        assert!(
+            !declared_length_window_transport_plausible(&stale_payload),
+            "the declared-length classifier must not move trigger tail bytes into the CNW tail"
         );
     }
 }

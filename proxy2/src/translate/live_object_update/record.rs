@@ -14,7 +14,7 @@ use super::{
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
     TRIGGER_OBJECT_TYPE, bits, door, effects, item, locstring, placeable, read_f32_le, read_u16_le,
-    read_u32_le, reader, trigger, write_u32_le, writer,
+    read_u32_le, reader, trigger, world_status, write_u32_le, writer,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -525,6 +525,7 @@ pub(super) fn rewrite_update_record_for_ee(
                 byte_gap_drop_range = Some((appearance_gap_begin, appearance_gap_end));
                 if bits.len() == *bit_cursor
                     && (raw_mask & !without_appearance & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
+                    && !suffix_is_fragment_neutral_work_remaining_only(live_bytes, *record_end)
                 {
                     low_tail_zero_fragment_bits_to_insert =
                         low_prefix_door_placeable_update_source_fragment_bits(without_appearance);
@@ -566,6 +567,7 @@ pub(super) fn rewrite_update_record_for_ee(
         if low_tail_prefix_end.is_none()
             && bits.len() == *bit_cursor
             && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
+            && !suffix_is_fragment_neutral_work_remaining_only(live_bytes, *record_end)
         {
             if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
                 live_bytes,
@@ -585,15 +587,14 @@ pub(super) fn rewrite_update_record_for_ee(
                     true,
                 ) != Some(prefix_end)
                 {
-                    // Late Winds local Diamond low-tail records can arrive
-                    // after the fragment stream has been fully consumed by
-                    // preceding add/update pairs. The read-buffer prefix still
-                    // proves the scalar branch and the trailing WORD/zero-WORD
-                    // low-bit suffix, but EE's `sub_14079C050` needs the CNW
-                    // low bits for position, scalar orientation, and neutral
-                    // state. Insert only those zero lower bits for this exact
-                    // no-fragment low-tail shape; the byte prefix and final
-                    // exact validator still own the record.
+                    // Some legacy no-fragment low-tail records arrive after
+                    // preceding records have consumed the CNW bit stream. The
+                    // read-buffer prefix still proves the scalar branch and the
+                    // trailing WORD/zero-WORD suffix, but EE's generic reader
+                    // needs the low bits for position, scalar orientation, and
+                    // neutral state. Insert only those zero lower bits for this
+                    // exact shape; a following fragment-neutral `W` suffix is
+                    // not enough to own this insertion.
                     low_tail_prefix_end = Some(prefix_end);
                     low_tail_zero_fragment_bits_to_insert =
                         low_prefix_door_placeable_update_source_fragment_bits(
@@ -612,6 +613,7 @@ pub(super) fn rewrite_update_record_for_ee(
                     == 0
                 && prefix_end < *record_end
                 && reader::legacy_low_bit_control_tail_ready(live_bytes, prefix_end, *record_end)
+                && !suffix_is_fragment_neutral_work_remaining_only(live_bytes, *record_end)
                 && door_placeable_update_read_end_for_orientation_branch(
                     live_bytes,
                     record_offset,
@@ -627,12 +629,12 @@ pub(super) fn rewrite_update_record_for_ee(
                     true,
                 ) != Some(prefix_end)
             {
-                // Late Winds local Diamond records can have their fragment
-                // cursor exhausted before a scalar placeable low-tail update.
-                // The already-proven read-buffer prefix and bounded low-bit
-                // suffix still identify the same decompile-owned shape; insert
-                // neutral source bits so the normal EE exact validator owns the
-                // final packet instead of trusting the byte rewrite alone.
+                // With no remaining CNW source bits, the already-proven
+                // read-buffer prefix and bounded low-bit suffix identify the
+                // same decompile-owned scalar shape. Insert neutral source bits
+                // only when the record is not followed solely by fragment-
+                // neutral `W` rows; `W current total` consumes no bits and
+                // cannot serve as a cursor owner for this repair.
                 low_tail_zero_fragment_bits_to_insert =
                     low_prefix_door_placeable_update_source_fragment_bits(low_tail_candidate_mask);
             }
@@ -1739,6 +1741,20 @@ fn low_prefix_door_placeable_update_source_fragment_bits(source_mask: u32) -> us
         bits = bits.saturating_add(1);
     }
     bits
+}
+
+fn suffix_is_fragment_neutral_work_remaining_only(bytes: &[u8], mut offset: usize) -> bool {
+    if offset >= bytes.len() {
+        return false;
+    }
+
+    while offset < bytes.len() {
+        if !world_status::is_work_remaining_record_at(bytes, offset) {
+            return false;
+        }
+        offset = offset.saturating_add(3);
+    }
+    true
 }
 
 fn first_msb_bits(bytes: &[u8], bit_count: usize) -> Option<Vec<bool>> {

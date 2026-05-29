@@ -369,14 +369,16 @@ mod tests {
     }
 
     #[test]
-    fn local_winds_eremor_seq16_placeable_pending_stream_stays_unclaimed_after_37_fragment_audit() {
+    fn local_winds_eremor_seq16_placeable_pending_stream_rewrites_after_37_fragment_audit() {
         // Earlier local Winds of Eremor area-entry burst from the same module:
         // four declared-zero Diamond chunks rebuilt by the pending stream
         // accumulator before a later independent live-object packet arrives.
-        // After the 0x37 cursor audit, the middle mask-0x17 stale gap repairs,
-        // but a terminal placeable U/9 0x37 row still has too few fragment bits
-        // for EE's scalar-orientation/state reader. Keep it quarantined until
-        // that final row has a decompile-owned cursor owner.
+        // After the 0x37 cursor audit and declared-window repairs, this stream
+        // now proves each final U/9 row from the decompiled scalar/state cursor:
+        // Diamond source bits provide position + scalar orientation + five
+        // state BOOLs, the bridge inserts EE's neutral sixth placeable-state
+        // BOOL, and the following W rows remain fragment-neutral identity
+        // records rather than donating any cursor bits.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_winds_eremor_seq16_placeable_pending_liveobject_20260521.bin"
         )
@@ -387,13 +389,17 @@ mod tests {
             "raw Winds of Eremor pending stream documents the pre-rewrite Diamond shape"
         );
 
+        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
+            .expect("Winds of Eremor pending stream should rewrite after 0x37 cursor proof");
+        assert!(summary.changed());
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten Winds of Eremor pending stream must validate exactly");
+        assert!(claim.add_records >= 1);
+        assert!(claim.update_records >= 1);
         assert!(
-            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
-            "Winds of Eremor pending stream must reject the unowned terminal 0x37 row"
-        );
-        assert!(
-            claim_payload_if_verified(&payload).is_none(),
-            "failed exact rewrite must leave the pending stream quarantined"
+            claim.world_status_records >= 1,
+            "W records must stay as fragment-neutral identity records"
         );
     }
 

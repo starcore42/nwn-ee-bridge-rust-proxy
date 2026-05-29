@@ -1104,6 +1104,32 @@ Current status:
   orientation/state BOOLs for an otherwise EE-ordered row. The final CEP v2.3
   starter-style `U/9` shortage before `W` therefore stays quarantined until a
   real update-family owner or stream-boundary artifact is proven.
+- 2026-05-30 `P/05/01` trigger `U/7` transport-boundary audit: wired the
+  decompile-backed trigger update cursor into the shared live-object transport
+  scanner. Diamond/HG `U/7 0xFFFF_FFF3` owns the generic position read fields,
+  exactly two position fragment bits, and a bounded three-byte trigger tail that
+  is dropped before EE emission; exact EE `U/7 0x00000001` owns the same
+  position bytes/bits without that legacy tail. A stale declared read window may
+  no longer split before trigger tail bytes even when those bytes decode as
+  compact CNW fragment storage. Verified with `cargo test -q -p
+  hgbridge-proxy2 trigger_update_tail_bytes_stay_inside_transport_record --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 trigger_update --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 declared_length --
+  --nocapture`.
+- 2026-05-30 `P/05/01` `U/9` before fragment-neutral `W` re-audit: split the
+  no-fragment low-tail rule from the valid scalar/state `0x37` cursor. Public
+  fixture-free coverage now proves a `U/9` low-tail row followed only by `W
+  current total` remains unclaimed when the Diamond source has no fragment bits:
+  `W` consumes zero BOOLs in Diamond `sub_44F160` and EE `sub_1407B85A0` and
+  cannot donate missing position/orientation/state bits. The Winds seq16
+  pending fixture is reclassified as positive evidence because its final `U/9`
+  rows do have the 12 Diamond source bits; the typed update rewrite inserts
+  only EE's neutral sixth placeable-state BOOL and leaves `W` as a
+  fragment-neutral identity row. The Contest/Prelude siblings still remain
+  active negative evidence. Verified with `cargo test -q -p hgbridge-proxy2
+  no_fragment_low_bits_placeable_update -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 after_37_fragment_audit -- --nocapture`, and `cargo test -q
+  -p hgbridge-proxy2 -- --test-threads=1` (797 passed).
 - 2026-05-30 `P/05/01` declared-length `W` tail boundary audit: hardened
   stale-declared split classification so a candidate whose CNW tail starts with
   aligned `W current total` is treated as an ambiguous live-object read boundary,
