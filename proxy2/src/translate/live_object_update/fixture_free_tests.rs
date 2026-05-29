@@ -211,6 +211,24 @@ fn door_placeable_low_tail_update_live_bytes(object_type: u8, tail: &[u8]) -> Ve
     live
 }
 
+fn door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_APPEARANCE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.extend_from_slice(&0x0070u16.to_le_bytes()); // scalar orientation
+    live.extend_from_slice(&0x0042u16.to_le_bytes()); // appearance row
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live
+}
+
 fn door_placeable_named_low_tail_update_live_bytes(object_type: u8, name: &[u8]) -> Vec<u8> {
     let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
@@ -252,6 +270,70 @@ fn work_remaining_record_is_three_read_buffer_bytes_and_fragment_neutral() {
     assert!(
         super::claim_payload_if_verified(&shifted).is_none(),
         "a work-remaining record must not consume or hide a following fragment bit"
+    );
+}
+
+#[test]
+fn work_remaining_does_not_supply_missing_update_fragment_bits() {
+    // The CEP v2.3 starter evidence reduces to this cursor rule: `W current
+    // total` is not a fragment-storage donor for an adjacent `U/9`/`U/10`.
+    // Diamond `sub_44F160` and EE `sub_1407B85A0` read only three bytes, while
+    // the preceding generic door/placeable update must own its own position,
+    // orientation, and state BOOLs before any following record boundary.
+    let mut live = door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE);
+    live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, // only the position residual bits are available
+        ],
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "a following W row must not make a bit-short placeable update exact"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "the update pass must not borrow missing U/9 bits from W"
+    );
+    assert_eq!(
+        payload, original,
+        "bit-short U/9 before W must stay visible for quarantine/diagnostics"
+    );
+}
+
+#[test]
+fn exact_adapter_rolls_back_prior_rewrites_before_unproven_update_w_handoff() {
+    // A bounded live-object adapter may stage earlier typed rewrites while it
+    // searches for an exact final EE claim. If a later U/9-W handoff lacks the
+    // decompile-owned update bits, the whole staged candidate must be discarded
+    // instead of emitting a partially translated stream.
+    let mut live = door_state_update_live_bytes();
+    live.extend_from_slice(&door_placeable_full_update_live_bytes(
+        super::PLACEABLE_OBJECT_TYPE,
+    ));
+    live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, true, false, true, // first door state update
+            true, false, // second U/9 has only position residual bits
+        ],
+    );
+    let original = payload.clone();
+
+    assert!(
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "exact adapter must reject the stream until the U/9-W cursor owner is proven"
+    );
+    assert_eq!(
+        payload, original,
+        "failed exact live-object rewrite must roll back earlier staged update edits"
     );
 }
 

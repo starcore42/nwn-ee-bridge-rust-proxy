@@ -1034,6 +1034,16 @@ Current status:
   recorded as unowned by the Diamond client reader.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_name -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
+  public fixture-free coverage now pins the negative `W` proof behind the
+  remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
+  `sub_1407B85A0` both read only `W current total` and consume no CNW fragment
+  BOOLs, so a following `W` row cannot donate missing position/orientation/state
+  bits to a preceding door/placeable `U/9`/`U/10` update. The exact live-object
+  adapter is also covered for rollback: earlier staged typed rewrites must be
+  discarded when the final U/9-W cursor owner is still unproven. The CEP v2.3
+  starter capture remains active pending a real owner for the final placeable
+  update bits or a separate stream-boundary explanation.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

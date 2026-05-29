@@ -189,6 +189,9 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         }
     }
 
+    // Candidate passes are intentionally speculative. If a later record, such
+    // as a bit-short U/9 before a read-buffer-only W row, prevents the exact EE
+    // reader claim, discard every staged edit instead of emitting a mixed stream.
     if !summary.changed() || claim_payload_if_verified(&candidate).is_none() {
         return None;
     }
