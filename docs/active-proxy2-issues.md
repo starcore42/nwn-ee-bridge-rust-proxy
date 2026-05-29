@@ -1199,6 +1199,21 @@ Current status:
   hgbridge-proxy2
   declared_length_window_rejects_large_character_sheet_combat_row_as_fragment_tail
   -- --nocapture`.
+- 2026-05-30 `P/05/01` combined character-sheet declared-tail audit: replaced
+  the fixed proofless `G S` placeholder bit cap with a computed bound from the
+  modeled EE `sub_1407B2740` branch widths: mask `0x20` BOOL, max build-8193.35
+  combat false-optional lists, max changed effect-icon BOOLs, and max changed
+  feat BOOLs. A stale-declared split beginning at an aligned combat+feat
+  character-sheet row can require more than 8192 minimum fragment bits while
+  still looking like compact CNW storage, so it now remains live GUI
+  read-boundary ambiguity. Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_combined_character_sheet_combat_feat_row_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 character_sheet --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check`, `cargo check
+  -q -p hgbridge-proxy2`, and the full serial `cargo test -q -p
+  hgbridge-proxy2 -- --test-threads=1` suite.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
