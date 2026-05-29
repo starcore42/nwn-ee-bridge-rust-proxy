@@ -4444,7 +4444,7 @@ mod tests {
     }
 
     #[test]
-    fn local_diamond_zero_prefixed_door_burst_rewrites_to_exact_ee_claim() {
+    fn local_diamond_zero_prefixed_door_burst_stays_unclaimed_after_37_order_audit() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/local_bw167demo_zero_prefixed_door_burst.bin"
         )
@@ -4455,9 +4455,17 @@ mod tests {
         assert_eq!(normalize_summary.old_wire_declared, 0);
         assert_eq!(normalize_summary.prefixed_fragment_bytes, [0, 0, 0, 0]);
 
-        let claim = rewrite_payload_to_exact_claim_for_test(&mut payload, None);
-        assert!(claim.add_records > 0);
-        assert!(claim.update_records > 0);
+        assert!(
+            !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+                &mut payload,
+                None,
+            ),
+            "zero-prefixed local door burst must reject the shifted 0x37 evidence"
+        );
+        assert!(
+            crate::translate::live_object_update::claim_payload_if_verified(&payload).is_none(),
+            "failed exact rewrite must leave the normalized door burst quarantined"
+        );
     }
 
     #[test]
@@ -5100,25 +5108,24 @@ mod local_diamond_live_object_tests {
     use crate::translate::live_object_update as live_update;
 
     #[test]
-    fn local_diamond_bw167demo_initial_live_object_rewrites_to_exact_claim() {
+    fn local_diamond_bw167demo_initial_live_object_stays_unclaimed_after_37_order_audit() {
         let mut payload = include_bytes!(
             "../../fixtures/live_object/local_diamond_bw167demo_initial_live_object_seq12_unclaimed.bin"
         )
         .to_vec();
 
         assert!(
-            crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
                 &mut payload,
                 None,
             ),
-            "BW167 demo initial live-object stream must rewrite through the bounded exact adapter"
+            "BW167 demo initial live-object stream must reject shifted 0x37 door/placeable rows"
         );
 
-        let claim = live_update::claim_payload_if_verified(&payload)
-            .expect("local Diamond bw167demo initial live-object stream must be exact-claimable");
-        assert!(claim.add_records > 0);
-        assert!(claim.update_records > 0);
-        assert!(claim.world_status_records > 0);
+        assert!(
+            live_update::claim_payload_if_verified(&payload).is_none(),
+            "seq12 initial stream remains active shifted-cursor evidence, not an EE-positive fixture"
+        );
     }
 
     #[test]

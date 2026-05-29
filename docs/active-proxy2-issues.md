@@ -1052,6 +1052,38 @@ Current status:
   discarded when the final U/9-W cursor owner is still unproven. The CEP v2.3
   starter capture remains active pending a real owner for the final placeable
   update bits or a separate stream-boundary explanation.
+- 2026-05-29 `P/05/01` door/placeable `0x37` appearance/scale-state cursor
+  audit: hardened the exact EE validator against a same-length swapped row.
+  Diamond `sub_467AE0` reads mask `0x20` appearance at loc_467C29 before mask
+  `0x4` scale/state at loc_467C6B; EE `sub_14079C050` preserves that order at
+  loc_14079C690 before loc_14079CB44. Public fixture-free coverage now proves
+  an EE-ordered row exact-claims and a scale/state-before-appearance row stays
+  unclaimed/unchanged even though it has the same byte length. This narrows the
+  CEP v2.3 terminal `U/9` evidence: the observed final row still has only two
+  fragment bits before `W` and its byte tail resembles the legacy scale-first
+  order, so it remains active until a real owner or stream-boundary explanation
+  is proven.
+- 2026-05-29 private fixture reclassification: the older local Diamond seq12
+  "rewritten/claimed" door-placeable streams and the XP2 seq19 mixed
+  door/placeable + GUI stream now stay unclaimed under the same `0x37` audit.
+  They contain or depend on the scale-before-appearance shape and are retained
+  as generalized shifted-cursor evidence, not positive EE fixtures. The
+  Chapter1 transition-pending claimed stream was also reclassified, but as the
+  sibling mask-`0x17` stale absent-appearance gap before scale, not as a `0x37`
+  row. The older M-frame local Prelude/Contest/Winds pending positives now
+  stay quarantined for the related terminal `U/9 mask=0x37` fragment shortage:
+  after the mask-`0x17` stale gap repairs, the final row still lacks the
+  decompile-required scalar/state fragment bits before the following `W`/stream
+  boundary. Next step: trace the original Diamond writer/server boundary for
+  those rows, then either prove a bounded pre-EE bridge artifact repair or keep
+  them quarantined until a real following-record owner is found.
+- 2026-05-29 server-dispatch accepted-dump reclassification: dispatcher tests
+  now allow a mismatch only when the typed rewrite still exact-claims and the
+  old harness-dumped comparison payload is a known stale full-appearance or
+  stale scale-before-appearance `U/9`/`U/10 mask=0x37` dump. This keeps
+  dispatcher ownership proven without letting old semantically shifted EE-byte
+  dumps become positive fixtures. Verified with `cargo test -q -p
+  hgbridge-proxy2 server_dispatch -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

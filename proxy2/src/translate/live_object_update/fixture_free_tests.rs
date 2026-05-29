@@ -229,6 +229,44 @@ fn door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     live
 }
 
+fn ee_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_APPEARANCE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.push(0x70); // scalar orientation high byte
+    live.extend_from_slice(&0x0042u16.to_le_bytes()); // appearance row
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live
+}
+
+fn scale_first_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_APPEARANCE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.push(0x70); // scalar orientation high byte
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live.extend_from_slice(&0x0042u16.to_le_bytes()); // appearance row
+    live
+}
+
 fn door_placeable_named_low_tail_update_live_bytes(object_type: u8, name: &[u8]) -> Vec<u8> {
     let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
@@ -251,6 +289,12 @@ fn scalar_door_placeable_update_bits() -> Vec<bool> {
         false, true, false, true, false, // scalar orientation selector + low bits
         true, false, true, false, true, // Diamond door/placeable state bits
     ]
+}
+
+fn exact_scalar_door_placeable_update_bits() -> Vec<bool> {
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.push(false); // EE-only neutral door/placeable state BOOL.
+    bits
 }
 
 #[test]
@@ -676,6 +720,47 @@ fn ee_door_placeable_update_rejects_low_tail_mask_bits() {
         assert!(
             super::claim_payload_if_verified(&payload).is_none(),
             "object type {object_type:#04X} must reject Diamond-only 0x40/0x80 update mask bits"
+        );
+    }
+}
+
+#[test]
+fn ee_door_placeable_update_37_requires_appearance_before_scale_state() {
+    // Diamond `sub_467AE0` and EE `sub_14079C050` both read the 0x20
+    // appearance field before the 0x4 scale/state pair. The two fields have
+    // the same byte total as scale/state plus a WORD appearance, so byte-end
+    // validation alone is not enough proof of the reader cursor.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let live = ee_door_placeable_full_update_live_bytes(object_type);
+        let payload =
+            live_object_payload_with_bits(&live, exact_scalar_door_placeable_update_bits());
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("EE-ordered door/placeable 0x37 update should exact-claim");
+
+        assert_eq!(claim.update_records, 1);
+        assert_eq!(claim.live_bytes_length, live.len());
+
+        let shifted = scale_first_door_placeable_full_update_live_bytes(object_type);
+        assert_eq!(
+            shifted.len(),
+            live.len(),
+            "the swapped field order is a same-length cursor hazard"
+        );
+        let mut shifted_payload =
+            live_object_payload_with_bits(&shifted, exact_scalar_door_placeable_update_bits());
+        let original = shifted_payload.clone();
+
+        assert!(
+            super::claim_payload_if_verified(&shifted_payload).is_none(),
+            "object type {object_type:#04X} must reject scale/state before appearance"
+        );
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+            "object type {object_type:#04X} must not rewrite a same-length shifted EE row"
+        );
+        assert_eq!(
+            shifted_payload, original,
+            "rejected shifted 0x37 row must stay visible for quarantine/diagnostics"
         );
     }
 }

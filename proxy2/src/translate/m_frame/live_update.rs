@@ -369,10 +369,14 @@ mod tests {
     }
 
     #[test]
-    fn local_winds_eremor_seq16_placeable_pending_stream_rewrites_to_exact_shape() {
+    fn local_winds_eremor_seq16_placeable_pending_stream_stays_unclaimed_after_37_fragment_audit() {
         // Earlier local Winds of Eremor area-entry burst from the same module:
         // four declared-zero Diamond chunks rebuilt by the pending stream
         // accumulator before a later independent live-object packet arrives.
+        // After the 0x37 cursor audit, the middle mask-0x17 stale gap repairs,
+        // but a terminal placeable U/9 0x37 row still has too few fragment bits
+        // for EE's scalar-orientation/state reader. Keep it quarantined until
+        // that final row has a decompile-owned cursor owner.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_winds_eremor_seq16_placeable_pending_liveobject_20260521.bin"
         )
@@ -383,15 +387,14 @@ mod tests {
             "raw Winds of Eremor pending stream documents the pre-rewrite Diamond shape"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("Winds of Eremor pending placeable stream should rewrite to exact EE shape");
-        assert!(summary.changed());
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten Winds of Eremor pending stream should validate exactly");
-        assert!(claim.add_records >= 1);
-        assert!(claim.creature_appearance_records >= 1);
-        assert!(claim.creature_update_records >= 1);
+        assert!(
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "Winds of Eremor pending stream must reject the unowned terminal 0x37 row"
+        );
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "failed exact rewrite must leave the pending stream quarantined"
+        );
     }
 
     #[test]
@@ -420,10 +423,12 @@ mod tests {
     }
 
     #[test]
-    fn local_contest_seq13_creature_placeable_stream_rewrites_to_exact_shape() {
+    fn local_contest_seq13_creature_placeable_stream_stays_unclaimed_after_37_fragment_audit() {
         // Local Contest Of Champions 0492 harness capture from 2026-05-21.
         // The opening inventory probe emits a mixed creature/placeable stream
-        // with Diamond compact placeable add/update tails.
+        // with Diamond compact placeable add/update tails. The final 0x37
+        // placeable update still lacks the EE scalar/state fragment bits needed
+        // to own the row exactly.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_contest_seq13_creature_placeable_liveobject_20260521.bin"
         )
@@ -434,22 +439,19 @@ mod tests {
             "raw Contest seq13 stream documents the pre-rewrite Diamond shape"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("Contest seq13 live-object stream should rewrite to exact EE shape");
-        assert!(summary.changed());
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten Contest seq13 stream should validate exactly");
-        assert!(claim.add_records >= 1);
-        assert!(claim.creature_update_records >= 1);
-        assert!(claim.update_records >= 1);
+        assert!(
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "Contest seq13 must remain unclaimed until the terminal 0x37 fragment owner is proven"
+        );
+        assert!(claim_payload_if_verified(&payload).is_none());
     }
 
     #[test]
-    fn local_contest_seq14_placeable_stream_rewrites_to_exact_shape() {
+    fn local_contest_seq14_placeable_stream_stays_unclaimed_after_37_fragment_audit() {
         // Same local module pass as seq13. This packet is a dense placeable
         // add/update burst, useful because it repeats the compact low-tail
-        // placeable family without any creature records in front.
+        // placeable family without any creature records in front. It is now
+        // negative coverage for the same terminal 0x37 fragment shortage.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_contest_seq14_placeable_liveobject_20260521.bin"
         )
@@ -460,24 +462,21 @@ mod tests {
             "raw Contest seq14 stream documents the pre-rewrite Diamond shape"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("Contest seq14 live-object stream should rewrite to exact EE shape");
-        assert!(summary.changed());
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten Contest seq14 stream should validate exactly");
-        assert!(claim.add_records >= 3);
-        assert!(claim.update_records >= 3);
+        assert!(
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "Contest seq14 must remain unclaimed until the terminal 0x37 fragment owner is proven"
+        );
+        assert!(claim_payload_if_verified(&payload).is_none());
     }
 
     #[test]
-    fn local_prelude_seq10_pending_stream_rewrites_to_exact_shape() {
+    fn local_prelude_seq10_pending_stream_stays_unclaimed_after_37_fragment_audit() {
         // Local Prelude 2026-05-22 opening area stream. The pending-stream
         // accumulator rebuilt this as one `P/5/1` candidate after the compact
         // Area_ClientArea repair; it contains a creature appearance/update
-        // prefix, then a compact placeable add/update pair and a world-status
-        // tail that must be owned by the typed live-object passes before EE
-        // sees it.
+        // prefix, then a compact placeable add/update pair. The final
+        // placeable 0x37 row still has no proven fragment owner before the
+        // world-status tail, so the stream stays quarantined.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_prelude_seq10_pending_liveobject_20260522.bin"
         )
@@ -488,17 +487,11 @@ mod tests {
             "raw Prelude seq10 stream documents the pre-rewrite Diamond shape"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("Prelude pending live-object stream should rewrite to exact EE shape");
-        assert!(summary.changed());
-
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten Prelude pending stream should validate exactly");
-        assert!(claim.add_records >= 1);
-        assert!(claim.update_records >= 1);
-        assert!(claim.creature_appearance_records >= 1);
-        assert!(claim.creature_update_records >= 1);
-        assert!(claim.world_status_records >= 1);
+        assert!(
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "Prelude seq10 must remain unclaimed until the terminal 0x37 fragment owner is proven"
+        );
+        assert!(claim_payload_if_verified(&payload).is_none());
     }
 
     #[test]
@@ -528,7 +521,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_seq12_local_diamond_stream_uses_bounded_typed_passes_until_exact_claim() {
+    fn pending_seq12_local_diamond_stream_stays_unclaimed_after_37_order_audit() {
+        // This local seq12 evidence predates the 0x37 bit-order audit and can
+        // only be made to pass by accepting scale-before-appearance
+        // door/placeable update rows. Keep it as negative coverage until the
+        // source side of those rows is re-captured or proven from decompiles.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_bw167demo_initial_live_object_seq12_20260517_unclaimed.bin"
         )
@@ -539,39 +536,24 @@ mod tests {
             "fresh pending stream capture documents the live-stream quarantine before typed passes"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None).expect(
-            "bounded typed live-object passes should rewrite the fresh local Diamond stream",
-        );
-
-        assert!(summary.changed());
         assert!(
-            claim_payload_if_verified(&payload).is_some(),
-            "rewritten local Diamond stream must be exact EE live-object shape before emission"
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "bounded typed live-object passes must reject the shifted seq12 0x37 evidence"
         );
         assert!(
-            claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
-            "shape-exact local Diamond stream documents the remaining lifecycle gap: a door update is present before EE has seen its add"
-        );
-
-        let lifecycle_summary =
-            remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
-                .expect("missing-object Diamond update should be removable only after exact record-boundary proof");
-        assert_eq!(lifecycle_summary.removed_update_records, 1);
-        assert!(
-            claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_some(),
-            "removing the proven Diamond no-op missing-object update should leave an exact EE-safe live-object payload"
+            claim_payload_if_verified(&payload).is_none(),
+            "stale seq12 evidence remains unclaimed after the rejected rewrite attempt"
         );
     }
 
     #[test]
-    fn local_diamond_seq12_missing_object_update_cleanup_is_exactly_bounded() {
-        // Local Diamond bridge capture from 2026-05-18, before the lifecycle
-        // compatibility cleanup. Diamond emits a `U/10 id=2` update whose
-        // generic reader consumes the mask body before discovering that no
-        // object exists; EE resolves the object first and would leave the cursor
-        // shifted. The M-frame live-object adapter may remove exactly that
-        // missing-object update, but only after the bounded typed add/update
-        // orchestration has proved the surrounding records and fragment bits.
+    fn local_diamond_seq12_missing_object_update_stays_unclaimed_after_37_order_audit() {
+        // Local Diamond bridge capture from 2026-05-18. The older accepted
+        // fixture carried door/placeable `U/9`/`U/10` 0x37 rows whose scale
+        // bytes are in the pre-audit, scale-before-appearance position. The
+        // decompiled Diamond and EE generic readers both consume appearance
+        // before scale, so the bounded adapter must reject this capture until a
+        // decompile-owned source shape is available.
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_seq12_door_placeable_missing_object_update_20260518_legacy.bin"
         )
@@ -586,60 +568,17 @@ mod tests {
             .expect("raw local Diamond seq12 should normalize from zero-declared fragments");
         assert_eq!(normalize.old_wire_declared, 0);
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("bounded typed live-object passes should rewrite local Diamond seq12");
-        assert!(summary.changed());
-
-        let canonicalize = canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
-            .expect("compact local Diamond door/placeable ids should canonicalize before cleanup");
-        assert_eq!(canonicalize.compact_add_ids_observed, 3);
-        assert_eq!(canonicalize.add_ids_rewritten, 3);
-        assert_eq!(canonicalize.reference_ids_rewritten, 3);
-
-        let exact_before_cleanup = claim_payload_if_verified(&payload)
-            .expect("rewritten seq12 stream should be byte/bit exact before lifecycle cleanup");
         assert!(
-            exact_before_cleanup.mentions.iter().any(|mention| {
-                mention.opcode == b'U'
-                    && mention.object_type == 0x0A
-                    && mention.object_id == 2
-                    && mention.requires_materialized_object
-            }),
-            "fixture must contain the orphan Diamond door update this test proves"
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "bounded typed live-object passes must not emit a stream with shifted 0x37 scale fields"
         );
         assert!(
-            claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
-            "the orphan U/10 id=2 update must not be forwarded to EE as lifecycle-safe"
+            canonicalize_compact_external_object_ids_payload_for_ee(&mut payload).is_none(),
+            "object-id canonicalization is gated by exact live-object cursor proof"
         );
-
-        let cleanup =
-            remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
-                .expect("the decompile-backed missing-object U/10 update should be removable");
-        assert_eq!(cleanup.old_declared, 319);
-        assert_eq!(cleanup.new_declared, 294);
-        assert_eq!(cleanup.removed_update_records, 1);
-        assert_eq!(cleanup.diamond_missing_object_update_records, 1);
-        assert_eq!(cleanup.ee_sentinel_inventory_owner_records, 0);
-        assert_eq!(cleanup.removed_bytes, 25);
-        assert_eq!(cleanup.removed_fragment_bits, 13);
-
-        let claim = claim_payload_if_verified_with_lifecycle(&payload, |_, _| false)
-            .expect("seq12 stream should be exact and lifecycle-safe after bounded cleanup");
-        assert_eq!(claim.add_records, 5);
-        assert_eq!(claim.update_records, 5);
-        assert_eq!(claim.live_bytes_length + 7, claim.declared);
-        let accepted = include_bytes!(
-            "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260518_claimed.bin"
-        );
-        let accepted_claim = claim_payload_if_verified_with_lifecycle(accepted, |_, _| false)
-            .expect("accepted local fixture should remain exact and lifecycle-safe");
-        assert_eq!(accepted_claim.add_records, claim.add_records);
-        assert_eq!(accepted_claim.update_records, claim.update_records);
-        assert_eq!(accepted_claim.live_bytes_length, claim.live_bytes_length);
-        assert_eq!(
-            &payload[..claim.declared],
-            &accepted[..accepted_claim.declared],
-            "cleanup output should retain the same declared EE live-object read window as the accepted local fixture"
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "normalized seq12 evidence remains unclaimed after rejecting shifted 0x37 rows"
         );
     }
 

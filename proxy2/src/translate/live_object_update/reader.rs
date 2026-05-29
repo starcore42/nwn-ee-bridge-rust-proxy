@@ -433,6 +433,19 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        // Diamond `sub_467AE0` reads mask 0x20 at loc_467C29 before mask 0x4
+        // at loc_467C6B; EE `sub_14079C050` preserves that order at
+        // loc_14079C690 before loc_14079CB44. A swapped same-length row can
+        // otherwise land byte-exact while decoding an impossible scale here.
+        let scale = read_f32_le(bytes, read_cursor)?;
+        if !is_plausible_legacy_object_scale(scale) {
+            if debug_live_claim {
+                eprintln!(
+                    "door/placeable update reject scale value offset={offset} record_end={record_end} read_cursor={read_cursor} scale={scale:?} mask=0x{mask:08X}"
+                );
+            }
+            return None;
+        }
         read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
         if read_cursor > record_end {
             if debug_live_claim {
@@ -574,7 +587,7 @@ fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
     cursor.checked_add(count)
 }
 
-fn is_plausible_legacy_object_scale(scale: f32) -> bool {
+pub(super) fn is_plausible_legacy_object_scale(scale: f32) -> bool {
     scale.is_finite() && (0.01..=100.0).contains(&scale)
 }
 

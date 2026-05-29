@@ -52,6 +52,96 @@ fn test_read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
+fn test_read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
+    let bytes = bytes.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn test_plausible_object_scale(scale: f32) -> bool {
+    scale.is_finite() && (0.01..=100.0).contains(&scale)
+}
+
+fn contains_stale_scale_first_door_placeable_update_37(payload: &[u8]) -> bool {
+    let live = live_object_read_window(payload);
+    let stale_mask = super::LEGACY_UPDATE_POSITION_MASK
+        | super::LEGACY_UPDATE_ORIENTATION_MASK
+        | super::LEGACY_UPDATE_SCALE_STATE_MASK
+        | super::LEGACY_UPDATE_STATE_MASK
+        | super::LEGACY_UPDATE_APPEARANCE_MASK;
+
+    for offset in 0..live.len().saturating_sub(super::LEGACY_UPDATE_HEADER_BYTES) {
+        if live[offset] != b'U'
+            || !matches!(
+                live.get(offset + 1).copied(),
+                Some(super::PLACEABLE_OBJECT_TYPE | super::DOOR_OBJECT_TYPE)
+            )
+            || super::read_u32_le(live, offset + 6) != Some(stale_mask)
+        {
+            continue;
+        }
+
+        let scale_first_cursor = offset
+            + super::LEGACY_UPDATE_HEADER_BYTES
+            + super::LEGACY_UPDATE_POSITION_READ_BYTES
+            + super::EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES;
+        let Some(scale_first) = test_read_f32_le(live, scale_first_cursor) else {
+            continue;
+        };
+        let Some(ee_order_scale) = test_read_f32_le(
+            live,
+            scale_first_cursor + super::EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+        ) else {
+            continue;
+        };
+        if test_plausible_object_scale(scale_first) && !test_plausible_object_scale(ee_order_scale)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn contains_stale_absent_appearance_gap_door_placeable_update_17(payload: &[u8]) -> bool {
+    let live = live_object_read_window(payload);
+    let gap_mask = super::LEGACY_UPDATE_POSITION_MASK
+        | super::LEGACY_UPDATE_ORIENTATION_MASK
+        | super::LEGACY_UPDATE_SCALE_STATE_MASK
+        | super::LEGACY_UPDATE_STATE_MASK;
+
+    for offset in 0..live.len().saturating_sub(super::LEGACY_UPDATE_HEADER_BYTES) {
+        if live[offset] != b'U'
+            || !matches!(
+                live.get(offset + 1).copied(),
+                Some(super::PLACEABLE_OBJECT_TYPE | super::DOOR_OBJECT_TYPE)
+            )
+            || super::read_u32_le(live, offset + 6) != Some(gap_mask)
+        {
+            continue;
+        }
+
+        let ee_scale_cursor = offset
+            + super::LEGACY_UPDATE_HEADER_BYTES
+            + super::LEGACY_UPDATE_POSITION_READ_BYTES
+            + super::EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES;
+        let Some(ee_scale) = test_read_f32_le(live, ee_scale_cursor) else {
+            continue;
+        };
+        let Some(gap_skipped_scale) = test_read_f32_le(
+            live,
+            ee_scale_cursor + super::EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+        ) else {
+            continue;
+        };
+        if !test_plausible_object_scale(ee_scale) && test_plausible_object_scale(gap_skipped_scale)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn test_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {
     let length = usize::try_from(super::read_u32_le(bytes, offset)?).ok()?;
     if length > super::MAX_LIVE_OBJECT_NAME_BYTES {
@@ -203,6 +293,46 @@ fn assert_rewrite_matches_expected_or_current_player_semantics(
     context: &str,
 ) {
     if rewritten == expected_ee {
+        return;
+    }
+
+    if contains_stale_scale_first_door_placeable_update_37(expected_ee) {
+        assert_ne!(
+            rewritten, expected_ee,
+            "{name} {context}: stale dumped door/placeable bytes should not be reproduced"
+        );
+        assert!(
+            !contains_stale_scale_first_door_placeable_update_37(rewritten),
+            "{name} {context}: rewritten payload should not keep scale-before-appearance U/9 or U/10 rows"
+        );
+        assert!(
+            super::claim_payload_if_verified(rewritten).is_some(),
+            "{name} {context}: rewritten door/placeable payload should exact-claim"
+        );
+        if let (Some(legacy_semantics), Some(rewritten_semantics)) = (
+            current_player_full_appearance_semantics(
+                legacy,
+                TestCreatureAppearanceDialect::LegacyDiamond,
+            ),
+            current_player_full_appearance_semantics(
+                rewritten,
+                TestCreatureAppearanceDialect::EeBuild8193,
+            ),
+        ) {
+            assert_eq!(
+                rewritten_semantics.appearance_type, legacy_semantics.appearance_type,
+                "{name} {context}: current-player Appearance_Type should round-trip"
+            );
+            assert_eq!(
+                rewritten_semantics.body_selector, legacy_semantics.body_selector,
+                "{name} {context}: current-player body selector should round-trip"
+            );
+            assert_eq!(
+                rewritten_semantics.equipment_count, legacy_semantics.equipment_count,
+                "{name} {context}: current-player equipment count should round-trip"
+            );
+        }
+        assert_no_full_creature_appearance_has_longer_legacy_shape(rewritten);
         return;
     }
 
@@ -4141,32 +4271,33 @@ fn local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_xp2_seq19_door_placeable_gui_stream_rewrites_to_exact_shape_after_terminal_gui_audit() {
+fn local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_37_order_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_seq19_door_placeable_gui_stream_20260522_unclaimed.bin"
     )
     .to_vec();
+    let original = payload.clone();
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "raw XP2 seq19 stream documents the unclaimed Diamond door/placeable + GUI-row shape"
     );
 
-    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-    assert!(claim.add_records >= 1);
-    assert!(claim.update_records >= 1);
     assert!(
-        claim.live_gui_item_create_records >= 1 && claim.live_gui_fragment_bits > 0,
-        "XP2 seq19 terminal trim must be owned by exact GUI item-create fragment storage"
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "XP2 seq19 must stay quarantined until the preceding door/placeable cursor owner is proven"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "partial door/placeable rewrites must not make the mixed XP2 stream exact"
     );
     assert_eq!(
-        claim.last_live_gui_item_record_end,
-        Some(claim.live_bytes_length),
-        "terminal GUI item-create row must own the final live-byte cursor"
-    );
-    assert!(
-        claim.last_live_gui_item_fragment_bit_end.is_some(),
-        "terminal GUI item-create row must own a nonempty final fragment span"
+        original[0..super::HIGH_LEVEL_HEADER_BYTES],
+        payload[0..super::HIGH_LEVEL_HEADER_BYTES],
+        "failed exact rewrite must keep the packet family unchanged"
     );
 }
 
@@ -4213,24 +4344,19 @@ fn local_chapter1_seq19_transition_pending_chunk_waits_for_continuation() {
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_chapter1_seq19_transition_pending_claimed_stream_stays_exact() {
+fn local_chapter1_seq19_transition_pending_claimed_stream_stays_unclaimed_after_scale_cursor_audit()
+{
     let payload = include_bytes!(
         "../../../fixtures/live_object/local_chapter1_seq19_transition_pending_chunks2_20260523_claimed.bin"
     );
 
-    let claim = super::claim_payload_if_verified(payload)
-        .expect("two-chunk Chapter1 transition pending stream should exact-claim after rewrite");
-    assert!(claim.add_records >= 1);
-    assert!(claim.update_records >= 1);
     assert!(
-        claim.mentions.iter().any(|mention| {
-            mention.opcode == b'A'
-                && matches!(
-                    mention.object_type,
-                    super::PLACEABLE_OBJECT_TYPE | super::DOOR_OBJECT_TYPE
-                )
-        }),
-        "claimed Chapter1 transition stream should retain materializing door/placeable adds"
+        contains_stale_absent_appearance_gap_door_placeable_update_17(payload),
+        "seq19 claimed fixture documents the stale two-byte absent-appearance gap"
+    );
+    assert!(
+        super::claim_payload_if_verified(payload).is_none(),
+        "two-chunk Chapter1 transition stream must not stay exact until the shifted cursor is owned"
     );
 }
 
@@ -4987,117 +5113,71 @@ fn local_cepv22_seq11_zero_declared_stream_rewrites_and_claims_exactly() {
 }
 
 #[test]
-fn local_diamond_seq12_door_placeable_stream_claims_exact_shape_before_lifecycle_cleanup() {
+fn local_diamond_seq12_door_placeable_stream_stays_unclaimed_after_37_order_audit() {
     let payload = include_bytes!(
         "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260517_rewritten.bin"
     );
 
-    let claim = super::claim_payload_if_verified(payload)
-        .expect("local Diamond seq12 door/placeable stream should claim after exact rewrite");
-
-    assert_eq!(claim.add_records, 5);
-    assert_eq!(
-        claim.update_records, 6,
-        "pre-cleanup compact stream still carries the orphan Diamond update"
+    assert!(
+        contains_stale_scale_first_door_placeable_update_37(payload),
+        "seq12 fixture documents the stale scale-before-appearance 0x37 hazard"
     );
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'A'
-            && mention.object_type == super::DOOR_OBJECT_TYPE
-            && mention.object_id == 3
-    }));
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'A'
-            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
-            && mention.object_id == 0x8000_0006
-    }));
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'U'
-            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
-            && mention.object_id == 0x8000_000E
-            && mention.requires_materialized_object
-    }));
+    assert!(
+        super::claim_payload_if_verified(payload).is_none(),
+        "stale seq12 door/placeable stream must not exact-claim after the 0x37 order audit"
+    );
     assert!(
         super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false).is_none(),
-        "compact seq12 fixture documents the orphan Diamond update before lifecycle cleanup"
+        "compact seq12 fixture remains active evidence, not an EE-positive fixture"
     );
 }
 
 #[test]
-fn local_diamond_seq12_compact_door_ids_canonicalize_to_ee_external_namespace() {
+fn local_diamond_seq12_compact_door_ids_do_not_canonicalize_after_37_order_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260517_rewritten.bin"
     )
     .to_vec();
+    let original = payload.clone();
 
-    let summary = super::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload)
-        .expect("seq12 compact Diamond door ids should canonicalize for EE");
-
-    assert_eq!(summary.compact_add_ids_observed, 3);
-    assert_eq!(summary.add_ids_rewritten, 3);
-    assert_eq!(summary.reference_ids_rewritten, 3);
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("canonicalized payload remains exact EE live-object shape");
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'A' && mention.object_type == 0x0A && mention.object_id == 0x8000_0003
-    }));
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'U'
-            && mention.object_type == 0x0A
-            && mention.object_id == 0x8000_0003
-            && mention.requires_materialized_object
-    }));
     assert!(
-        super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_none(),
-        "canonicalization proves the EE object namespace but does not remove the orphan Diamond update"
+        contains_stale_scale_first_door_placeable_update_37(&payload),
+        "seq12 compact fixture still carries the stale 0x37 order hazard"
     );
-
-    let cleanup =
-        super::remove_unmaterialized_update_records_payload_if_possible(&mut payload, |_, _| false)
-            .expect("canonicalized orphan Diamond update should be removable after exact proof");
-    assert_eq!(cleanup.removed_update_records, 1);
     assert!(
-        super::claim_payload_if_verified_with_lifecycle(&payload, |_, _| false).is_some(),
-        "canonicalized payload must lifecycle-proof after the bounded missing-object cleanup"
+        super::canonicalize_compact_external_object_ids_payload_for_ee(&mut payload).is_none(),
+        "object-id canonicalization must not run before the shifted 0x37 cursor is owned"
+    );
+    assert_eq!(
+        payload, original,
+        "failed canonicalization must leave shifted seq12 evidence unchanged"
     );
 }
 
 #[test]
-fn local_diamond_seq12_rebuilt_high_bit_door_placeable_stream_claims_exactly() {
+fn local_diamond_seq12_rebuilt_high_bit_door_placeable_stream_stays_unclaimed_after_37_order_audit()
+{
     // Local Diamond bridge capture from 2026-05-18, dumped after the
     // live-object high-level fragment stream was rebuilt and canonicalized for
-    // EE.  It is deliberately separate from the compact-id 2026-05-17 fixture:
-    // this pins the emitted EE-facing external-object namespace shape.
+    // EE. It is deliberately separate from the compact-id 2026-05-17 fixture:
+    // after the 0x37 order audit it now pins the old shifted bridge artifact
+    // as rejected evidence rather than an accepted EE-facing packet.
     let payload = include_bytes!(
         "../../../fixtures/live_object/local_diamond_seq12_door_placeable_stream_20260518_claimed.bin"
     );
 
-    let claim = super::claim_payload_if_verified(payload)
-        .expect("rebuilt local Diamond seq12 stream should claim as exact EE live-object shape");
-    assert_eq!(claim.add_records, 5);
-    assert_eq!(claim.update_records, 5);
-    assert_eq!(claim.live_bytes_length + 7, claim.declared);
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'A'
-            && mention.object_type == super::DOOR_OBJECT_TYPE
-            && mention.object_id == 0x8000_0003
-    }));
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'A'
-            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
-            && mention.object_id == 0x8000_0006
-    }));
-    assert!(claim.mentions.iter().any(|mention| {
-        mention.opcode == b'U'
-            && mention.object_type == super::PLACEABLE_OBJECT_TYPE
-            && mention.object_id == 0x8000_000E
-            && mention.requires_materialized_object
-    }));
-
-    let lifecycle_claim = super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false)
-        .expect("add/update pairs in the same rebuilt stream should lifecycle-proof internally");
-    assert_eq!(lifecycle_claim.add_records, 5);
-    assert_eq!(lifecycle_claim.update_records, 5);
+    assert!(
+        contains_stale_scale_first_door_placeable_update_37(payload),
+        "rebuilt seq12 fixture documents the stale scale-before-appearance 0x37 hazard"
+    );
+    assert!(
+        super::claim_payload_if_verified(payload).is_none(),
+        "rebuilt seq12 stream must not exact-claim while 0x37 fields are scale-first"
+    );
+    assert!(
+        super::claim_payload_if_verified_with_lifecycle(payload, |_, _| false).is_none(),
+        "lifecycle proof cannot rescue a shifted 0x37 byte cursor"
+    );
 }
 
 #[cfg(hgbridge_private_fixtures)]
