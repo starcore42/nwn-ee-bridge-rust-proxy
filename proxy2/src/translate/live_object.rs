@@ -732,12 +732,7 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
 }
 
 fn is_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
-    matches!(bytes.get(offset), Some(&b'W'))
-        && bytes
-            .get(offset + 1)
-            .copied()
-            .is_some_and(|marker| marker <= 0x0F)
-        && bytes.get(offset + 2) == Some(&0x0E)
+    crate::translate::live_object_update::looks_like_work_remaining_record_at(bytes, offset)
 }
 
 pub fn wrap_legacy_live_object_continuation_payload_if_plausible(
@@ -1802,7 +1797,7 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
         (b'U' | b'P', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => LEGACY_UPDATE_HEADER_BYTES,
         (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
         (b'I', _) => 7,
-        (b'W', _) if marker <= 0x0F && bytes.get(offset + 2) == Some(&0x0E) => 3,
+        (b'W', _) if is_work_remaining_record_at(bytes, offset) => 3,
         _ => 2,
     }
 }
@@ -3113,10 +3108,9 @@ fn advance_known_live_record_fragment_cursor_for_ee(
                 None
             }
         }
-        (b'W', marker)
-            if marker <= 0x0F
-                && record_end >= record_offset + 3
-                && bytes.get(record_offset + 2) == Some(&0x0E) =>
+        (b'W', _)
+            if record_end == record_offset + 3
+                && is_work_remaining_record_at(bytes, record_offset) =>
         {
             Some(true)
         }
@@ -4376,7 +4370,7 @@ mod declared_length_repair_tests {
         ];
         payload.extend_from_slice(&(split as u32).to_le_bytes());
         payload.extend_from_slice(&live);
-        payload.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+        payload.extend_from_slice(&[b'W', 0x10, 0x20]);
 
         assert!(
             decode_cnw_msb_valid_bits(&payload[split..]).is_some(),

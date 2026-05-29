@@ -52,6 +52,10 @@ pub(crate) mod visual_transform;
 mod world_status;
 mod writer;
 
+pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -> bool {
+    world_status::is_work_remaining_record_at(bytes, offset)
+}
+
 pub(crate) fn observe_visual_effect_hak_order_top_first(hak_order_top_first: &[String]) {
     visual_effect_rows::observe_hak_order_top_first(hak_order_top_first);
 }

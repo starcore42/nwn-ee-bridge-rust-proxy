@@ -12,7 +12,7 @@ use super::{
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
     MAX_LIVE_OBJECT_NAME_BYTES, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature,
     door, effects, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le, reader,
-    trigger,
+    trigger, world_status,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1385,7 +1385,7 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
         (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
         (b'G', b'Q') => 3,
         (b'I', _) => 7,
-        (b'W', marker) if marker <= 0x0F && bytes.get(offset + 2) == Some(&0x0E) => 3,
+        (b'W', _) if world_status::is_work_remaining_record_at(bytes, offset) => 3,
         _ => 2,
     }
 }
@@ -1646,7 +1646,7 @@ pub(super) fn looks_like_legacy_live_object_sub_message_boundary(
         return true;
     }
 
-    opcode == b'W' && bytes.len() - offset >= 3 && marker <= 0x0F && bytes[offset + 2] == 0x0E
+    opcode == b'W' && world_status::is_work_remaining_record_at(bytes, offset)
 }
 
 pub(super) fn looks_like_legacy_live_object_id_at(bytes: &[u8], offset: usize) -> bool {
@@ -1808,6 +1808,20 @@ mod tests {
         assert_eq!(
             find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
             15
+        );
+    }
+
+    #[test]
+    fn work_remaining_boundary_uses_three_byte_counter_shape() {
+        let mut live = vec![b'W', 0x10, 0x20];
+        live.extend_from_slice(&[b'D', 0x05]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+
+        assert!(looks_like_legacy_live_object_sub_message_boundary(&live, 0));
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            3,
+            "W reads exactly two counter BYTEs before the next live-object row"
         );
     }
 

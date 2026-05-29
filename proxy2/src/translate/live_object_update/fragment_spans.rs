@@ -9,7 +9,7 @@
 
 use super::{
     CNW_FRAGMENT_HEADER_BITS, DOOR_OBJECT_TYPE, add, appearance, bits, boundary, creature, gui,
-    inventory, read_u32_le,
+    inventory, read_u32_le, world_status,
 };
 
 const MAX_INTERLEAVED_FRAGMENT_SPAN_BYTES: usize = 4096;
@@ -771,14 +771,7 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
 
     let work_offset = (0..=live_bytes.len().saturating_sub(3))
         .rev()
-        .find(|offset| {
-            live_bytes.get(*offset).copied() == Some(b'W')
-                && live_bytes
-                    .get(offset + 1)
-                    .copied()
-                    .is_some_and(|marker| marker <= 0x0F)
-                && live_bytes.get(offset + 2).copied() == Some(0x0E)
-        })?;
+        .find(|offset| world_status::is_work_remaining_record_at(live_bytes, *offset))?;
     let span_start = work_offset.checked_add(3)?;
     if span_start >= live_bytes.len()
         || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
@@ -949,12 +942,7 @@ pub(super) fn promote_door_add_following_missing_type_update_fragment_span_for_e
         .checked_add(3)
         .filter(|following_world_status_end| *following_world_status_end < live_bytes.len())
         .is_some_and(|following_world_status_end| {
-            live_bytes.get(span_end).copied() == Some(b'W')
-                && live_bytes
-                    .get(span_end + 1)
-                    .copied()
-                    .is_some_and(|marker| marker <= 0x0F)
-                && live_bytes.get(span_end + 2).copied() == Some(0x0E)
+            world_status::is_work_remaining_record_at(live_bytes, span_end)
                 && looks_like_door_add_fixed_prefix(live_bytes, following_world_status_end)
         });
     let following_item_add = live_bytes.get(span_end).copied() == Some(b'A')
@@ -1029,12 +1017,7 @@ pub(super) fn promote_door_add_embedded_missing_type_update_fragment_span_for_ee
         .checked_add(3)
         .filter(|following_world_status_end| *following_world_status_end < live_bytes.len())
         .is_some_and(|following_world_status_end| {
-            live_bytes.get(span_end).copied() == Some(b'W')
-                && live_bytes
-                    .get(span_end + 1)
-                    .copied()
-                    .is_some_and(|marker| marker <= 0x0F)
-                && live_bytes.get(span_end + 2).copied() == Some(0x0E)
+            world_status::is_work_remaining_record_at(live_bytes, span_end)
                 && looks_like_door_add_fixed_prefix(live_bytes, following_world_status_end)
         });
     let following_item_add = live_bytes.get(span_end).copied() == Some(b'A')

@@ -336,6 +336,21 @@ fn work_remaining_record_is_three_read_buffer_bytes_and_fragment_neutral() {
 }
 
 #[test]
+fn work_remaining_record_accepts_general_counter_bytes() {
+    // The reader contract is `W current total`, not the observed `W xx 0E`
+    // packet family from local transition captures. Both counter bytes are
+    // read-buffer BYTEs, and neither is a CNW fragment cursor guard.
+    let live = [b'W', 0x10, 0x20];
+    let payload = live_object_payload_with_bits(&live, Vec::new());
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("work-remaining must exact-claim with arbitrary counter bytes");
+
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+}
+
+#[test]
 fn work_remaining_does_not_supply_missing_update_fragment_bits() {
     // The CEP v2.3 starter evidence reduces to this cursor rule: `W current
     // total` is not a fragment-storage donor for an adjacent `U/9`/`U/10`.
@@ -500,7 +515,7 @@ fn work_remaining_midstream_fragment_storage_requires_top_level_following_bounda
 
 #[test]
 fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_proof() {
-    let live = [b'W', 0x01, 0x0E, 0xA0];
+    let live = [b'W', 0x10, 0x20, 0xA0];
     let mut payload = live_object_payload_with_bits(&live, Vec::new());
 
     assert!(

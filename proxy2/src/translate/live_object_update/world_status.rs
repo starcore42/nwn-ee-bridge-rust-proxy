@@ -54,6 +54,13 @@ pub(super) fn is_verified_work_remaining_record(
     parse_work_remaining_record(bytes, record_offset, record_end).is_some()
 }
 
+pub(super) fn is_work_remaining_record_at(bytes: &[u8], record_offset: usize) -> bool {
+    let Some(record_end) = record_offset.checked_add(WORK_REMAINING_RECORD_BYTES) else {
+        return false;
+    };
+    parse_work_remaining_record(bytes, record_offset, record_end).is_some()
+}
+
 pub(super) fn claim_identity_record_for_ee(
     bytes: &[u8],
     record_offset: usize,

@@ -1117,6 +1117,21 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 work_remaining --
   --nocapture`.
+- 2026-05-30 `P/05/01` `W current total` counter-shape audit: removed the
+  observed `total == 0x0E` boundary assumption from Rust proxy2's live-object
+  transport scanners and fragment-span promoters. The decompiled reader/writer
+  contract is exactly opcode `W` plus two read-buffer BYTE counters; neither
+  counter byte is a fragment guard. The stale-declared capacity walk now also
+  accepts `W` only as an exact three-byte record, so trailing bytes after `W`
+  still require the dedicated bounded fragment-storage proof. Verified with the
+  public fixture-free `work_remaining_record_accepts_general_counter_bytes`,
+  `work_remaining_boundary_uses_three_byte_counter_shape`, and updated
+  declared-length `W` tail regressions, `cargo test -q -p hgbridge-proxy2
+  work_remaining -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  declared_length -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  live_object_update -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  live_object -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
+  and `cargo check -q -p hgbridge-proxy2`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
