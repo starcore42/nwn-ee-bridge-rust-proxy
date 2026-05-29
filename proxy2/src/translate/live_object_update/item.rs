@@ -26,7 +26,6 @@ const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_NAME_MASK;
 const DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES: usize = 6;
 const DIAMOND_ITEM_UPDATE_40_OPTIONAL_OBJECT_ID_READ_BYTES: usize = 4;
-const MAX_UNOWNED_IGNORED_LOW_80_ZERO_PAD_BYTES: usize = 3;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ItemUpdateRewrite {
@@ -110,12 +109,8 @@ pub(super) fn rewrite_update_record_for_ee(
     let mut candidate = live_bytes.clone();
     let mut candidate_record_end = *record_end;
     if (raw_mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
-        let legacy_tail_end = diamond_item_update_40_tail_end(
-            live_bytes,
-            common.read_end,
-            *record_end,
-            (raw_mask & LEGACY_ITEM_IGNORED_LOW_80_MASK) != 0,
-        )?;
+        let legacy_tail_end =
+            diamond_item_update_40_tail_end(live_bytes, common.read_end, *record_end)?;
         bytes_removed =
             bytes_removed.saturating_add(legacy_tail_end.saturating_sub(common.read_end));
         // Diamond `sub_459700` hands object type/id/mask to item update
@@ -344,7 +339,6 @@ fn diamond_item_update_40_tail_end(
     bytes: &[u8],
     tail_offset: usize,
     record_end: usize,
-    raw_had_ignored_low_80: bool,
 ) -> Option<usize> {
     let fixed_end = tail_offset.checked_add(DIAMOND_ITEM_UPDATE_40_FIXED_READ_BYTES)?;
     if fixed_end > record_end {
@@ -362,22 +356,8 @@ fn diamond_item_update_40_tail_end(
     if decompile_tail_end > record_end {
         return None;
     }
-    if decompile_tail_end == record_end {
-        return Some(record_end);
-    }
 
-    let remaining = record_end - decompile_tail_end;
-    if raw_had_ignored_low_80
-        && remaining <= MAX_UNOWNED_IGNORED_LOW_80_ZERO_PAD_BYTES
-        && bytes
-            .get(decompile_tail_end..record_end)?
-            .iter()
-            .all(|byte| *byte == 0)
-    {
-        return Some(record_end);
-    }
-
-    None
+    (decompile_tail_end == record_end).then_some(record_end)
 }
 
 #[cfg(test)]
@@ -389,6 +369,14 @@ mod tests {
         live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
         live.extend_from_slice(&EE_ITEM_UPDATE_HIDDEN_MASK.to_le_bytes());
         live.extend_from_slice(&[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A]);
+        live
+    }
+
+    fn legacy_hidden_item_update_with_mask(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+        live.extend_from_slice(&raw_mask.to_le_bytes());
+        live.extend_from_slice(tail);
         live
     }
 
@@ -425,6 +413,69 @@ mod tests {
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
+    }
+
+    #[test]
+    fn item_update_40_optional_object_id_tail_rewrites_after_bool_proof() {
+        let mut live = legacy_hidden_item_update_with_mask(
+            EE_ITEM_UPDATE_HIDDEN_MASK,
+            &[
+                0x34, 0x12, // WORD
+                0x02, // BYTE that guards the optional object id
+                0x78, 0x56, // WORD
+                0x9A, // BYTE
+                0x44, 0x33, 0x22, 0x80, // optional OBJECTID
+            ],
+        );
+        let mut record_end = live.len();
+
+        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[false], 0)
+            .expect("mode-2 legacy item 0x40 tail should include the optional object id");
+
+        assert!(rewrite.rewritten);
+        assert_eq!(rewrite.bytes_removed, 10);
+        assert_eq!(rewrite.next_bit_cursor, 1);
+        assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(live.len(), LEGACY_UPDATE_HEADER_BYTES);
+    }
+
+    #[test]
+    fn item_update_40_ignored_low80_does_not_extend_read_tail() {
+        let mut live = legacy_hidden_item_update_with_mask(
+            EE_ITEM_UPDATE_HIDDEN_MASK | LEGACY_ITEM_IGNORED_LOW_80_MASK,
+            &[
+                0x34, 0x12, 0x01, 0x78, 0x56, 0x9A, // decompile-owned 0x40 tail
+                0x00, 0x00, 0x00, // unowned padding-like bytes
+            ],
+        );
+        let original = live.clone();
+        let mut record_end = live.len();
+
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[true], 0).is_none(),
+            "raw item mask 0x80 is ignored for mask translation but does not own extra read bytes"
+        );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
+    }
+
+    #[test]
+    fn item_update_40_low80_exact_tail_translates_mask_only() {
+        let mut live = legacy_hidden_item_update_with_mask(
+            EE_ITEM_UPDATE_HIDDEN_MASK | LEGACY_ITEM_IGNORED_LOW_80_MASK,
+            &[0x34, 0x12, 0x01, 0x78, 0x56, 0x9A],
+        );
+        let mut record_end = live.len();
+
+        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &[true], 0)
+            .expect("ignored 0x80 can be dropped only when no extra bytes are attributed to it");
+
+        assert!(rewrite.rewritten);
+        assert!(rewrite.mask_changed);
+        assert_eq!(rewrite.bytes_removed, 6);
+        assert_eq!(rewrite.next_bit_cursor, 1);
+        assert_eq!(read_u32_le(&live, 6), Some(EE_ITEM_UPDATE_HIDDEN_MASK));
+        assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
     }
 }
 

@@ -998,6 +998,21 @@ Current status:
   resolve the active CEP v2.3 `U/6` handoff/terminal-tail capture; it removes
   one unsupported partial-mutation path before continuing that boundary audit.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_40 -- --nocapture`.
+- 2026-05-29 `P/05/01` item `U/6` low-`0x80` read-tail audit: tightened the
+  same item-update path so raw mask `0x80` is not allowed to extend the
+  decompile-owned `0x40` read-buffer tail with padding-like zero bytes.
+  Re-auditing Diamond `sub_459700` -> item helper `sub_451AF0` showed no
+  separate item `0x80` read-buffer owner; `0x80` may still be dropped from the
+  emitted mask when the record otherwise lands exactly, but any extra bytes
+  remain unclaimed and leave the source payload untouched. Public coverage now
+  proves the `0x40` optional-object-id tail, exact `0x40|0x80` mask
+  translation with no extra bytes, and rejection/rollback when `0x80` is used
+  to hide three zero bytes. The CEP v2.3 starter `U/6` handoff/terminal-tail
+  capture remains active evidence rather than exact-claimable. Verified with
+  `cargo test -q -p hgbridge-proxy2 item_update_40 -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`,
+  private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`,
+  and private `local_xp2_chapter2_inventory_live_objects_rewrite_to_exact_shape`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
