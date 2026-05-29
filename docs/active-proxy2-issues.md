@@ -1177,6 +1177,17 @@ Current status:
   hgbridge-proxy2 character_sheet -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 declared_length_ -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` character-sheet effect-icon declared-tail audit:
+  extended the stale-declared `G S` tail guard beyond the short-row floor.
+  EE `sub_1407B2740` mask `0x0100` effect-icon rows can sit exactly on the
+  generic 16-byte ambiguous-tail scanner floor while still owning one changed-row
+  CNW BOOL after the read-buffer body. A proposed CNW tail beginning at such an
+  aligned `G S` effect-icon row is now kept as live GUI read-boundary ambiguity
+  instead of fragment storage. Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_character_sheet_effect_icon_row_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 character_sheet --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
