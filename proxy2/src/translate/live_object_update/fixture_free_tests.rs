@@ -367,6 +367,58 @@ fn work_remaining_does_not_supply_missing_update_fragment_bits() {
 }
 
 #[test]
+fn work_remaining_does_not_rescue_shifted_door_placeable_37_rows() {
+    // `W current total` is a fragment-neutral suffix. It can follow a
+    // fully-proven update record, but it cannot turn a shifted U/9 or U/10
+    // cursor into an owned family tail. The preceding record must still follow
+    // Diamond `sub_467AE0` / EE `sub_14079C050`: appearance before scale/state,
+    // and all position/orientation/state fragment BOOLs present before `W`.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let mut shifted_live = scale_first_door_placeable_full_update_live_bytes(object_type);
+        shifted_live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+        let mut shifted_payload =
+            live_object_payload_with_bits(&shifted_live, exact_scalar_door_placeable_update_bits());
+        let original_shifted = shifted_payload.clone();
+
+        assert!(
+            super::claim_payload_if_verified(&shifted_payload).is_none(),
+            "object type {object_type:#04X} must reject scale/state before appearance even when W follows"
+        );
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+            "the update pass must not use W as a shifted 0x37 row owner"
+        );
+        assert_eq!(
+            shifted_payload, original_shifted,
+            "shifted U/9 or U/10 before W must stay visible for quarantine/diagnostics"
+        );
+
+        let mut bit_short_live = ee_door_placeable_full_update_live_bytes(object_type);
+        bit_short_live.extend_from_slice(&[b'W', 0x0C, 0x0E]);
+        let mut bit_short_payload = live_object_payload_with_bits(
+            &bit_short_live,
+            vec![
+                true, false, // only the position residual bits are available
+            ],
+        );
+        let original_bit_short = bit_short_payload.clone();
+
+        assert!(
+            super::claim_payload_if_verified(&bit_short_payload).is_none(),
+            "object type {object_type:#04X} must own its orientation/state bits before W"
+        );
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut bit_short_payload).is_none(),
+            "the update pass must not borrow missing 0x37 fragment bits from W"
+        );
+        assert_eq!(
+            bit_short_payload, original_bit_short,
+            "bit-short U/9 or U/10 before W must stay visible for quarantine/diagnostics"
+        );
+    }
+}
+
+#[test]
 fn exact_adapter_rolls_back_prior_rewrites_before_unproven_update_w_handoff() {
     // A bounded live-object adapter may stage earlier typed rewrites while it
     // searches for an exact final EE claim. If a later U/9-W handoff lacks the

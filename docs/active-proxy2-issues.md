@@ -1097,6 +1097,13 @@ Current status:
   boundary. Verified with `cargo test -q -p hgbridge-proxy2
   stale_absent_appearance_gap_repair_rejects_terminal_extra_fragment_bit --
   --nocapture`.
+- 2026-05-29 `P/05/01` `U/9`/`U/10` mask-`0x37` before `W` audit: no packet
+  behavior changed, but public fixture-free coverage now pins the suffix rule.
+  `W current total` remains a fragment-neutral suffix only; it cannot rescue a
+  same-length scale/state-before-appearance row, and it cannot supply missing
+  orientation/state BOOLs for an otherwise EE-ordered row. The final CEP v2.3
+  starter-style `U/9` shortage before `W` therefore stays quarantined until a
+  real update-family owner or stream-boundary artifact is proven.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

@@ -4502,6 +4502,9 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
+        // `W current total` is fragment-neutral in both Diamond and EE. It can
+        // be a suffix after a record-specific terminal storage proof, but it
+        // must never donate missing bits to the preceding update record.
         let followed_only_by_terminal_work_remaining = record_end < live_bytes.len()
             && terminal_work_remaining_suffix_legal_end(&live_bytes, record_end).is_some();
         if record_rewrite.terminal_fragment_trim_allowed
