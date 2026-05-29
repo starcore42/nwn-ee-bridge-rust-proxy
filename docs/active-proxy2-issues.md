@@ -961,6 +961,18 @@ Current status:
   plus terminal tail).
   Verified with
   `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-29 `P/05/01` delete-record fragment-cursor audit: no packet behavior
+  changed, but public fixture-free coverage now pins the delete bit table that
+  terminal-tail decisions rely on. Diamond `sub_455720` and EE `sub_1407B35B0`
+  both route `D/5`, `D/6`, and `D/9` through helpers that read OBJECTID plus
+  one CNW BOOL, while `D/7` and `D/10` read only the OBJECTID. The exact
+  validator now has a regression proving the one-BOOL deletes reject missing or
+  extra terminal bits and the read-buffer-only deletes reject any fragment
+  residue. This does not resolve the active To Heir/XP1/XP2/CEP terminal-tail
+  captures above; it prevents their trailing delete rows from becoming an
+  accidental generic trim owner. Verified with `cargo test -q -p
+  hgbridge-proxy2 live_object_delete_records_own_exact_fragment_bits --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

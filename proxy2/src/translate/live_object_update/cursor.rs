@@ -536,6 +536,9 @@ pub(super) fn legacy_live_delete_fragment_bit_count(
         return None;
     }
 
+    // Diamond `sub_455720` and EE `sub_1407B35B0` dispatch deletes by object
+    // type. Creature/item/placeable delete helpers read OBJECTID plus one
+    // BOOL; trigger/door delete helpers read only OBJECTID.
     match bytes[record_offset + 1] {
         0x05 | 0x06 | 0x09 => Some(1),
         0x07 | 0x0A => Some(0),

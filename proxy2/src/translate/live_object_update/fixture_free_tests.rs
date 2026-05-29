@@ -362,6 +362,47 @@ fn live_gui_inventory_delete_row_is_read_buffer_only() {
 }
 
 #[test]
+fn live_object_delete_records_own_exact_fragment_bits() {
+    for object_type in [
+        super::CREATURE_OBJECT_TYPE,
+        super::ITEM_OBJECT_TYPE,
+        super::PLACEABLE_OBJECT_TYPE,
+    ] {
+        let live = [b'D', object_type, 0x22, 0x00, 0x00, 0x80];
+        let payload = live_object_payload_with_bits(&live, vec![true]);
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("delete record with one owned BOOL should exact-claim");
+        assert_eq!(claim.delete_records, 1);
+
+        let missing_bit = live_object_payload_with_bits(&live, Vec::new());
+        assert!(
+            super::claim_payload_if_verified(&missing_bit).is_none(),
+            "D/{object_type:#04X} must not claim without its decompiled delete BOOL"
+        );
+
+        let extra_bit = live_object_payload_with_bits(&live, vec![true, false]);
+        assert!(
+            super::claim_payload_if_verified(&extra_bit).is_none(),
+            "D/{object_type:#04X} must not hide a terminal extra fragment bit"
+        );
+    }
+
+    for object_type in [super::TRIGGER_OBJECT_TYPE, super::DOOR_OBJECT_TYPE] {
+        let live = [b'D', object_type, 0x22, 0x00, 0x00, 0x80];
+        let payload = live_object_payload_with_bits(&live, Vec::new());
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("read-buffer-only delete record should exact-claim");
+        assert_eq!(claim.delete_records, 1);
+
+        let extra_bit = live_object_payload_with_bits(&live, vec![true]);
+        assert!(
+            super::claim_payload_if_verified(&extra_bit).is_none(),
+            "D/{object_type:#04X} must remain read-buffer-only and reject fragment residue"
+        );
+    }
+}
+
+#[test]
 fn live_gui_repository_update_remains_fifteen_read_buffer_bytes() {
     let mut live = vec![b'G', b'R', b'U'];
     live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
