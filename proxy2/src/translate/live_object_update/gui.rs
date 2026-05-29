@@ -64,6 +64,7 @@ const MAX_CHARACTER_SHEET_COMBAT_LIST_ROWS: usize = 255;
 const MAX_CHARACTER_SHEET_EFFECT_ICON_ROWS: usize = 255;
 const MAX_CHARACTER_SHEET_FEAT_ROWS: usize = 4096;
 const MAX_CHARACTER_SHEET_CLASS_ROWS: usize = 8;
+const CHARACTER_SHEET_PROOFLESS_FRAGMENT_BIT_CAP: usize = 8192;
 
 #[derive(Debug, Clone, Copy)]
 struct LiveGuiCharacterSheetClaim {
@@ -366,7 +367,11 @@ pub(super) fn looks_like_legacy_character_sheet_read_boundary_without_fragment_p
     // only an ambiguity detector: if the decompiled character-sheet byte cursor
     // can parse a supported row with enough placeholder BOOL capacity, the split
     // must not treat those bytes as pure fragment storage.
-    let placeholder_bits = [false; 256];
+    // This is only an ambiguity detector, not a claim. Combat-info rows can
+    // legitimately exceed 256 owned BOOL/bit reads under the modeled row caps,
+    // so keep the placeholder cursor large enough to avoid a false negative
+    // when an aligned `G S` row starts at a stale-declared tail split.
+    let placeholder_bits = vec![false; CHARACTER_SHEET_PROOFLESS_FRAGMENT_BIT_CAP];
     character_sheet_parse_modes().into_iter().any(|mode| {
         let Some(mut cursor) =
             CharacterSheetCursor::new(bytes, offset + 2, scan_end, &placeholder_bits, 0)

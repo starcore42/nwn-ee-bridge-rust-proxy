@@ -1188,6 +1188,17 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 character_sheet --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 declared_length_ --
   --nocapture`.
+- 2026-05-30 `P/05/01` large character-sheet combat declared-tail audit:
+  hardened the same proofless `G S` ambiguity guard so combat-info rows with
+  many list entries cannot be missed just because they need more than 256
+  placeholder fragment bits. EE `sub_1407B2740` mask `0x40` owns interleaved
+  bit fields before and inside the combat lists; when such a row starts at a
+  stale-declared split, the bytes remain live GUI read-boundary ambiguity until
+  the exact character-sheet reader owns the real fragment cursor. Verified with
+  `CARGO_TARGET_DIR=C:\nwnbridge\codex-target\nwn-ee-bridge cargo test -q -p
+  hgbridge-proxy2
+  declared_length_window_rejects_large_character_sheet_combat_row_as_fragment_tail
+  -- --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
