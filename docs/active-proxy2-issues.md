@@ -973,6 +973,18 @@ Current status:
   accidental generic trim owner. Verified with `cargo test -q -p
   hgbridge-proxy2 live_object_delete_records_own_exact_fragment_bits --
   --nocapture`.
+- 2026-05-29 `P/05/01` inventory/GQ terminal-bit audit: no packet behavior
+  changed, but public fixture-free coverage now proves the generalized
+  `I/0x2A00` word-list branch before `GQ` cursor rule behind the XP1/To Heir
+  evidence. Diamond `sub_455940` and EE `sub_1407B4F70` own exactly the two
+  `0x0200` BOOLs, three `0x2000` Feature-25 BOOLs per second-list object, and
+  the single `0x0800` selector; `GQ` then owns read-buffer bytes only. An
+  extra terminal fragment bit after that exact `I/0x2A00 + GQ` stream remains
+  unclaimed and the update pass leaves the payload untouched. This keeps the
+  active captures quarantined until a real terminal owner or continuation
+  handoff is proven. Verified with `cargo test -q -p hgbridge-proxy2
+  inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

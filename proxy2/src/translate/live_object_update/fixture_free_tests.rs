@@ -104,6 +104,29 @@ fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
     live
 }
 
+fn inventory_2a00_word_list_live_bytes(
+    word_entries: &[u16],
+    feature25_second_ids: &[u32],
+    tail_0800: Option<[u8; 12]>,
+) -> Vec<u8> {
+    let mut live = vec![b'I'];
+    live.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+    live.extend_from_slice(&0x2A00u16.to_le_bytes());
+    live.extend_from_slice(&(word_entries.len() as u32).to_le_bytes());
+    for entry in word_entries {
+        live.extend_from_slice(&entry.to_le_bytes());
+    }
+    live.extend_from_slice(&0u32.to_le_bytes());
+    live.extend_from_slice(&(feature25_second_ids.len() as u32).to_le_bytes());
+    for object_id in feature25_second_ids {
+        live.extend_from_slice(&object_id.to_le_bytes());
+    }
+    if let Some(tail) = tail_0800 {
+        live.extend_from_slice(&tail);
+    }
+    live
+}
+
 fn trigger_add_live_bytes(vertex_count: u8) -> Vec<u8> {
     let mut live = vec![b'A', super::TRIGGER_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -846,6 +869,52 @@ fn final_fragment_trim_requires_family_owned_terminal_storage() {
     assert_eq!(
         payload, original,
         "unowned terminal fragment bits must leave the source payload untouched"
+    );
+}
+
+#[test]
+fn inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit() {
+    let mut live = inventory_2a00_word_list_live_bytes(
+        &[0x0303],
+        &[0xFFFF_FFFE],
+        Some([
+            0x0E, 0x0D, 0x0D, 0x0A, 0x13, 0x0A, 0x0C, 0x0D, 0x0F, 0x0A, 0x13, 0x0A,
+        ]),
+    );
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let owned_inventory_bits = vec![
+        false, // 0x0200 semantic BOOL; does not change the word-list cursor.
+        false, // 0x0200 layout selector: false selects DWORD count + WORD rows.
+        true, false, true, // one 0x2000 Feature-25 second-list row.
+        true, // 0x0800 true branch owns the 12-byte read-buffer tail.
+    ];
+    let exact_payload = live_object_payload_with_bits(&live, owned_inventory_bits.clone());
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("I/0x2A00 word-list plus read-buffer-only GQ should claim exactly");
+    assert_eq!(exact_claim.inventory_records, 1);
+    assert_eq!(exact_claim.live_gui_read_buffer_records, 1);
+    assert_eq!(
+        exact_claim.inventory_fragment_bits, 6,
+        "Diamond sub_455940 and EE sub_1407B4F70 own exactly two 0x0200 BOOLs, three Feature-25 BOOLs, and one 0x0800 BOOL"
+    );
+
+    let mut shifted_bits = owned_inventory_bits;
+    shifted_bits.push(false);
+    let mut shifted_payload = live_object_payload_with_bits(&live, shifted_bits);
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "read-buffer-only GQ must not own a terminal residual fragment bit"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "terminal residual bits after I/0x2A00 + GQ must stay quarantined without a family owner"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "the update pass must not trim or rewrite unowned terminal evidence"
     );
 }
 
