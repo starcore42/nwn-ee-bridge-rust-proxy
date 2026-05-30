@@ -1698,6 +1698,16 @@ Current status:
   appearance row. Verified with `cargo test -q -p hgbridge-proxy2
   declared_length_capacity_splits_short_partial_creature_appearance_before_delete_bits
   -- --nocapture`.
+- 2026-05-31 `P/05/01` zero-mask creature appearance capacity-floor audit:
+  fixed the transport prefix-capacity minimum for `P/5` appearance rows. Diamond
+  `sub_448E30` and EE `sub_14077FE10` both read the no-op appearance row as
+  exactly `P/5 + OBJECTID + WORD mask`, so a zero mask owns eight read-buffer
+  bytes and no CNW BOOLs. The capacity preflight now uses that eight-byte floor
+  instead of the ten-byte `U` update header floor, preventing valid standalone
+  zero-mask `P/5` rows from being rejected before typed validation. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  declared_length_capacity_accepts_zero_mask_creature_appearance_without_bool_bits
+  -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

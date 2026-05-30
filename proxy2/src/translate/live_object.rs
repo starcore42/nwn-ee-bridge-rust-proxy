@@ -61,6 +61,7 @@ const LEGACY_UPDATE_SCALE_STATE_MASK: u32 = 0x0000_0004;
 const LEGACY_UPDATE_STATE_MASK: u32 = 0x0000_0010;
 const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
+const LEGACY_CREATURE_APPEARANCE_HEADER_BYTES: usize = 8;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
 const LEGACY_CREATURE_UPDATE_3967_MIN_READ_BYTES: usize = 67;
 const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 256;
@@ -896,7 +897,6 @@ fn short_creature_body_part_delta_read_end_for_transport(
     tail_start: usize,
     scan_end: usize,
 ) -> Option<usize> {
-    const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
     const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
     const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
     const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
@@ -930,7 +930,7 @@ fn short_creature_body_part_delta_read_end_for_transport(
     }
 
     let Some(selector_offset) = tail_start
-        .checked_add(LEGACY_APPEARANCE_HEADER_BYTES)
+        .checked_add(LEGACY_CREATURE_APPEARANCE_HEADER_BYTES)
         .and_then(|cursor| advance_short_creature_appearance_pre_body_scalar_cursor(cursor, mask))
     else {
         return None;
@@ -992,7 +992,6 @@ fn short_creature_equipment_delta_read_end_for_transport(
     tail_start: usize,
     scan_end: usize,
 ) -> Option<usize> {
-    const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
     const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
     const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
     const LEGACY_APPEARANCE_SCALAR_AND_TAIL_MASKS: u16 = 0x0001
@@ -1030,7 +1029,7 @@ fn short_creature_equipment_delta_read_end_for_transport(
     }
 
     let Some(cursor) = tail_start
-        .checked_add(LEGACY_APPEARANCE_HEADER_BYTES)
+        .checked_add(LEGACY_CREATURE_APPEARANCE_HEADER_BYTES)
         .and_then(|cursor| advance_short_creature_appearance_scalar_cursor(cursor, mask))
     else {
         return None;
@@ -2330,7 +2329,18 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
             minimum_legacy_door_placeable_update_record_length_at(bytes, offset)
         }
         (b'U', 0x05) => minimum_legacy_creature_update_record_length_at(bytes, offset),
-        (b'U' | b'P', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => LEGACY_UPDATE_HEADER_BYTES,
+        (b'P', CREATURE_OBJECT_TYPE) => {
+            // Diamond `sub_448E30` and EE `sub_14077FE10` both read a P/5
+            // appearance header as CHAR opcode, BYTE object type, OBJECTID,
+            // and WORD mask. A zero-mask row ends at those eight bytes and
+            // consumes no CNW BOOLs, so capacity proof must not borrow the
+            // ten-byte U-record header floor here.
+            LEGACY_CREATURE_APPEARANCE_HEADER_BYTES
+        }
+        (b'U', ITEM_OBJECT_TYPE | TRIGGER_OBJECT_TYPE)
+        | (b'P', ITEM_OBJECT_TYPE | TRIGGER_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) => {
+            LEGACY_UPDATE_HEADER_BYTES
+        }
         (b'D', 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => 6,
         (b'I', _) => 7,
         (b'W', _) if is_work_remaining_record_at(bytes, offset) => 3,
@@ -5696,6 +5706,31 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short P/5 zero-mask appearance"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_accepts_zero_mask_creature_appearance_without_bool_bits() {
+        let live = creature_zero_appearance_live_bytes();
+        let empty_fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+
+        assert_eq!(
+            live.len(),
+            LEGACY_CREATURE_APPEARANCE_HEADER_BYTES,
+            "Diamond/EE P/5 zero-mask appearance owns only the eight-byte read header"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "P/5 zero-mask appearance is a complete live-object read row"
+        );
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &empty_fragment_bits,
+            ),
+            "zero-mask P/5 owns no CNW BOOLs and must not require the ten-byte U-record floor"
         );
     }
 
