@@ -1242,6 +1242,20 @@ Current status:
   declared_length_window_rejects_short_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 declared_length_ -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` zero-mask appearance declared-tail audit: extended the
+  same short read-boundary guard to eight-byte `P/5` creature appearance
+  no-op rows. Diamond `sub_448E30` and EE `sub_14077FE10` both read `P/5`,
+  OBJECTID, and WORD appearance mask before mask-gated branches; a zero mask
+  consumes no CNW BOOLs, but its bytes can still decode as compact fragment
+  storage. Stale-declared transport repair now leaves those aligned rows for
+  the focused appearance/live-object validator instead of stealing them as a
+  CNW tail. Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_zero_appearance_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, `cargo check -q -p hgbridge-proxy2`, `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo fmt --all
+  --check`, `git diff --check`, and full serial `cargo test -q -p
+  hgbridge-proxy2 -- --test-threads=1`.
 - 2026-05-30 `P/05/01` short inventory/add declared-tail audit: extended the
   same stale-declared tail guard to aligned sub-16-byte live-object read
   records outside `U`. A short `I/0x0002` inventory scalar row and the 15-byte

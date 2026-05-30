@@ -777,6 +777,11 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         return true;
     }
 
+    if fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(bytes, tail_start)
+    {
+        return true;
+    }
+
     if fragment_tail_starts_with_aligned_short_gui_read_boundary(bytes, tail_start) {
         return true;
     }
@@ -838,6 +843,22 @@ fn fragment_tail_starts_with_aligned_short_add_read_boundary(
         tail_start,
         bytes.len(),
     ) == Some(bytes.len())
+}
+
+fn fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    // Diamond `sub_448E30` and EE `sub_14077FE10` both read `P/5 + OBJECTID +
+    // WORD mask` before the mask-gated appearance body. Mask zero is therefore
+    // an eight-byte read-buffer-only record and must not be stolen as a compact
+    // CNW fragment tail.
+    crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+        bytes,
+        tail_start,
+        bytes.len(),
+    )
+    .is_some_and(|appearance_end| appearance_end > tail_start && appearance_end <= bytes.len())
 }
 
 fn fragment_tail_starts_with_aligned_short_update_read_boundary(
@@ -4687,6 +4708,13 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_zero_appearance_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live
+    }
+
     fn compact_inventory_scalar_live_bytes() -> Vec<u8> {
         let mut live = vec![b'I'];
         live.extend_from_slice(&0x8000_342Au32.to_le_bytes());
@@ -5189,6 +5217,49 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short U/5 zero-mask update"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_zero_appearance_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&creature_zero_appearance_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short P/5 zero-mask appearance bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(
+                &payload, split
+            ),
+            "aligned P/5 zero-mask appearance is a decompile-owned short read-buffer row"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned P/5 zero-mask appearance remains a read-buffer row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned short P/5 zero-mask appearance"
         );
     }
 

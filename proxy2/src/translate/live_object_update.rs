@@ -1491,11 +1491,16 @@ pub(crate) fn legacy_creature_appearance_record_end_for_transport(
 ) -> Option<usize> {
     // Transport declared-length repair needs the same decompile-owned `P/5`
     // creature appearance byte boundary as the semantic live-object pass.
-    // Diamond `sub_448E30` consumes the full appearance body and embedded
-    // visible-equipment subobjects before the live-object dispatcher resumes;
-    // without this proof, the transport repair scanner can mistake bytes inside
-    // the appearance/equipment body for top-level `A/U/P` records.
-    appearance::try_get_legacy_creature_appearance_record_end(live_bytes, offset, scan_end)
+    // Diamond `sub_448E30` and EE `sub_14077FE10` first read the `P/5`
+    // object id plus WORD mask. A zero mask is an eight-byte read-buffer-only
+    // no-op appearance record; nonzero full masks can then consume the full
+    // appearance body and embedded visible-equipment subobjects before the
+    // live-object dispatcher resumes. Without this proof, transport repair can
+    // mistake appearance bytes for CNW fragment storage or top-level records.
+    creature::try_get_zero_mask_creature_appearance_record_end(live_bytes, offset, scan_end)
+        .or_else(|| {
+            appearance::try_get_legacy_creature_appearance_record_end(live_bytes, offset, scan_end)
+        })
 }
 
 pub(crate) fn legacy_inventory_fragment_bit_count_for_transport(
