@@ -1655,6 +1655,80 @@ fn compact_placeable_token_add_rewrites_before_following_same_object_update() {
 }
 
 #[test]
+fn compact_placeable_token_add_accepts_following_exact_37_update() {
+    // Compact `A/09` add expansion may use the following same-object
+    // `U/09 mask=0x37` only after that update's own EE reader proves
+    // appearance before scale/state and all position/orientation/state bits at
+    // the post-add cursor.
+    let object_id = 0x8000_18CAu32;
+    let mut live = compact_placeable_token_name_add_live_bytes();
+    live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        object_id,
+    ));
+
+    let mut bits = vec![true, false, true, false];
+    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("compact placeable add should be bounded by the exact following 0x37 update");
+    assert!(
+        rewrite.bytes_inserted
+            >= super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "compact placeable add should receive EE's visual-transform map"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("compact placeable add plus exact 0x37 update should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn compact_placeable_token_add_rejects_shifted_or_bit_short_37_update() {
+    // Same-length scale/state-before-appearance rows and fragment-short rows
+    // are still shifted-cursor evidence. They must not prove the preceding
+    // compact add's EE visual-map and guard-bit expansion.
+    let object_id = 0x8000_18CAu32;
+    let add = compact_placeable_token_name_add_live_bytes();
+    for (label, update, update_bits) in [
+        (
+            "scale-first",
+            with_live_update_object_id(
+                scale_first_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+                object_id,
+            ),
+            exact_scalar_door_placeable_update_bits(),
+        ),
+        (
+            "bit-short",
+            with_live_update_object_id(
+                ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+                object_id,
+            ),
+            vec![true, false],
+        ),
+    ] {
+        let mut live = add.clone();
+        live.extend_from_slice(&update);
+        let mut bits = vec![true, false, true, false];
+        bits.extend_from_slice(&update_bits);
+        let mut payload = live_object_payload_with_bits(&live, bits);
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "{label} 0x37 update must not gate compact placeable add expansion"
+        );
+        assert_eq!(
+            payload, original,
+            "{label} 0x37 evidence must stay visible for quarantine/diagnostics"
+        );
+    }
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

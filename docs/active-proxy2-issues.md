@@ -1304,6 +1304,16 @@ Current status:
   rule while still asserting no stale scale-first `0x37` rows survive. Verified
   with `cargo test -q -p hgbridge-proxy2 door_add_visual_map_repair --
   --nocapture`.
+- 2026-05-30 `P/05/01` compact placeable-add/`0x37` same-object audit: no
+  packet behavior changed, but public fixture-free coverage now proves the
+  analogous compact `A/09` token-name path. The add expansion may use an
+  immediate same-object `U/09 mask=0x37` only when the update exact-claims at
+  the post-add cursor with the decompiled appearance-before-scale/state order
+  and all position/orientation/state BOOLs present. Scale-first same-length
+  rows and bit-short `0x37` rows still reject and leave the source payload
+  untouched so shifted-cursor evidence remains quarantinable. Verified with
+  `cargo test -q -p hgbridge-proxy2 compact_placeable_token_add --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
