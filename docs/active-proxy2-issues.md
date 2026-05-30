@@ -1666,6 +1666,26 @@ Current status:
   --test-threads=1`, `cargo fmt --all --check`, `git diff --check`, `cargo
   check -q -p hgbridge-proxy2`, and full serial `cargo test -q -p
   hgbridge-proxy2 -- --test-threads=1`.
+- 2026-05-31 `P/05/01` combined short creature body/equipment appearance
+  declared-tail audit: extended the partial body-delta transport guard beyond
+  exact mask `0x0100`. Diamond `sub_448E30` and EE `sub_14077FE10` both read
+  scalar appearance fields before the `0x0100` body selector, then read the
+  post-body `0x2000` WORD+DWORD, skip the `0x4000` feature byte on the legacy
+  build path, and finally read the `0x0200` equipment count. Short combined
+  masks such as `0x0101`, `0x2100`, `0x0300`, and `0x4300` can still sit below
+  the broad boundary scanner floor while decoding as plausible CNW fragment
+  storage, so declared-length repair now treats them as unmodeled read-buffer
+  rows instead of fragment tails. Zero-count equipment also accepts the
+  legacy-skipped `0x4000` mask bit (`0x4200`). Verified with
+  `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail
+  -- --nocapture` and `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_zero_equipment_delta_appearance_as_fragment_tail
+  -- --nocapture`, plus `cargo fmt --all --check`, `git diff --check`, `cargo
+  check -q -p hgbridge-proxy2`, `cargo test -q -p hgbridge-proxy2
+  declared_length_ -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  live_object_update -- --test-threads=1`, and full serial `cargo test -q -p
+  hgbridge-proxy2 -- --test-threads=1`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

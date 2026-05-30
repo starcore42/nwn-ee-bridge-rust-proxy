@@ -890,7 +890,17 @@ fn fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundar
 ) -> bool {
     const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
     const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
+    const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
     const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
+    const LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK: u16 = 0x2000;
+    const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
+    const LEGACY_APPEARANCE_SCALAR_MASKS: u16 =
+        0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
+    const LEGACY_APPEARANCE_BODY_COMPATIBLE_MASKS: u16 = LEGACY_APPEARANCE_BODY_PART_MASK
+        | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
+        | LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK
+        | LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK
+        | LEGACY_APPEARANCE_SCALAR_MASKS;
 
     let Some(mask_offset) = tail_start.checked_add(6) else {
         return false;
@@ -904,11 +914,16 @@ fn fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundar
     let Some(mask) = read_u16_le(bytes, mask_offset) else {
         return false;
     };
-    if mask != LEGACY_APPEARANCE_BODY_PART_MASK {
+    if (mask & LEGACY_APPEARANCE_BODY_PART_MASK) == 0
+        || (mask & !LEGACY_APPEARANCE_BODY_COMPATIBLE_MASKS) != 0
+    {
         return false;
     }
 
-    let Some(selector_offset) = tail_start.checked_add(LEGACY_APPEARANCE_HEADER_BYTES) else {
+    let Some(selector_offset) = tail_start
+        .checked_add(LEGACY_APPEARANCE_HEADER_BYTES)
+        .and_then(|cursor| advance_short_creature_appearance_pre_body_scalar_cursor(cursor, mask))
+    else {
         return false;
     };
     let Some(selector) = bytes.get(selector_offset).copied() else {
@@ -924,14 +939,32 @@ fn fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundar
     let Some(record_end) = selector_offset.checked_add(body_bytes) else {
         return false;
     };
+    let Some(mut record_end) = advance_short_creature_appearance_post_body_cursor(record_end, mask)
+    else {
+        return false;
+    };
+    if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0 {
+        let Some(count) = bytes.get(record_end).copied() else {
+            return false;
+        };
+        if count != 0 {
+            return false;
+        }
+        let Some(end) = record_end.checked_add(1) else {
+            return false;
+        };
+        record_end = end;
+    }
 
-    // Diamond `sub_448E30` and EE `sub_14077FE10` both enter the body-part
-    // delta branch when mask bit 0x0100 is set: a zero selector owns only the
-    // selector byte, selectors 1..=9 own selector plus index/value byte pairs,
-    // and larger selectors own the fixed nineteen-value body table. The bridge
-    // still quarantines this unmodeled partial appearance family for semantic
-    // translation, but stale-declared transport repair must not steal these
-    // short read-buffer bytes as CNW fragment storage.
+    // Diamond `sub_448E30` and EE `sub_14077FE10` both read scalar fields
+    // before mask bit 0x0100, then a body selector: zero owns only the selector
+    // byte, selectors 1..=9 own selector plus index/value byte pairs, and
+    // larger selectors own the fixed nineteen-value body table. The post-body
+    // `0x2000` WORD+DWORD follows that branch; `0x4000` is skipped on the
+    // legacy build path; and a zero `0x0200` equipment count owns one byte and
+    // no item rows. The semantic translator still quarantines this unmodeled
+    // partial appearance family, but stale-declared transport repair must not
+    // steal these short read-buffer bytes as CNW fragment storage.
     record_end <= bytes.len()
         && record_end > tail_start
         && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES
@@ -943,6 +976,7 @@ fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundar
 ) -> bool {
     const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
     const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
+    const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
     const LEGACY_APPEARANCE_SCALAR_AND_TAIL_MASKS: u16 = 0x0001
         | 0x0002
         | 0x0004
@@ -953,7 +987,8 @@ fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundar
         | 0x0080
         | 0x0800
         | 0x1000
-        | 0x2000;
+        | 0x2000
+        | LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK;
 
     let Some(mask_offset) = tail_start.checked_add(6) else {
         return false;
@@ -992,8 +1027,9 @@ fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundar
     };
 
     // Diamond `sub_448E30` and EE `sub_14077FE10` reach the equipment-delta
-    // branch after the scalar appearance fields: mask bit 0x0200 first owns a
-    // BYTE count, then each nonzero entry owns CHAR opcode + OBJECTID + DWORD
+    // branch after scalar fields, the post-body 0x2000 WORD+DWORD tail, and the
+    // legacy-skipped 0x4000 feature byte: mask bit 0x0200 first owns a BYTE
+    // count, then each nonzero entry owns CHAR opcode + OBJECTID + DWORD
     // slot/field before any opcode-specific item body. A zero-count delta is
     // therefore a read-buffer row with no fragment BOOLs. The typed appearance
     // translator still leaves partial equipment deltas unclaimed until that
@@ -1004,7 +1040,10 @@ fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundar
         && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES
 }
 
-fn advance_short_creature_appearance_scalar_cursor(mut cursor: usize, mask: u16) -> Option<usize> {
+fn advance_short_creature_appearance_pre_body_scalar_cursor(
+    mut cursor: usize,
+    mask: u16,
+) -> Option<usize> {
     if (mask & 0x0001) != 0 {
         cursor = cursor.checked_add(2)?;
     }
@@ -1035,10 +1074,22 @@ fn advance_short_creature_appearance_scalar_cursor(mut cursor: usize, mask: u16)
     if (mask & 0x0040) != 0 {
         cursor = cursor.checked_add(1)?;
     }
+    Some(cursor)
+}
+
+fn advance_short_creature_appearance_post_body_cursor(
+    mut cursor: usize,
+    mask: u16,
+) -> Option<usize> {
     if (mask & 0x2000) != 0 {
         cursor = cursor.checked_add(2 + 4)?;
     }
     Some(cursor)
+}
+
+fn advance_short_creature_appearance_scalar_cursor(mut cursor: usize, mask: u16) -> Option<usize> {
+    cursor = advance_short_creature_appearance_pre_body_scalar_cursor(cursor, mask)?;
+    advance_short_creature_appearance_post_body_cursor(cursor, mask)
 }
 
 fn fragment_tail_starts_with_aligned_short_update_read_boundary(
@@ -4907,14 +4958,51 @@ mod declared_length_repair_tests {
         live
     }
 
-    fn creature_body_part_delta_appearance_live_bytes(selector: u8) -> Vec<u8> {
+    fn creature_body_part_delta_appearance_live_bytes(mask: u16, selector: u8) -> Vec<u8> {
         let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
-        live.extend_from_slice(&0x0100u16.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        if (mask & 0x0001) != 0 {
+            live.extend_from_slice(&0x1234u16.to_le_bytes());
+        }
+        if (mask & 0x0002) != 0 {
+            live.push(0x12);
+        }
+        if (mask & 0x0004) != 0 {
+            live.push(0x34);
+        }
+        if (mask & 0x0080) != 0 {
+            live.push(0x56);
+        }
+        if (mask & 0x0800) != 0 {
+            live.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        }
+        if (mask & 0x1000) != 0 {
+            live.extend_from_slice(&0x0506_0708u32.to_le_bytes());
+        }
+        if (mask & 0x0008) != 0 {
+            live.push(0x78);
+        }
+        if (mask & 0x0010) != 0 {
+            live.push(0x9A);
+        }
+        if (mask & 0x0020) != 0 {
+            live.push(0xBC);
+        }
+        if (mask & 0x0040) != 0 {
+            live.push(0xDE);
+        }
         live.push(selector);
         for index in 0..selector.min(9) {
             live.push(index);
             live.push(0x20 + index);
+        }
+        if (mask & 0x2000) != 0 {
+            live.extend_from_slice(&0x1357u16.to_le_bytes());
+            live.extend_from_slice(&0x2468_ACEDu32.to_le_bytes());
+        }
+        if (mask & 0x0200) != 0 {
+            live.push(0);
         }
         live
     }
@@ -5577,7 +5665,19 @@ mod declared_length_repair_tests {
 
     #[test]
     fn declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail() {
-        for selector in [0u8, 1, 3] {
+        for (label, mask, selector) in [
+            ("body selector zero", 0x0100u16, 0u8),
+            ("body selector one", 0x0100u16, 1u8),
+            ("body selector three", 0x0100u16, 3u8),
+            ("appearance type plus body selector zero", 0x0101u16, 0u8),
+            ("0x2000 tail plus body selector zero", 0x2100u16, 0u8),
+            ("zero equipment plus body selector zero", 0x0300u16, 0u8),
+            (
+                "legacy-skipped 0x4000 plus zero equipment and body selector zero",
+                0x4300u16,
+                0u8,
+            ),
+        ] {
             let mut live = Vec::new();
             append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
 
@@ -5589,11 +5689,13 @@ mod declared_length_repair_tests {
             ];
             payload.extend_from_slice(&(split as u32).to_le_bytes());
             payload.extend_from_slice(&live);
-            payload.extend_from_slice(&creature_body_part_delta_appearance_live_bytes(selector));
+            payload.extend_from_slice(&creature_body_part_delta_appearance_live_bytes(
+                mask, selector,
+            ));
 
             assert!(
                 decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
-                "short P/5 body-part selector {selector} bytes can masquerade as compact CNW fragment storage"
+                "short P/5 {label} bytes can masquerade as compact CNW fragment storage"
             );
             assert!(
                 crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
@@ -5608,7 +5710,7 @@ mod declared_length_repair_tests {
                 fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
                     &payload, split
                 ),
-                "aligned P/5 body-part selector {selector} is a decompile-owned read-buffer row"
+                "aligned P/5 {label} is a decompile-owned read-buffer row"
             );
 
             let repair = LiveObjectDeclaredLengthRepairCandidate {
@@ -5620,7 +5722,7 @@ mod declared_length_repair_tests {
             };
             assert!(
                 declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
-                "aligned P/5 body-part selector {selector} remains a read boundary, not a CNW tail"
+                "aligned P/5 {label} remains a read boundary, not a CNW tail"
             );
             assert!(
                 !declared_length_window_transport_plausible(&payload),
@@ -5636,6 +5738,7 @@ mod declared_length_repair_tests {
             ("zero-count equipment only", 0x0200u16),
             ("appearance type plus zero-count equipment", 0x0201u16),
             ("0x2000 tail plus zero-count equipment", 0x2200u16),
+            ("legacy-skipped 0x4000 plus zero-count equipment", 0x4200u16),
         ] {
             let mut live = Vec::new();
             append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
