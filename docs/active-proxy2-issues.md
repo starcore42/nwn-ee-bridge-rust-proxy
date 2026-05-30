@@ -1708,6 +1708,23 @@ Current status:
   with `cargo test -q -p hgbridge-proxy2
   declared_length_capacity_accepts_zero_mask_creature_appearance_without_bool_bits
   -- --nocapture`.
+- 2026-05-31 `P/05/01` name-only creature appearance capacity audit: tightened
+  stale-declared prefix capacity for non-full `P/5` masks carrying `0x0400`.
+  Diamond `sub_448E30` and EE `sub_14077FE10` both read the appearance header,
+  then mask bit `0x0400` owns the outer name-mode BOOL before either one direct
+  `CExoString` or the two helper locstring/client-string branches. A direct
+  empty name therefore still consumes exactly one CNW BOOL after the fragment
+  header; capacity proof can no longer accept a read prefix with only the CNW
+  header bits. Full `0xFFFF` appearances remain with the typed appearance
+  rewrite/validator because visible-equipment item name/property bits can be
+  inserted or removed before exact EE validation. Verified with `cargo test -q
+  -p hgbridge-proxy2
+  declared_length_capacity_counts_name_only_creature_appearance_bits --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  declared_length_repair_claims_cepv22_full_stream_without_stranding_live_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`, and `cargo check -q -p hgbridge-proxy2`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

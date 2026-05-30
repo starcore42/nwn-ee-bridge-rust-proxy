@@ -513,6 +513,33 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     return false;
                 }
             }
+            (b'P', CREATURE_OBJECT_TYPE) => {
+                let short_read_buffer_only =
+                    short_creature_body_part_delta_read_end_for_transport(bytes, offset, record_end)
+                        == Some(record_end)
+                        || short_creature_equipment_delta_read_end_for_transport(
+                            bytes, offset, record_end,
+                        ) == Some(record_end);
+                let mask = read_u16_le(bytes, offset.saturating_add(6));
+                let non_full_name_mask = mask
+                    .is_some_and(|mask| mask != 0xFFFF && (mask & 0x0400) != 0);
+                // Full 0xFFFF appearances can rewrite visible-equipment item
+                // name/property bits before the exact EE validator runs. The
+                // transport preflight only enforces the stable non-full name
+                // branch here; full records stay with the typed appearance pass.
+                if !short_read_buffer_only
+                    && non_full_name_mask
+                    && !crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
+                        bytes,
+                        offset,
+                        record_end,
+                        bits,
+                        &mut bit_cursor,
+                    )
+                {
+                    return false;
+                }
+            }
             (b'D', object_type) if matches!(object_type, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => {
                 let Some(bit_count) =
                     legacy_live_delete_fragment_bit_count(bytes, offset, record_end)
@@ -5004,6 +5031,14 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_name_only_empty_appearance_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0x0400u16.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live
+    }
+
     fn creature_body_part_delta_appearance_live_bytes(mask: u16, selector: u8) -> Vec<u8> {
         let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -5731,6 +5766,52 @@ mod declared_length_repair_tests {
                 &empty_fragment_bits,
             ),
             "zero-mask P/5 owns no CNW BOOLs and must not require the ten-byte U-record floor"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_name_only_creature_appearance_bits() {
+        let live = creature_name_only_empty_appearance_live_bytes();
+        let too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut enough_bits = too_few_bits.clone();
+        enough_bits.push(false);
+
+        assert_eq!(
+            crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                &live,
+                0,
+                live.len(),
+            ),
+            Some(live.len()),
+            "Diamond/EE P/5 name-only appearance owns the empty direct CExoString read body"
+        );
+        assert!(
+            !short_creature_body_part_delta_read_end_for_transport(&live, 0, live.len()).is_some()
+        );
+        assert!(
+            !short_creature_equipment_delta_read_end_for_transport(&live, 0, live.len()).is_some()
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "P/5 name-only appearance is a complete live-object read row"
+        );
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &too_few_bits,
+            ),
+            "mask 0x0400 owns the outer name-mode BOOL and cannot pass with only the CNW header"
+        );
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "a direct empty name consumes exactly one P/5 name-mode BOOL after the CNW header"
         );
     }
 

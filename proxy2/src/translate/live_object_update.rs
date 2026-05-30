@@ -1618,6 +1618,34 @@ pub(crate) fn advance_verified_creature_appearance_fragment_cursor_for_ee(
     )
 }
 
+pub(crate) fn advance_legacy_creature_appearance_fragment_cursor_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    let original_bit_cursor = *bit_cursor;
+    if appearance::advance_verified_legacy_creature_appearance_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        return true;
+    }
+
+    *bit_cursor = original_bit_cursor;
+    creature::advance_verified_noop_creature_appearance_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+}
+
 pub(crate) fn try_get_verified_creature_appearance_record_end_for_ee(
     live_bytes: &[u8],
     offset: usize,
