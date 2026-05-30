@@ -1476,6 +1476,20 @@ Current status:
   creature_4408_zero_count -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 creature_status_effect -- --nocapture`, and `cargo test -q
   -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` short live GUI declared-tail audit: no packet shape
+  changed, but the stale-declared tail guard now names the decompile-backed
+  short live GUI read-buffer boundary explicitly. Diamond `sub_4589A0` and EE
+  `sub_1407B3F30` keep `G/Q`, `G/I D|U`, and `G/R D|U|M` rows in the read
+  buffer with no CNW BOOLs, so a proposed CNW tail beginning at one of those
+  aligned rows is read-boundary ambiguity, not fragment storage. Fixture-free
+  coverage now proves short `G/I U` and `G/R M` rows can decode as compact CNW
+  bits but are still rejected by declared-length transport plausibility.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_gui -- --nocapture`, `cargo test -q
+  -p hgbridge-proxy2 declared_length_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --nocapture`, `cargo fmt --all
+  --check`, `git diff --check`, `cargo check -q -p hgbridge-proxy2`, and the
+  serial full `cargo test -q -p hgbridge-proxy2 -- --test-threads=1` suite.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

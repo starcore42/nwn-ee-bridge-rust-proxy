@@ -776,18 +776,8 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         return true;
     }
 
-    if let Some(gui_end) =
-        crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
-            bytes,
-            tail_start,
-            bytes.len(),
-            &[],
-            0,
-        )
-    {
-        if gui_end > tail_start && gui_end <= bytes.len() {
-            return true;
-        }
+    if fragment_tail_starts_with_aligned_short_gui_read_boundary(bytes, tail_start) {
+        return true;
     }
 
     if fragment_tail_starts_with_aligned_short_update_read_boundary(bytes, tail_start) {
@@ -799,6 +789,24 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
     };
     delete_end <= bytes.len()
         && legacy_live_delete_fragment_bit_count(bytes, tail_start, delete_end).is_some()
+}
+
+fn fragment_tail_starts_with_aligned_short_gui_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    // Diamond `sub_4589A0` and EE `sub_1407B3F30` own short `G/Q`,
+    // `G/I D|U`, and `G/R D|U|M` rows entirely in the read buffer. A stale
+    // declared split at one of those opcodes is therefore still a live GUI
+    // boundary, even when the byte sequence also decodes as compact CNW bits.
+    crate::translate::live_object_update::legacy_live_gui_record_end_for_transport(
+        bytes,
+        tail_start,
+        bytes.len(),
+        &[],
+        0,
+    )
+    .is_some_and(|gui_end| gui_end > tail_start && gui_end <= bytes.len())
 }
 
 fn fragment_tail_starts_with_aligned_short_inventory_read_boundary(
@@ -4617,6 +4625,20 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn gui_inventory_update_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'G', b'I', b'U'];
+        live.extend_from_slice(&0x8000_3451u32.to_le_bytes());
+        live.extend_from_slice(&0x0003u16.to_le_bytes());
+        live.push(0x05);
+        live
+    }
+
+    fn gui_repository_move_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'G', b'R', b'M', 0x02, 0x04];
+        live.extend_from_slice(&0x8000_3452u32.to_le_bytes());
+        live
+    }
+
     fn compact_placeable_short_name_add_live_bytes() -> Vec<u8> {
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
         live.extend_from_slice(&0x8000_347Eu32.to_le_bytes());
@@ -4703,6 +4725,53 @@ mod declared_length_repair_tests {
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short GUI record"
         );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_gui_inventory_repository_rows_as_fragment_tail() {
+        let gui_cases = [
+            ("G/I update", gui_inventory_update_live_bytes()),
+            ("G/R move", gui_repository_move_live_bytes()),
+        ];
+        for (label, gui_tail) in gui_cases {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.extend_from_slice(&gui_tail);
+
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "{label} bytes can masquerade as compact CNW fragment storage"
+            );
+            assert!(
+                fragment_tail_starts_with_aligned_short_gui_read_boundary(&payload, split),
+                "{label} remains a decompile-owned GUI read-buffer row"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "{label} remains a live GUI read row, not a CNW tail"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not steal an aligned {label} row"
+            );
+        }
     }
 
     #[test]
