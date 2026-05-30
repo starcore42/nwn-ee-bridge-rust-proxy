@@ -607,90 +607,6 @@ fn score_legacy_quickbar_parse_from(
     best_score
 }
 
-fn score_legacy_quickbar_candidate_window(
-    read_buffer: &[u8],
-    mut cursor: usize,
-    remaining_slots: usize,
-) -> Option<i32> {
-    if cursor >= read_buffer.len() || remaining_slots == 0 {
-        return None;
-    }
-
-    let mut score = 0;
-    let slots_to_probe = remaining_slots.min(8);
-    for probe in 0..slots_to_probe {
-        if cursor >= read_buffer.len() {
-            return if probe == 0 { None } else { Some(score - 20) };
-        }
-
-        let ty = read_buffer[cursor];
-        if !is_legacy_quickbar_plausible_type(ty) {
-            return None;
-        }
-        if ty == 1 {
-            return Some(score + 12);
-        }
-
-        let (button, next_cursor) = parse_legacy_quickbar_non_item(read_buffer, cursor)?;
-        if next_cursor <= cursor {
-            return None;
-        }
-        match button.kind {
-            QuickbarButtonKind::Spell { .. } => score += 80,
-            QuickbarButtonKind::General { ref bytes } if bytes.len() == 1 && bytes[0] == 0 => {
-                score += 8
-            }
-            QuickbarButtonKind::General { .. } => score += 4,
-            QuickbarButtonKind::Item { .. } => score += 100,
-            QuickbarButtonKind::ItemCandidate | QuickbarButtonKind::Unsupported => return None,
-        }
-        cursor = next_cursor;
-    }
-
-    Some(score)
-}
-
-pub(super) fn find_legacy_quickbar_resync(
-    read_buffer: &[u8],
-    slot: usize,
-    cursor: usize,
-) -> Option<usize> {
-    let remaining_slots = LEGACY_QUICKBAR_BUTTON_COUNT.checked_sub(slot)?;
-    let max_candidate = read_buffer.len().min(cursor.checked_add(2048)?);
-    let mut best_score = i32::MIN;
-    let mut best_candidate = None;
-
-    for candidate in cursor.saturating_add(1)..max_candidate {
-        let ty = read_buffer[candidate];
-        if !is_legacy_quickbar_plausible_type(ty) || ty == 1 {
-            continue;
-        }
-
-        let mut score =
-            score_legacy_quickbar_candidate_window(read_buffer, candidate, remaining_slots)?;
-        if ty == 2 {
-            score += 120;
-        } else if ty == 0 {
-            score += 4;
-        } else if legacy_quickbar_type_has_no_payload(ty) {
-            score += 12;
-        }
-        let skipped = candidate.saturating_sub(cursor);
-        score -= skipped.checked_div(64).unwrap_or(0).min(40) as i32;
-
-        if score > best_score {
-            best_score = score;
-            best_candidate = Some(candidate);
-        }
-    }
-
-    if best_score >= 80 {
-        best_candidate
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,6 +631,29 @@ mod tests {
         assert!(
             split.is_none(),
             "a cursor-derived split with only blank/candidate slots must not discard a source tail"
+        );
+    }
+
+    #[test]
+    fn split_rejects_resynced_leading_byte_before_spell_slot() {
+        let mut body_and_tail = Vec::new();
+        body_and_tail.push(0xFF);
+        body_and_tail.push(2);
+        body_and_tail.push(0);
+        body_and_tail.extend_from_slice(&1u32.to_le_bytes());
+        body_and_tail.push(0);
+        body_and_tail.push(0);
+        body_and_tail.extend(std::iter::repeat(0).take(LEGACY_QUICKBAR_BUTTON_COUNT - 1));
+
+        let split = choose_quickbar_split(
+            &body_and_tail,
+            &[0x60],
+            QuickbarSplitPolicy::DecompileOwnedBoundary,
+        );
+
+        assert!(
+            split.is_none(),
+            "SetAllButtons has no Diamond/EE reader branch that skips an unowned byte before slot 0"
         );
     }
 }

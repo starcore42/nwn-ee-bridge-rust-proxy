@@ -68,10 +68,7 @@ pub(super) fn parse_quickbar_read_buffer(
             continue;
         }
 
-        let parsed = parse_legacy_quickbar_non_item(read_buffer, cursor).or_else(|| {
-            let resync_cursor = find_legacy_quickbar_resync(read_buffer, slot, cursor)?;
-            parse_legacy_quickbar_non_item(read_buffer, resync_cursor)
-        });
+        let parsed = parse_legacy_quickbar_non_item(read_buffer, cursor);
         let (button, next_cursor) = parsed.unwrap_or((
             QuickbarButton {
                 kind: QuickbarButtonKind::Unsupported,
@@ -351,27 +348,20 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
                 });
                 continue;
             }
-            let Some(resync_cursor) = find_legacy_quickbar_resync(read_buffer, slot, button_start)
-            else {
-                if quickbar_can_blank_remaining_after_source_parse_failure(&buttons, slot) {
-                    reader = before_button;
-                    buttons.push(QuickbarButton {
+            if quickbar_can_blank_remaining_after_source_parse_failure(&buttons, slot) {
+                reader = before_button;
+                buttons.push(QuickbarButton {
+                    kind: QuickbarButtonKind::Unsupported,
+                });
+                buttons.extend(
+                    (slot + 1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| QuickbarButton {
                         kind: QuickbarButtonKind::Unsupported,
-                    });
-                    buttons.extend((slot + 1..LEGACY_QUICKBAR_BUTTON_COUNT).map(|_| {
-                        QuickbarButton {
-                            kind: QuickbarButtonKind::Unsupported,
-                        }
-                    }));
-                    opaque_item_slots_blanked = true;
-                    break;
-                }
-                return None;
-            };
-            reader = before_button;
-            reader.cursor = resync_cursor;
-            let resynced_type = reader.read_byte()?;
-            parse_legacy_quickbar_non_item_from_reader(&mut reader, resynced_type)?
+                    }),
+                );
+                opaque_item_slots_blanked = true;
+                break;
+            }
+            return None;
         };
         if slot + 1 == LEGACY_QUICKBAR_BUTTON_COUNT
             && ty == 18

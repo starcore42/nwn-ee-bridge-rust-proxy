@@ -536,6 +536,16 @@ Current status:
   it is zero, not arbitrary read-buffer data. Public fixture-free coverage now
   accepts the zero suffix and rejects a nonzero suffix while the full quickbar
   suite still passes.
+- 2026-05-30 `P/1E/01` quickbar arbitrary-resync audit: removed the generic
+  non-item slot resync scorer from the source reader. Diamond `sub_469FD0` and
+  EE `sub_14079DB00` iterate exactly 36 slot records; they do not skip an
+  unowned byte before a later plausible spell/general slot. Compact item
+  recovery remains available only through the typed item-body parser plus the
+  36-slot boundary scorer. Public fixture-free coverage now proves a shifted
+  byte before slot 0 cannot be discarded to claim a later spell slot. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  split_rejects_resynced_leading_byte_before_spell_slot -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 quickbar -- --nocapture`.
 - 2026-05-29 `P/1E/01` quickbar exact-validator padding audit: hardened the
   EE `SetAllButtons` shape validator so, after the 36-slot read-buffer cursor
   and final CNW fragment bit cursor are exact, every unused low bit in the
