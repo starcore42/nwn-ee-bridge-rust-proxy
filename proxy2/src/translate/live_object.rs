@@ -6201,8 +6201,8 @@ mod declared_length_repair_tests {
                 split,
                 payload.len(),
             )
-            .is_none(),
-            "the semantic appearance translator still leaves named partial body deltas unclaimed"
+            == Some(payload.len()),
+            "the semantic appearance translator now owns named partial body deltas exactly"
         );
         assert!(
             fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
@@ -6230,36 +6230,58 @@ mod declared_length_repair_tests {
 
     #[test]
     fn declared_length_capacity_counts_named_partial_creature_appearance_bits() {
-        for (label, live, name_bits) in [
+        for (label, live, name_bits, byte_only_claims) in [
             (
                 "direct empty name",
                 creature_direct_name_body_part_delta_appearance_live_bytes(0x0500, 0, b""),
                 vec![false],
+                true,
             ),
             (
                 "locstring token plus inline name",
                 creature_locstring_name_body_part_delta_appearance_live_bytes(0x0500, 0),
                 vec![true, true, false, false],
+                false,
             ),
         ] {
-            assert!(
-                crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
-                    &live,
-                    0,
-                    live.len(),
-                )
-                .is_none(),
-                "the semantic appearance translator still leaves {label} partial body deltas unclaimed"
-            );
-            assert!(
-                live_object_read_prefix_walks_to(&live, 0, live.len()),
-                "P/5 {label} partial body-delta is a complete live-object read row"
-            );
-
             let mut too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
             too_few_bits.extend(name_bits.iter().copied().take(name_bits.len() - 1));
             let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
             enough_bits.extend(name_bits);
+            let byte_only_end =
+                crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                    &live,
+                    0,
+                    live.len(),
+                );
+            if byte_only_claims {
+                assert_eq!(
+                    byte_only_end,
+                    Some(live.len()),
+                    "the semantic appearance translator now owns {label} partial body deltas exactly"
+                );
+            } else {
+                assert!(
+                    byte_only_end.is_none(),
+                    "locstring partial appearance boundaries still require fragment proof"
+                );
+            }
+            let mut proven_cursor = CNW_FRAGMENT_HEADER_BITS;
+            assert!(
+                crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
+                    &live,
+                    0,
+                    live.len(),
+                    &enough_bits,
+                    &mut proven_cursor,
+                ),
+                "the proof-backed semantic appearance parser owns {label} partial body deltas exactly"
+            );
+            assert_eq!(proven_cursor, enough_bits.len());
+            assert!(
+                live_object_read_prefix_walks_to(&live, 0, live.len()),
+                "P/5 {label} partial body-delta is a complete live-object read row"
+            );
 
             assert!(
                 !live_object_read_prefix_has_plausible_fragment_capacity(
@@ -6322,8 +6344,8 @@ mod declared_length_repair_tests {
                     split,
                     payload.len(),
                 )
-                .is_none(),
-                "the semantic appearance translator still leaves partial body deltas unclaimed"
+                == Some(payload.len()),
+                "the semantic appearance translator now owns partial body deltas exactly"
             );
             assert!(
                 fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
@@ -6382,8 +6404,8 @@ mod declared_length_repair_tests {
                     split,
                     payload.len(),
                 )
-                .is_none(),
-                "the semantic appearance translator still leaves partial equipment deltas unclaimed"
+                == Some(payload.len()),
+                "the semantic appearance translator now owns zero-count partial equipment deltas exactly"
             );
             assert!(
                 fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(

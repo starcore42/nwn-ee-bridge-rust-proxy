@@ -34,6 +34,14 @@ const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
 const LEGACY_APPEARANCE_ALL_FIELDS_MASK: u16 = 0xFFFF;
 const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
 const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
+const LEGACY_APPEARANCE_SCALAR_FIELD_MASKS: u16 =
+    0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
+const LEGACY_APPEARANCE_SUPPORTED_NON_FULL_MASKS: u16 = LEGACY_APPEARANCE_SCALAR_FIELD_MASKS
+    | LEGACY_APPEARANCE_BODY_PART_MASK
+    | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
+    | LEGACY_APPEARANCE_NAME_MASK
+    | 0x2000
+    | 0x4000;
 const LEGACY_APPEARANCE_BODY_PART_COUNT: u8 = 0x13;
 const LEGACY_APPEARANCE_MAX_EQUIPMENT_RECORDS: u8 = 32;
 const LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID: u32 = 0x7F00_0000;
@@ -4750,7 +4758,11 @@ fn parse_verified_creature_appearance_with_optional_preceding_fence(
             return None;
         }
         let proof_cursor = bit_cursor.checked_add(preceding_fence_bits)?;
-        let name_shape = read_appearance_name_shape(fragment_bits, proof_cursor)?;
+        let name_shape = if (mask & LEGACY_APPEARANCE_NAME_MASK) != 0 {
+            read_appearance_name_shape(fragment_bits, proof_cursor)?
+        } else {
+            AppearanceNameShape::CExoString
+        };
         let record = parse_creature_appearance_record(
             bytes,
             offset,
@@ -5130,6 +5142,11 @@ fn parse_creature_appearance_record(
     if mask == 0 {
         return None;
     }
+    if mask != LEGACY_APPEARANCE_ALL_FIELDS_MASK
+        && (mask & !LEGACY_APPEARANCE_SUPPORTED_NON_FULL_MASKS) != 0
+    {
+        return None;
+    }
 
     let mut cursor = offset + LEGACY_APPEARANCE_HEADER_BYTES;
     let mut fragment_bits_consumed = 0usize;
@@ -5454,10 +5471,19 @@ fn parse_creature_appearance_record(
             &mut ee_extra_byte_inserts,
         )?;
     } else if (mask & LEGACY_APPEARANCE_BODY_PART_MASK) != 0 {
-        // The partial body-part delta path is a different decompiled branch
-        // with count/delta semantics. Do not claim it until we have a capture
-        // fixture and exact reader model for that branch.
-        return None;
+        // Diamond `sub_448E30` and EE `sub_14077FE10` share this non-full
+        // body-delta branch: selector zero keeps the current body table,
+        // selectors 1..=9 read compact index/value byte pairs, and selectors
+        // >= 0x0A read the fixed nineteen-part table. EE build-0x23 widens
+        // only that fixed table, using the same high-byte inserts as the
+        // full-appearance path above.
+        cursor = advance_creature_appearance_body_fields(
+            bytes,
+            cursor,
+            limit,
+            dialect,
+            &mut ee_extra_byte_inserts,
+        )?;
     }
 
     if (mask & 0x2000) != 0 {
@@ -5536,9 +5562,16 @@ fn parse_creature_appearance_record(
             ee_extra_fragment_bits.checked_add(equipment.ee_extra_fragment_bits)?;
         count
     } else if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0 {
-        // The non-`0xFFFF` equipment-delta branch compares individual slots
-        // and writes a compact change list. Keep it quarantined until modeled.
-        return None;
+        let count = *bytes.get(cursor)?;
+        cursor = cursor.checked_add(1)?;
+        if count != 0 {
+            // Nonzero equipment deltas enter the compact item-change list and
+            // can contain nested item bodies. Keep that subfamily quarantined
+            // until its typed item model is wired end to end; the zero-count
+            // branch is decompile-owned and consumes only this count byte.
+            return None;
+        }
+        0
     } else {
         0
     };
@@ -9047,6 +9080,52 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_body_delta_with_full_selector() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_BODY_PART_MASK);
+        bytes.push(LEGACY_APPEARANCE_BODY_PART_COUNT);
+        for part in 0..LEGACY_APPEARANCE_BODY_PART_COUNT {
+            bytes.push(0x20 + part);
+        }
+        bytes
+    }
+
+    fn partial_legacy_creature_zero_equipment_delta_with_ee_only_fields() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(
+            &mut bytes,
+            0x0080 | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK | 0x4000,
+        );
+        bytes.push(0x56); // 0x0080 compact Diamond scalar low byte.
+        bytes.push(0); // 0x0200 equipment-delta count.
+        bytes
+    }
+
+    fn partial_legacy_creature_nonzero_equipment_delta() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(1); // nonzero equipment-delta count.
+        bytes.push(b'A'); // start of the still-unmodeled compact item-change row.
+        push_u32(&mut bytes, 0x8000_0043);
+        push_u32(&mut bytes, 2);
+        bytes
+    }
+
+    fn partial_legacy_creature_unsupported_mask_bit() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, 0x8000);
+        bytes.push(0);
+        bytes
+    }
+
     fn mixed_locstring_name_bits() -> Vec<bool> {
         vec![
             true,  // creature-name selector: two locstring components.
@@ -9448,6 +9527,149 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 1,
             "EE zero-body-selector validation must preserve the direct-name bit cursor"
+        );
+    }
+
+    #[test]
+    fn partial_body_delta_full_selector_survives_ee_widening_without_name_bits() {
+        let mut bytes = partial_legacy_creature_body_delta_with_full_selector();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "non-full P/5 body-delta rows are decompile-owned appearance records"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 0,
+            "a no-name partial body delta owns no CNW fragment BOOLs"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy partial full-body selector should widen to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted,
+            usize::from(LEGACY_APPEARANCE_BODY_PART_COUNT),
+            "EE build-0x23 widens each fixed body byte with a neutral high byte"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(
+            ee_cursor, 0,
+            "EE validation must not invent a creature-name selector for masks without 0x0400"
+        );
+    }
+
+    #[test]
+    fn partial_zero_equipment_delta_widens_scalar_and_feature_tail_without_name_bits() {
+        let mut bytes = partial_legacy_creature_zero_equipment_delta_with_ee_only_fields();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "zero-count non-full equipment delta is a complete decompiled P/5 row"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(legacy_cursor, 0);
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("zero-count equipment delta should rewrite to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 2,
+            "EE reads the build-0x23 scalar high byte and build-0x0E tail byte before the zero count"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
+    }
+
+    #[test]
+    fn partial_equipment_delta_nonzero_count_stays_unclaimed_until_item_model_exists() {
+        let bytes = partial_legacy_creature_nonzero_equipment_delta();
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            None,
+            "nonzero equipment deltas contain compact item-change rows and remain quarantined"
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(
+            !advance_verified_legacy_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &[],
+                &mut bit_cursor,
+            ),
+            "the proof-backed parser must not accept the unmodeled nonzero equipment list"
+        );
+    }
+
+    #[test]
+    fn partial_appearance_rejects_unsupported_non_full_mask_bits() {
+        let bytes = partial_legacy_creature_unsupported_mask_bit();
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            None,
+            "unknown non-full appearance mask bits must not be treated as zero-width fields"
         );
     }
 
