@@ -788,6 +788,12 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         return true;
     }
 
+    if fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(
+        bytes, tail_start,
+    ) {
+        return true;
+    }
+
     if fragment_tail_starts_with_aligned_short_gui_read_boundary(bytes, tail_start) {
         return true;
     }
@@ -929,6 +935,110 @@ fn fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundar
     record_end <= bytes.len()
         && record_end > tail_start
         && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES
+}
+
+fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
+    const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
+    const LEGACY_APPEARANCE_SCALAR_AND_TAIL_MASKS: u16 = 0x0001
+        | 0x0002
+        | 0x0004
+        | 0x0008
+        | 0x0010
+        | 0x0020
+        | 0x0040
+        | 0x0080
+        | 0x0800
+        | 0x1000
+        | 0x2000;
+
+    let Some(mask_offset) = tail_start.checked_add(6) else {
+        return false;
+    };
+    if bytes.get(tail_start).copied() != Some(b'P')
+        || bytes.get(tail_start + 1).copied() != Some(CREATURE_OBJECT_TYPE)
+        || !looks_like_legacy_live_object_id_at(bytes, tail_start + 2)
+    {
+        return false;
+    }
+    let Some(mask) = read_u16_le(bytes, mask_offset) else {
+        return false;
+    };
+    if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) == 0
+        || (mask
+            & !(LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK | LEGACY_APPEARANCE_SCALAR_AND_TAIL_MASKS))
+            != 0
+    {
+        return false;
+    }
+
+    let Some(cursor) = tail_start
+        .checked_add(LEGACY_APPEARANCE_HEADER_BYTES)
+        .and_then(|cursor| advance_short_creature_appearance_scalar_cursor(cursor, mask))
+    else {
+        return false;
+    };
+    let Some(count) = bytes.get(cursor).copied() else {
+        return false;
+    };
+    if count != 0 {
+        return false;
+    }
+    let Some(record_end) = cursor.checked_add(1) else {
+        return false;
+    };
+
+    // Diamond `sub_448E30` and EE `sub_14077FE10` reach the equipment-delta
+    // branch after the scalar appearance fields: mask bit 0x0200 first owns a
+    // BYTE count, then each nonzero entry owns CHAR opcode + OBJECTID + DWORD
+    // slot/field before any opcode-specific item body. A zero-count delta is
+    // therefore a read-buffer row with no fragment BOOLs. The typed appearance
+    // translator still leaves partial equipment deltas unclaimed until that
+    // branch is fully modeled; stale-declared repair must not steal the aligned
+    // short zero-count form as CNW fragment storage.
+    record_end <= bytes.len()
+        && record_end > tail_start
+        && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES
+}
+
+fn advance_short_creature_appearance_scalar_cursor(mut cursor: usize, mask: u16) -> Option<usize> {
+    if (mask & 0x0001) != 0 {
+        cursor = cursor.checked_add(2)?;
+    }
+    if (mask & 0x0002) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0004) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0080) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0800) != 0 {
+        cursor = cursor.checked_add(4)?;
+    }
+    if (mask & 0x1000) != 0 {
+        cursor = cursor.checked_add(4)?;
+    }
+    if (mask & 0x0008) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0010) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0020) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x0040) != 0 {
+        cursor = cursor.checked_add(1)?;
+    }
+    if (mask & 0x2000) != 0 {
+        cursor = cursor.checked_add(2 + 4)?;
+    }
+    Some(cursor)
 }
 
 fn fragment_tail_starts_with_aligned_short_update_read_boundary(
@@ -4809,6 +4919,48 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_zero_equipment_delta_appearance_live_bytes(mask: u16) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        if (mask & 0x0001) != 0 {
+            live.extend_from_slice(&0x1234u16.to_le_bytes());
+        }
+        if (mask & 0x0002) != 0 {
+            live.push(0x12);
+        }
+        if (mask & 0x0004) != 0 {
+            live.push(0x34);
+        }
+        if (mask & 0x0080) != 0 {
+            live.push(0x56);
+        }
+        if (mask & 0x0800) != 0 {
+            live.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        }
+        if (mask & 0x1000) != 0 {
+            live.extend_from_slice(&0x0506_0708u32.to_le_bytes());
+        }
+        if (mask & 0x0008) != 0 {
+            live.push(0x78);
+        }
+        if (mask & 0x0010) != 0 {
+            live.push(0x9A);
+        }
+        if (mask & 0x0020) != 0 {
+            live.push(0xBC);
+        }
+        if (mask & 0x0040) != 0 {
+            live.push(0xDE);
+        }
+        if (mask & 0x2000) != 0 {
+            live.extend_from_slice(&0x1357u16.to_le_bytes());
+            live.extend_from_slice(&0x2468_ACEDu32.to_le_bytes());
+        }
+        live.push(0); // 0x0200 equipment-delta count.
+        live
+    }
+
     fn compact_inventory_scalar_live_bytes() -> Vec<u8> {
         let mut live = vec![b'I'];
         live.extend_from_slice(&0x8000_342Au32.to_le_bytes());
@@ -5473,6 +5625,65 @@ mod declared_length_repair_tests {
             assert!(
                 !declared_length_window_transport_plausible(&payload),
                 "a plausible CNW bit shape must not steal an aligned short P/5 body-part delta"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_zero_equipment_delta_appearance_as_fragment_tail()
+     {
+        for (label, mask) in [
+            ("zero-count equipment only", 0x0200u16),
+            ("appearance type plus zero-count equipment", 0x0201u16),
+            ("0x2000 tail plus zero-count equipment", 0x2200u16),
+        ] {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.extend_from_slice(&creature_zero_equipment_delta_appearance_live_bytes(mask));
+
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "short P/5 {label} bytes can masquerade as compact CNW fragment storage"
+            );
+            assert!(
+                crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                    &payload,
+                    split,
+                    payload.len(),
+                )
+                .is_none(),
+                "the semantic appearance translator still leaves partial equipment deltas unclaimed"
+            );
+            assert!(
+                fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(
+                    &payload, split
+                ),
+                "aligned P/5 {label} is a decompile-owned read-buffer row"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "aligned P/5 {label} remains a read boundary, not a CNW tail"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not steal an aligned short P/5 equipment delta"
             );
         }
     }

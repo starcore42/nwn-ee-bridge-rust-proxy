@@ -1645,6 +1645,27 @@ Current status:
   --test-threads=1`, `cargo fmt --all --check`, `cargo check -q -p
   hgbridge-proxy2`, and full serial `cargo test -q -p hgbridge-proxy2 --
   --test-threads=1`.
+- 2026-05-31 `P/05/01` short creature equipment-delta appearance declared-tail
+  audit: stale-declared repair now treats short zero-count `P/5` mask `0x0200`
+  equipment-delta rows as live-object read-boundary ambiguity instead of CNW
+  fragment storage, including scalar/`0x2000` prefixes that still stay below
+  the short-row floor. Diamond `sub_448E30` and EE `sub_14077FE10` both read
+  the `P/5 + OBJECTID + WORD mask` header, then after the scalar fields mask
+  bit `0x0200` owns a BYTE count; count zero consumes no entry bytes and no CNW
+  BOOLs, while nonzero entries own `CHAR opcode + OBJECTID + DWORD slot/field`
+  before any opcode-specific item body. The semantic appearance translator
+  still leaves partial equipment deltas unclaimed until the typed model/writer
+  is implemented; the transport guard only prevents shifted declared-length
+  repair from stealing the aligned short zero-count form. Verified with `cargo
+  test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_zero_equipment_delta_appearance_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`, `cargo fmt --all --check`, `git diff --check`, `cargo
+  check -q -p hgbridge-proxy2`, and full serial `cargo test -q -p
+  hgbridge-proxy2 -- --test-threads=1`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
