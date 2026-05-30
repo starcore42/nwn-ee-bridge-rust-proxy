@@ -1742,6 +1742,24 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --test-threads=1`.
+- 2026-05-31 `P/05/01` named partial creature appearance capacity audit:
+  extended the transport-only partial `P/5` guard to masks that combine the
+  name bit `0x0400` with body/equipment deltas. Diamond `sub_448E30` and EE
+  `sub_14077FE10` read the name branch before scalar fields, the `0x0100`
+  body selector, post-body `0x2000`, skipped legacy `0x4000`, and zero-count
+  `0x0200` equipment; Diamond `sub_53E700` proves locstring components consume
+  selector plus language bits for token components. Declared-length capacity
+  now counts direct-name and locstring-pair name BOOLs before treating the
+  remaining partial body/zero-equipment bytes as read-buffer-only transport
+  rows. The semantic appearance translator still leaves non-full body/equipment
+  deltas unclaimed until a typed model/writer is implemented. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  declared_length_window_rejects_short_creature_named_body_delta_appearance_as_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  declared_length_capacity_counts_named_partial_creature_appearance_bits --
+  --nocapture`, and the prior
+  `declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail`
+  regression.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

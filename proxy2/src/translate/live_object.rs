@@ -514,12 +514,20 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                 }
             }
             (b'P', CREATURE_OBJECT_TYPE) => {
-                let short_read_buffer_only =
-                    short_creature_body_part_delta_read_end_for_transport(bytes, offset, record_end)
-                        == Some(record_end)
-                        || short_creature_equipment_delta_read_end_for_transport(
-                            bytes, offset, record_end,
-                        ) == Some(record_end);
+                let short_partial_appearance =
+                    partial_creature_appearance_claim_for_transport_record(
+                        bytes,
+                        offset,
+                        record_end,
+                        bits,
+                        bit_cursor,
+                    );
+                if let Some(claim) = short_partial_appearance {
+                    if claim.fragment_bits > bits.len().saturating_sub(bit_cursor) {
+                        return false;
+                    }
+                    bit_cursor = bit_cursor.saturating_add(claim.fragment_bits);
+                }
                 let mask = read_u16_le(bytes, offset.saturating_add(6));
                 let non_full_name_mask = mask
                     .is_some_and(|mask| mask != 0xFFFF && (mask & 0x0400) != 0);
@@ -527,7 +535,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                 // name/property bits before the exact EE validator runs. The
                 // transport preflight only enforces the stable non-full name
                 // branch here; full records stay with the typed appearance pass.
-                if !short_read_buffer_only
+                if short_partial_appearance.is_none()
                     && non_full_name_mask
                     && !crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
                         bytes,
@@ -924,87 +932,12 @@ fn short_creature_body_part_delta_read_end_for_transport(
     tail_start: usize,
     scan_end: usize,
 ) -> Option<usize> {
-    const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
-    const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
-    const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
-    const LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK: u16 = 0x2000;
-    const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
-    const LEGACY_APPEARANCE_SCALAR_MASKS: u16 =
-        0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
-    const LEGACY_APPEARANCE_BODY_COMPATIBLE_MASKS: u16 = LEGACY_APPEARANCE_BODY_PART_MASK
-        | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
-        | LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK
-        | LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK
-        | LEGACY_APPEARANCE_SCALAR_MASKS;
-    let scan_end = scan_end.min(bytes.len());
-
-    let Some(mask_offset) = tail_start.checked_add(6) else {
-        return None;
-    };
-    if bytes.get(tail_start).copied() != Some(b'P')
-        || bytes.get(tail_start + 1).copied() != Some(CREATURE_OBJECT_TYPE)
-        || !looks_like_legacy_live_object_id_at(bytes, tail_start + 2)
+    if let Some(claim) =
+        partial_creature_appearance_claim_for_transport(bytes, tail_start, scan_end, None, 0, true)
     {
-        return None;
+        return claim.has_body_delta.then_some(claim.record_end);
     }
-    let Some(mask) = read_u16_le(bytes, mask_offset) else {
-        return None;
-    };
-    if (mask & LEGACY_APPEARANCE_BODY_PART_MASK) == 0
-        || (mask & !LEGACY_APPEARANCE_BODY_COMPATIBLE_MASKS) != 0
-    {
-        return None;
-    }
-
-    let Some(selector_offset) = tail_start
-        .checked_add(LEGACY_CREATURE_APPEARANCE_HEADER_BYTES)
-        .and_then(|cursor| advance_short_creature_appearance_pre_body_scalar_cursor(cursor, mask))
-    else {
-        return None;
-    };
-    let Some(selector) = bytes.get(selector_offset).copied() else {
-        return None;
-    };
-    let body_bytes = if selector == 0 {
-        1usize
-    } else if selector < 0x0A {
-        1usize.saturating_add(usize::from(selector).saturating_mul(2))
-    } else {
-        1usize.saturating_add(LEGACY_APPEARANCE_FULL_BODY_PART_COUNT)
-    };
-    let Some(record_end) = selector_offset.checked_add(body_bytes) else {
-        return None;
-    };
-    let Some(mut record_end) = advance_short_creature_appearance_post_body_cursor(record_end, mask)
-    else {
-        return None;
-    };
-    if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0 {
-        let Some(count) = bytes.get(record_end).copied() else {
-            return None;
-        };
-        if count != 0 {
-            return None;
-        }
-        let Some(end) = record_end.checked_add(1) else {
-            return None;
-        };
-        record_end = end;
-    }
-
-    // Diamond `sub_448E30` and EE `sub_14077FE10` both read scalar fields
-    // before mask bit 0x0100, then a body selector: zero owns only the selector
-    // byte, selectors 1..=9 own selector plus index/value byte pairs, and
-    // larger selectors own the fixed nineteen-value body table. The post-body
-    // `0x2000` WORD+DWORD follows that branch; `0x4000` is skipped on the
-    // legacy build path; and a zero `0x0200` equipment count owns one byte and
-    // no item rows. The semantic translator still quarantines this unmodeled
-    // partial appearance family, but stale-declared transport repair must not
-    // steal these short read-buffer bytes as CNW fragment storage.
-    (record_end <= scan_end
-        && record_end > tail_start
-        && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES)
-        .then_some(record_end)
+    None
 }
 
 fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(
@@ -1015,6 +948,19 @@ fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundar
 }
 
 fn short_creature_equipment_delta_read_end_for_transport(
+    bytes: &[u8],
+    tail_start: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if let Some(claim) =
+        partial_creature_appearance_claim_for_transport(bytes, tail_start, scan_end, None, 0, true)
+    {
+        return claim.has_equipment_delta.then_some(claim.record_end);
+    }
+    legacy_zero_equipment_delta_read_end_for_transport(bytes, tail_start, scan_end)
+}
+
+fn legacy_zero_equipment_delta_read_end_for_transport(
     bytes: &[u8],
     tail_start: usize,
     scan_end: usize,
@@ -1084,6 +1030,269 @@ fn short_creature_equipment_delta_read_end_for_transport(
         && record_end > tail_start
         && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES)
         .then_some(record_end)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PartialCreatureAppearanceTransportClaim {
+    record_end: usize,
+    fragment_bits: usize,
+    has_body_delta: bool,
+    has_equipment_delta: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PartialCreatureAppearanceNameClaim {
+    cursor: usize,
+    fragment_bits: usize,
+}
+
+fn partial_creature_appearance_claim_for_transport_record(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<PartialCreatureAppearanceTransportClaim> {
+    let claim = partial_creature_appearance_claim_for_transport(
+        bytes,
+        offset,
+        record_end,
+        Some(fragment_bits),
+        bit_cursor,
+        false,
+    )?;
+    (claim.record_end == record_end).then_some(claim)
+}
+
+fn partial_creature_appearance_claim_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+    fragment_bits: Option<&[bool]>,
+    bit_cursor: usize,
+    require_short: bool,
+) -> Option<PartialCreatureAppearanceTransportClaim> {
+    const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
+    const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
+    const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
+    const LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK: u16 = 0x2000;
+    const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
+    const LEGACY_APPEARANCE_SCALAR_MASKS: u16 =
+        0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
+    const LEGACY_APPEARANCE_PARTIAL_TRANSPORT_MASKS: u16 = LEGACY_APPEARANCE_BODY_PART_MASK
+        | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
+        | LEGACY_APPEARANCE_NAME_MASK
+        | LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK
+        | LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK
+        | LEGACY_APPEARANCE_SCALAR_MASKS;
+    const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
+
+    let scan_end = scan_end.min(bytes.len());
+    let mask_offset = offset.checked_add(6)?;
+    if offset.checked_add(LEGACY_CREATURE_APPEARANCE_HEADER_BYTES)? > scan_end
+        || bytes.get(offset).copied()? != b'P'
+        || bytes.get(offset + 1).copied()? != CREATURE_OBJECT_TYPE
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    let mask = read_u16_le(bytes, mask_offset)?;
+    let has_body_delta = (mask & LEGACY_APPEARANCE_BODY_PART_MASK) != 0;
+    let has_equipment_delta = (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0;
+    if mask == 0xFFFF
+        || (!has_body_delta && !has_equipment_delta)
+        || (mask & !LEGACY_APPEARANCE_PARTIAL_TRANSPORT_MASKS) != 0
+    {
+        return None;
+    }
+
+    let name_start = offset.checked_add(LEGACY_CREATURE_APPEARANCE_HEADER_BYTES)?;
+    let mut accepted: Option<PartialCreatureAppearanceTransportClaim> = None;
+    for name in partial_creature_appearance_name_claims_for_transport(
+        bytes,
+        name_start,
+        scan_end,
+        mask,
+        fragment_bits,
+        bit_cursor,
+    ) {
+        let Some(mut cursor) =
+            advance_short_creature_appearance_pre_body_scalar_cursor(name.cursor, mask)
+        else {
+            continue;
+        };
+        if cursor > scan_end {
+            continue;
+        }
+
+        if has_body_delta {
+            let Some(selector) = bytes.get(cursor).copied() else {
+                continue;
+            };
+            let body_bytes = if selector == 0 {
+                1usize
+            } else if selector < 0x0A {
+                1usize.saturating_add(usize::from(selector).saturating_mul(2))
+            } else {
+                1usize.saturating_add(LEGACY_APPEARANCE_FULL_BODY_PART_COUNT)
+            };
+            let Some(next_cursor) = cursor.checked_add(body_bytes) else {
+                continue;
+            };
+            cursor = next_cursor;
+        }
+
+        let Some(next_cursor) = advance_short_creature_appearance_post_body_cursor(cursor, mask)
+        else {
+            continue;
+        };
+        cursor = next_cursor;
+
+        if has_equipment_delta {
+            let Some(count) = bytes.get(cursor).copied() else {
+                continue;
+            };
+            if count != 0 {
+                continue;
+            }
+            let Some(next_cursor) = cursor.checked_add(1) else {
+                continue;
+            };
+            cursor = next_cursor;
+        }
+
+        if cursor > scan_end || cursor <= offset {
+            continue;
+        }
+        if require_short && cursor.saturating_sub(offset) >= MIN_AMBIGUOUS_TAIL_READ_BYTES {
+            continue;
+        }
+        if cursor < scan_end && !looks_like_legacy_live_object_sub_message_boundary(bytes, cursor) {
+            continue;
+        }
+
+        // Diamond `sub_448E30` and EE `sub_14077FE10` read mask bit 0x0400
+        // before the scalar/body/equipment branches. This transport-only claim
+        // counts those name BOOLs, then leaves the still-unmodeled partial body
+        // and zero-count equipment deltas as read-buffer rows with no additional
+        // CNW bits. It is deliberately not a semantic appearance rewrite.
+        let claim = PartialCreatureAppearanceTransportClaim {
+            record_end: cursor,
+            fragment_bits: name.fragment_bits,
+            has_body_delta,
+            has_equipment_delta,
+        };
+        if accepted
+            .as_ref()
+            .map(|current| claim.record_end < current.record_end)
+            .unwrap_or(true)
+        {
+            accepted = Some(claim);
+        }
+    }
+    accepted
+}
+
+fn partial_creature_appearance_name_claims_for_transport(
+    bytes: &[u8],
+    cursor: usize,
+    scan_end: usize,
+    mask: u16,
+    fragment_bits: Option<&[bool]>,
+    bit_cursor: usize,
+) -> Vec<PartialCreatureAppearanceNameClaim> {
+    const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
+    if (mask & LEGACY_APPEARANCE_NAME_MASK) == 0 {
+        return vec![PartialCreatureAppearanceNameClaim {
+            cursor,
+            fragment_bits: 0,
+        }];
+    }
+
+    let mut claims = Vec::new();
+    if let Some(fragment_bits) = fragment_bits {
+        match fragment_bits.get(bit_cursor).copied() {
+            Some(false) => {
+                if let Some(end) = bounded_inline_cexo_string_end(cursor, bytes, scan_end) {
+                    claims.push(PartialCreatureAppearanceNameClaim {
+                        cursor: end,
+                        fragment_bits: 1,
+                    });
+                }
+            }
+            Some(true) => {
+                if let Some(first) = advance_partial_creature_locstring_component_for_transport(
+                    bytes,
+                    cursor,
+                    scan_end,
+                    fragment_bits,
+                    bit_cursor.saturating_add(1),
+                ) {
+                    if let Some(second) = advance_partial_creature_locstring_component_for_transport(
+                        bytes,
+                        first.cursor,
+                        scan_end,
+                        fragment_bits,
+                        bit_cursor
+                            .saturating_add(1)
+                            .saturating_add(first.fragment_bits),
+                    ) {
+                        claims.push(PartialCreatureAppearanceNameClaim {
+                            cursor: second.cursor,
+                            fragment_bits: 1usize
+                                .saturating_add(first.fragment_bits)
+                                .saturating_add(second.fragment_bits),
+                        });
+                    }
+                }
+            }
+            None => {}
+        }
+        return claims;
+    }
+
+    // Proofless transport scanning uses only the direct CExoString branch. The
+    // locstring-pair branch has a minimum eight-byte read body, so named
+    // partial body/equipment rows that are short enough to need this ambiguity
+    // guard are necessarily direct names; longer locstring rows are handled by
+    // the generic boundary floor and by the proof-backed capacity pass above.
+    if let Some(end) = bounded_inline_cexo_string_end(cursor, bytes, scan_end) {
+        claims.push(PartialCreatureAppearanceNameClaim {
+            cursor: end,
+            fragment_bits: 1,
+        });
+    }
+    claims
+}
+
+fn bounded_inline_cexo_string_end(cursor: usize, bytes: &[u8], scan_end: usize) -> Option<usize> {
+    let end = inline_cexo_string_end(bytes, cursor)?;
+    (end <= scan_end).then_some(end)
+}
+
+fn advance_partial_creature_locstring_component_for_transport(
+    bytes: &[u8],
+    cursor: usize,
+    scan_end: usize,
+    fragment_bits: &[bool],
+    component_bit_cursor: usize,
+) -> Option<PartialCreatureAppearanceNameClaim> {
+    let token_component = *fragment_bits.get(component_bit_cursor)?;
+    if token_component {
+        fragment_bits.get(component_bit_cursor.checked_add(1)?)?;
+        let end = cursor.checked_add(4)?;
+        return (end <= scan_end).then_some(PartialCreatureAppearanceNameClaim {
+            cursor: end,
+            fragment_bits: 2,
+        });
+    }
+
+    let end = bounded_inline_cexo_string_end(cursor, bytes, scan_end)?;
+    Some(PartialCreatureAppearanceNameClaim {
+        cursor: end,
+        fragment_bits: 1,
+    })
 }
 
 fn advance_short_creature_appearance_pre_body_scalar_cursor(
@@ -5048,6 +5257,74 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_direct_name_body_part_delta_appearance_live_bytes(
+        mask: u16,
+        selector: u8,
+        name: &[u8],
+    ) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        if (mask & 0x0001) != 0 {
+            live.extend_from_slice(&0x1234u16.to_le_bytes());
+        }
+        if (mask & 0x0002) != 0 {
+            live.push(0x12);
+        }
+        if (mask & 0x0004) != 0 {
+            live.push(0x34);
+        }
+        if (mask & 0x0080) != 0 {
+            live.push(0x56);
+        }
+        if (mask & 0x0800) != 0 {
+            live.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        }
+        if (mask & 0x1000) != 0 {
+            live.extend_from_slice(&0x0506_0708u32.to_le_bytes());
+        }
+        if (mask & 0x0008) != 0 {
+            live.push(0x78);
+        }
+        if (mask & 0x0010) != 0 {
+            live.push(0x9A);
+        }
+        if (mask & 0x0020) != 0 {
+            live.push(0xBC);
+        }
+        if (mask & 0x0040) != 0 {
+            live.push(0xDE);
+        }
+        live.push(selector);
+        for index in 0..selector.min(9) {
+            live.push(index);
+            live.push(0x20 + index);
+        }
+        if (mask & 0x2000) != 0 {
+            live.extend_from_slice(&0x1357u16.to_le_bytes());
+            live.extend_from_slice(&0x2468_ACEDu32.to_le_bytes());
+        }
+        if (mask & 0x0200) != 0 {
+            live.push(0);
+        }
+        live
+    }
+
+    fn creature_locstring_name_body_part_delta_appearance_live_bytes(
+        mask: u16,
+        selector: u8,
+    ) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0x0100_75D6u32.to_le_bytes()); // First locstring component token.
+        live.extend_from_slice(&0u32.to_le_bytes()); // Second locstring component empty string.
+        live.push(selector);
+        live
+    }
+
     fn creature_body_part_delta_appearance_live_bytes(mask: u16, selector: u8) -> Vec<u8> {
         let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -5863,6 +6140,115 @@ mod declared_length_repair_tests {
             ),
             "token first component plus inline second component consumes four P/5 name BOOLs after the CNW header"
         );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_named_body_delta_appearance_as_fragment_tail()
+    {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&creature_direct_name_body_part_delta_appearance_live_bytes(
+            0x0500, 0, b"",
+        ));
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short direct-name P/5 body-delta bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                &payload,
+                split,
+                payload.len(),
+            )
+            .is_none(),
+            "the semantic appearance translator still leaves named partial body deltas unclaimed"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
+                &payload, split
+            ),
+            "aligned direct-name P/5 body-delta is still a decompile-owned read-buffer row"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned named P/5 body-delta remains a read boundary, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned named P/5 body-delta"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_named_partial_creature_appearance_bits() {
+        for (label, live, name_bits) in [
+            (
+                "direct empty name",
+                creature_direct_name_body_part_delta_appearance_live_bytes(0x0500, 0, b""),
+                vec![false],
+            ),
+            (
+                "locstring token plus inline name",
+                creature_locstring_name_body_part_delta_appearance_live_bytes(0x0500, 0),
+                vec![true, true, false, false],
+            ),
+        ] {
+            assert!(
+                crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                    &live,
+                    0,
+                    live.len(),
+                )
+                .is_none(),
+                "the semantic appearance translator still leaves {label} partial body deltas unclaimed"
+            );
+            assert!(
+                live_object_read_prefix_walks_to(&live, 0, live.len()),
+                "P/5 {label} partial body-delta is a complete live-object read row"
+            );
+
+            let mut too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            too_few_bits.extend(name_bits.iter().copied().take(name_bits.len() - 1));
+            let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            enough_bits.extend(name_bits);
+
+            assert!(
+                !live_object_read_prefix_has_plausible_fragment_capacity(
+                    &live,
+                    0,
+                    live.len(),
+                    &too_few_bits,
+                ),
+                "P/5 {label} body-delta must not pass capacity proof with a missing name branch bit"
+            );
+            assert!(
+                live_object_read_prefix_has_plausible_fragment_capacity(
+                    &live,
+                    0,
+                    live.len(),
+                    &enough_bits,
+                ),
+                "P/5 {label} body-delta consumes exactly its decompiled name BOOLs before the byte-only partial body branch"
+            );
+        }
     }
 
     #[test]
