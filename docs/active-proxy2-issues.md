@@ -1613,6 +1613,14 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --nocapture`.
+- 2026-05-30 `P/05/01` compact door-add declared-tail audit: extended the same
+  stale-declared short-add guard to 12-byte `A/0A` door adds whose Diamond
+  source owns `OBJECTID + nonzero door DWORD + WORD state tail` before the
+  focused add translator inserts EE's object visual-transform map and empty
+  direct `CExoString`. Those bytes can decode as compact CNW fragment storage,
+  but they are still a live-object read-buffer row and the transport prefix
+  walker must split before a following `W`/`U/0A` row. Verified with `cargo
+  test -q -p hgbridge-proxy2 compact_door -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

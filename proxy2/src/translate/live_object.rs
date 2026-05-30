@@ -834,15 +834,22 @@ fn fragment_tail_starts_with_aligned_short_add_read_boundary(
 ) -> bool {
     // Compact Diamond placeable adds can be only 15 read-buffer bytes:
     // `A/09 + OBJECTID + four-byte legacy name/token + BYTE/WORD/WORD tail`.
+    // Short Diamond door adds can be only 12 read-buffer bytes:
+    // `A/0A + OBJECTID + nonzero door DWORD + WORD state tail`.
     // The focused add translator owns the fragment guards and EE visual-map
-    // insertion later; stale-declared repair must not first classify those
-    // bytes as CNW fragment storage merely because the record is below the
-    // broad ambiguous-tail floor.
+    // insertion later; stale-declared repair must not first classify either
+    // compact row as CNW fragment storage merely because it is below the broad
+    // ambiguous-tail floor.
     crate::translate::live_object_update::try_get_legacy_placeable_short_name_add_record_end_for_transport(
         bytes,
         tail_start,
         bytes.len(),
     ) == Some(bytes.len())
+        || crate::translate::live_object_update::try_get_legacy_short_door_add_record_end_for_transport(
+            bytes,
+            tail_start,
+            bytes.len(),
+        ) == Some(bytes.len())
 }
 
 fn fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(
@@ -1817,6 +1824,18 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
             // name/token slot before the BYTE/WORD/WORD tail. Splitting at the
             // decompiled tail cursor lets the focused add translator repair the
             // bytes and fragment BOOLs before the following `U/9` update.
+            return record_end;
+        }
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_legacy_short_door_add_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            // Diamond short door adds can omit the empty direct string and
+            // carry only the first door DWORD plus WORD state tail. Split at
+            // that decompiled tail cursor so the focused add translator can
+            // insert the EE visual-transform map and empty CExoString before
+            // any following `U/10` update.
             return record_end;
         }
         if let Some(record_end) =
@@ -4747,6 +4766,14 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn compact_door_tail_only_add_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'A', DOOR_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_34CDu32.to_le_bytes());
+        live.extend_from_slice(&4u32.to_le_bytes());
+        live.extend_from_slice(&0x14E5u16.to_le_bytes());
+        live
+    }
+
     fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
         let mut live = vec![b'A'];
         live.extend_from_slice(&0x8001_69DCu32.to_le_bytes());
@@ -5027,6 +5054,47 @@ mod declared_length_repair_tests {
     }
 
     #[test]
+    fn declared_length_window_rejects_compact_door_add_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&compact_door_tail_only_add_live_bytes());
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "12-byte compact A/10 bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_add_read_boundary(&payload, split),
+            "aligned compact A/10 remains a decompile-owned door add record"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned compact A/10 remains a live-object add row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned compact A/10 add"
+        );
+    }
+
+    #[test]
     fn declared_length_window_rejects_top_level_item_add_as_fragment_tail() {
         let mut live = Vec::new();
         append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
@@ -5087,6 +5155,23 @@ mod declared_length_repair_tests {
         assert!(
             live_object_read_prefix_walks_to(&live, 0, live.len()),
             "top-level item add plus W current-total is a complete live-object read prefix"
+        );
+    }
+
+    #[test]
+    fn declared_length_read_prefix_walks_through_compact_door_add_record() {
+        let mut live = compact_door_tail_only_add_live_bytes();
+        let door_add_end = live.len();
+        live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            door_add_end,
+            "the transport scanner must split after the compact short door add"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "compact short door add plus W current-total is a complete live-object read prefix"
         );
     }
 

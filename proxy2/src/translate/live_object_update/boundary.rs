@@ -150,6 +150,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             return record_end;
         }
         if let Some(record_end) =
+            try_get_legacy_short_door_add_record_end_for_transport(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
             try_get_legacy_placeable_bare_name_add_record_end_for_transport(bytes, offset, scan_end)
         {
             return record_end;
@@ -418,6 +423,46 @@ pub(super) fn try_get_legacy_placeable_short_name_add_record_end_for_transport(
             record_end,
             scan_end,
             PLACEABLE_OBJECT_TYPE,
+            object_id,
+        )
+        .is_none()
+    {
+        return None;
+    }
+    Some(record_end)
+}
+
+pub(super) fn try_get_legacy_short_door_add_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    if offset + 12 > scan_end
+        || bytes.get(offset).copied()? != b'A'
+        || bytes.get(offset + 1).copied()? != DOOR_OBJECT_TYPE
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+        || read_u32_le(bytes, offset + 6)? == 0
+        || read_u16_le(bytes, offset + 10).is_none()
+    {
+        return None;
+    }
+
+    // Diamond/HG short direct-name door adds can omit the empty CExoString and
+    // carry only the first door DWORD plus the final WORD state tail. The
+    // focused add translator later inserts EE's object visual-transform map and
+    // empty direct string at this cursor; the transport scanner only proves the
+    // 12-byte read-buffer row so a following update or stale-declared fragment
+    // tail is not swallowed into the add.
+    let object_id = read_u32_le(bytes, offset + 2)?;
+    let record_end = offset + 12;
+    if record_end < scan_end
+        && !looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+        && try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+            bytes,
+            record_end,
+            scan_end,
+            DOOR_OBJECT_TYPE,
             object_id,
         )
         .is_none()

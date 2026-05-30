@@ -1431,6 +1431,14 @@ pub(crate) fn try_get_legacy_placeable_short_name_add_record_end_for_transport(
     )
 }
 
+pub(crate) fn try_get_legacy_short_door_add_record_end_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    boundary::try_get_legacy_short_door_add_record_end_for_transport(live_bytes, offset, scan_end)
+}
+
 pub(crate) fn try_get_legacy_placeable_bare_name_add_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,
