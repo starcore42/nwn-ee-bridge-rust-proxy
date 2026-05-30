@@ -1577,6 +1577,18 @@ Current status:
   hgbridge-proxy2 live_object_update -- --nocapture`, `cargo fmt --all
   --check`, `git diff --check`, `cargo check -q -p hgbridge-proxy2`, and the
   serial full `cargo test -q -p hgbridge-proxy2 -- --test-threads=1` suite.
+- 2026-05-30 `P/05/01` interior short-read declared-tail audit: tightened the
+  stale-declared tail ambiguity guard so a proposed CNW fragment tail is scanned
+  for decompile-owned short read-buffer rows after any leading fragment-looking
+  byte, not only at the first tail byte. Diamond/EE `W current total`, zero-row
+  `G/Q`, and six-byte delete rows remain live-object read boundaries wherever
+  they are left inside the proposed tail; a compact CNW bit decode is not enough
+  to hide them as fragment storage. Verified with `cargo test -q -p
+  hgbridge-proxy2
+  declared_length_window_rejects_interior_short_read_boundary_in_fragment_tail
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

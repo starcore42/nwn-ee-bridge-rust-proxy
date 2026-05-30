@@ -721,29 +721,30 @@ fn fragment_tail_contains_legacy_live_object_read_boundary(
         return false;
     }
 
-    if crate::translate::live_object_update::legacy_live_gui_character_sheet_read_boundary_without_fragment_proof(
-        bytes,
-        tail_start,
-        bytes.len(),
-    ) {
-        // `G S` CharacterSheet rows can be shorter than, equal to, or longer
-        // than the generic ambiguous-tail floor while still owning CNW BOOLs
-        // after a decompiled read-buffer body. When one starts exactly at the
-        // proposed CNW tail, the split is still a live GUI read-boundary
-        // ambiguity until the focused character-sheet reader proves the row.
-        return true;
-    }
-
-    if fragment_tail_starts_with_aligned_short_live_object_read_boundary(bytes, tail_start) {
-        // Diamond/EE short read-buffer rows such as `W current total`, zero-row
-        // `GQ`, and delete records are shorter than the broad ambiguous-tail
-        // scanner below. When one starts exactly at the proposed CNW tail, the
-        // split is still a live-object read boundary, not fragment storage.
-        return true;
-    }
-
     let mut offset = tail_start;
     while offset + 1 < bytes.len() {
+        if crate::translate::live_object_update::legacy_live_gui_character_sheet_read_boundary_without_fragment_proof(
+            bytes,
+            offset,
+            bytes.len(),
+        ) {
+            // `G S` CharacterSheet rows can be shorter than, equal to, or longer
+            // than the generic ambiguous-tail floor while still owning CNW BOOLs
+            // after a decompiled read-buffer body. When one is left inside the
+            // proposed CNW tail, the split is still a live GUI read-boundary
+            // ambiguity until the focused character-sheet reader proves the row.
+            return true;
+        }
+
+        if fragment_tail_starts_with_aligned_short_live_object_read_boundary(bytes, offset) {
+            // Diamond/EE short read-buffer rows such as `W current total`,
+            // zero-row `GQ`, and delete records are shorter than the broad
+            // ambiguous-tail scanner below. When one is left inside the
+            // proposed CNW tail, the split is still a live-object read
+            // boundary, not fragment storage.
+            return true;
+        }
+
         if bytes.len().saturating_sub(offset) >= MIN_AMBIGUOUS_TAIL_READ_BYTES
             && looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
         {
@@ -4812,6 +4813,60 @@ mod declared_length_repair_tests {
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short GUI record"
         );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_interior_short_read_boundary_in_fragment_tail() {
+        let short_rows = [
+            ("W current-total", vec![b'W', 0x10, 0x20]),
+            ("G/Q zero-row", vec![b'G', b'Q', 0x00]),
+            {
+                let mut delete = vec![b'D', TRIGGER_OBJECT_TYPE];
+                delete.extend_from_slice(&0x8000_1007u32.to_le_bytes());
+                ("D/7 delete", delete)
+            },
+        ];
+
+        for (label, row) in short_rows {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.push(0x60);
+            payload.extend_from_slice(&row);
+
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "{label} after one fragment-looking byte can still decode as compact CNW storage"
+            );
+            assert!(
+                !fragment_tail_starts_with_aligned_short_live_object_read_boundary(&payload, split),
+                "{label} is not at the proposed tail start in this regression"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "{label} remains a live-object read boundary even when one byte follows the proposed split"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not hide an interior short {label} row"
+            );
+        }
     }
 
     #[test]
