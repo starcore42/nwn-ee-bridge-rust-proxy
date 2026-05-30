@@ -1686,6 +1686,18 @@ Current status:
   declared_length_ -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   live_object_update -- --test-threads=1`, and full serial `cargo test -q -p
   hgbridge-proxy2 -- --test-threads=1`.
+- 2026-05-31 `P/05/01` short partial creature appearance prefix-capacity
+  audit: wired the same decompile-backed short `P/5` body-delta and zero-count
+  equipment-delta row cursors into the live-object transport boundary walker,
+  not just the stale-tail ambiguity guard. Diamond `sub_448E30` and EE
+  `sub_14077FE10` own selector-zero body rows and zero-count equipment rows as
+  sub-10-byte read-buffer records with no CNW BOOLs; a following `D/5` delete
+  still owns its own one BOOL. The prefix capacity proof now splits at those
+  short `P/5` ends before counting following record bits, so an empty fragment
+  tail cannot hide a delete BOOL shortage behind an unmodeled partial
+  appearance row. Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_capacity_splits_short_partial_creature_appearance_before_delete_bits
+  -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
