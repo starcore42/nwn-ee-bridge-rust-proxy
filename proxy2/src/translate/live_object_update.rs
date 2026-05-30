@@ -2722,13 +2722,6 @@ fn legacy_door_add_repair_claims_following_same_object_update(
     if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
         return false;
     }
-    if read_u32_le(live_bytes, record_end + 6) != Some(0x17) {
-        // This bridge is for the decompile-backed stale absent-appearance
-        // `U/9`/`U/10` mask-0x17 path. Mask 0x37 carries the appearance branch
-        // and remains quarantined when its scale/appearance cursor is shifted.
-        return false;
-    }
-
     let mut candidate_live = live_bytes.to_vec();
     let mut candidate_record_end = record_end;
     let mut candidate_bits = fragment_bits.to_vec();
@@ -2772,6 +2765,21 @@ fn legacy_door_add_repair_claims_following_same_object_update(
 
     let after_add_cursor = candidate_cursor;
     let mut candidate_following_end = following_end;
+    let mut verified_cursor = after_add_cursor;
+    if record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        candidate_record_end,
+        candidate_following_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) {
+        // The following same-object update is already EE-shaped at the exact
+        // post-add cursor. This safely covers mask 0x37 rows whose decompiled
+        // appearance-before-scale/state order and fragment bits are complete,
+        // while shifted same-length rows still fail the exact reader below.
+        return true;
+    }
+
     let mut candidate_reliable = true;
     if record::rewrite_update_record_for_ee(
         &mut candidate_live,

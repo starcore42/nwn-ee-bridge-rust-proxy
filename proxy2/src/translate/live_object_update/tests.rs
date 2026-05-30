@@ -4308,12 +4308,11 @@ fn local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_37_order_audit() {
+fn local_xp2_seq19_door_placeable_gui_stream_rewrites_after_door_add_37_cursor_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_seq19_door_placeable_gui_stream_20260522_unclaimed.bin"
     )
     .to_vec();
-    let original = payload.clone();
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
@@ -4321,20 +4320,25 @@ fn local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_37_order_audi
     );
 
     assert!(
-        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
             &mut payload,
             None
         ),
-        "XP2 seq19 must stay quarantined until the preceding door/placeable cursor owner is proven"
+        "XP2 seq19 should rewrite once the preceding door add is gated by an exact same-object 0x37 update"
     );
     assert!(
-        super::claim_payload_if_verified(&payload).is_none(),
-        "partial door/placeable rewrites must not make the mixed XP2 stream exact"
+        !contains_stale_scale_first_door_placeable_update_37(&payload),
+        "rewritten XP2 seq19 must not reproduce stale scale-first 0x37 door/placeable rows"
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten XP2 seq19 door/placeable + GUI stream should exact-claim");
+    assert!(
+        claim.add_records > 0 && claim.update_records > 0,
+        "door/placeable add/update records should both be owned after rewrite: {claim:?}"
     );
     assert_eq!(
-        original[0..super::HIGH_LEVEL_HEADER_BYTES],
-        payload[0..super::HIGH_LEVEL_HEADER_BYTES],
-        "failed exact rewrite must keep the packet family unchanged"
+        claim.live_gui_item_create_records, 8,
+        "the terminal GUI item-create records own the final fragment cursor"
     );
 }
 

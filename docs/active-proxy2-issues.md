@@ -1266,9 +1266,10 @@ Current status:
   EE's eleven neutral add guard/state BOOLs, preventing the add from borrowing
   the following update's bits. Door `A/0A` visual-map insertion is similarly
   gated by an immediate same-object `U/0A` mask-`0x17` stale
-  absent-appearance update proof; mask-`0x37` evidence remains quarantined
-  because that branch still carries the appearance cursor-order risk. Verified
-  with `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+  absent-appearance update proof; shifted or bit-short mask-`0x37` evidence
+  remains quarantined because that branch still carries the appearance
+  cursor-order risk until the exact update reader owns it. Verified with `cargo
+  test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
 - 2026-05-30 `P/05/01` creature effect-only update boundary audit:
   promoted already-EE-shaped creature `U/05 mask=0x0008` rows to an explicit
   transport boundary shape before the live-object scanner looks for embedded
@@ -1291,6 +1292,18 @@ Current status:
   optional-object guard plus EE-only visual-transform guard at their final
   cursors. Verified by fixture-free empty-name coverage and the Winds seq16
   pending stream exact-claim.
+- 2026-05-30 `P/05/01` door-add/`0x37` same-object cursor audit: generalized
+  the door `A/0A` visual-map insertion gate from the mask-`0x17` stale-gap
+  sibling to any immediate same-object door update that exact-claims at the
+  post-add fragment cursor. The following `U/0A mask=0x37` may now prove the
+  add rewrite only when the decompiled `sub_467AE0` / `sub_14079C050` order is
+  appearance before scale/state and all position/orientation/state BOOLs are
+  present. Same-length scale-first rows and bit-short `0x37` rows still reject
+  and stay visible as active shifted-cursor evidence. The XP2 seq19
+  door/placeable + GUI private fixture now exact-claims under this generalized
+  rule while still asserting no stale scale-first `0x37` rows survive. Verified
+  with `cargo test -q -p hgbridge-proxy2 door_add_visual_map_repair --
+  --nocapture`.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

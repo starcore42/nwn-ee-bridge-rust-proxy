@@ -328,6 +328,11 @@ fn ee_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     live
 }
 
+fn with_live_update_object_id(mut live: Vec<u8>, object_id: u32) -> Vec<u8> {
+    live[2..6].copy_from_slice(&object_id.to_le_bytes());
+    live
+}
+
 fn scale_first_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
@@ -1675,6 +1680,80 @@ fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
         .expect("door add/update pair should claim after bounded map repair");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn door_add_visual_map_repair_accepts_following_exact_37_update() {
+    // Door `A/0A` map insertion may use a following same-object `U/0A 0x37`
+    // as a cursor proof only after the update's own decompiled reader proves
+    // appearance before scale/state and all position/orientation/state bits at
+    // the post-add cursor.
+    let object_id = 0x8000_34D2u32;
+    let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);
+    live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::DOOR_OBJECT_TYPE),
+        object_id,
+    ));
+
+    let mut bits = vec![true, false, true, false, false, true, true];
+    bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("door add map insertion should be bounded by the exact following 0x37 update");
+    assert_eq!(rewrite.update_records_rewritten, 0);
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("door add plus exact 0x37 update should claim after bounded map repair");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn door_add_visual_map_repair_rejects_shifted_or_bit_short_37_update() {
+    // Same-length scale/state-before-appearance bytes and bit-short updates
+    // remain active cursor hazards. The add pass must not use them as proof for
+    // inserting a visual-transform map into the preceding door add.
+    let object_id = 0x8000_34D3u32;
+    let add = door_direct_name_add_live_bytes_without_visual_map(object_id);
+    for (label, update, update_bits) in [
+        (
+            "scale-first",
+            with_live_update_object_id(
+                scale_first_door_placeable_full_update_live_bytes(super::DOOR_OBJECT_TYPE),
+                object_id,
+            ),
+            exact_scalar_door_placeable_update_bits(),
+        ),
+        (
+            "bit-short",
+            with_live_update_object_id(
+                ee_door_placeable_full_update_live_bytes(super::DOOR_OBJECT_TYPE),
+                object_id,
+            ),
+            vec![true, false],
+        ),
+    ] {
+        let mut live = add.clone();
+        live.extend_from_slice(&update);
+        let mut bits = vec![true, false, true, false, false, true, true];
+        bits.extend_from_slice(&update_bits);
+        let mut payload = live_object_payload_with_bits(&live, bits);
+        let original = payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "{label} 0x37 update must not gate door add map insertion"
+        );
+        assert_eq!(
+            payload, original,
+            "{label} 0x37 evidence must stay visible for quarantine/diagnostics"
+        );
+    }
 }
 
 #[test]
