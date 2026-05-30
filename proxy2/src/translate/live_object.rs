@@ -940,6 +940,15 @@ fn short_creature_body_part_delta_read_end_for_transport(
     None
 }
 
+fn partial_creature_appearance_read_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    partial_creature_appearance_claim_for_transport(bytes, offset, scan_end, None, 0, false)
+        .map(|claim| claim.record_end)
+}
+
 fn fragment_tail_starts_with_aligned_short_creature_equipment_delta_read_boundary(
     bytes: &[u8],
     tail_start: usize,
@@ -2339,6 +2348,16 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
                 bytes, offset, scan_end,
             )
         {
+            return record_end;
+        }
+        if let Some(record_end) =
+            partial_creature_appearance_read_end_for_transport(bytes, offset, scan_end)
+        {
+            // Diamond `sub_448E30` and EE `sub_14077FE10` keep non-full
+            // body/equipment appearance deltas inside the `P/5` read-buffer
+            // row. In particular, a body selector `>= 0x0A` owns the following
+            // fixed nineteen body bytes, which can otherwise resemble top-level
+            // `D/A/U` records to the generic scanner.
             return record_end;
         }
         if let Some(record_end) =
@@ -5298,9 +5317,15 @@ mod declared_length_repair_tests {
             live.push(0xDE);
         }
         live.push(selector);
-        for index in 0..selector.min(9) {
-            live.push(index);
-            live.push(0x20 + index);
+        if selector < 0x0A {
+            for index in 0..selector {
+                live.push(index);
+                live.push(0x20 + index);
+            }
+        } else {
+            for value in 0..0x13 {
+                live.push(0x05 + value);
+            }
         }
         if (mask & 0x2000) != 0 {
             live.extend_from_slice(&0x1357u16.to_le_bytes());
@@ -5360,9 +5385,15 @@ mod declared_length_repair_tests {
             live.push(0xDE);
         }
         live.push(selector);
-        for index in 0..selector.min(9) {
-            live.push(index);
-            live.push(0x20 + index);
+        if selector < 0x0A {
+            for index in 0..selector {
+                live.push(index);
+                live.push(0x20 + index);
+            }
+        } else {
+            for value in 0..0x13 {
+                live.push(0x05 + value);
+            }
         }
         if (mask & 0x2000) != 0 {
             live.extend_from_slice(&0x1357u16.to_le_bytes());
@@ -6441,6 +6472,50 @@ mod declared_length_repair_tests {
                 "D/5 after short P/5 {label} owns one BOOL; an empty fragment tail must not pass capacity proof"
             );
         }
+    }
+
+    #[test]
+    fn declared_length_capacity_keeps_full_selector_partial_creature_appearance_together() {
+        let mut live = creature_body_part_delta_appearance_live_bytes(0x0100, b'D');
+        let appearance_end = live.len();
+        live.extend_from_slice(&creature_delete_live_bytes());
+
+        assert_eq!(
+            live[LEGACY_CREATURE_APPEARANCE_HEADER_BYTES], b'D',
+            "this fixture intentionally starts the body selector with a delete opcode byte"
+        );
+        assert_eq!(
+            live[LEGACY_CREATURE_APPEARANCE_HEADER_BYTES + 1],
+            CREATURE_OBJECT_TYPE,
+            "the first fixed body byte makes the selector/body pair look like D/5"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            appearance_end,
+            "transport scan must not split inside the selector >= 0x0A fixed body table"
+        );
+
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.push(true);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "the following D/5 owns one BOOL only after the full selector body row is kept together"
+        );
+        let too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &too_few_bits,
+            ),
+            "the fixed body table bytes must not be reinterpreted as the delete BOOL owner"
+        );
     }
 
     #[test]

@@ -1760,6 +1760,20 @@ Current status:
   --nocapture`, and the prior
   `declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail`
   regression.
+- 2026-05-31 `P/05/01` partial creature body full-selector transport audit:
+  extended the read-boundary walker for non-full `P/5` body/equipment
+  appearance deltas beyond the short-row floor. Diamond `sub_448E30` and EE
+  `sub_14077FE10` both compare the `0x0100` body selector against `0x0A`;
+  selectors `1..=9` own compact index/value byte pairs, while selectors
+  `>=0x0A` own the selector plus a fixed nineteen body bytes before returning
+  to the live-object dispatcher. Those body bytes can begin with opcode-like
+  pairs such as `D/5`, so the generic transport scanner now uses the
+  decompile-backed partial appearance read end instead of splitting inside the
+  fixed body table. The semantic appearance translator still leaves non-full
+  body/equipment deltas unclaimed until a typed model/writer is implemented.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  declared_length_capacity_keeps_full_selector_partial_creature_appearance_together
+  -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
