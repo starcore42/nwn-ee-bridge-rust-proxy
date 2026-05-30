@@ -529,6 +529,13 @@ Current status:
   single zero DWORD empty-string-length artifact. It no longer discards an
   arbitrary four-byte read-buffer suffix after the two strings. Verified with
   `cargo test -q -p hgbridge-proxy2 quickbar_command_tail -- --nocapture`.
+- 2026-05-30 `P/1E/01` final-slot command-tail re-audit: applied the same
+  zero-DWORD suffix rule to the normal 36th-slot type-18 reader path. Diamond
+  `sub_469FD0` and EE `sub_14079DB00` own only the two CExoString command
+  fields; a four-byte suffix can prove a legacy empty-string artifact only when
+  it is zero, not arbitrary read-buffer data. Public fixture-free coverage now
+  accepts the zero suffix and rejects a nonzero suffix while the full quickbar
+  suite still passes.
 - 2026-05-29 `P/1E/01` quickbar exact-validator padding audit: hardened the
   EE `SetAllButtons` shape validator so, after the 36-slot read-buffer cursor
   and final CNW fragment bit cursor are exact, every unused low bit in the

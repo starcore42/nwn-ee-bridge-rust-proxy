@@ -376,12 +376,14 @@ pub(super) fn parse_quickbar_read_buffer_with_fragments(
         if slot + 1 == LEGACY_QUICKBAR_BUTTON_COUNT
             && ty == 18
             && reader.cursor.checked_add(CNW_LENGTH_BYTES)? == read_buffer.len()
+            && read_u32_le(read_buffer, reader.cursor) == Some(0)
         {
             // HG command-line quickbar records have been observed with a final
             // four-byte read-window suffix after Diamond's decompile-owned two
             // CExoString payload. General command buttons are not emitted raw
-            // yet, so consume this exact final-slot suffix only to prove the
-            // 36-slot boundary, then let the writer emit a blank EE slot.
+            // yet, so consume only the same zero-DWORD empty-string artifact
+            // accepted by the compact-recovery tail helper to prove the 36-slot
+            // boundary, then let the writer emit a blank EE slot.
             reader.skip_bytes(CNW_LENGTH_BYTES)?;
         }
         buttons.push(QuickbarButton { kind });
@@ -726,6 +728,25 @@ mod tests {
         read_buffer
     }
 
+    fn direct_command_tail_payload(suffix: u32) -> Vec<u8> {
+        let mut read_buffer = Vec::new();
+        read_buffer.extend(std::iter::repeat(0).take(LEGACY_QUICKBAR_BUTTON_COUNT - 1));
+        read_buffer.extend(command_tail_with_optional_suffix(&suffix.to_le_bytes()));
+
+        let declared = u32::try_from(
+            HIGH_LEVEL_HEADER_BYTES
+                .checked_add(CNW_LENGTH_BYTES)
+                .and_then(|offset| offset.checked_add(read_buffer.len()))
+                .expect("synthetic quickbar length"),
+        )
+        .expect("synthetic quickbar declared length");
+        let mut payload = vec![b'P', QUICKBAR_MAJOR, SET_ALL_BUTTONS_MINOR];
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&read_buffer);
+        payload.push(0x60);
+        payload
+    }
+
     #[test]
     fn quickbar_command_tail_allows_exact_command_shape_without_suffix() {
         let read_buffer = command_tail_with_optional_suffix(&[]);
@@ -753,6 +774,20 @@ mod tests {
         assert!(
             !legacy_quickbar_trailing_command_tail_is_discardable(&read_buffer, 0),
             "command-tail compatibility must not discard arbitrary read-buffer DWORDs"
+        );
+    }
+
+    #[test]
+    fn final_slot_command_tail_accepts_only_zero_suffix() {
+        assert!(
+            super::super::facade::parse_cnw_quickbar_payload(&direct_command_tail_payload(0))
+                .is_some(),
+            "final type-18 command tail may consume one zero DWORD boundary artifact"
+        );
+        assert!(
+            super::super::facade::parse_cnw_quickbar_payload(&direct_command_tail_payload(1))
+                .is_none(),
+            "nonzero bytes after the two decompiled command strings are not quickbar-owned"
         );
     }
 }
