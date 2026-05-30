@@ -1753,8 +1753,8 @@ Current status:
   remaining partial body/zero-equipment bytes as read-buffer-only transport
   rows. Later typed-parser work on 2026-05-31 promoted the direct-name and
   fragment-proven locstring body-delta rows into the structured appearance
-  model; nonzero equipment deltas remain active until the compact item-change
-  list is modeled. Verified with
+  model, and later the same day promoted the nonzero equipment `A/D/U`
+  item-change list. Verified with
   `cargo test -q -p hgbridge-proxy2
   declared_length_window_rejects_short_creature_named_body_delta_appearance_as_fragment_tail
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2
@@ -1772,8 +1772,8 @@ Current status:
   pairs such as `D/5`, so the generic transport scanner now uses the
   decompile-backed partial appearance read end instead of splitting inside the
   fixed body table. Later typed-parser work on 2026-05-31 promoted this
-  selector branch into the structured appearance model/writer; nonzero
-  equipment deltas remain active until modeled.
+  selector branch into the structured appearance model/writer; later equipment
+  work promoted the counted `A/D/U` delta rows too.
   Verified with `cargo test -q -p hgbridge-proxy2
   declared_length_capacity_keeps_full_selector_partial_creature_appearance_together
   -- --nocapture`.
@@ -1787,15 +1787,34 @@ Current status:
   equipment count. The writer now inserts EE build-0x23 high bytes for scalar
   `0x0080` and fixed body tables, inserts the EE build-0x0E tail byte before a
   zero equipment count, and validates the exact EE cursor without inventing a
-  name selector for no-name masks. Unsupported non-full mask bits and nonzero
-  equipment counts still quarantine; the next generalized step is modeling the
-  compact equipment item-change list. Verified with `cargo test -q -p
+  name selector for no-name masks. Unsupported non-full mask bits still
+  quarantine. Verified with `cargo test -q -p
   hgbridge-proxy2 partial_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 appearance -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 declared_length_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
   hgbridge-proxy2`, and full serial `cargo test -q -p hgbridge-proxy2 --
   --test-threads=1`.
+- ~~2026-05-31 `P/05/01` non-full creature equipment-delta item-change audit:
+  promoted nonzero `0x0200` equipment deltas from quarantine into the
+  structured appearance parser/writer for the decompile-backed counted row
+  list. Diamond `sub_448E30` and EE `sub_14077FE10` read the count byte and
+  then `CHAR opcode + OBJECTIDServer + DWORD slot/field` per row; `A` shares
+  the existing visible-equipment item body and active-property BOOL cursor,
+  `D` is header-only and byte-exact across Diamond/EE, and `U` owns one status
+  byte before EE's object visual-transform identity map. The live-object
+  declared-length capacity preflight now spends nested non-full appearance
+  fragment bits for all non-full masks, so a following `D/5` row cannot steal
+  an equipment item's active-property BOOLs. Verified with `cargo test -q -p
+  hgbridge-proxy2 partial_equipment_delta_nonzero -- --nocapture`, `cargo test
+  -q -p hgbridge-proxy2
+  declared_length_capacity_counts_nonzero_equipment_add_item_bits_before_delete_bits
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 partial_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 appearance -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`,
+  `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all --check`, and `git
+  diff --check`.~~
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

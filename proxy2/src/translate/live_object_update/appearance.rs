@@ -211,6 +211,9 @@ enum CreatureAppearanceByteInsert {
     LegacyVisualTransformIdentity {
         offset: usize,
     },
+    EquipmentUpdateVisualTransformIdentity {
+        offset: usize,
+    },
     LegacyVisualTransformIdentitySuffix {
         offset: usize,
         start: usize,
@@ -238,6 +241,7 @@ impl CreatureAppearanceByteInsert {
             | Self::EeModelType3ArmorAccessoryTable { offset, .. }
             | Self::EmbeddedVisibleEquipmentObjectIdSuffix { offset, .. }
             | Self::LegacyVisualTransformIdentity { offset }
+            | Self::EquipmentUpdateVisualTransformIdentity { offset }
             | Self::LegacyVisualTransformIdentitySuffix { offset, .. }
             | Self::LegacyScalarVisualTransformIdentityReplacement { offset }
             | Self::LegacyFullPartTablePrefixRemoval { offset, .. } => *offset,
@@ -253,6 +257,7 @@ impl CreatureAppearanceByteInsert {
             Self::EeModelType3ArmorAccessoryTable { .. } => 1,
             Self::EmbeddedVisibleEquipmentObjectIdSuffix { .. } => 1,
             Self::LegacyVisualTransformIdentity { .. }
+            | Self::EquipmentUpdateVisualTransformIdentity { .. }
             | Self::LegacyVisualTransformIdentitySuffix { .. }
             | Self::LegacyScalarVisualTransformIdentityReplacement { .. } => 2,
             Self::MissingFirstInlineNameLengthLowByte { .. }
@@ -288,6 +293,9 @@ impl CreatureAppearanceByteInsert {
             }
             Self::EmbeddedVisibleEquipmentObjectIdSuffix { suffix, .. } => suffix.clone(),
             Self::LegacyVisualTransformIdentity { .. } => {
+                EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.to_vec()
+            }
+            Self::EquipmentUpdateVisualTransformIdentity { .. } => {
                 EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.to_vec()
             }
             Self::LegacyVisualTransformIdentitySuffix { start, .. } => {
@@ -5564,14 +5572,51 @@ fn parse_creature_appearance_record(
     } else if (mask & LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK) != 0 {
         let count = *bytes.get(cursor)?;
         cursor = cursor.checked_add(1)?;
-        if count != 0 {
-            // Nonzero equipment deltas enter the compact item-change list and
-            // can contain nested item bodies. Keep that subfamily quarantined
-            // until its typed item model is wired end to end; the zero-count
-            // branch is decompile-owned and consumes only this count byte.
-            return None;
+        if count == 0 {
+            0
+        } else {
+            // Diamond `sub_448E30` and EE `sub_14077FE10` share the non-full
+            // equipment-delta row shape after the count byte: each entry owns a
+            // CHAR opcode, OBJECTIDServer, DWORD slot/field, then opcode-owned
+            // payload. `A` uses the same item appearance/active-property reader
+            // as full visible-equipment rows, `D` owns only the header, and `U`
+            // owns one status byte before EE's object visual-transform map.
+            let equipment = parse_legacy_visible_equipment_records(
+                bytes,
+                cursor,
+                limit,
+                count,
+                translated_ee_bit_proof,
+                bit_proof,
+                fragment_bits_consumed,
+                ee_extra_fragment_bits,
+            )?;
+            cursor = equipment.end;
+            preferred_zero_padding_relative_start =
+                equipment.first_positive_name_selector_relative_start;
+            token_selector_padding_repair_relative_start =
+                equipment.token_selector_padding_repair_relative_start;
+            inline_active_name_fence_repair_relative_start =
+                equipment.inline_active_name_fence_repair_relative_start;
+            ee_extra_insert_offsets.extend(
+                equipment
+                    .ee_extra_insert_offsets
+                    .iter()
+                    .map(|relative| fragment_bits_consumed.saturating_add(*relative)),
+            );
+            ee_name_bit_rewrites.extend(equipment.ee_name_bit_rewrites.iter().map(|rewrite| {
+                FragmentNameBitRewrite {
+                    relative_offset: fragment_bits_consumed.saturating_add(rewrite.relative_offset),
+                    proof: rewrite.proof,
+                }
+            }));
+            ee_extra_byte_inserts.extend(equipment.ee_extra_byte_inserts);
+            fragment_bits_consumed =
+                fragment_bits_consumed.checked_add(equipment.fragment_bits_consumed)?;
+            ee_extra_fragment_bits =
+                ee_extra_fragment_bits.checked_add(equipment.ee_extra_fragment_bits)?;
+            count
         }
-        0
     } else {
         0
     };
@@ -6600,6 +6645,21 @@ fn parse_legacy_visible_equipment_records(
                 ee_extra_bits_before,
             )
         }
+        b'U' => {
+            let Some(parse) = parse_legacy_visible_equipment_update_record(
+                bytes,
+                cursor,
+                limit,
+                remaining,
+                require_translated_byte_shape,
+                bit_proof,
+                legacy_bits_before,
+                ee_extra_bits_before,
+            ) else {
+                return None;
+            };
+            Some(parse)
+        }
         b'A' => {
             if remaining == 1 {
                 let min_next =
@@ -6844,6 +6904,69 @@ fn parse_legacy_visible_equipment_records(
     }
 }
 
+fn parse_legacy_visible_equipment_update_record(
+    bytes: &[u8],
+    cursor: usize,
+    limit: usize,
+    remaining: u8,
+    require_translated_byte_shape: bool,
+    bit_proof: Option<AppearanceBitProof<'_>>,
+    legacy_bits_before: usize,
+    ee_extra_bits_before: usize,
+) -> Option<LegacyVisibleEquipmentParse> {
+    let header_end = cursor.checked_add(1 + 4 + 4)?;
+    if header_end > limit || header_end > bytes.len() {
+        return None;
+    }
+    let object_id = read_u32_le(bytes, cursor + 1)?;
+    if !looks_like_creature_or_legacy_sentinel_id(object_id) {
+        return None;
+    }
+    let slot = read_u32_le(bytes, cursor + 5)?;
+    if !is_legacy_visible_equipment_slot(slot) {
+        return None;
+    }
+    let status_end = header_end.checked_add(1)?;
+    if status_end > limit || status_end > bytes.len() {
+        return None;
+    }
+
+    let (next, mut prefix_inserts) =
+        if has_ee_object_visual_transform_identity_at(bytes, status_end, limit) {
+            (
+                status_end.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?,
+                Vec::new(),
+            )
+        } else if has_partial_ee_object_visual_transform_identity_at(bytes, status_end, limit)
+            || require_translated_byte_shape
+        {
+            return None;
+        } else {
+            (
+                status_end,
+                vec![
+                    CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity {
+                        offset: status_end,
+                    },
+                ],
+            )
+        };
+
+    let mut rest = parse_legacy_visible_equipment_records(
+        bytes,
+        next,
+        limit,
+        remaining - 1,
+        require_translated_byte_shape,
+        bit_proof,
+        legacy_bits_before,
+        ee_extra_bits_before,
+    )?;
+    prefix_inserts.extend(rest.ee_extra_byte_inserts);
+    rest.ee_extra_byte_inserts = prefix_inserts;
+    Some(rest)
+}
+
 fn visible_equipment_translated_end_is_bounded(bytes: &[u8], end: usize, limit: usize) -> bool {
     if end >= limit {
         return true;
@@ -6912,7 +7035,27 @@ fn parse_legacy_compact_visible_equipment_records(
             if next > limit || next > bytes.len() {
                 return None;
             }
-            parse_legacy_visible_equipment_records(
+            let (next, mut prefix_inserts) =
+                if has_ee_object_visual_transform_identity_at(bytes, next, limit) {
+                    (
+                        next.checked_add(EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len())?,
+                        Vec::new(),
+                    )
+                } else if has_partial_ee_object_visual_transform_identity_at(bytes, next, limit)
+                    || require_translated_byte_shape
+                {
+                    return None;
+                } else {
+                    (
+                        next,
+                        vec![
+                            CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity {
+                                offset: next,
+                            },
+                        ],
+                    )
+                };
+            let mut rest = parse_legacy_visible_equipment_records(
                 bytes,
                 next,
                 limit,
@@ -6921,7 +7064,10 @@ fn parse_legacy_compact_visible_equipment_records(
                 bit_proof,
                 legacy_bits_before,
                 ee_extra_bits_before,
-            )
+            )?;
+            prefix_inserts.extend(rest.ee_extra_byte_inserts);
+            rest.ee_extra_byte_inserts = prefix_inserts;
+            Some(rest)
         }
         b'A' => {
             if remaining == 1 {
@@ -7200,6 +7346,7 @@ fn visible_equipment_parse_subobject_proof_rank(
                 item_high_bytes = item_high_bytes.saturating_add(1);
             }
             CreatureAppearanceByteInsert::LegacyVisualTransformIdentity { .. }
+            | CreatureAppearanceByteInsert::EquipmentUpdateVisualTransformIdentity { .. }
             | CreatureAppearanceByteInsert::LegacyVisualTransformIdentitySuffix { .. }
             | CreatureAppearanceByteInsert::LegacyScalarVisualTransformIdentityReplacement {
                 ..
@@ -9105,15 +9252,38 @@ mod public_tests {
         bytes
     }
 
-    fn partial_legacy_creature_nonzero_equipment_delta() -> Vec<u8> {
+    fn partial_legacy_creature_nonzero_equipment_delta_with_add() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
         push_u32(&mut bytes, 0x8000_0042);
         push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
         bytes.push(1); // nonzero equipment-delta count.
-        bytes.push(b'A'); // start of the still-unmodeled compact item-change row.
+        push_visible_equipment_no_name_item(&mut bytes);
+        bytes
+    }
+
+    fn partial_legacy_creature_nonzero_equipment_delta_with_delete() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
         push_u32(&mut bytes, 0x8000_0043);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(1); // nonzero equipment-delta count.
+        bytes.push(b'D');
+        push_u32(&mut bytes, 0x8000_0044);
         push_u32(&mut bytes, 2);
+        bytes
+    }
+
+    fn partial_legacy_creature_nonzero_equipment_delta_with_update() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0043);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK);
+        bytes.push(1); // nonzero equipment-delta count.
+        bytes.push(b'U');
+        push_u32(&mut bytes, 0x8000_0044);
+        push_u32(&mut bytes, 2);
+        bytes.push(0x7F); // equipment update selector byte.
         bytes
     }
 
@@ -9642,25 +9812,145 @@ mod public_tests {
     }
 
     #[test]
-    fn partial_equipment_delta_nonzero_count_stays_unclaimed_until_item_model_exists() {
-        let bytes = partial_legacy_creature_nonzero_equipment_delta();
+    fn partial_equipment_delta_nonzero_add_rewrites_counted_item_change_list() {
+        let mut bytes = partial_legacy_creature_nonzero_equipment_delta_with_add();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = vec![
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ];
+
         assert_eq!(
             try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
-            None,
-            "nonzero equipment deltas contain compact item-change rows and remain quarantined"
+            Some(bytes.len()),
+            "nonzero equipment deltas own the counted A/D/U item-change list"
         );
 
         let mut bit_cursor = 0usize;
-        assert!(
-            !advance_verified_legacy_creature_appearance_record(
-                &bytes,
-                0,
-                bytes.len(),
-                &[],
-                &mut bit_cursor,
-            ),
-            "the proof-backed parser must not accept the unmodeled nonzero equipment list"
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 4,
+            "the partial equipment A row consumes only its item active-property BOOLs"
         );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("partial equipment A row should rewrite to exact EE shape");
+
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
+            "model-type-2 item parts widen to WORDs and EE reads an object visual-transform map"
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(
+            ee_cursor, 5,
+            "EE validation consumes the inserted active-property BOOL after the shared first BOOL"
+        );
+    }
+
+    #[test]
+    fn partial_equipment_delta_nonzero_update_inserts_visual_transform_map() {
+        let mut bytes = partial_legacy_creature_nonzero_equipment_delta_with_update();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "Diamond U equipment deltas own one selector byte and no visual-transform bytes"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(legacy_cursor, 0);
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("partial equipment U row should gain EE's visual-transform map");
+
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len()
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
+    }
+
+    #[test]
+    fn partial_equipment_delta_nonzero_delete_is_byte_exact() {
+        let bytes = partial_legacy_creature_nonzero_equipment_delta_with_delete();
+        let record_end = bytes.len();
+        let fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "partial equipment D rows have the same Diamond and EE read-buffer shape"
+        );
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
     }
 
     #[test]

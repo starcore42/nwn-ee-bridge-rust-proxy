@@ -529,14 +529,13 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     bit_cursor = bit_cursor.saturating_add(claim.fragment_bits);
                 }
                 let mask = read_u16_le(bytes, offset.saturating_add(6));
-                let non_full_name_mask = mask
-                    .is_some_and(|mask| mask != 0xFFFF && (mask & 0x0400) != 0);
+                let non_full_mask = mask.is_some_and(|mask| mask != 0xFFFF);
                 // Full 0xFFFF appearances can rewrite visible-equipment item
                 // name/property bits before the exact EE validator runs. The
-                // transport preflight only enforces the stable non-full name
-                // branch here; full records stay with the typed appearance pass.
+                // transport preflight only enforces stable non-full records
+                // here; full records stay with the typed appearance pass.
                 if short_partial_appearance.is_none()
-                    && non_full_name_mask
+                    && non_full_mask
                     && !crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
                         bytes,
                         offset,
@@ -5447,6 +5446,23 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_equipment_delta_add_appearance_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0x0200u16.to_le_bytes());
+        live.push(1); // 0x0200 equipment-delta count.
+        live.push(b'A');
+        live.extend_from_slice(&0x8000_0042u32.to_le_bytes()); // embedded item OBJECTID.
+        live.extend_from_slice(&2u32.to_le_bytes()); // visible-equipment slot.
+        live.extend_from_slice(&0x01u32.to_le_bytes()); // stock weapon row, model type 2.
+        live.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]); // model-type-2 appearance bytes.
+        live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // shared active-property DWORD.
+        live.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]); // shared active-property DWORD.
+        live.push(0); // active-property count.
+        live.extend_from_slice(&[0, 0]); // value-mask trailer.
+        live
+    }
+
     fn compact_inventory_scalar_live_bytes() -> Vec<u8> {
         let mut live = vec![b'I'];
         live.extend_from_slice(&0x8000_342Au32.to_le_bytes());
@@ -6494,6 +6510,44 @@ mod declared_length_repair_tests {
                 "D/5 after short P/5 {label} owns one BOOL; an empty fragment tail must not pass capacity proof"
             );
         }
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_nonzero_equipment_add_item_bits_before_delete_bits() {
+        let mut live = creature_equipment_delta_add_appearance_live_bytes();
+        let appearance_end = live.len();
+        live.extend_from_slice(&creature_delete_live_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            appearance_end,
+            "transport scan must keep the counted equipment A row inside the P/5 appearance row"
+        );
+
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.extend_from_slice(&[true, false, true, false]); // equipment item active-property BOOLs.
+        enough_bits.push(true); // following D/5 delete BOOL.
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "P/5 equipment A consumes its item active-property BOOLs before the following D/5 row"
+        );
+
+        let mut missing_item_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        missing_item_bits.push(true); // enough only for the delete if the item bits are skipped.
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &missing_item_bits,
+            ),
+            "capacity proof must not skip the nested equipment item BOOLs"
+        );
     }
 
     #[test]
