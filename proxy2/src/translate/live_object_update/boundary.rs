@@ -59,6 +59,14 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         }
     }
 
+    if bytes.get(offset).copied() == Some(b'A') {
+        if let Some(record_end) =
+            appearance::try_get_legacy_item_add_record_end_for_transport(bytes, offset, scan_end)
+        {
+            return record_end;
+        }
+    }
+
     if bytes.get(offset).copied() == Some(b'A') && bytes.get(offset + 1).copied() == Some(0x05) {
         let record_end = offset.saturating_add(creature::EE_CREATURE_ADD_RECORD_BYTES);
         if record_end <= scan_end
@@ -741,11 +749,15 @@ fn try_get_looping_visual_effect_update_record_end_for_transport(
     let candidates = effects::legacy_looping_visual_effect_update_record_end_candidates(
         bytes, offset, scan_end,
     )?;
-    let mut candidates = candidates;
+    let legacy_candidates = candidates;
+    let mut candidates = legacy_candidates.clone();
     if let Some(end) = effects::try_get_verified_ee_looping_visual_effect_update_record_end(
         bytes, offset, scan_end,
     ) {
-        if !candidates.contains(&end) {
+        let shorter_legacy_boundary = legacy_candidates.iter().any(|legacy_end| {
+            *legacy_end < end && record_end_lands_on_boundary(bytes, *legacy_end, scan_end)
+        });
+        if !shorter_legacy_boundary && !candidates.contains(&end) {
             candidates.push(end);
         }
     }
@@ -916,11 +928,36 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
     // BOOL control before returning to the live-object dispatcher. Only the
     // compact numeric update families with decompile-owned byte lengths may
     // claim a boundary here.
-    creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end)
+    try_get_ee_creature_update_0008_record_end_for_transport(bytes, offset, scan_end)
+        .or_else(|| creature::try_get_ee_creature_update_4008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_8008_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
+}
+
+fn try_get_ee_creature_update_0008_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let record_end = creature::try_get_ee_creature_update_0008_record_end(bytes, offset, scan_end)?;
+    if let Some(legacy_candidates) =
+        effects::legacy_looping_visual_effect_update_record_end_candidates(bytes, offset, scan_end)
+    {
+        if legacy_candidates.iter().any(|legacy_end| {
+            *legacy_end < record_end && record_end_lands_on_boundary(bytes, *legacy_end, scan_end)
+        }) {
+            // Without visualeffects.2da row proof, a single status-effect row
+            // can parse as either legacy no-target `A/D + WORD` followed by a
+            // real live-object submessage, or as EE target-payload bytes plus
+            // an identity visual-transform map. If the shorter legacy cursor
+            // lands on an explicit live-object boundary, keep the stream split
+            // there and let the rewrite pass insert the EE map later.
+            return None;
+        }
+    }
+    Some(record_end)
 }
 
 fn try_get_ee_placeable_add_record_end(

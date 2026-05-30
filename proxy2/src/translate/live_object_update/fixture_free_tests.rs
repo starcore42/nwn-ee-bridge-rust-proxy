@@ -70,6 +70,19 @@ fn creature_status_effect_4008_payload(rows: &[(u16, Option<&[u8]>)]) -> Vec<u8>
     payload
 }
 
+fn ee_creature_effect_only_update_live(rows: &[(u8, u16)]) -> Vec<u8> {
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'U', 0x05, 0x55, 0x00, 0x00, 0x80]);
+    live.extend_from_slice(&0x0000_0008u32.to_le_bytes());
+    live.extend_from_slice(&(rows.len() as u16).to_le_bytes());
+    for (opcode, row) in rows {
+        live.push(*opcode);
+        live.extend_from_slice(&row.to_le_bytes());
+        live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    }
+    live
+}
+
 fn legacy_zero_count_creature_4408_payload(
     rows: &[(u8, u16)],
     extra_before_scalar: &[u8],
@@ -165,6 +178,73 @@ fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
     live.extend_from_slice(&1u32.to_le_bytes());
     live.extend_from_slice(&[0, 0, 0xFF]);
     live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live
+}
+
+fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_18CAu32.to_le_bytes());
+    live.extend_from_slice(&0x0000_62A9u32.to_le_bytes());
+    live.push(0x05);
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live
+}
+
+fn ee_empty_placeable_add_live_bytes(appearance: u16) -> Vec<u8> {
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_18C2u32.to_le_bytes());
+    live.extend_from_slice(&0u32.to_le_bytes());
+    live.push(0x05);
+    live.extend_from_slice(&appearance.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live
+}
+
+fn placeable_stale_gap_update_live_bytes_for_object(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'U', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0xB3, 0x0C, 0x11, 0x06, 0x0F, 0x0F]);
+    live.push(0x61);
+    live.extend_from_slice(&0x0076u16.to_le_bytes());
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live
+}
+
+fn door_direct_name_add_live_bytes_without_visual_map(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'A', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&0u32.to_le_bytes());
+    live.extend_from_slice(&0x0000_000Cu32.to_le_bytes());
+    live.extend_from_slice(&4u32.to_le_bytes());
+    live.extend_from_slice(b"Door");
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live
+}
+
+fn door_update_0x17_live_bytes_for_object(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x8E, 0x12, 0xD4, 0x10, 0xEE, 0x0E]);
+    live.push(0x28);
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
     live
 }
 
@@ -1384,6 +1464,265 @@ fn top_level_item_add_token_name_repair_rewrites_selector_prefix_only() {
 }
 
 #[test]
+fn compact_placeable_token_name_add_advances_legacy_tail_cursor_only() {
+    let live = compact_placeable_token_name_add_live_bytes();
+    let legacy_bits = vec![true, false, true, false];
+    let mut bit_cursor = 0usize;
+
+    assert_eq!(
+        super::boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+            &live,
+            0,
+            live.len(),
+        ),
+        Some(live.len()),
+        "the compact token-name placeable add owns the byte cursor"
+    );
+    assert!(
+        super::cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+            &live,
+            &legacy_bits,
+            0,
+            live.len(),
+            &mut bit_cursor,
+        )
+    );
+    assert_eq!(
+        bit_cursor, 4,
+        "Diamond compact placeable adds consume only the four legacy tail BOOLs"
+    );
+
+    bit_cursor = 0;
+    assert!(
+        !super::cursor::advance_live_add_record_bit_cursor(
+            &live,
+            &legacy_bits,
+            0,
+            live.len(),
+            &mut bit_cursor,
+        ),
+        "raw token-name compact placeable adds are not already exact EE records"
+    );
+}
+
+#[test]
+fn empty_placeable_add_guard_repair_drains_compact_source_residue() {
+    for residue_bits in 0usize..=4 {
+        let live = ee_empty_placeable_add_live_bytes(0x0071);
+        let residue = (0..residue_bits)
+            .map(|index| index % 2 == 0)
+            .collect::<Vec<_>>();
+        let mut payload = live_object_payload_with_bits(&live, residue);
+
+        let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("compact placeable residue should rewrite to neutral EE add guards");
+        assert!(
+            rewrite.bits_inserted >= 7,
+            "residue {residue_bits} should grow to the 11-bit EE guard run"
+        );
+
+        let claim =
+            super::claim_payload_if_verified(&payload).expect("rewritten add should exact-claim");
+        assert_eq!(claim.add_records, 1);
+        let fragment_bits = super::bits::decode_msb_valid_bits(
+            &payload[claim.declared..],
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("rewritten placeable add fragment bits");
+        assert_eq!(
+            fragment_bits.len(),
+            super::CNW_FRAGMENT_HEADER_BITS + 11,
+            "residue {residue_bits} should be replaced, not appended"
+        );
+        assert!(
+            fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..]
+                .iter()
+                .all(|bit| !*bit),
+            "residue {residue_bits} must not leak into EE guard bits"
+        );
+    }
+}
+
+#[test]
+fn empty_placeable_add_direct_name_repair_reuses_stale_inner_bit_as_state() {
+    let live = ee_empty_placeable_add_live_bytes(0x0071);
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, true, true, false, true, false, true, false, true, false, true,
+        ],
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "outer=true/inner=true would route EE into the TLK helper, not the empty CExoString"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("direct empty-name placeable add bits should repair at the add cursor");
+    assert!(
+        rewrite.bits_inserted == 0 && rewrite.bits_removed == 0,
+        "direct-name branch repair should change existing guard bits in place"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("repaired empty-name placeable add should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten placeable add fragment bits");
+    let add_bits = &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..];
+    assert_eq!(add_bits.len(), 11);
+    assert!(
+        !add_bits[0],
+        "outer=false selects the direct CExoString reader"
+    );
+    assert!(
+        add_bits[1],
+        "the former stale inner selector remains the first post-name state bit"
+    );
+    assert!(
+        !add_bits[2] && !add_bits[10],
+        "absent optional-object guard and EE-only visual guard stay neutral"
+    );
+}
+
+#[test]
+fn ee_empty_placeable_add_does_not_borrow_following_update_bits() {
+    let object_id = 0x8000_18C2u32;
+    let mut live = ee_empty_placeable_add_live_bytes(0x0009);
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+
+    let mut bits = vec![false, true, false, true];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "exact add validation can otherwise borrow the following update's source bits"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("compact-source add bits should be repaired before the following update");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert!(
+        rewrite.bits_inserted >= 8,
+        "compact add repair plus 0x17 update repair should grow the bitstream"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("add/update pair should claim after bounded compact-source repair");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn compact_placeable_token_add_rewrites_before_following_same_object_update() {
+    let object_id = 0x8000_18CAu32;
+    let mut live = compact_placeable_token_name_add_live_bytes();
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+
+    let mut bits = vec![true, false, true, false];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw compact token-name placeable add is not an exact EE add row"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("compact placeable add should rewrite before the following update");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert!(
+        rewrite.bytes_inserted
+            >= super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "compact add should receive EE's visual-transform map"
+    );
+    assert!(
+        rewrite.bits_inserted >= 8,
+        "compact add source bits should net-grow into the EE name/guard run"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("compact add/update pair should claim after bounded rewrite");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
+    let object_id = 0x8000_34D1u32;
+    let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);
+    live.extend_from_slice(&door_update_0x17_live_bytes_for_object(object_id));
+
+    let mut bits = vec![true, false, true, false, false, true, true];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "legacy door add lacks EE's visual-transform map before repair"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("door add map insertion should be bounded by the following update");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("door add/update pair should claim after bounded map repair");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn update_pass_expands_compact_placeable_token_add_with_no_source_bits() {
+    let live = compact_placeable_token_name_add_live_bytes();
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("compact token-name add should expand at the proven update cursor");
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+    assert_eq!(
+        rewrite.bits_inserted, 12,
+        "EE placeable add needs outer+inner name bits and the guard/state run"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload).expect("rewritten add should claim");
+    assert_eq!(claim.add_records, 1);
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
+    let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    assert_eq!(
+        super::read_u32_le(live, 6),
+        Some(0),
+        "legacy short-name token is canonicalized to an empty CExoString"
+    );
+    assert_eq!(
+        live.get(15..),
+        Some(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES[..])
+    );
+
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten compact add fragment bits");
+    let add_bits = &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..];
+    assert_eq!(add_bits.len(), 12);
+    assert!(
+        add_bits[0],
+        "outer locstring helper selects the empty CExoString"
+    );
+    assert!(
+        add_bits[1..].iter().all(|bit| !*bit),
+        "the helper inner bit and EE guard/state bits are neutral"
+    );
+}
+
+#[test]
 fn door_add_name_diagnostic_uses_ee_visual_map_width() {
     // EE door adds carry the object visual-transform map as two DWORD counts,
     // not the old 40-byte scalar transform. The final claim diagnostics must
@@ -1620,6 +1959,57 @@ fn creature_status_effect_single_target_payload_is_exact_ee_shape() {
     let claim = super::claim_payload_if_verified(&payload)
         .expect("single target-payload status-effect row should be exact-owned");
     assert_eq!(claim.creature_update_records, 1);
+}
+
+#[test]
+fn creature_effect_only_status_update_boundary_owns_embedded_add_rows() {
+    // Standalone `U/5 mask=0x0008` uses the same EE status-effect row writer as
+    // the 0x4008/0x8008/C408 families: each A/D row owns a following
+    // ObjectVisualTransformData identity map before the next live-object record.
+    let mut live = ee_creature_effect_only_update_live(&[(b'A', 0x00F3), (b'D', 0x00B6)]);
+    let status_end = live.len();
+    live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        status_end,
+        "the transport scanner must not split at embedded A/D effect rows"
+    );
+
+    let claim = super::claim_payload_if_verified(&live_object_payload_with_bits(&live, Vec::new()))
+        .expect("effect-only status update followed by W should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
+fn creature_effect_only_target_shape_yields_to_shorter_live_boundary() {
+    let mut live = ee_creature_effect_only_update_live(&[(b'A', 0x00F3)]);
+    live.truncate(12 + 3);
+    let legacy_effect_end = live.len();
+    live.extend_from_slice(&[b'A', super::DOOR_OBJECT_TYPE, 0xB4, 0x18, 0x00]);
+    live.extend_from_slice(
+        &[0; super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN],
+    );
+
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        legacy_effect_end,
+        "a target-payload-shaped single effect row must not swallow a following live-object boundary"
+    );
+    assert!(
+        super::boundary::try_get_ee_creature_update_record_end_for_transport(&live, 0, live.len())
+            .is_none(),
+        "byte-only EE status proof must yield to the shorter legacy boundary when 2DA target proof is absent"
+    );
 }
 
 #[test]

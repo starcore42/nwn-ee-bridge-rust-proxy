@@ -1234,6 +1234,63 @@ Current status:
   add translator proves the real cursor, rather than letting declared-length
   repair steal those bytes as a fragment tail. Verified with `cargo test -q -p
   hgbridge-proxy2 declared_length_window_rejects_ -- --nocapture`.
+- 2026-05-30 `P/05/01` top-level item-add declared-tail audit: shared the
+  parsed visible-equipment item-add boundary with the declared-length transport
+  scanner. Top-level item adds are `A + OBJECTID + slot DWORD + item body`
+  rather than `A/<object-type>`, and the item body can contain opcode-looking
+  bytes; stale-declared repair must therefore use the item parser's
+  decompile-owned body cursor before treating later bytes as fragment storage.
+  Fixture-free coverage now proves a token-name model-type-2 item add is kept
+  as a read-buffer row and that prefix walking advances over the whole item
+  body before a following `W current total` record. Verified with `cargo test
+  -q -p hgbridge-proxy2 top_level_item_add -- --nocapture`.
+- 2026-05-30 `P/05/01` compact placeable-add token-tail audit: narrowed the
+  update pass bridge for compact Diamond `A/09` token-name adds to the case
+  where prior update repairs have consumed every source BOOL. Diamond
+  `CNWSMessage::AddPlaceableAppearanceToMessage` can carry a four-byte
+  legacy name/token slot before the compact type/appearance/static tail, but
+  raw compact rows are not exact EE until the focused add writer materializes
+  the empty CExoString selector, EE visual-transform map, and neutral guard
+  bits. Fixture-free coverage now proves legacy cursor advancement consumes
+  only the four compact source BOOLs, exact EE validation rejects the raw
+  compact row, bounded empty-add residue is drained before neutral guard
+  insertion, and zero-source compact token-name adds expand exactly in the
+  update pass. Verified with `cargo test -q -p hgbridge-proxy2
+  live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` live-object add/update cursor-starvation audit:
+  kept raw compact `A/09` placeable adds out of the exact EE validator and
+  instead added bounded update-pass trials that must prove both the rewritten
+  add row and the immediate same-object `U/09` row exact-claim from the
+  resulting cursor. Already EE-shaped empty `A/09` rows use the same
+  same-object proof before draining four Diamond compact source BOOLs into
+  EE's eleven neutral add guard/state BOOLs, preventing the add from borrowing
+  the following update's bits. Door `A/0A` visual-map insertion is similarly
+  gated by an immediate same-object `U/0A` mask-`0x17` stale
+  absent-appearance update proof; mask-`0x37` evidence remains quarantined
+  because that branch still carries the appearance cursor-order risk. Verified
+  with `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-30 `P/05/01` creature effect-only update boundary audit:
+  promoted already-EE-shaped creature `U/05 mask=0x0008` rows to an explicit
+  transport boundary shape before the live-object scanner looks for embedded
+  `A` bytes. EE `sub_1407A4E50` reads `WORD count` plus bounded short
+  status-effect rows for this mask; those row bytes must not split into
+  top-level add records merely because a later effect id resembles an opcode.
+  The transport helper also refuses the longer target-payload interpretation
+  when a shorter legacy effect row lands exactly on the following live-object
+  boundary, so a one-row `U/05` cannot swallow a following door/placeable add.
+  Fixture-free coverage proves both sides, and the HG seq31 mixed
+  creature/trigger/door burst plus local Chapter1 seq19 stream exact-claim
+  after this boundary proof.
+- 2026-05-30 `P/05/01` empty placeable-add direct-name bit audit: widened the
+  already-EE-shaped `A/09` guard repair so empty direct `CExoString` names use
+  the same decompile-owned direct branch repair as non-empty inline names when
+  stale source bits still say `outer=true, inner=true`. EE
+  `sub_1407A7800` would route that bit pair into the TLK/object-table helper,
+  not the inline string bytes; the bridge now forces `outer=false`, reuses the
+  former inner bit as the first post-name state BOOL, and then proves the
+  optional-object guard plus EE-only visual-transform guard at their final
+  cursors. Verified by fixture-free empty-name coverage and the Winds seq16
+  pending stream exact-claim.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

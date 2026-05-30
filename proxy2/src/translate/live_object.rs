@@ -1695,6 +1695,16 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
         }
     }
 
+    if bytes.get(offset).copied() == Some(b'A') {
+        if let Some(record_end) =
+            crate::translate::live_object_update::try_get_legacy_item_add_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            return record_end;
+        }
+    }
+
     if bytes.get(offset).copied() == Some(b'A')
         && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
     {
@@ -1809,6 +1819,19 @@ fn find_next_legacy_live_object_sub_message_boundary_after(
                 bytes, offset, scan_end,
             )
         {
+            return record_end;
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'U')
+        && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
+    {
+        if let Some(record_end) = crate::translate::live_object_update::
+            try_get_verified_creature_update_record_end_for_transport(bytes, offset, scan_end)
+        {
+            // Already-EE-shaped creature status-effect updates own the A/D
+            // effect rows and their object visual-transform maps. The add-map
+            // scanner must not split those rows as top-level live-object adds.
             return record_end;
         }
     }
@@ -1981,6 +2004,12 @@ fn minimum_legacy_live_object_record_length_at(bytes: &[u8], offset: usize) -> u
     let opcode = bytes[offset];
     let marker = bytes[offset + 1];
     match (opcode, marker) {
+        (b'A', _)
+            if crate::translate::live_object_update::
+                looks_like_legacy_item_add_record_boundary_for_transport(bytes, offset) =>
+        {
+            9
+        }
         (b'A', 0x05) => CREATURE_ADD_VISUAL_TRANSFORM_READ_OFFSET,
         (b'A', TRIGGER_OBJECT_TYPE) => {
             crate::translate::live_object_update::trigger_add_min_record_bytes_for_ee()
@@ -2154,6 +2183,13 @@ fn looks_like_legacy_live_object_sub_message_boundary(bytes: &[u8], offset: usiz
         && bytes[offset + 5] == 0xFF;
     if matches!(opcode, b'A' | b'D' | b'U' | b'P')
         && (typed_object_boundary || legacy_type5_sentinel_boundary)
+    {
+        return true;
+    }
+
+    if opcode == b'A'
+        && crate::translate::live_object_update::
+            looks_like_legacy_item_add_record_boundary_for_transport(bytes, offset)
     {
         return true;
     }
@@ -2366,6 +2402,39 @@ struct DoorPlaceableAddRewrite {
     bytes_removed: u32,
     fragment_bits_changed: bool,
     legacy_door_model_tokens_removed: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DoorPlaceableAddUpdatePassRewrite {
+    pub maps_inserted: u32,
+    pub bytes_inserted: u32,
+    pub bytes_removed: u32,
+    pub fragment_bits_changed: bool,
+    pub legacy_door_model_tokens_removed: u32,
+}
+
+pub(crate) fn rewrite_legacy_door_placeable_add_record_for_update_pass(
+    bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    record_offset: usize,
+) -> Option<DoorPlaceableAddUpdatePassRewrite> {
+    let rewrite = rewrite_legacy_door_placeable_add_record_for_ee(
+        bytes,
+        record_end,
+        bits,
+        bit_cursor,
+        record_offset,
+        None,
+    )?;
+    Some(DoorPlaceableAddUpdatePassRewrite {
+        maps_inserted: rewrite.maps_inserted,
+        bytes_inserted: rewrite.bytes_inserted,
+        bytes_removed: rewrite.bytes_removed,
+        fragment_bits_changed: rewrite.fragment_bits_changed,
+        legacy_door_model_tokens_removed: rewrite.legacy_door_model_tokens_removed,
+    })
 }
 
 fn rewrite_legacy_door_placeable_add_record_for_ee(
@@ -4649,6 +4718,24 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'A'];
+        live.extend_from_slice(&0x8001_69DCu32.to_le_bytes());
+        live.extend_from_slice(&0x10u32.to_le_bytes());
+        live.extend_from_slice(&0x01u32.to_le_bytes());
+        for part in [0x17u16, 0x3Fu16, 0x17u16] {
+            live.extend_from_slice(&part.to_le_bytes());
+        }
+        live.push(0);
+        live.extend_from_slice(&EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES);
+        live.extend_from_slice(&0x0000_380Au32.to_le_bytes());
+        live.extend_from_slice(&0x0000_0670u32.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&[0, 0, 0xFF]);
+        live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        live
+    }
+
     #[test]
     fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
         let mut live = Vec::new();
@@ -4853,6 +4940,70 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned compact A/9 add"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_top_level_item_add_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let item_add = top_level_model_type2_token_name_item_add_live_bytes();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&item_add);
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "top-level item-add bytes can masquerade as compact CNW fragment storage"
+        );
+        assert_eq!(
+            crate::translate::live_object_update::try_get_legacy_item_add_record_end_for_transport(
+                &payload,
+                split,
+                payload.len(),
+            ),
+            Some(payload.len()),
+            "top-level item adds own the A + object-id + slot + item-body read cursor"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned top-level item add remains a live-object read row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned top-level item add"
+        );
+    }
+
+    #[test]
+    fn declared_length_read_prefix_walks_through_top_level_item_add_record() {
+        let mut live = top_level_model_type2_token_name_item_add_live_bytes();
+        let item_end = live.len();
+        live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            item_end,
+            "the transport scanner must not split inside the top-level item body"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "top-level item add plus W current-total is a complete live-object read prefix"
         );
     }
 

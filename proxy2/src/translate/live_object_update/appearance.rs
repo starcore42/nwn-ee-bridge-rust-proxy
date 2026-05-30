@@ -1476,6 +1476,45 @@ pub(super) fn looks_like_legacy_item_add_record_boundary(bytes: &[u8], offset: u
             .unwrap_or(false)
 }
 
+pub(super) fn try_get_legacy_item_add_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    if !looks_like_legacy_item_add_record_boundary(bytes, offset) {
+        return None;
+    }
+    if matches!(
+        bytes.get(offset + 1).copied(),
+        Some(0x05 | 0x06 | 0x07 | 0x09 | 0x0A)
+    ) {
+        return None;
+    }
+
+    // Top-level item adds use the visible-equipment item writer shape without
+    // an object-type byte: `A`, OBJECTID, slot DWORD, then the item body. The
+    // item body can contain bytes that look like live-object opcodes, so the
+    // transport walker must ask the item parser for a decompile-owned boundary
+    // before falling back to a generic opcode scan.
+    let min_end = offset.checked_add(1 + 4 + 4 + 1)?;
+    let max_end = offset
+        .checked_add(LEGACY_APPEARANCE_MAX_ITEM_ADD_BYTES)?
+        .min(scan_end);
+    for record_end in min_end..=max_end {
+        if record_end != scan_end
+            && !boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, record_end)
+        {
+            continue;
+        }
+        if !parse_legacy_item_add_record_candidates(bytes, offset, record_end).is_empty() {
+            return Some(record_end);
+        }
+    }
+
+    None
+}
+
 pub(super) fn advance_verified_ee_item_add_record(
     bytes: &[u8],
     offset: usize,

@@ -12,6 +12,13 @@ use super::{PLACEABLE_OBJECT_TYPE, creature, locstring, read_u16_le};
 const EE_VISUAL_TRANSFORM_BYTES: usize =
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
 
+#[derive(Debug, Clone, Copy)]
+struct VerifiedEePlaceableAddGuardShape {
+    direct_empty_name: bool,
+    direct_inline_name: bool,
+    optional_object_bytes_present: bool,
+}
+
 pub(super) fn repair_verified_ee_placeable_add_guard_bits(
     live_bytes: &[u8],
     offset: usize,
@@ -19,11 +26,116 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: &mut usize,
 ) -> Option<bool> {
+    if *bit_cursor > fragment_bits.len() {
+        return None;
+    }
+
+    let shape = verified_ee_placeable_add_guard_shape(live_bytes, offset, record_end)?;
+
+    let remaining_source_bits = fragment_bits.len().saturating_sub(*bit_cursor);
+    if shape.direct_empty_name && !shape.optional_object_bytes_present && remaining_source_bits <= 4
+    {
+        // Winds local Diamond captures can reach this pass after earlier scalar
+        // update repairs have consumed all, or all but a bounded residue, of
+        // the compact source add bits. The read buffer is already the exact EE
+        // empty-direct-name placeable add shape (`sub_1407A7800`): outer name
+        // BOOL false, optional-object BOOL false, eight neutral trailing state
+        // BOOLs, then the bridge-emitted identity visual-transform map. Drain
+        // only the decompile-backed compact residue and materialize that
+        // neutral EE guard run.
+        fragment_bits.drain(*bit_cursor..);
+        fragment_bits.extend(std::iter::repeat(false).take(11));
+        *bit_cursor = bit_cursor.saturating_add(11);
+        return Some(true);
+    }
+
+    let direct_cexo_string_name = shape.direct_empty_name || shape.direct_inline_name;
+    let mut changed = false;
+    let outer_locstring = fragment_bits.get(*bit_cursor).copied()?;
+    let destination_name_inner_bits = if outer_locstring {
+        let inner_client_tlk = fragment_bits.get(*bit_cursor + 1).copied()?;
+        if direct_cexo_string_name && shape.optional_object_bytes_present && inner_client_tlk {
+            // Direct CExoString names are selected by outer=false in EE
+            // `sub_1407A7800`. Some Diamond/HG captures reach this already
+            // EE-shaped byte layout while the legacy fragment cursor still has
+            // outer=true and four optional-object bytes present; the following
+            // bit remains the first post-name state bit rather than an EE
+            // locstring inner selector.
+            changed |= set_bit(fragment_bits, *bit_cursor, false)?;
+            0
+        } else {
+            if direct_cexo_string_name && inner_client_tlk {
+                // Same decompile-backed direct-name repair as the add writer:
+                // `outer=true, inner=true` would send EE into the TLK helper,
+                // but the read-buffer cursor holds a CExoString. The
+                // former inner bit is the first post-name state BOOL; only the
+                // branch selector is forced to EE's direct-name path.
+                changed |= set_bit(fragment_bits, *bit_cursor, false)?;
+                0
+            } else {
+                if inner_client_tlk {
+                    return None;
+                }
+                1
+            }
+        }
+    } else {
+        0
+    };
+    let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
+    if fragment_bits.len() <= post_name_bit + 9 {
+        return None;
+    }
+
+    changed |= set_bit(
+        fragment_bits,
+        post_name_bit + 1,
+        shape.optional_object_bytes_present,
+    )?;
+    changed |= set_bit(fragment_bits, post_name_bit + 9, false)?;
+    *bit_cursor = post_name_bit.saturating_add(10);
+    Some(changed)
+}
+
+pub(super) fn repair_verified_ee_placeable_add_compact_source_bits(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+) -> Option<bool> {
+    if *bit_cursor > fragment_bits.len() {
+        return None;
+    }
+    let shape = verified_ee_placeable_add_guard_shape(live_bytes, offset, record_end)?;
+    if !shape.direct_empty_name || shape.optional_object_bytes_present {
+        return None;
+    }
+    let drain_end = bit_cursor.checked_add(4)?;
+    if drain_end > fragment_bits.len() {
+        return None;
+    }
+
+    // This is the nonterminal sibling of the bounded terminal residue repair
+    // above. A Diamond compact source add owns exactly four tail BOOLs here;
+    // EE's empty direct-name placeable add owns eleven neutral guard/state BOOLs.
+    fragment_bits.drain(*bit_cursor..drain_end);
+    for delta in 0..11 {
+        fragment_bits.insert(*bit_cursor + delta, false);
+    }
+    *bit_cursor = bit_cursor.saturating_add(11);
+    Some(true)
+}
+
+fn verified_ee_placeable_add_guard_shape(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<VerifiedEePlaceableAddGuardShape> {
     if offset + 6 > record_end
         || record_end > live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
-        || *bit_cursor > fragment_bits.len()
     {
         return None;
     }
@@ -75,68 +187,11 @@ pub(super) fn repair_verified_ee_placeable_add_guard_bits(
             }
         };
 
-    if *bit_cursor == fragment_bits.len() {
-        if !direct_empty_name || optional_object_bytes_present {
-            return None;
-        }
-
-        // Winds local Diamond captures can reach this pass after earlier
-        // scalar update repairs have consumed every source fragment bit. The
-        // read buffer is already the exact EE empty-direct-name placeable add
-        // shape (`sub_1407A7800`): outer name BOOL false, optional-object BOOL
-        // false, eight neutral trailing state BOOLs, then the bridge-emitted
-        // identity visual-transform map. Materialize only that decompiled
-        // neutral guard run and let the exact add validator advance it.
-        fragment_bits.extend(std::iter::repeat(false).take(11));
-        *bit_cursor = bit_cursor.saturating_add(11);
-        return Some(true);
-    }
-
-    let mut changed = false;
-    let outer_locstring = fragment_bits.get(*bit_cursor).copied()?;
-    let destination_name_inner_bits = if outer_locstring {
-        let inner_client_tlk = fragment_bits.get(*bit_cursor + 1).copied()?;
-        if direct_inline_name && optional_object_bytes_present && inner_client_tlk {
-            // Direct inline CExoString names are selected by outer=false in EE
-            // `sub_1407A7800`. Some Diamond/HG captures reach this already
-            // EE-shaped byte layout while the legacy fragment cursor still has
-            // outer=true and four optional-object bytes present; the following
-            // bit remains the first post-name state bit rather than an EE
-            // locstring inner selector.
-            changed |= set_bit(fragment_bits, *bit_cursor, false)?;
-            0
-        } else {
-            if direct_inline_name && inner_client_tlk {
-                // Same decompile-backed direct-name repair as the add writer:
-                // `outer=true, inner=true` would send EE into the TLK helper,
-                // but the read-buffer cursor holds an inline CExoString. The
-                // former inner bit is the first post-name state BOOL; only the
-                // branch selector is forced to EE's direct-name path.
-                changed |= set_bit(fragment_bits, *bit_cursor, false)?;
-                0
-            } else {
-                if inner_client_tlk {
-                    return None;
-                }
-                1
-            }
-        }
-    } else {
-        0
-    };
-    let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
-    if fragment_bits.len() <= post_name_bit + 9 {
-        return None;
-    }
-
-    changed |= set_bit(
-        fragment_bits,
-        post_name_bit + 1,
+    Some(VerifiedEePlaceableAddGuardShape {
+        direct_empty_name,
+        direct_inline_name,
         optional_object_bytes_present,
-    )?;
-    changed |= set_bit(fragment_bits, post_name_bit + 9, false)?;
-    *bit_cursor = post_name_bit.saturating_add(10);
-    Some(changed)
+    })
 }
 
 fn set_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {

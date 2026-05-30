@@ -634,6 +634,38 @@ pub(super) fn try_get_ee_creature_update_c408_record_end(
     (cursor <= scan_end).then_some(cursor)
 }
 
+pub(super) fn try_get_ee_creature_update_0008_record_end(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // EE `sub_140781E80` reaches the same visual-effect update reader for a
+    // standalone `0x0008` status-effect delta. After the focused rewrite inserts
+    // `ObjectVisualTransformData` after each A/D row, the row bytes are no
+    // longer live-object boundaries; the count-derived EE cursor owns them.
+    if offset + 12 > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != 0x05
+        || read_u32_le(bytes, offset + 6)? != 0x0000_0008
+    {
+        return None;
+    }
+
+    let count = read_u16_le(bytes, offset + 10)?;
+    if count == 0 || count > 256 {
+        return None;
+    }
+
+    let cursor = try_get_ee_creature_status_effect_entries_end(
+        bytes,
+        offset.checked_add(12)?,
+        count,
+        scan_end,
+    )?;
+    (cursor <= scan_end).then_some(cursor)
+}
+
 pub(super) fn try_get_ee_creature_update_4008_record_end(
     bytes: &[u8],
     offset: usize,

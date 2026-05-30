@@ -188,16 +188,29 @@ fn compact_legacy_placeable_add_cursor_shape(
 ) -> bool {
     if name_offset > record_end
         || record_end > bytes.len()
-        || record_end - name_offset < CNW_LENGTH_BYTES + 1 + 1 + 2 + 2
-        || read_u32_le(bytes, name_offset) != Some(0)
-        || legacy_placeable_add_tail_end_for_cursor(
-            bytes,
-            name_offset + CNW_LENGTH_BYTES,
-            record_end,
-            allow_transform_suffix,
-        )
-        .is_some()
+        || record_end - name_offset < CNW_LENGTH_BYTES + 1 + 2 + 2
     {
+        return false;
+    }
+    let Some(legacy_name_token) = read_u32_le(bytes, name_offset) else {
+        return false;
+    };
+    if legacy_placeable_add_tail_end_for_cursor(
+        bytes,
+        name_offset + CNW_LENGTH_BYTES,
+        record_end,
+        allow_transform_suffix,
+    )
+    .is_some()
+    {
+        // Diamond `CNWSMessage::AddPlaceableAppearanceToMessage` can write a
+        // four-byte legacy name/token slot before the compact
+        // type/appearance/static tail. Treat that as a source-only cursor shape
+        // during rewrite; exact EE validation still requires the focused add
+        // translator to materialize the EE name/visual-transform form first.
+        return allow_transform_suffix;
+    }
+    if legacy_name_token != 0 {
         return false;
     }
 
@@ -443,22 +456,6 @@ fn advance_placeable_add_bit_cursor(
         return false;
     }
     let name_offset = record_offset + LEGACY_UPDATE_HEADER_BYTES - 4;
-    if compact_legacy_placeable_add_cursor_shape(bytes, name_offset, record_end, false) {
-        // Keep the update-rewrite pass aligned with the focused placeable add
-        // writer. Before visual/name normalization, this local Diamond shape
-        // owns only the four legacy tail BOOLs. Requiring the final EE 11-bit
-        // guard/state run here would make the stream unreliable before the
-        // semantic add translator can repair it.
-        let remaining_source_bits = bits.len().saturating_sub(*bit_cursor);
-        if remaining_source_bits == 0 {
-            return true;
-        }
-        if remaining_source_bits < LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
-            return false;
-        }
-        *bit_cursor = bit_cursor.saturating_add(LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS);
-        return *bit_cursor <= bits.len();
-    }
     if *bit_cursor >= bits.len() {
         return false;
     }

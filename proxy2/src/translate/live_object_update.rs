@@ -1441,6 +1441,31 @@ pub(crate) fn try_get_legacy_placeable_bare_name_add_record_end_for_transport(
     )
 }
 
+pub(crate) fn looks_like_legacy_item_add_record_boundary_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+) -> bool {
+    appearance::looks_like_legacy_item_add_record_boundary(live_bytes, offset)
+        && !matches!(
+            live_bytes.get(offset + 1).copied(),
+            Some(
+                CREATURE_OBJECT_TYPE
+                    | ITEM_OBJECT_TYPE
+                    | TRIGGER_OBJECT_TYPE
+                    | PLACEABLE_OBJECT_TYPE
+                    | DOOR_OBJECT_TYPE
+            )
+        )
+}
+
+pub(crate) fn try_get_legacy_item_add_record_end_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    appearance::try_get_legacy_item_add_record_end_for_transport(live_bytes, offset, scan_end)
+}
+
 pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,
@@ -2452,6 +2477,326 @@ pub fn promote_work_remaining_trailing_fragment_span_payload_if_possible(
     Some(summary)
 }
 
+fn compact_ee_placeable_add_repair_claims_following_same_object_update(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    if record_end >= live_bytes.len()
+        || live_bytes.get(offset).copied() != Some(b'A')
+        || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+        || live_bytes.get(record_end).copied() != Some(b'U')
+        || live_bytes.get(record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+    {
+        return false;
+    }
+
+    let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
+        return false;
+    };
+    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
+        return false;
+    }
+
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        live_bytes,
+        record_end,
+        live_bytes.len(),
+    )
+    .min(live_bytes.len());
+    if following_end <= record_end {
+        return false;
+    }
+
+    let mut exact_cursor = bit_cursor;
+    if !add::advance_verified_add_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut exact_cursor,
+    ) {
+        return false;
+    }
+
+    let mut exact_following_cursor = exact_cursor;
+    if record::advance_verified_update_record_for_ee(
+        live_bytes,
+        record_end,
+        following_end,
+        fragment_bits,
+        &mut exact_following_cursor,
+    ) {
+        return false;
+    }
+
+    let mut candidate_live = live_bytes.to_vec();
+    let mut candidate_bits = fragment_bits.to_vec();
+    let mut candidate_cursor = bit_cursor;
+    if add_guard::repair_verified_ee_placeable_add_compact_source_bits(
+        &candidate_live,
+        offset,
+        record_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+    )
+    .is_none()
+    {
+        return false;
+    }
+    let after_add_cursor = candidate_cursor;
+    let mut candidate_following_end = following_end;
+    let mut candidate_reliable = true;
+    if record::rewrite_update_record_for_ee(
+        &mut candidate_live,
+        &mut candidate_following_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+        &mut candidate_reliable,
+        record_end,
+    )
+    .is_none()
+        || !candidate_reliable
+    {
+        return false;
+    }
+
+    let mut verified_cursor = after_add_cursor;
+    record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        record_end,
+        candidate_following_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) && verified_cursor == candidate_cursor
+}
+
+fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    if record_end >= live_bytes.len()
+        || live_bytes.get(offset).copied() != Some(b'A')
+        || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+        || live_bytes.get(record_end).copied() != Some(b'U')
+        || live_bytes.get(record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+        || boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+            live_bytes, offset, record_end,
+        ) != Some(record_end)
+    {
+        return false;
+    }
+
+    let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
+        return false;
+    };
+    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
+        return false;
+    }
+
+    let mut legacy_cursor = bit_cursor;
+    if !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+        live_bytes,
+        fragment_bits,
+        offset,
+        record_end,
+        &mut legacy_cursor,
+    ) {
+        return false;
+    }
+
+    let mut exact_cursor = bit_cursor;
+    if add::advance_verified_add_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut exact_cursor,
+    ) {
+        return false;
+    }
+
+    let mut candidate_live = live_bytes.to_vec();
+    let mut candidate_record_end = record_end;
+    let mut candidate_bits = fragment_bits.to_vec();
+    let mut candidate_cursor = bit_cursor;
+    let Some(add_rewrite) =
+        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+            &mut candidate_live,
+            &mut candidate_record_end,
+            &mut candidate_bits,
+            &mut candidate_cursor,
+            offset,
+        )
+    else {
+        return false;
+    };
+    if add_rewrite.maps_inserted == 0
+        && add_rewrite.bytes_inserted == 0
+        && add_rewrite.bytes_removed == 0
+        && !add_rewrite.fragment_bits_changed
+    {
+        return false;
+    }
+
+    let after_add_cursor = candidate_cursor;
+    let mut verified_add_cursor = bit_cursor;
+    if !add::advance_verified_add_record(
+        &candidate_live,
+        offset,
+        candidate_record_end,
+        &candidate_bits,
+        &mut verified_add_cursor,
+    ) || verified_add_cursor != after_add_cursor
+    {
+        return false;
+    }
+
+    if candidate_live.get(candidate_record_end).copied() != Some(b'U')
+        || candidate_live.get(candidate_record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
+        || read_u32_le(&candidate_live, candidate_record_end + 2) != Some(add_object_id)
+    {
+        return false;
+    }
+
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        &candidate_live,
+        candidate_record_end,
+        candidate_live.len(),
+    )
+    .min(candidate_live.len());
+    if following_end <= candidate_record_end {
+        return false;
+    }
+
+    let mut candidate_following_end = following_end;
+    let mut candidate_reliable = true;
+    if record::rewrite_update_record_for_ee(
+        &mut candidate_live,
+        &mut candidate_following_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+        &mut candidate_reliable,
+        candidate_record_end,
+    )
+    .is_none()
+        || !candidate_reliable
+    {
+        return false;
+    }
+
+    let mut verified_cursor = after_add_cursor;
+    record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        candidate_record_end,
+        candidate_following_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) && verified_cursor == candidate_cursor
+}
+
+fn legacy_door_add_repair_claims_following_same_object_update(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> bool {
+    if record_end >= live_bytes.len()
+        || live_bytes.get(offset).copied() != Some(b'A')
+        || live_bytes.get(offset + 1).copied() != Some(DOOR_OBJECT_TYPE)
+        || live_bytes.get(record_end).copied() != Some(b'U')
+        || live_bytes.get(record_end + 1).copied() != Some(DOOR_OBJECT_TYPE)
+    {
+        return false;
+    }
+
+    let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
+        return false;
+    };
+    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
+        return false;
+    }
+    if read_u32_le(live_bytes, record_end + 6) != Some(0x17) {
+        // This bridge is for the decompile-backed stale absent-appearance
+        // `U/9`/`U/10` mask-0x17 path. Mask 0x37 carries the appearance branch
+        // and remains quarantined when its scale/appearance cursor is shifted.
+        return false;
+    }
+
+    let mut candidate_live = live_bytes.to_vec();
+    let mut candidate_record_end = record_end;
+    let mut candidate_bits = fragment_bits.to_vec();
+    let mut candidate_cursor = bit_cursor;
+    let Some(add_rewrite) =
+        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+            &mut candidate_live,
+            &mut candidate_record_end,
+            &mut candidate_bits,
+            &mut candidate_cursor,
+            offset,
+        )
+    else {
+        return false;
+    };
+    if add_rewrite.maps_inserted == 0
+        && add_rewrite.bytes_inserted == 0
+        && add_rewrite.bytes_removed == 0
+        && !add_rewrite.fragment_bits_changed
+        && add_rewrite.legacy_door_model_tokens_removed == 0
+    {
+        return false;
+    }
+
+    if candidate_live.get(candidate_record_end).copied() != Some(b'U')
+        || candidate_live.get(candidate_record_end + 1).copied() != Some(DOOR_OBJECT_TYPE)
+        || read_u32_le(&candidate_live, candidate_record_end + 2) != Some(add_object_id)
+    {
+        return false;
+    }
+
+    let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        &candidate_live,
+        candidate_record_end,
+        candidate_live.len(),
+    )
+    .min(candidate_live.len());
+    if following_end <= candidate_record_end {
+        return false;
+    }
+
+    let after_add_cursor = candidate_cursor;
+    let mut candidate_following_end = following_end;
+    let mut candidate_reliable = true;
+    if record::rewrite_update_record_for_ee(
+        &mut candidate_live,
+        &mut candidate_following_end,
+        &mut candidate_bits,
+        &mut candidate_cursor,
+        &mut candidate_reliable,
+        candidate_record_end,
+    )
+    .is_none()
+        || !candidate_reliable
+    {
+        return false;
+    }
+
+    let mut verified_cursor = after_add_cursor;
+    record::advance_verified_update_record_for_ee(
+        &candidate_live,
+        candidate_record_end,
+        candidate_following_end,
+        &candidate_bits,
+        &mut verified_cursor,
+    ) && verified_cursor == candidate_cursor
+}
+
 pub fn rewrite_update_records_payload_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
@@ -3066,6 +3411,206 @@ pub fn rewrite_update_records_payload_if_possible(
             }
 
             if bit_cursor_reliable {
+                if legacy_door_add_repair_claims_following_same_object_update(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                ) {
+                    let before_fragment_bits_len = fragment_bits.len();
+                    if let Some(add_rewrite) =
+                        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+                            &mut live_bytes,
+                            &mut record_end,
+                            &mut fragment_bits,
+                            &mut bit_cursor,
+                            offset,
+                        )
+                    {
+                        changed |= add_rewrite.maps_inserted != 0
+                            || add_rewrite.bytes_inserted != 0
+                            || add_rewrite.bytes_removed != 0
+                            || add_rewrite.fragment_bits_changed
+                            || add_rewrite.legacy_door_model_tokens_removed != 0;
+                        summary.bytes_inserted = summary
+                            .bytes_inserted
+                            .saturating_add(add_rewrite.bytes_inserted);
+                        summary.bytes_removed =
+                            summary.bytes_removed.saturating_add(add_rewrite.bytes_removed);
+                        if fragment_bits.len() > before_fragment_bits_len {
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(fragment_bits.len() - before_fragment_bits_len)
+                                    .unwrap_or(u32::MAX),
+                            );
+                        } else if before_fragment_bits_len > fragment_bits.len() {
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(before_fragment_bits_len - fragment_bits.len())
+                                    .unwrap_or(u32::MAX),
+                            );
+                        }
+                        last_verified_record_end = record_end;
+                        last_verified_record_allows_trailing_fragment_promotion = false;
+                        last_verified_creature_add_record = None;
+                        last_verified_add_record = read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_type, object_id));
+                        last_verified_door_add_fragment_span_record =
+                            read_u32_le(&live_bytes, offset + 2)
+                                .map(|object_id| (record_end, object_id));
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                }
+
+                if compact_ee_placeable_add_repair_claims_following_same_object_update(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                ) {
+                    let before_fragment_bits_len = fragment_bits.len();
+                    if let Some(compact_guard_changed) =
+                        add_guard::repair_verified_ee_placeable_add_compact_source_bits(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            &mut fragment_bits,
+                            &mut bit_cursor,
+                        )
+                    {
+                        changed |= compact_guard_changed;
+                        if fragment_bits.len() > before_fragment_bits_len {
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(fragment_bits.len() - before_fragment_bits_len)
+                                    .unwrap_or(u32::MAX),
+                            );
+                        } else if before_fragment_bits_len > fragment_bits.len() {
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(before_fragment_bits_len - fragment_bits.len())
+                                    .unwrap_or(u32::MAX),
+                            );
+                        }
+                        last_verified_record_end = record_end;
+                        last_verified_record_allows_trailing_fragment_promotion = false;
+                        last_verified_creature_add_record = None;
+                        last_verified_add_record = read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_type, object_id));
+                        last_verified_door_add_fragment_span_record = None;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                }
+
+                if compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                ) {
+                    let before_fragment_bits_len = fragment_bits.len();
+                    if let Some(add_rewrite) =
+                        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+                            &mut live_bytes,
+                            &mut record_end,
+                            &mut fragment_bits,
+                            &mut bit_cursor,
+                            offset,
+                        )
+                    {
+                        changed |= add_rewrite.maps_inserted != 0
+                            || add_rewrite.bytes_inserted != 0
+                            || add_rewrite.bytes_removed != 0
+                            || add_rewrite.fragment_bits_changed
+                            || add_rewrite.legacy_door_model_tokens_removed != 0;
+                        summary.bytes_inserted = summary
+                            .bytes_inserted
+                            .saturating_add(add_rewrite.bytes_inserted);
+                        summary.bytes_removed =
+                            summary.bytes_removed.saturating_add(add_rewrite.bytes_removed);
+                        if fragment_bits.len() > before_fragment_bits_len {
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(fragment_bits.len() - before_fragment_bits_len)
+                                    .unwrap_or(u32::MAX),
+                            );
+                        } else if before_fragment_bits_len > fragment_bits.len() {
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(before_fragment_bits_len - fragment_bits.len())
+                                    .unwrap_or(u32::MAX),
+                            );
+                        }
+                        last_verified_record_end = record_end;
+                        last_verified_record_allows_trailing_fragment_promotion = false;
+                        last_verified_creature_add_record = None;
+                        last_verified_add_record = read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_type, object_id));
+                        last_verified_door_add_fragment_span_record = None;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                }
+
+                // A compact Diamond `A/09` with source BOOLs is handled by the
+                // same-object update trial above. This zero-source fallback is
+                // only for packets where earlier update repairs consumed every
+                // compact tail BOOL before the add row reached this pass.
+                let zero_source_compact_placeable_add = object_type == PLACEABLE_OBJECT_TYPE
+                    && bit_cursor == fragment_bits.len()
+                    && boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                    ) == Some(record_end);
+                if zero_source_compact_placeable_add {
+                    let before_fragment_bits_len = fragment_bits.len();
+                    if let Some(add_rewrite) =
+                        crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
+                            &mut live_bytes,
+                            &mut record_end,
+                            &mut fragment_bits,
+                            &mut bit_cursor,
+                            offset,
+                        )
+                    {
+                        changed |= add_rewrite.maps_inserted != 0
+                            || add_rewrite.bytes_inserted != 0
+                            || add_rewrite.bytes_removed != 0
+                            || add_rewrite.fragment_bits_changed
+                            || add_rewrite.legacy_door_model_tokens_removed != 0;
+                        summary.bytes_inserted = summary
+                            .bytes_inserted
+                            .saturating_add(add_rewrite.bytes_inserted);
+                        summary.bytes_removed =
+                            summary.bytes_removed.saturating_add(add_rewrite.bytes_removed);
+                        if fragment_bits.len() > before_fragment_bits_len {
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(fragment_bits.len() - before_fragment_bits_len)
+                                    .unwrap_or(u32::MAX),
+                            );
+                        } else if before_fragment_bits_len > fragment_bits.len() {
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(before_fragment_bits_len - fragment_bits.len())
+                                    .unwrap_or(u32::MAX),
+                            );
+                        }
+                        last_verified_record_end = record_end;
+                        last_verified_record_allows_trailing_fragment_promotion = false;
+                        last_verified_creature_add_record = None;
+                        last_verified_add_record = read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_type, object_id));
+                        last_verified_door_add_fragment_span_record =
+                            if object_type == DOOR_OBJECT_TYPE {
+                                read_u32_le(&live_bytes, offset + 2)
+                                    .map(|object_id| (record_end, object_id))
+                            } else {
+                                None
+                            };
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                }
+
                 let exact_add_start_bit_cursor = bit_cursor;
                 if add::advance_verified_add_record(
                     &live_bytes,
