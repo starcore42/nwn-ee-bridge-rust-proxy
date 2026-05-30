@@ -793,6 +793,10 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
     let Some(delete_end) = tail_start.checked_add(6) else {
         return false;
     };
+    // EE `sub_1407B35B0` and Diamond's matching delete dispatch read exactly
+    // `D/type/OBJECTID`. Creature, item, and placeable deletes also own one
+    // following fragment BOOL; trigger and door deletes own none. Either way,
+    // the six read-buffer bytes are not compact fragment storage.
     delete_end <= bytes.len()
         && legacy_live_delete_fragment_bit_count(bytes, tail_start, delete_end).is_some()
 }
@@ -5570,40 +5574,95 @@ mod declared_length_repair_tests {
 
     #[test]
     fn declared_length_window_rejects_short_delete_read_record_as_fragment_tail() {
-        let mut live = Vec::new();
-        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
-
-        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
-        let mut payload = vec![
-            HIGH_LEVEL_ENVELOPE,
-            GAME_OBJECT_UPDATE_MAJOR,
-            LIVE_OBJECT_MINOR,
+        let delete_cases = [
+            ("D/5 creature", CREATURE_OBJECT_TYPE, 1usize),
+            ("D/6 item", ITEM_OBJECT_TYPE, 1),
+            ("D/9 placeable", PLACEABLE_OBJECT_TYPE, 1),
+            ("D/7 trigger", TRIGGER_OBJECT_TYPE, 0),
+            ("D/10 door", DOOR_OBJECT_TYPE, 0),
         ];
-        payload.extend_from_slice(&(split as u32).to_le_bytes());
-        payload.extend_from_slice(&live);
-        payload.extend_from_slice(&[b'D', TRIGGER_OBJECT_TYPE]);
-        payload.extend_from_slice(&0x8000_1007u32.to_le_bytes());
+        for (label, object_type, bit_count) in delete_cases {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
 
-        assert!(
-            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
-            "read-buffer delete bytes can masquerade as compact CNW fragment storage"
-        );
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.extend_from_slice(&[b'D', object_type]);
+            payload.extend_from_slice(&0x8000_1007u32.to_le_bytes());
 
-        let repair = LiveObjectDeclaredLengthRepairCandidate {
-            old_declared: split as u32,
-            new_declared: split as u32,
-            old_payload_length: payload.len(),
-            read_bytes_length: live.len(),
-            fragment_bytes_length: payload.len() - split,
-        };
-        assert!(
-            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
-            "aligned D/7 remains a read-buffer delete record, not a CNW tail"
-        );
-        assert!(
-            !declared_length_window_transport_plausible(&payload),
-            "a plausible CNW bit shape must not steal an aligned short delete record"
-        );
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "{label} read-buffer bytes can masquerade as compact CNW fragment storage"
+            );
+            assert_eq!(
+                legacy_live_delete_fragment_bit_count(&payload, split, payload.len()),
+                Some(bit_count),
+                "{label} must keep its decompile-owned delete BOOL count"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "aligned {label} remains a live-object delete record, not a CNW tail"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not steal aligned {label} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_length_read_prefix_capacity_counts_delete_fragment_bits() {
+        let delete_cases = [
+            ("D/5 creature", CREATURE_OBJECT_TYPE, vec![true]),
+            ("D/6 item", ITEM_OBJECT_TYPE, vec![false]),
+            ("D/9 placeable", PLACEABLE_OBJECT_TYPE, vec![true]),
+            ("D/7 trigger", TRIGGER_OBJECT_TYPE, Vec::new()),
+            ("D/10 door", DOOR_OBJECT_TYPE, Vec::new()),
+        ];
+        for (label, object_type, owned_bits) in delete_cases {
+            let mut live = vec![b'D', object_type];
+            live.extend_from_slice(&0x8000_1007u32.to_le_bytes());
+            live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+            let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            fragment_bits.extend_from_slice(&owned_bits);
+            assert!(
+                live_object_read_prefix_has_plausible_fragment_capacity(
+                    &live,
+                    0,
+                    live.len(),
+                    &fragment_bits,
+                ),
+                "{label} must advance by its exact delete bit count before W"
+            );
+
+            if !owned_bits.is_empty() {
+                let too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+                assert!(
+                    !live_object_read_prefix_has_plausible_fragment_capacity(
+                        &live,
+                        0,
+                        live.len(),
+                        &too_few_bits,
+                    ),
+                    "{label} must not use W or padding as delete fragment-bit storage"
+                );
+            }
+        }
     }
 
     #[test]

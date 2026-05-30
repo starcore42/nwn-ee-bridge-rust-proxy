@@ -1621,6 +1621,14 @@ Current status:
   but they are still a live-object read-buffer row and the transport prefix
   walker must split before a following `W`/`U/0A` row. Verified with `cargo
   test -q -p hgbridge-proxy2 compact_door -- --nocapture`.
+- 2026-05-30 `P/05/01` delete declared-tail bit-count audit: no packet shape
+  changed, but public fixture-free coverage now pins delete rows under the
+  stale-declared tail guard. Diamond and EE both read six delete read-buffer
+  bytes; `D/5`, `D/6`, and `D/9` then own exactly one CNW BOOL, while `D/7`
+  and `D/10` own none. A proposed CNW tail beginning at any aligned delete row
+  therefore remains live-object read-boundary ambiguity, and prefix capacity
+  must not borrow the following `W` row as delete bit storage. Verified with
+  `cargo test -q -p hgbridge-proxy2 declared_length_ -- --nocapture`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
