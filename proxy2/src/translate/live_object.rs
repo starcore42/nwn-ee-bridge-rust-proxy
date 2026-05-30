@@ -782,6 +782,12 @@ fn fragment_tail_starts_with_aligned_short_live_object_read_boundary(
         return true;
     }
 
+    if fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
+        bytes, tail_start,
+    ) {
+        return true;
+    }
+
     if fragment_tail_starts_with_aligned_short_gui_read_boundary(bytes, tail_start) {
         return true;
     }
@@ -870,6 +876,59 @@ fn fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(
         bytes.len(),
     )
     .is_some_and(|appearance_end| appearance_end > tail_start && appearance_end <= bytes.len())
+}
+
+fn fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
+    bytes: &[u8],
+    tail_start: usize,
+) -> bool {
+    const LEGACY_APPEARANCE_HEADER_BYTES: usize = 8;
+    const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
+    const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
+
+    let Some(mask_offset) = tail_start.checked_add(6) else {
+        return false;
+    };
+    if bytes.get(tail_start).copied() != Some(b'P')
+        || bytes.get(tail_start + 1).copied() != Some(CREATURE_OBJECT_TYPE)
+        || !looks_like_legacy_live_object_id_at(bytes, tail_start + 2)
+    {
+        return false;
+    }
+    let Some(mask) = read_u16_le(bytes, mask_offset) else {
+        return false;
+    };
+    if mask != LEGACY_APPEARANCE_BODY_PART_MASK {
+        return false;
+    }
+
+    let Some(selector_offset) = tail_start.checked_add(LEGACY_APPEARANCE_HEADER_BYTES) else {
+        return false;
+    };
+    let Some(selector) = bytes.get(selector_offset).copied() else {
+        return false;
+    };
+    let body_bytes = if selector == 0 {
+        1usize
+    } else if selector < 0x0A {
+        1usize.saturating_add(usize::from(selector).saturating_mul(2))
+    } else {
+        1usize.saturating_add(LEGACY_APPEARANCE_FULL_BODY_PART_COUNT)
+    };
+    let Some(record_end) = selector_offset.checked_add(body_bytes) else {
+        return false;
+    };
+
+    // Diamond `sub_448E30` and EE `sub_14077FE10` both enter the body-part
+    // delta branch when mask bit 0x0100 is set: a zero selector owns only the
+    // selector byte, selectors 1..=9 own selector plus index/value byte pairs,
+    // and larger selectors own the fixed nineteen-value body table. The bridge
+    // still quarantines this unmodeled partial appearance family for semantic
+    // translation, but stale-declared transport repair must not steal these
+    // short read-buffer bytes as CNW fragment storage.
+    record_end <= bytes.len()
+        && record_end > tail_start
+        && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES
 }
 
 fn fragment_tail_starts_with_aligned_short_update_read_boundary(
@@ -4738,6 +4797,18 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_body_part_delta_appearance_live_bytes(selector: u8) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0x0100u16.to_le_bytes());
+        live.push(selector);
+        for index in 0..selector.min(9) {
+            live.push(index);
+            live.push(0x20 + index);
+        }
+        live
+    }
+
     fn compact_inventory_scalar_live_bytes() -> Vec<u8> {
         let mut live = vec![b'I'];
         live.extend_from_slice(&0x8000_342Au32.to_le_bytes());
@@ -5350,6 +5421,60 @@ mod declared_length_repair_tests {
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short P/5 zero-mask appearance"
         );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_body_delta_appearance_as_fragment_tail() {
+        for selector in [0u8, 1, 3] {
+            let mut live = Vec::new();
+            append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+            let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+            let mut payload = vec![
+                HIGH_LEVEL_ENVELOPE,
+                GAME_OBJECT_UPDATE_MAJOR,
+                LIVE_OBJECT_MINOR,
+            ];
+            payload.extend_from_slice(&(split as u32).to_le_bytes());
+            payload.extend_from_slice(&live);
+            payload.extend_from_slice(&creature_body_part_delta_appearance_live_bytes(selector));
+
+            assert!(
+                decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+                "short P/5 body-part selector {selector} bytes can masquerade as compact CNW fragment storage"
+            );
+            assert!(
+                crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                    &payload,
+                    split,
+                    payload.len(),
+                )
+                .is_none(),
+                "the semantic appearance translator still leaves partial body deltas unclaimed"
+            );
+            assert!(
+                fragment_tail_starts_with_aligned_short_creature_body_part_delta_read_boundary(
+                    &payload, split
+                ),
+                "aligned P/5 body-part selector {selector} is a decompile-owned read-buffer row"
+            );
+
+            let repair = LiveObjectDeclaredLengthRepairCandidate {
+                old_declared: split as u32,
+                new_declared: split as u32,
+                old_payload_length: payload.len(),
+                read_bytes_length: live.len(),
+                fragment_bytes_length: payload.len() - split,
+            };
+            assert!(
+                declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+                "aligned P/5 body-part selector {selector} remains a read boundary, not a CNW tail"
+            );
+            assert!(
+                !declared_length_window_transport_plausible(&payload),
+                "a plausible CNW bit shape must not steal an aligned short P/5 body-part delta"
+            );
+        }
     }
 
     #[test]
