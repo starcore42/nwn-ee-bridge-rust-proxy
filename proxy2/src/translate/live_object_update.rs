@@ -1507,6 +1507,11 @@ pub(crate) fn legacy_creature_appearance_record_end_for_transport(
     // mistake appearance bytes for CNW fragment storage or top-level records.
     creature::try_get_zero_mask_creature_appearance_record_end(live_bytes, offset, scan_end)
         .or_else(|| {
+            appearance::try_get_legacy_creature_appearance_record_end_for_transport(
+                live_bytes, offset, scan_end,
+            )
+        })
+        .or_else(|| {
             appearance::try_get_legacy_creature_appearance_record_end(live_bytes, offset, scan_end)
         })
 }

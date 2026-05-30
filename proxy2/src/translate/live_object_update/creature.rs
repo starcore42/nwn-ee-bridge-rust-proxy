@@ -3234,10 +3234,12 @@ pub(super) fn advance_verified_noop_creature_appearance_record(
         return false;
     };
     if locstring_pair_shape {
-        if cursor.read_bool().is_none()
-            || cursor.read_bool().is_none()
-            || cursor.read_cexo_string().is_none()
-            || cursor.read_cexo_string().is_none()
+        if cursor
+            .read_creature_appearance_locstring_component()
+            .is_none()
+            || cursor
+                .read_creature_appearance_locstring_component()
+                .is_none()
         {
             *bit_cursor = original_bit_cursor;
             return false;
@@ -3979,6 +3981,15 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
 mod tests {
     use super::*;
 
+    fn name_only_creature_appearance_token_inline_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'P', 0x05];
+        bytes.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        bytes.extend_from_slice(&LEGACY_CREATURE_APPEARANCE_NAME_ONLY_MASK.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // First locstring component token ref.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // Second locstring component empty string.
+        bytes
+    }
+
     fn creature_4008_live_bytes_with_status_row(target_payload: Option<&[u8]>) -> Vec<u8> {
         let mut bytes = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
         bytes.extend_from_slice(&0x0000_4008u32.to_le_bytes());
@@ -4042,6 +4053,39 @@ mod tests {
             !simulate_ee_creature_update_status_effect_helper_cursor_with_rows(&mut cursor, &rows),
             "a P/B visualeffects row must own DWORD target id plus one BYTE before the map"
         );
+    }
+
+    #[test]
+    fn name_only_creature_appearance_locstring_token_requires_component_bits() {
+        let bytes = name_only_creature_appearance_token_inline_bytes();
+        let mut short_cursor = 0usize;
+        assert!(
+            !advance_verified_noop_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &[true, true, false],
+                &mut short_cursor,
+            ),
+            "outer locstring + token component needs the token language bit and the second component selector"
+        );
+        assert_eq!(
+            short_cursor, 0,
+            "rejected fallback must restore the fragment cursor"
+        );
+
+        let mut exact_cursor = 0usize;
+        assert!(
+            advance_verified_noop_creature_appearance_record(
+                &bytes,
+                0,
+                bytes.len(),
+                &[true, true, false, false],
+                &mut exact_cursor,
+            ),
+            "token first component plus inline second component consumes the decompiled four BOOLs"
+        );
+        assert_eq!(exact_cursor, 4);
     }
 
     #[test]
@@ -4617,6 +4661,22 @@ impl LegacyCreatureUpdateCursor<'_> {
 
     fn read_bool(&mut self) -> Option<bool> {
         Some(self.read_fragment_bits(1)? != 0)
+    }
+
+    fn read_creature_appearance_locstring_component(&mut self) -> Option<()> {
+        let token_branch = self.read_bool()?;
+        if token_branch {
+            // Diamond `sub_53E700` and the EE locstring helper first read the
+            // component token selector, then the client-TLK/language selector,
+            // before the DWORD token reference. Do not collapse this to the
+            // inline CExoString shape; the read bytes can be identical while
+            // the fragment cursor is two bits wider.
+            self.read_bool()?;
+            self.read_u32()?;
+        } else {
+            self.read_cexo_string()?;
+        }
+        Some(())
     }
 
     fn read_fragment_bits(&mut self, count: usize) -> Option<u64> {

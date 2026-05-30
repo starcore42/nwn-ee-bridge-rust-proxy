@@ -1725,6 +1725,23 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
   --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
   --test-threads=1`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-05-31 `P/05/01` name-only creature appearance locstring-token audit:
+  extended the same `0x0400` proof to the locstring-pair branch. Diamond
+  `sub_448E30` / EE `sub_14077FE10` read the outer name-mode BOOL, and
+  Diamond `sub_53E700` plus the matching EE locstring helper then read each
+  component's token/inline selector; token components additionally read the
+  client-TLK/language selector before the DWORD token reference, while inline
+  components read a `CExoString`. Transport boundary selection now prefers a
+  `P/5` name branch that lands on the live-object boundary, and the narrow
+  name-only fallback consumes the exact component selector bits instead of
+  treating token DWORDs as generic empty strings. Verified with `cargo test -q
+  -p hgbridge-proxy2
+  name_only_creature_appearance_locstring_token_requires_component_bits --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  declared_length_capacity_counts_name_only_creature_appearance_locstring_token_bits
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 declared_length_ --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`.
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

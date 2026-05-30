@@ -167,8 +167,13 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         {
             return record_end;
         }
-        let legacy_end =
-            appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end);
+        let legacy_transport_end =
+            appearance::try_get_legacy_creature_appearance_record_end_for_transport(
+                bytes, offset, scan_end,
+            );
+        let legacy_end = legacy_transport_end.or_else(|| {
+            appearance::try_get_legacy_creature_appearance_record_end(bytes, offset, scan_end)
+        });
         let ee_byte_shape_end = appearance::try_get_ee_creature_appearance_record_end_by_byte_shape(
             bytes, offset, scan_end,
         );

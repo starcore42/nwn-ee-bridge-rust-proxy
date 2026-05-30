@@ -5039,6 +5039,15 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_name_only_token_inline_appearance_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0x0400u16.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes()); // First locstring component token ref.
+        live.extend_from_slice(&0u32.to_le_bytes()); // Second locstring component empty string.
+        live
+    }
+
     fn creature_body_part_delta_appearance_live_bytes(mask: u16, selector: u8) -> Vec<u8> {
         let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -5812,6 +5821,47 @@ mod declared_length_repair_tests {
                 &enough_bits,
             ),
             "a direct empty name consumes exactly one P/5 name-mode BOOL after the CNW header"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_name_only_creature_appearance_locstring_token_bits() {
+        let live = creature_name_only_token_inline_appearance_live_bytes();
+        let mut too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        too_few_bits.extend([true, true, false]);
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.extend([true, true, false, false]);
+
+        assert_eq!(
+            crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                &live,
+                0,
+                live.len(),
+            ),
+            Some(live.len()),
+            "fragment-shape ambiguous P/5 name-only rows must prefer the branch that lands on the live-object boundary"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "transport walk must keep the complete locstring-pair name row together"
+        );
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &too_few_bits,
+            ),
+            "locstring token component owns the language selector before the second component selector"
+        );
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "token first component plus inline second component consumes four P/5 name BOOLs after the CNW header"
         );
     }
 

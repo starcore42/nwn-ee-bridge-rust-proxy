@@ -535,6 +535,47 @@ pub(super) fn try_get_legacy_creature_appearance_record_end(
     accepted.map(|record| record.record_end)
 }
 
+pub(super) fn try_get_legacy_creature_appearance_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    let scan_end = scan_end.min(bytes.len());
+    let mask = read_u16_le(bytes, offset.checked_add(6)?).unwrap_or(0);
+    let mut accepted: Option<LegacyAppearanceRecord> = None;
+    for name_shape in [
+        AppearanceNameShape::LocStringPair,
+        AppearanceNameShape::CExoString,
+    ] {
+        let Some(record) = parse_creature_appearance_record(
+            bytes,
+            offset,
+            scan_end,
+            name_shape,
+            CreatureAppearanceWireDialect::LegacyDiamond,
+            None,
+        ) else {
+            continue;
+        };
+        let lands_on_transport_boundary = record.record_end == scan_end
+            || boundary::looks_like_legacy_live_object_sub_message_boundary(
+                bytes,
+                record.record_end,
+            );
+        if !lands_on_transport_boundary {
+            continue;
+        }
+        if accepted
+            .as_ref()
+            .map(|current| legacy_appearance_boundary_candidate_is_better(mask, &record, current))
+            .unwrap_or(true)
+        {
+            accepted = Some(record);
+        }
+    }
+    accepted.map(|record| record.record_end)
+}
+
 pub(super) fn try_get_ee_creature_appearance_record_end_by_byte_shape(
     bytes: &[u8],
     offset: usize,
