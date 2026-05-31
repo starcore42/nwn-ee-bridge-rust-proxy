@@ -166,6 +166,17 @@ fn item_update_full_mask_scalar_direct_name_bits() -> Vec<bool> {
     ]
 }
 
+fn item_update_full_mask_scalar_locstring_inline_bits() -> Vec<bool> {
+    vec![
+        false, true, // position residual bits.
+        false, true, false, true, false, // scalar orientation selector plus residual bits.
+        true, false, true, false, true,  // state bits.
+        true,  // locstring item name helper.
+        false, // inline CExoString component, not TLK token.
+        true,  // EE hidden-state BOOL after item name.
+    ]
+}
+
 fn item_update_hidden_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -1639,6 +1650,46 @@ fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
 }
 
 #[test]
+fn item_full_update_scalar_locstring_inline_rewrites_mask_without_moving_cursor() {
+    // The full-mask item update uses the same decompiled name branch as the
+    // narrower U/6 name tests. The outer locstring selector owns one extra
+    // fragment bit before the inline CExoString bytes; the following hidden BOOL
+    // remains after that component selector, not at the direct-name cursor.
+    let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    let following_bits = item_update_full_mask_scalar_locstring_inline_bits();
+    let mut payload = live_object_payload_with_bits(&live, following_bits);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the raw Diamond all-bits item mask is not an exact EE update"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("decompile-shaped locstring-inline full item update should translate its mask");
+
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
+    assert_eq!(rewrite.bits_removed, 0);
+    assert_eq!(rewrite.bytes_inserted, 0);
+    assert_eq!(rewrite.bytes_removed, 0);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let rewritten_live =
+        &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    assert_eq!(
+        super::read_u32_le(rewritten_live, 6),
+        Some(0x0008_0073),
+        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("translated locstring-inline full item update should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+}
+
+#[test]
 fn item_full_update_vector_selector_cannot_claim_scalar_direct_name_bytes() {
     // The same read-buffer bytes can look scalar by inspection, but the
     // decompiled Diamond/EE generic update reader branches on the orientation
@@ -2537,6 +2588,50 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() 
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten typed item-create/full-update stream should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstring_inline_bits() {
+    // This is the locstring-inline sibling of the CEP v2.3 typed A/6 handoff
+    // audit. The A/6 active-property insertion is allowed only if the following
+    // U/6 owns its own position/orientation/state/name/hidden bits exactly.
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let following_update_bits = item_update_full_mask_scalar_locstring_inline_bits();
+    let mut owned_bits = source_item_create_bits.to_vec();
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw typed item create still lacks EE's active-property bit"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("typed item-create repair should preserve a locstring-inline full U/6 cursor");
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = vec![false, false, false, true, false, false];
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "the A/6 active-property insert must not steal locstring-inline U/6 bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten typed item-create/locstring-inline full-update stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
 }

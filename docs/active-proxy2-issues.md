@@ -1182,6 +1182,17 @@ Current status:
   update_rewrite_typed_item_create_preserves_following_full_item_update_bits
   -- --nocapture`, and private
   `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
+- 2026-06-01 `P/05/01` full item `U/6` locstring-inline audit: no packet
+  behavior changed, but public fixture-free coverage now pins the locstring
+  inline sibling of the same all-bits item-update rule. Diamond `sub_451AF0`
+  and EE `sub_14076BD30` read the item-name outer selector, then the
+  locstring component selector before the inline `CExoString`, and only then
+  the EE hidden-state BOOL. The typed `A/6` handoff coverage now proves the
+  active-property insertion preserves those following U/6 locstring-inline bits
+  just as it does direct-name bits, so the remaining CEP v2.3 boundary should
+  stay focused on the actual source cursor/handoff bits rather than adding a
+  special U/6 name-branch rescue. Verified with `cargo test -q -p
+  hgbridge-proxy2 locstring_inline -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
