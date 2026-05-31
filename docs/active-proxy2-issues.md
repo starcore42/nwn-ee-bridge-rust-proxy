@@ -1116,6 +1116,17 @@ Current status:
   -p hgbridge-proxy2 item_update_position -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 item_update -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1`.
+- 2026-05-31 `P/05/01` item `U/6` locstring-token name audit: no packet
+  behavior changed, but public fixture-free coverage now pins the token branch
+  of the same decompile-backed item-name bit order. Diamond `sub_451AF0` and EE
+  `sub_14076BD30` read the outer item-name selector, then the locstring
+  token/client-TLK selector bit and selector BYTE + DWORD token payload, before
+  any following item hidden-state BOOL or next live-object record. Tests now
+  prove token-name + hidden owns those bits in order, rejects a missing or extra
+  terminal hidden-state bit, and hands off to a following `D/6` delete only
+  after the token payload. Verified with `cargo test -q -p hgbridge-proxy2
+  item_update_locstring_token_name -- --nocapture` and `cargo test -q -p
+  hgbridge-proxy2 item_update_name -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

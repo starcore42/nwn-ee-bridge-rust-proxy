@@ -126,6 +126,15 @@ fn item_update_name_live_bytes(raw_mask: u32, name: &[u8]) -> Vec<u8> {
     live
 }
 
+fn item_update_locstring_token_name_live_bytes(raw_mask: u32, selector: u8, token: u32) -> Vec<u8> {
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&raw_mask.to_le_bytes());
+    live.push(selector);
+    live.extend_from_slice(&token.to_le_bytes());
+    live
+}
+
 fn item_update_position_live_bytes(position_bytes: [u8; 6]) -> Vec<u8> {
     let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -1412,6 +1421,57 @@ fn item_update_name_without_hidden_owns_only_name_selector_bits() {
         super::claim_payload_if_verified(&extra_bit).is_none(),
         "sub_451AF0's post-name overflow check must not be modeled as a fragment BOOL"
     );
+}
+
+#[test]
+fn item_update_locstring_token_name_owns_token_selector_before_hidden_bool() {
+    // Diamond `sub_451AF0` and EE `sub_14076BD30` both read the outer item-name
+    // selector first. When it selects the locstring helper, the next fragment
+    // bit selects the client-TLK/token branch before the item hidden-state
+    // BOOL. The read-buffer payload is the selector BYTE plus DWORD token.
+    let mask = super::LEGACY_UPDATE_NAME_MASK | 0x0000_0040;
+    let live = item_update_locstring_token_name_live_bytes(mask, 1, 0x0100_75D6);
+
+    let payload = live_object_payload_with_bits(&live, vec![true, true, false]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("locstring-token item-name plus hidden BOOL should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+
+    let missing_hidden = live_object_payload_with_bits(&live, vec![true, true]);
+    assert!(
+        super::claim_payload_if_verified(&missing_hidden).is_none(),
+        "the hidden-state BOOL is read after the locstring token selector"
+    );
+
+    let extra_terminal = live_object_payload_with_bits(&live, vec![true, true, false, true]);
+    assert!(
+        super::claim_payload_if_verified(&extra_terminal).is_none(),
+        "token item-name updates must not hide a terminal fragment bit after hidden state"
+    );
+}
+
+#[test]
+fn item_update_locstring_token_name_hands_off_after_token_payload() {
+    let mut live =
+        item_update_locstring_token_name_live_bytes(super::LEGACY_UPDATE_NAME_MASK, 0, 0x0100_380A);
+    live.extend_from_slice(&[b'D', super::ITEM_OBJECT_TYPE]);
+    live.extend_from_slice(&0x8000_2201u32.to_le_bytes());
+
+    let payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, // item name uses the locstring helper.
+            true, // locstring helper uses selector BYTE + DWORD token.
+            true, // following D/6 delete owns one BOOL.
+        ],
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("item token-name update should hand off only after the token payload");
+
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.delete_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
 }
 
 #[test]
