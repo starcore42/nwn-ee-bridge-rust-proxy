@@ -1787,14 +1787,28 @@ Current status:
   equipment count. The writer now inserts EE build-0x23 high bytes for scalar
   `0x0080` and fixed body tables, inserts the EE build-0x0E tail byte before a
   zero equipment count, and validates the exact EE cursor without inventing a
-  name selector for no-name masks. Unsupported non-full mask bits still
-  quarantine. Verified with `cargo test -q -p
+  name selector for no-name masks. Unresearched non-full mask bits still
+  quarantine; a later 2026-05-31 audit proved mask `0x8000` is an ignored
+  zero-payload bit. Verified with `cargo test -q -p
   hgbridge-proxy2 partial_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 appearance -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 declared_length_ -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
   hgbridge-proxy2`, and full serial `cargo test -q -p hgbridge-proxy2 --
   --test-threads=1`.
+- ~~2026-05-31 `P/05/01` ignored high-mask creature appearance audit:
+  corrected the non-full `P/5` mask contract for `0x8000`. Diamond
+  `sub_448E30` and EE `sub_14077FE10` both read the appearance header and have
+  no payload branch for the high bit: Diamond proceeds from the `0x2000`
+  WORD+DWORD tail to equipment `0x0200`, while EE proceeds from the
+  build-gated `0x4000` byte to equipment `0x0200`. The structured parser,
+  EE writer, exact verifier, and live-object transport preflight now model
+  `0x8000` as zero-byte / zero-BOOL owned state, including combinations with
+  body and zero-count equipment deltas. Verified with `cargo test -q -p
+  hgbridge-proxy2 partial_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 declared_length_ -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 appearance -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`.~~
 - ~~2026-05-31 `P/05/01` non-full creature equipment-delta item-change audit:
   promoted nonzero `0x0200` equipment deltas from quarantine into the
   structured appearance parser/writer for the decompile-backed counted row

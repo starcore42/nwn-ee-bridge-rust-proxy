@@ -34,14 +34,21 @@ const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
 const LEGACY_APPEARANCE_ALL_FIELDS_MASK: u16 = 0xFFFF;
 const LEGACY_APPEARANCE_BODY_PART_MASK: u16 = 0x0100;
 const LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK: u16 = 0x0200;
+const LEGACY_APPEARANCE_IGNORED_HIGH_MASK: u16 = 0x8000;
 const LEGACY_APPEARANCE_SCALAR_FIELD_MASKS: u16 =
     0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
+// Diamond `sub_448E30` and EE `sub_14077FE10` have no payload branch for mask
+// bit 0x8000: Diamond reaches equipment-delta `0x0200` immediately after the
+// `0x2000` WORD+DWORD tail, while EE reaches it immediately after the
+// build-gated `0x4000` byte. Model 0x8000 explicitly as an ignored zero-byte /
+// zero-BOOL bit so it cannot be mistaken for an unresearched payload branch.
 const LEGACY_APPEARANCE_SUPPORTED_NON_FULL_MASKS: u16 = LEGACY_APPEARANCE_SCALAR_FIELD_MASKS
     | LEGACY_APPEARANCE_BODY_PART_MASK
     | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
     | LEGACY_APPEARANCE_NAME_MASK
     | 0x2000
-    | 0x4000;
+    | 0x4000
+    | LEGACY_APPEARANCE_IGNORED_HIGH_MASK;
 const LEGACY_APPEARANCE_BODY_PART_COUNT: u8 = 0x13;
 const LEGACY_APPEARANCE_MAX_EQUIPMENT_RECORDS: u8 = 32;
 const LEGACY_APPEARANCE_DUMMY_ITEM_OBJECT_ID: u32 = 0x7F00_0000;
@@ -2632,6 +2639,23 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
             record.ee_extra_byte_inserts,
             bit_window,
         );
+    }
+    if record.appearance_name_bits.is_none()
+        && record.ee_extra_insert_offsets.is_empty()
+        && record.ee_name_bit_rewrites.is_empty()
+        && record.ee_extra_byte_inserts.is_empty()
+        && record.fragment_bits_consumed == record.ee_fragment_bits_consumed
+    {
+        let mut proof_cursor = bit_cursor;
+        if advance_verified_ee_creature_appearance_record(
+            bytes,
+            offset,
+            *record_end,
+            fragment_bits,
+            &mut proof_cursor,
+        ) {
+            return Some(CreatureAppearanceExtraRewrite::default());
+        }
     }
     // Byte-only EE dialect repairs, such as build-0x23 creature/body-part WORD
     // widening, can still expose chunk-local zero fragment storage before the
@@ -9287,12 +9311,11 @@ mod public_tests {
         bytes
     }
 
-    fn partial_legacy_creature_unsupported_mask_bit() -> Vec<u8> {
+    fn partial_legacy_creature_ignored_high_mask_only() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
         push_u32(&mut bytes, 0x8000_0042);
-        push_u16(&mut bytes, 0x8000);
-        bytes.push(0);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_IGNORED_HIGH_MASK);
         bytes
     }
 
@@ -9954,13 +9977,56 @@ mod public_tests {
     }
 
     #[test]
-    fn partial_appearance_rejects_unsupported_non_full_mask_bits() {
-        let bytes = partial_legacy_creature_unsupported_mask_bit();
+    fn partial_appearance_owns_ignored_high_mask_without_payload_bits() {
+        let mut bytes = partial_legacy_creature_ignored_high_mask_only();
         assert_eq!(
             try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
-            None,
-            "unknown non-full appearance mask bits must not be treated as zero-width fields"
+            Some(bytes.len()),
+            "Diamond has no P/5 0x8000 reader payload branch, so the row ends after the mask"
         );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "EE has the same zero-payload 0x8000 behavior"
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            bytes.len(),
+            &[],
+            &mut bit_cursor,
+        ));
+        assert_eq!(
+            bit_cursor, 0,
+            "ignored 0x8000 owns no Diamond fragment BOOLs"
+        );
+
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("ignored high-mask row should already be EE-shaped");
+        assert_eq!(rewrite.bytes_inserted, 0);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(record_end, LEGACY_APPEARANCE_HEADER_BYTES);
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
     }
 
     #[test]

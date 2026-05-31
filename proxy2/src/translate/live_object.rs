@@ -1085,13 +1085,19 @@ fn partial_creature_appearance_claim_for_transport(
     const LEGACY_APPEARANCE_NAME_MASK: u16 = 0x0400;
     const LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK: u16 = 0x2000;
     const LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK: u16 = 0x4000;
+    const LEGACY_APPEARANCE_IGNORED_HIGH_MASK: u16 = 0x8000;
     const LEGACY_APPEARANCE_SCALAR_MASKS: u16 =
         0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0800 | 0x1000;
+    // Mask bit 0x8000 is an explicit zero-payload branch for transport
+    // accounting: Diamond `sub_448E30` and EE `sub_14077FE10` both proceed
+    // from the post-body/tail branches to equipment-delta `0x0200` without a
+    // `0x8000` read.
     const LEGACY_APPEARANCE_PARTIAL_TRANSPORT_MASKS: u16 = LEGACY_APPEARANCE_BODY_PART_MASK
         | LEGACY_APPEARANCE_EQUIPMENT_DELTA_MASK
         | LEGACY_APPEARANCE_NAME_MASK
         | LEGACY_APPEARANCE_POST_BODY_WORD_DWORD_MASK
         | LEGACY_APPEARANCE_LEGACY_SKIPPED_FEATURE_0E_MASK
+        | LEGACY_APPEARANCE_IGNORED_HIGH_MASK
         | LEGACY_APPEARANCE_SCALAR_MASKS;
     const LEGACY_APPEARANCE_FULL_BODY_PART_COUNT: usize = 0x13;
 
@@ -5258,6 +5264,13 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_ignored_high_mask_appearance_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&0x8000u16.to_le_bytes());
+        live
+    }
+
     fn creature_name_only_empty_appearance_live_bytes() -> Vec<u8> {
         let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -6103,6 +6116,40 @@ mod declared_length_repair_tests {
     }
 
     #[test]
+    fn declared_length_capacity_accepts_ignored_high_mask_creature_appearance_without_bool_bits() {
+        let live = creature_ignored_high_mask_appearance_live_bytes();
+        let empty_fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+
+        assert_eq!(
+            live.len(),
+            LEGACY_CREATURE_APPEARANCE_HEADER_BYTES,
+            "Diamond/EE P/5 0x8000 owns only the eight-byte read header"
+        );
+        assert_eq!(
+            crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                &live,
+                0,
+                live.len(),
+            ),
+            Some(live.len()),
+            "0x8000 is an ignored appearance mask bit, not an unsupported payload branch"
+        );
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "P/5 0x8000 is a complete live-object read row"
+        );
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &empty_fragment_bits,
+            ),
+            "ignored-mask P/5 owns no CNW BOOLs and must not require the U-record floor"
+        );
+    }
+
+    #[test]
     fn declared_length_capacity_counts_name_only_creature_appearance_bits() {
         let live = creature_name_only_empty_appearance_live_bytes();
         let too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
@@ -6327,6 +6374,7 @@ mod declared_length_repair_tests {
             ("body selector one", 0x0100u16, 1u8),
             ("body selector three", 0x0100u16, 3u8),
             ("appearance type plus body selector zero", 0x0101u16, 0u8),
+            ("ignored high bit plus body selector zero", 0x8100u16, 0u8),
             ("0x2000 tail plus body selector zero", 0x2100u16, 0u8),
             ("zero equipment plus body selector zero", 0x0300u16, 0u8),
             (
@@ -6394,6 +6442,7 @@ mod declared_length_repair_tests {
         for (label, mask) in [
             ("zero-count equipment only", 0x0200u16),
             ("appearance type plus zero-count equipment", 0x0201u16),
+            ("ignored high bit plus zero-count equipment", 0x8200u16),
             ("0x2000 tail plus zero-count equipment", 0x2200u16),
             ("legacy-skipped 0x4000 plus zero-count equipment", 0x4200u16),
         ] {
