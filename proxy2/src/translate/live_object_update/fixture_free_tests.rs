@@ -297,6 +297,22 @@ fn ee_shaped_model_type2_typed_item_create_live_bytes() -> Vec<u8> {
     live
 }
 
+fn legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+    live.extend_from_slice(&0x01u32.to_le_bytes()); // stock base item with model type 2.
+    live.extend_from_slice(&[0x0C, 0x0B, 0x0B]); // Diamond BYTE model parts.
+    live.push(0);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live.extend_from_slice(&5u32.to_le_bytes());
+    live.extend_from_slice(b"Lance");
+    live.extend_from_slice(&2u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&[0, 0, 0xFF]);
+    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live
+}
+
 fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_18CAu32.to_le_bytes());
@@ -2709,6 +2725,52 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() 
 }
 
 #[test]
+fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
+    // This is the Diamond-body sibling of the CEP v2.3 `A/6` handoff audit.
+    // At this layer the EE object visual-map may already be present, while the
+    // typed item-create row still has Diamond-width model-type-2 BYTE parts and
+    // lacks EE's active-property BOOL. Widening those bytes must not move the
+    // following full `U/6` source bit.
+    let mut live = legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut owned_bits = source_item_create_bits.to_vec();
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy typed item-create widening should preserve the following U/6 cursor");
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(
+        rewrite.bytes_inserted, 3,
+        "model-type-2 BYTE parts widen to WORDs before the existing EE visual-map"
+    );
+    assert_eq!(rewrite.masks_translated, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = vec![false, false, false, true, false, false];
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "item-create byte widening must not steal any following U/6 bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten legacy item-create/full-update stream should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
 fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstring_inline_bits() {
     // This is the locstring-inline sibling of the CEP v2.3 typed A/6 handoff
     // audit. The A/6 active-property insertion is allowed only if the following
@@ -2829,6 +2891,40 @@ fn typed_item_create_handoff_rejects_vector_selected_full_item_update() {
     assert_eq!(
         payload, original,
         "failed handoff proof must leave the source bytes and fragment bits untouched"
+    );
+}
+
+#[test]
+fn legacy_width_typed_item_create_handoff_rejects_vector_selected_full_item_update() {
+    // Byte widening inside the preceding Diamond `A/6` body is still
+    // transactional. If the following `U/6` bits select vector orientation while
+    // the bytes are scalar-shaped, the item-create repair must roll back instead
+    // of committing a plausible but shifted cursor.
+    let mut live = legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let shifted_following_update_bits = [
+        false, true, // position residual bits.
+        true, // vector orientation selector, despite scalar-shaped bytes.
+        true, false, true, false, true,  // state bits if the cursor were valid.
+        false, // direct name if the scalar cursor were valid.
+        true,  // hidden BOOL if the scalar cursor were valid.
+    ];
+    let mut bits = source_item_create_bits.to_vec();
+    bits.extend_from_slice(&shifted_following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "legacy A/6 byte/bit repair must not commit when following U/6 bits are shifted"
+    );
+    assert_eq!(
+        payload, original,
+        "failed Diamond-body handoff proof must leave bytes and bits untouched"
     );
 }
 

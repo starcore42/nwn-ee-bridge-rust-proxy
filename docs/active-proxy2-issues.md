@@ -1231,6 +1231,21 @@ Current status:
   hgbridge-proxy2 work_remaining_does_not_rescue_shifted_full_item_update_cursor
   -- --nocapture`. Next step remains finding the real owner for the shifted
   source bits or proving the stream-boundary artifact.
+- 2026-06-01 `P/05/01` typed item-create legacy-width handoff audit: no packet
+  behavior changed, but public fixture-free coverage now pins the Diamond-body
+  sibling of the CEP v2.3 `A/6` handoff. When the EE object visual-map is
+  already present but the model-type-2 appearance bytes are still Diamond-width
+  BYTE fields and EE's active-property BOOL is absent, the bridge may widen only
+  those three model bytes and insert only the EE active-property BOOL without
+  moving the following decompile-correct scalar full `U/6` bits. The matching
+  negative proof still rejects and rolls back a vector-selected/scalar-shaped
+  following `U/6`, so the CEP v2.3 failure is not explained by typed `A/6`
+  byte widening or active-property insertion. Continue tracing the source
+  fragment cursor, original Diamond writer/handoff, or stream-boundary artifact.
+  Verified with `cargo test -q -p hgbridge-proxy2 typed_item_create --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 item_full_update --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 work_remaining --
+  --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
