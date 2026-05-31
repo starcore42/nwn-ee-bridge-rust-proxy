@@ -143,6 +143,29 @@ fn item_update_position_live_bytes(position_bytes: [u8; 6]) -> Vec<u8> {
     live
 }
 
+fn item_update_full_mask_scalar_direct_name_live_bytes(name: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+    live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+    live.extend_from_slice(&[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F]); // position read bytes.
+    live.push(0); // scalar-orientation read byte.
+    live.extend_from_slice(&0xFFFFu16.to_le_bytes()); // appearance word with resref sentinel.
+    live.extend_from_slice(&[0; 16]); // empty appearance resref.
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live
+}
+
+fn item_update_full_mask_scalar_direct_name_bits() -> Vec<bool> {
+    vec![
+        false, true, // position residual bits.
+        false, true, false, true, false, // scalar orientation selector plus residual bits.
+        true, false, true, false, true,  // state bits.
+        false, // direct CExoString item name.
+        true,  // EE hidden-state BOOL after item name.
+    ]
+}
+
 fn item_update_hidden_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -1574,6 +1597,79 @@ fn item_update_locstring_token_name_hands_off_after_token_payload() {
 }
 
 #[test]
+fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
+    // Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
+    // `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` agree on the low
+    // update-body order: position, orientation selector/body, appearance, state
+    // bits, item name, then EE's hidden-state BOOL. The raw Diamond full mask
+    // is translated to that EE mask only when the same fragment cursor proves
+    // every branch.
+    let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    let mut payload =
+        live_object_payload_with_bits(&live, item_update_full_mask_scalar_direct_name_bits());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the raw Diamond all-bits item mask is not an exact EE update"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("decompile-shaped scalar full item update should translate its mask");
+
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    assert_eq!(rewrite.bits_inserted, 0);
+    assert_eq!(rewrite.bits_removed, 0);
+    assert_eq!(rewrite.bytes_inserted, 0);
+    assert_eq!(rewrite.bytes_removed, 0);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let rewritten_live =
+        &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    assert_eq!(
+        super::read_u32_le(rewritten_live, 6),
+        Some(0x0008_0073),
+        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("translated scalar full item update should exact-claim");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+}
+
+#[test]
+fn item_full_update_vector_selector_cannot_claim_scalar_direct_name_bytes() {
+    // The same read-buffer bytes can look scalar by inspection, but the
+    // decompiled Diamond/EE generic update reader branches on the orientation
+    // BOOL first. A true selector must consume the six vector bytes; the item
+    // translator must not relabel that bit to rescue a later direct-name shape.
+    let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    let vector_selector_bits = vec![
+        false, true, // position residual bits.
+        true, // vector orientation selector.
+        true, false, true, false, true,  // state bits that would follow vector orientation.
+        false, // direct name if the read cursor were still plausible.
+        true,  // hidden BOOL.
+    ];
+    let mut payload = live_object_payload_with_bits(&live, vector_selector_bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "orientation BOOL order is decompile-owned and cannot be repaired from scalar-looking bytes"
+    );
+    assert_eq!(
+        payload, original,
+        "rejected shifted item update must leave bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "vector-selector/scalar-byte item update must remain quarantinable"
+    );
+}
+
+#[test]
 fn legacy_trigger_update_rewrite_requires_tail_and_position_bits() {
     let missing_tail = trigger_update_live_bytes(0xFFFF_FFF3, &[]);
     let mut missing_tail_payload = live_object_payload_with_bits(&missing_tail, vec![false, true]);
@@ -2395,6 +2491,52 @@ fn update_rewrite_typed_item_create_preserves_following_update_bits() {
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten item-create/update should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() {
+    // Extend the local CEP v2.3 `A/6` handoff proof beyond the following
+    // update's first two position bits. When the next `U/6` carries the
+    // decompiled scalar-orientation/name/hidden cursor, the typed item-create
+    // repair inserts only its EE active-property bit and the later full-mask
+    // item update translates normally.
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut owned_bits = source_item_create_bits.to_vec();
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw typed item create still lacks EE's active-property bit"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("typed item-create repair should preserve a full following item-update cursor");
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = vec![false, false, false, true, false, false];
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "the A/6 active-property insert must not steal any following U/6 bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten typed item-create/full-update stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
 }

@@ -1157,6 +1157,31 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2
   live_object_update::fixture_free_tests -- --test-threads=1`, and private
   `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
+- 2026-06-01 `P/05/01` item full-mask `U/6` scalar/vector audit: no packet
+  behavior changed, but public fixture-free coverage now pins the exact
+  all-bits item-update rule behind the remaining CEP v2.3 `U/6` boundary.
+  Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` both read the generic
+  update prefix as position bytes plus two bits, one orientation selector BOOL,
+  either one scalar byte plus four bits or six vector bytes, appearance/resref,
+  five state bits, item name selector/data, then EE's hidden-state BOOL. Tests
+  now prove a raw Diamond `0xFFFF_FFF3` item row with decompile-correct scalar
+  bits and direct `CExoString` name translates to EE mask `0x00080073` without
+  moving bytes or fragment bits, and that the same scalar-looking read-buffer
+  bytes stay unclaimed/unchanged when the orientation BOOL is true and therefore
+  selects the vector branch. The typed `A/6` repair also exact-claims when
+  followed by a full `U/6` whose source bits are correct through orientation,
+  state, name, and hidden. Current CEP v2.3 debug still reaches the following
+  `U/6 mask=0xFFFF_FFF3` at `offset=104`, `bit_cursor=28` with the next bits
+  selecting vector while the bytes look scalar/direct-name, so do not add a
+  U/6 scalar-byte rescue. Next step: trace the preceding source fragment cursor
+  and original writer/handoff that produced those bits (typed `A/6` active-item
+  body, earlier rewrite cursor, or server-side fragment storage) before changing
+  translation behavior. Verified with `cargo test -q -p hgbridge-proxy2
+  item_full_update -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  update_rewrite_typed_item_create_preserves_following_full_item_update_bits
+  -- --nocapture`, and private
+  `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
