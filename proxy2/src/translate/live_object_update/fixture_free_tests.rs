@@ -703,6 +703,33 @@ fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_p
 }
 
 #[test]
+fn work_remaining_fragment_span_promoter_ignores_w_inside_gui_read_buffer() {
+    // The pre-loop post-W span repair may only use a top-level `W current total`
+    // boundary. Diamond `sub_4589A0` / EE `sub_1407B3F30` read `G I U` as one
+    // ten-byte GUI row, and bytes inside its OBJECTID can legally spell
+    // `W current total`; those bytes are not a work-remaining suffix and must
+    // not be truncated as fragment storage.
+    let live = [
+        b'G', b'I', b'U', 0x57, 0x10, 0x20, 0x80, 0x44, 0x33, 0x55, 0xA0,
+    ];
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the extra terminal byte after GUI must block the raw exact claim"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "post-W repair must not fire on W-shaped bytes inside a GUI row"
+    );
+    assert_eq!(
+        payload, original,
+        "W-shaped GUI object-id bytes must remain visible for quarantine"
+    );
+}
+
+#[test]
 fn live_gui_inventory_update_row_is_ten_read_buffer_bytes() {
     // Diamond `sub_4589A0` and EE `sub_1407B3F30` read inventory `G I/i U` as
     // inner opcode, OBJECTID/INT32, SHORT, BYTE. Unlike repository `G R/r U`,

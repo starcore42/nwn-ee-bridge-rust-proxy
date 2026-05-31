@@ -771,7 +771,7 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
 
     let work_offset = (0..=live_bytes.len().saturating_sub(3))
         .rev()
-        .find(|offset| world_status::is_work_remaining_record_at(live_bytes, *offset))?;
+        .find(|offset| work_remaining_offset_is_top_level_suffix(live_bytes, *offset))?;
     let span_start = work_offset.checked_add(3)?;
     if span_start >= live_bytes.len()
         || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
@@ -811,6 +811,30 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
         bytes_promoted: fragment_bytes.len(),
         bits_promoted,
     })
+}
+
+fn work_remaining_offset_is_top_level_suffix(live_bytes: &[u8], work_offset: usize) -> bool {
+    if !world_status::is_work_remaining_record_at(live_bytes, work_offset) {
+        return false;
+    }
+
+    let mut offset = 0usize;
+    while offset < work_offset {
+        if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset) {
+            return false;
+        }
+        let next = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            live_bytes,
+            offset,
+            live_bytes.len(),
+        );
+        if next <= offset || next > work_offset {
+            return false;
+        }
+        offset = next;
+    }
+
+    offset == work_offset
 }
 
 pub(super) fn promote_boundary_collision_trailing_fragment_prefix_after_verified_record_for_ee(

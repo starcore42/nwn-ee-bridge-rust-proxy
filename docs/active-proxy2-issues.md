@@ -1211,6 +1211,18 @@ Current status:
   live_object_update -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   live_object -- --nocapture`, `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
+- ~~2026-05-31 `P/05/01` `W current total` fragment-span top-level-boundary
+  audit: hardened the pre-loop post-`W` fragment-storage promoter so it may use
+  only a `W current total` reached by a top-level live-object boundary walk.
+  Diamond `sub_44F160` and EE `sub_1407B85A0` still read `W` as exactly three
+  read-buffer bytes with no CNW BOOLs, while Diamond `sub_4589A0` / EE
+  `sub_1407B3F30` read `G I U` as a ten-byte GUI row whose OBJECTID bytes can
+  legally spell `W current total`. The promoter now refuses such nested
+  W-shaped bytes instead of truncating them as fragment storage. Verified with
+  `cargo test -q -p hgbridge-proxy2 work_remaining_ -- --nocapture`, `cargo
+  test -q -p hgbridge-proxy2 live_gui_inventory_update -- --nocapture`, `cargo
+  test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`, and
+  `cargo check -q -p hgbridge-proxy2`.~~
 - 2026-05-30 `P/05/01` short GUI/delete declared-tail audit: generalized the
   aligned short-read-boundary guard that was added for `W current total`.
   Zero-row `GQ` and six-byte delete rows can also be shorter than the broad
