@@ -222,6 +222,24 @@ fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
     live
 }
 
+fn ee_shaped_model_type2_typed_item_create_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+    live.extend_from_slice(&0x01u32.to_le_bytes()); // stock base item with model type 2.
+    for part in [0x0Cu16, 0x0Bu16, 0x0Bu16] {
+        live.extend_from_slice(&part.to_le_bytes());
+    }
+    live.push(0);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live.extend_from_slice(&5u32.to_le_bytes());
+    live.extend_from_slice(b"Lance");
+    live.extend_from_slice(&2u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&[0, 0, 0xFF]);
+    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live
+}
+
 fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_18CAu32.to_le_bytes());
@@ -2335,6 +2353,50 @@ fn update_rewrite_can_repair_top_level_item_add_name_bits_midstream() {
         super::claim_payload_if_verified(&payload).expect("repaired mixed stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.world_status_records, 2);
+}
+
+#[test]
+fn update_rewrite_typed_item_create_preserves_following_update_bits() {
+    // `A/6` is a typed live-object item create: after the object id, Diamond
+    // and EE hand off to the shared item body reader. It must not fall through
+    // to top-level visible-equipment add cursor fallback, because the EE-only
+    // active-property BOOL belongs inside the item-create row before the next
+    // `U/6` position record sees its residual bits.
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_position_live_bytes([
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+    ]));
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            false, false, true, false, false, // item name + Diamond active-property bits.
+            false, true, // following U/6 position residual bits.
+        ],
+    );
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw typed item create is missing EE's active-property bit"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("typed item-create rewrite should insert the missing EE bit");
+    assert_eq!(rewrite.bits_inserted, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        &[false, false, false, true, false, false, false, true],
+        "the inserted EE bit must precede, not consume, the following update bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten item-create/update should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
 }
 
 #[test]

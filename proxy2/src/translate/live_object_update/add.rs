@@ -33,14 +33,16 @@ pub(super) fn advance_verified_add_record(
     }
 
     let original_bit_cursor = *bit_cursor;
-    if appearance::advance_verified_ee_item_add_record(
-        bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    ) {
-        return true;
+    if !appearance::starts_with_typed_live_object_add_marker(bytes, offset) {
+        if appearance::advance_verified_ee_item_add_record(
+            bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        ) {
+            return true;
+        }
     }
     *bit_cursor = original_bit_cursor;
     if bytes.get(offset + 1).copied() == Some(ITEM_OBJECT_TYPE)
@@ -92,6 +94,123 @@ pub(super) fn advance_verified_add_record(
         *bit_cursor = original_bit_cursor;
     }
     verified
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ee_shaped_model_type2_typed_item_create_record() -> Vec<u8> {
+        vec![
+            b'A',
+            ITEM_OBJECT_TYPE,
+            0xB8,
+            0x00,
+            0x00,
+            0x80,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x0C,
+            0x00,
+            0x0B,
+            0x00,
+            0x0B,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            0x00,
+            b'L',
+            b'a',
+            b'n',
+            b'c',
+            b'e',
+            0x02,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0xFF,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    }
+
+    #[test]
+    fn typed_item_create_rewrite_keeps_following_bits_aligned() {
+        // Local CEP starter evidence exposed this as a stock model-type-2 item
+        // rule: an `A/6` typed create can already carry EE-shaped appearance
+        // bytes while still missing EE's active-property BOOL. At a live-object
+        // boundary, `A` followed by a typed object marker must use the typed
+        // item-create reader, not the top-level visible-equipment add reader.
+        let mut live = ee_shaped_model_type2_typed_item_create_record();
+        let source_record_bits = [false, false, true, false, false];
+        let following_record_bits = [false, true];
+        let mut fragment_bits = source_record_bits
+            .into_iter()
+            .chain(following_record_bits)
+            .collect::<Vec<_>>();
+
+        let mut raw_cursor = 0usize;
+        assert!(
+            !advance_verified_add_record(&live, 0, live.len(), &fragment_bits, &mut raw_cursor,),
+            "raw typed A/6 must not exact-claim through the top-level item-add shape"
+        );
+        assert_eq!(raw_cursor, 0);
+
+        let mut record_end = live.len();
+        let rewrite = appearance::insert_ee_item_create_extras_for_ee(
+            &mut live,
+            2,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("typed item-create should insert EE's missing active-property bit");
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(record_end, live.len());
+
+        let mut cursor = 0usize;
+        assert!(advance_verified_add_record(
+            &live,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut cursor,
+        ));
+        assert_eq!(
+            cursor,
+            source_record_bits.len() + rewrite.bits_inserted,
+            "typed A/6 item-create must consume the rewritten item body/name/active-property cursor"
+        );
+        assert_eq!(
+            &fragment_bits[cursor..],
+            &following_record_bits,
+            "rewriting the item-create row must preserve the following record bits"
+        );
+    }
 }
 
 fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {

@@ -1138,6 +1138,25 @@ Current status:
   rather than borrowing or trimming through `W`. Verified with `cargo test -q
   -p hgbridge-proxy2 work_remaining_does_not_supply_missing_item_hidden_bit
   -- --nocapture`.
+- 2026-06-01 `P/05/01` typed item-create handoff audit: fixed the `A/6`
+  boundary classifier so a live-object add row whose byte after `A` is a typed
+  object marker stays on the typed item-create path (`A`, type `0x06`, OBJECTID,
+  shared item body) instead of trying top-level visible-equipment item-add
+  name/appearance repair or fallback cursor advancement. The generalized public
+  regression uses a stock model-type-2 item body shaped like the CEP v2.3
+  Lance evidence: EE appearance/visual-map bytes are present, but EE's
+  active-property BOOL is still missing from the fragment stream. The rewrite
+  inserts exactly that BOOL and preserves the following `U/6` position bits.
+  Private CEP v2.3 debug after this change still quarantines at the following
+  `U/6 mask=0xFFFF_FFF3` boundary (`offset=104`, `bit_cursor=28`), so the next
+  active work remains proving or rejecting that update mask/body owner rather
+  than the preceding `A/6` item-create row. Verified with `cargo test -q -p
+  hgbridge-proxy2 typed_item_create_rewrite_keeps_following_bits_aligned --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  update_rewrite_typed_item_create_preserves_following_update_bits --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  live_object_update::fixture_free_tests -- --test-threads=1`, and private
+  `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

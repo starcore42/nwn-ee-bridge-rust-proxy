@@ -21,9 +21,10 @@
 //!   semantic record together.
 
 use super::{
-    CNW_FRAGMENT_HEADER_BITS, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
-    MAX_COMPACT_LEGACY_LIVE_OBJECT_ID, MAX_LIVE_OBJECT_NAME_BYTES,
-    MAX_REASONABLE_LIVE_PAYLOAD_BYTES, MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, bits, boundary,
+    CNW_FRAGMENT_HEADER_BITS, DOOR_OBJECT_TYPE, ITEM_OBJECT_TYPE,
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS, MAX_COMPACT_LEGACY_LIVE_OBJECT_ID,
+    MAX_LIVE_OBJECT_NAME_BYTES, MAX_REASONABLE_LIVE_PAYLOAD_BYTES,
+    MIN_COMPACT_LEGACY_LIVE_OBJECT_ID, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, bits, boundary,
     fragment_spans, read_u16_le, read_u32_le,
 };
 
@@ -1540,6 +1541,20 @@ pub(super) fn looks_like_legacy_item_add_record_boundary(bytes: &[u8], offset: u
             .unwrap_or(false)
 }
 
+pub(super) fn starts_with_typed_live_object_add_marker(bytes: &[u8], offset: usize) -> bool {
+    bytes.get(offset).copied() == Some(b'A')
+        && matches!(
+            bytes.get(offset + 1).copied(),
+            Some(
+                LEGACY_CREATURE_TYPE
+                    | ITEM_OBJECT_TYPE
+                    | TRIGGER_OBJECT_TYPE
+                    | PLACEABLE_OBJECT_TYPE
+                    | DOOR_OBJECT_TYPE
+            )
+        )
+}
+
 pub(super) fn try_get_legacy_item_add_record_end_for_transport(
     bytes: &[u8],
     offset: usize,
@@ -1549,10 +1564,7 @@ pub(super) fn try_get_legacy_item_add_record_end_for_transport(
     if !looks_like_legacy_item_add_record_boundary(bytes, offset) {
         return None;
     }
-    if matches!(
-        bytes.get(offset + 1).copied(),
-        Some(0x05 | 0x06 | 0x07 | 0x09 | 0x0A)
-    ) {
+    if starts_with_typed_live_object_add_marker(bytes, offset) {
         return None;
     }
 

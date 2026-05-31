@@ -1000,24 +1000,28 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
-                    if let Some(repair) = appearance::repair_verified_ee_item_add_name_fragment_bits(
-                        live_bytes,
-                        offset,
-                        record_end,
-                        &mut fragment_bits,
-                        bit_cursor,
-                    ) {
-                        bit_cursor = repair.next_bit_cursor;
-                        summary.add_records_repaired =
-                            summary.add_records_repaired.saturating_add(1);
-                        summary.bits_inserted = summary.bits_inserted.saturating_add(
-                            u32::try_from(repair.bits_inserted).unwrap_or(u32::MAX),
-                        );
-                        summary.bits_removed = summary
-                            .bits_removed
-                            .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
-                        offset = record_end;
-                        continue;
+                    if !appearance::starts_with_typed_live_object_add_marker(live_bytes, offset) {
+                        if let Some(repair) =
+                            appearance::repair_verified_ee_item_add_name_fragment_bits(
+                                live_bytes,
+                                offset,
+                                record_end,
+                                &mut fragment_bits,
+                                bit_cursor,
+                            )
+                        {
+                            bit_cursor = repair.next_bit_cursor;
+                            summary.add_records_repaired =
+                                summary.add_records_repaired.saturating_add(1);
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(repair.bits_inserted).unwrap_or(u32::MAX),
+                            );
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(repair.bits_removed).unwrap_or(u32::MAX),
+                            );
+                            offset = record_end;
+                            continue;
+                        }
                     }
                     trace_add_name_rewrite_reject(
                         "add-record-cursor-rejected",
@@ -3690,46 +3694,48 @@ pub fn rewrite_update_records_payload_if_possible(
                 }
                 bit_cursor = exact_add_start_bit_cursor;
 
-                if let Some(repair) = appearance::repair_verified_ee_item_add_name_fragment_bits(
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    &mut fragment_bits,
-                    bit_cursor,
-                ) {
-                    changed = true;
-                    summary.bits_inserted = summary
-                        .bits_inserted
-                        .saturating_add(u32::try_from(repair.bits_inserted).unwrap_or(u32::MAX));
-                    summary.bits_removed = summary
-                        .bits_removed
-                        .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
-                    bit_cursor = repair.next_bit_cursor;
-                    last_verified_record_end = record_end;
-                    last_verified_record_allows_trailing_fragment_promotion = false;
-                    last_verified_creature_add_record =
-                        if bit_cursor_reliable && object_type == CREATURE_OBJECT_TYPE {
-                            read_u32_le(&live_bytes, offset + 2)
-                                .map(|object_id| (record_end, object_id))
-                        } else {
-                            None
-                        };
-                    last_verified_add_record =
-                        if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
-                            read_u32_le(&live_bytes, offset + 2)
-                                .map(|object_id| (record_end, object_type, object_id))
-                        } else {
-                            None
-                        };
-                    last_verified_door_add_fragment_span_record = if object_type == DOOR_OBJECT_TYPE
-                    {
-                        read_u32_le(&live_bytes, offset + 2)
-                            .map(|object_id| (record_end, object_id))
-                    } else {
-                        None
-                    };
-                    offset = record_end.max(offset + 1);
-                    continue;
+                if !appearance::starts_with_typed_live_object_add_marker(&live_bytes, offset) {
+                    if let Some(repair) = appearance::repair_verified_ee_item_add_name_fragment_bits(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    ) {
+                        changed = true;
+                        summary.bits_inserted = summary.bits_inserted.saturating_add(
+                            u32::try_from(repair.bits_inserted).unwrap_or(u32::MAX),
+                        );
+                        summary.bits_removed = summary
+                            .bits_removed
+                            .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
+                        bit_cursor = repair.next_bit_cursor;
+                        last_verified_record_end = record_end;
+                        last_verified_record_allows_trailing_fragment_promotion = false;
+                        last_verified_creature_add_record =
+                            if bit_cursor_reliable && object_type == CREATURE_OBJECT_TYPE {
+                                read_u32_le(&live_bytes, offset + 2)
+                                    .map(|object_id| (record_end, object_id))
+                            } else {
+                                None
+                            };
+                        last_verified_add_record =
+                            if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
+                                read_u32_le(&live_bytes, offset + 2)
+                                    .map(|object_id| (record_end, object_type, object_id))
+                            } else {
+                                None
+                            };
+                        last_verified_door_add_fragment_span_record =
+                            if object_type == DOOR_OBJECT_TYPE {
+                                read_u32_le(&live_bytes, offset + 2)
+                                    .map(|object_id| (record_end, object_id))
+                            } else {
+                                None
+                            };
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                 }
 
                 if object_type == ITEM_OBJECT_TYPE {
@@ -3762,31 +3768,33 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
-                if let Some(item_rewrite) = appearance::insert_ee_item_add_extras_for_ee(
-                    &mut live_bytes,
-                    offset,
-                    &mut record_end,
-                    &mut fragment_bits,
-                    bit_cursor,
-                ) {
-                    if item_rewrite.bits_inserted != 0
-                        || item_rewrite.bits_removed != 0
-                        || item_rewrite.bytes_inserted != 0
-                        || item_rewrite.bytes_removed != 0
-                    {
-                        changed = true;
-                        summary.bits_inserted = summary.bits_inserted.saturating_add(
-                            u32::try_from(item_rewrite.bits_inserted).unwrap_or(u32::MAX),
-                        );
-                        summary.bits_removed = summary.bits_removed.saturating_add(
-                            u32::try_from(item_rewrite.bits_removed).unwrap_or(u32::MAX),
-                        );
-                        summary.bytes_inserted = summary.bytes_inserted.saturating_add(
-                            u32::try_from(item_rewrite.bytes_inserted).unwrap_or(u32::MAX),
-                        );
-                        summary.bytes_removed = summary.bytes_removed.saturating_add(
-                            u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
-                        );
+                if !appearance::starts_with_typed_live_object_add_marker(&live_bytes, offset) {
+                    if let Some(item_rewrite) = appearance::insert_ee_item_add_extras_for_ee(
+                        &mut live_bytes,
+                        offset,
+                        &mut record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    ) {
+                        if item_rewrite.bits_inserted != 0
+                            || item_rewrite.bits_removed != 0
+                            || item_rewrite.bytes_inserted != 0
+                            || item_rewrite.bytes_removed != 0
+                        {
+                            changed = true;
+                            summary.bits_inserted = summary.bits_inserted.saturating_add(
+                                u32::try_from(item_rewrite.bits_inserted).unwrap_or(u32::MAX),
+                            );
+                            summary.bits_removed = summary.bits_removed.saturating_add(
+                                u32::try_from(item_rewrite.bits_removed).unwrap_or(u32::MAX),
+                            );
+                            summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                                u32::try_from(item_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                            );
+                            summary.bytes_removed = summary.bytes_removed.saturating_add(
+                                u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                            );
+                        }
                     }
                 }
 
@@ -3900,36 +3908,62 @@ pub fn rewrite_update_records_payload_if_possible(
                 }
 
                 let add_record_start_bit_cursor = bit_cursor;
-                if !(object_type == ITEM_OBJECT_TYPE
-                    && appearance::advance_verified_ee_item_create_record(
+                let typed_marker =
+                    appearance::starts_with_typed_live_object_add_marker(&live_bytes, offset);
+                let mut add_record_cursor_verified = false;
+                if object_type == ITEM_OBJECT_TYPE {
+                    let mut item_create_cursor = add_record_start_bit_cursor;
+                    if appearance::advance_verified_ee_item_create_record(
                         &live_bytes,
                         offset + 2,
                         record_end,
                         &fragment_bits,
-                        &mut bit_cursor,
-                    ))
-                    && !appearance::advance_verified_ee_item_add_record(
+                        &mut item_create_cursor,
+                    ) {
+                        bit_cursor = item_create_cursor;
+                        add_record_cursor_verified = true;
+                    }
+                }
+                if !add_record_cursor_verified && !typed_marker {
+                    let mut item_add_cursor = add_record_start_bit_cursor;
+                    if appearance::advance_verified_ee_item_add_record(
                         &live_bytes,
                         offset,
                         record_end,
                         &fragment_bits,
-                        &mut bit_cursor,
-                    )
-                    && !cursor::advance_live_add_record_bit_cursor(
+                        &mut item_add_cursor,
+                    ) {
+                        bit_cursor = item_add_cursor;
+                        add_record_cursor_verified = true;
+                    }
+                }
+                if !add_record_cursor_verified && !typed_marker {
+                    let mut generic_add_cursor = add_record_start_bit_cursor;
+                    if cursor::advance_live_add_record_bit_cursor(
                         &live_bytes,
                         &fragment_bits,
                         offset,
                         record_end,
-                        &mut bit_cursor,
-                    )
-                    && !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+                        &mut generic_add_cursor,
+                    ) {
+                        bit_cursor = generic_add_cursor;
+                        add_record_cursor_verified = true;
+                    }
+                }
+                if !add_record_cursor_verified && !typed_marker {
+                    let mut legacy_add_cursor = add_record_start_bit_cursor;
+                    if cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
                         &live_bytes,
                         &fragment_bits,
                         offset,
                         record_end,
-                        &mut bit_cursor,
-                    )
-                {
+                        &mut legacy_add_cursor,
+                    ) {
+                        bit_cursor = legacy_add_cursor;
+                        add_record_cursor_verified = true;
+                    }
+                }
+                if !add_record_cursor_verified {
                     bit_cursor = add_record_start_bit_cursor;
                     if last_verified_record_allows_trailing_fragment_promotion
                         && offset == last_verified_record_end
