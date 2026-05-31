@@ -1031,9 +1031,8 @@ fn legacy_zero_equipment_delta_read_end_for_transport(
     // count, then each nonzero entry owns CHAR opcode + OBJECTID + DWORD
     // slot/field before any opcode-specific item body. A zero-count delta is
     // therefore a read-buffer row with no fragment BOOLs. The typed appearance
-    // translator still leaves partial equipment deltas unclaimed until that
-    // branch is fully modeled; stale-declared repair must not steal the aligned
-    // short zero-count form as CNW fragment storage.
+    // parser/writer owns the bounded equipment-delta list; stale-declared repair
+    // must not steal the aligned short zero-count form as CNW fragment storage.
     (record_end <= scan_end
         && record_end > tail_start
         && record_end.saturating_sub(tail_start) < MIN_AMBIGUOUS_TAIL_READ_BYTES)
@@ -1188,9 +1187,9 @@ fn partial_creature_appearance_claim_for_transport(
 
         // Diamond `sub_448E30` and EE `sub_14077FE10` read mask bit 0x0400
         // before the scalar/body/equipment branches. This transport-only claim
-        // counts those name BOOLs, then leaves the still-unmodeled partial body
-        // and zero-count equipment deltas as read-buffer rows with no additional
-        // CNW bits. It is deliberately not a semantic appearance rewrite.
+        // counts those name BOOLs, then advances the same byte-owned partial
+        // body/equipment rows that the semantic appearance parser later rewrites
+        // or validates. It is deliberately not itself a semantic rewrite.
         let claim = PartialCreatureAppearanceTransportClaim {
             record_end: cursor,
             fragment_bits: name.fragment_bits,

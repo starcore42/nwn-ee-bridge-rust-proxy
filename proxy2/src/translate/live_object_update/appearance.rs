@@ -798,9 +798,9 @@ fn legacy_appearance_boundary_candidate_is_better(
                 && candidate.record_end > current.record_end);
     }
 
-    // Non-full updates are still modeled conservatively.  Until each partial
-    // mask family has its own exact typed parser, keep the historical shortest
-    // accepted boundary to avoid swallowing a following live-object record.
+    // Non-full records can still have byte-plausible alternate name/body
+    // boundaries. Keep the shortest accepted boundary unless a full-appearance
+    // equipment table proves the larger semantic record above.
     candidate.record_end < current.record_end
 }
 
@@ -6021,14 +6021,29 @@ fn advance_creature_appearance_body_fields(
         return cursor.checked_add(1).filter(|end| *end <= limit);
     }
     if direct_selector < 0x0A {
-        // The same reader accepts a compact delta table: selector count, then
-        // count pairs of body-part index/value bytes.  This branch is byte-
-        // identical in the Diamond reader path; EE high-byte expansion is only
-        // needed for the full 19-part table below.
-        return cursor
-            .checked_add(1)?
-            .checked_add(usize::from(direct_selector).checked_mul(2)?)
-            .filter(|end| *end <= limit);
+        // Diamond `sub_448E30` reads compact body deltas as selector count,
+        // then BYTE index + BYTE value pairs. EE `sub_14077FE10` uses the same
+        // selector and index order, but in the proxy-owned build-0x23 dialect
+        // reads each compact value as a WORD with a required zero high byte.
+        cursor = cursor.checked_add(1)?;
+        for _ in 0..usize::from(direct_selector) {
+            cursor = cursor.checked_add(1)?; // body-part index byte.
+            match dialect {
+                CreatureAppearanceWireDialect::LegacyDiamond => {
+                    cursor = cursor.checked_add(1)?;
+                    ee_extra_byte_inserts.push(
+                        CreatureAppearanceByteInsert::EeFeature23CreatureBodyPartHighByte {
+                            offset: cursor,
+                        },
+                    );
+                }
+                CreatureAppearanceWireDialect::EeBuild8193 => {
+                    require_zero_high_byte_word(bytes, cursor, limit)?;
+                    cursor = cursor.checked_add(2)?;
+                }
+            }
+        }
+        return (cursor <= limit).then_some(cursor);
     }
 
     // Diamond `sub_448E30` compares the selector against `0x0A`; selectors
@@ -9263,6 +9278,17 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_body_delta_with_compact_selector() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_BODY_PART_MASK);
+        bytes.push(2); // compact body-delta pair count.
+        bytes.extend_from_slice(&[0, 0x10]); // body-part index, compact value.
+        bytes.extend_from_slice(&[4, 0x20]); // body-part index, compact value.
+        bytes
+    }
+
     fn partial_legacy_creature_zero_equipment_delta_with_ee_only_fields() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -9720,6 +9746,83 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 1,
             "EE zero-body-selector validation must preserve the direct-name bit cursor"
+        );
+    }
+
+    #[test]
+    fn partial_body_delta_compact_selector_widens_values_without_name_bits() {
+        let mut bytes = partial_legacy_creature_body_delta_with_compact_selector();
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "compact body-delta selectors own only index/value byte pairs in Diamond"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 0,
+            "compact body deltas do not own CNW fragment BOOLs"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy compact body deltas should widen to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 2,
+            "EE build-0x23 widens each compact body-delta value to a WORD"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            &bytes[LEGACY_APPEARANCE_HEADER_BYTES..record_end],
+            &[2, 0, 0x10, 0, 4, 0x20, 0],
+            "the selector/index order must stay intact while only value high bytes are inserted"
+        );
+        assert_eq!(
+            try_get_ee_creature_appearance_record_end_by_byte_shape(&bytes, 0, bytes.len()),
+            Some(bytes.len())
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(
+            ee_cursor, 0,
+            "EE compact body-delta validation must not invent a creature-name selector"
+        );
+
+        let mut nonzero_high = bytes.clone();
+        nonzero_high[LEGACY_APPEARANCE_HEADER_BYTES + 3] = 1;
+        let mut bad_cursor = 0usize;
+        assert!(
+            !advance_verified_ee_creature_appearance_record(
+                &nonzero_high,
+                0,
+                record_end,
+                &fragment_bits,
+                &mut bad_cursor,
+            ),
+            "EE build-0x23 compact body-delta WORD high bytes must be zero"
         );
     }
 

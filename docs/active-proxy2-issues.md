@@ -1785,7 +1785,8 @@ Current status:
   the `0x0100` body selector (`0`, `1..=9`, or `>=0x0A` fixed nineteen-part
   table), optional `0x2000`, legacy-skipped/EE-read `0x4000`, and the `0x0200`
   equipment count. The writer now inserts EE build-0x23 high bytes for scalar
-  `0x0080` and fixed body tables, inserts the EE build-0x0E tail byte before a
+  `0x0080`, compact body-delta values, and fixed body tables, inserts the EE
+  build-0x0E tail byte before a
   zero equipment count, and validates the exact EE cursor without inventing a
   name selector for no-name masks. Unresearched non-full mask bits still
   quarantine; a later 2026-05-31 audit proved mask `0x8000` is an ignored
@@ -1796,6 +1797,16 @@ Current status:
   hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
   hgbridge-proxy2`, and full serial `cargo test -q -p hgbridge-proxy2 --
   --test-threads=1`.
+- ~~2026-05-31 `P/05/01` compact partial creature body-delta EE-width audit:
+  fixed the structured non-full `P/5` body-delta reader/writer for selector
+  counts `1..=9`. Diamond `sub_448E30` reads selector count, then BYTE
+  body-part index + BYTE value pairs. EE `sub_14077FE10`, after the
+  `ServerSatisfiesBuild(0x2001,0x23,0)` gate, keeps the same selector/index
+  order but reads each value as a WORD. The proxy-owned EE dialect now inserts
+  zero high bytes after each compact value and the exact verifier rejects
+  nonzero high bytes, so later appearance/equipment fields cannot silently
+  shift by one byte per pair. Verified with `cargo test -q -p hgbridge-proxy2
+  partial_body_delta_compact_selector -- --nocapture`.~~
 - ~~2026-05-31 `P/05/01` ignored high-mask creature appearance audit:
   corrected the non-full `P/5` mask contract for `0x8000`. Diamond
   `sub_448E30` and EE `sub_14077FE10` both read the appearance header and have
