@@ -6,7 +6,7 @@
 use super::{
     CNW_LENGTH_BYTES, DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
     EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
-    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES,
+    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES, ITEM_OBJECT_TYPE,
     LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
@@ -122,6 +122,16 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
                 // prevents the preceding status record from swallowing it.
                 return legacy_4408_end;
             }
+        }
+    }
+
+    if bytes.get(offset).copied() == Some(b'U')
+        && bytes.get(offset + 1).copied() == Some(ITEM_OBJECT_TYPE)
+    {
+        if let Some(record_end) =
+            try_get_item_update_record_end_for_transport(bytes, offset, scan_end)
+        {
+            return record_end;
         }
     }
 
@@ -984,6 +994,33 @@ pub(super) fn try_get_ee_creature_update_record_end_for_transport(
         .or_else(|| creature::try_get_ee_creature_update_c408_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c40f_record_end(bytes, offset, scan_end))
         .or_else(|| creature::try_get_ee_creature_update_c44f_record_end(bytes, offset, scan_end))
+}
+
+fn try_get_item_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    // Diamond routes item updates through the same generic update byte order as
+    // doors/placeables (`sub_459700 -> sub_467AE0`): position, orientation,
+    // appearance, scale/state, then object-specific item name handling. The
+    // boundary scanner has no fragment cursor, so it only accepts a byte cursor
+    // that lands on the live-object boundary and leaves exact bit proof to
+    // item.rs.
+    let candidates =
+        item::update_record_read_end_candidates_for_transport(bytes, offset, scan_end)?;
+    let mut proven_end = None;
+    for candidate in candidates {
+        if !record_end_lands_on_boundary(bytes, candidate, scan_end) {
+            continue;
+        }
+        proven_end = match proven_end {
+            Some(existing) if existing != candidate => return None,
+            Some(existing) => Some(existing),
+            None => Some(candidate),
+        };
+    }
+    proven_end
 }
 
 fn try_get_ee_creature_update_0008_record_end_for_transport(

@@ -126,6 +126,14 @@ fn item_update_name_live_bytes(raw_mask: u32, name: &[u8]) -> Vec<u8> {
     live
 }
 
+fn item_update_position_live_bytes(position_bytes: [u8; 6]) -> Vec<u8> {
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&super::LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+    live.extend_from_slice(&position_bytes);
+    live
+}
+
 fn inventory_2a00_word_list_live_bytes(
     word_entries: &[u16],
     feature25_second_ids: &[u32],
@@ -1310,6 +1318,49 @@ fn trigger_update_exact_shape_owns_only_position_fragment_bits() {
         super::claim_payload_if_verified(&extra_bit_payload).is_none(),
         "a byte-complete trigger update with an extra unowned fragment bit is not exact"
     );
+}
+
+#[test]
+fn item_update_position_body_w_bytes_stay_inside_update_record() {
+    // Diamond `sub_459700 -> sub_467AE0` consumes the full six-byte position
+    // body before the live-object dispatcher can see the next opcode. The first
+    // three position bytes can legally spell a `W current total` row, but they
+    // are not a top-level work-remaining record.
+    let live = item_update_position_live_bytes([b'W', 0x10, 0x20, 0xAA, 0xBB, 0xCC]);
+    let payload = live_object_payload_with_bits(&live, vec![true, false]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("item position update should own W-shaped position bytes");
+
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 0);
+    assert_eq!(claim.live_bytes_length, live.len());
+
+    let bit_short = live_object_payload_with_bits(&live, vec![true]);
+    assert!(
+        super::claim_payload_if_verified(&bit_short).is_none(),
+        "the transport boundary must not replace the two position fragment bits"
+    );
+}
+
+#[test]
+fn item_update_position_hands_off_after_full_position_body() {
+    let mut live = item_update_position_live_bytes([b'W', 0x10, 0x20, 0xAA, 0xBB, 0xCC]);
+    live.extend_from_slice(&[b'D', super::ITEM_OBJECT_TYPE]);
+    live.extend_from_slice(&0x8000_2201u32.to_le_bytes());
+
+    let payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, // item position residual bits.
+            true,  // D/6 owns one delete BOOL.
+        ],
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("item update should hand off only after all position bytes");
+
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.delete_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
 }
 
 #[test]

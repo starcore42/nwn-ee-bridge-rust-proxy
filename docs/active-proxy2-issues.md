@@ -1101,6 +1101,21 @@ Current status:
   recorded as unowned by the Diamond client reader.
   Verified with `cargo test -q -p hgbridge-proxy2 item_update_name -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 live_object_update -- --nocapture`.
+- 2026-05-31 `P/05/01` item `U/6` read-body boundary audit: fixed the shared
+  live-object transport scanner so item update read-buffer fields are walked
+  before generic opcode scans. Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0`
+  owns the generic item update order: position bytes, scalar/vector orientation
+  bytes, appearance/resref, scale/state bytes, then item name bits/string; EE's
+  item validator uses the same byte order before the hidden-state BOOL. A
+  position body whose first three bytes spell `W current total` is therefore
+  still a `U/6` body, not a top-level `W` row, and the following live-object row
+  is considered only after all six position bytes and the two position fragment
+  bits are owned. This does not resolve the active CEP v2.3 terminal-tail
+  evidence; low-`0x40` item read tails and `U/9`/`W` shortages remain
+  quarantined unless a separate owner is proven. Verified with `cargo test -q
+  -p hgbridge-proxy2 item_update_position -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 item_update -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

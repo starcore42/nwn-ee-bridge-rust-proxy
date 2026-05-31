@@ -167,6 +167,73 @@ pub(super) fn advance_verified_ee_item_update_record(
     (read_end == record_end).then_some(next_bit_cursor)
 }
 
+pub(super) fn update_record_read_end_candidates_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<Vec<usize>> {
+    let mask = item_update_mask(bytes, offset, scan_end)?;
+    if !legacy_item_update_mask_supported(mask) {
+        return None;
+    }
+
+    let mut cursors = vec![offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?];
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        cursors = cursors
+            .into_iter()
+            .filter_map(|cursor| cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES))
+            .collect();
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let mut branch_cursors = Vec::with_capacity(cursors.len().saturating_mul(2));
+        for cursor in cursors {
+            if let Some(next) = cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES) {
+                branch_cursors.push(next);
+            }
+            if let Some(next) = cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES) {
+                branch_cursors.push(next);
+            }
+        }
+        cursors = branch_cursors;
+    }
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
+        cursors = cursors
+            .into_iter()
+            .filter_map(|cursor| {
+                let appearance = read_u16_le(bytes, cursor)?;
+                let mut next = cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+                if appearance >= 0xFFFE {
+                    next = next.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+                }
+                Some(next)
+            })
+            .collect();
+    }
+    if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        cursors = cursors
+            .into_iter()
+            .filter_map(|cursor| cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES))
+            .collect();
+    }
+    if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        let mut name_cursors = Vec::with_capacity(cursors.len().saturating_mul(2));
+        for cursor in cursors {
+            if let Some(next) = locstring::inline_cexo_string_end(bytes, cursor) {
+                name_cursors.push(next);
+            }
+            if let Some(next) = locstring::tlk_locstring_ref_end(bytes, cursor) {
+                name_cursors.push(next);
+            }
+        }
+        cursors = name_cursors;
+    }
+
+    cursors.retain(|cursor| *cursor <= scan_end && *cursor <= bytes.len());
+    cursors.sort_unstable();
+    cursors.dedup();
+    (!cursors.is_empty()).then_some(cursors)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ItemUpdateCommonPrefix {
     read_end: usize,
