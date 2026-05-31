@@ -2637,6 +2637,41 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstri
 }
 
 #[test]
+fn typed_item_create_handoff_rejects_vector_selected_full_item_update() {
+    // This is the negative sibling of the CEP v2.3 typed A/6 handoff audit.
+    // The A/6 row may insert EE's active-property BOOL only when the following
+    // U/6 owns its own cursor. Diamond `sub_467AE0` and EE `sub_14079C050`
+    // branch on the orientation BOOL before reading orientation bytes, so a
+    // vector selector cannot be relabeled to fit scalar-looking item bytes.
+    let mut live = ee_shaped_model_type2_typed_item_create_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let shifted_following_update_bits = [
+        false, true, // position residual bits.
+        true, // vector orientation selector, despite scalar-shaped bytes.
+        true, false, true, false, true,  // state bits if the cursor were valid.
+        false, // direct name if the scalar cursor were valid.
+        true,  // hidden BOOL if the scalar cursor were valid.
+    ];
+    let mut bits = source_item_create_bits.to_vec();
+    bits.extend_from_slice(&shifted_following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "A/6 repair must not commit when the following U/6 cursor is shifted"
+    );
+    assert_eq!(
+        payload, original,
+        "failed handoff proof must leave the source bytes and fragment bits untouched"
+    );
+}
+
+#[test]
 fn live_gui_character_sheet_effect_icons_word_ids_do_not_split_on_legacy_prefix() {
     // EE build 8193.37 widened character-sheet effect-icon counts and ids to
     // WORDs. The leading zero removed-count byte is also a valid legacy prefix,

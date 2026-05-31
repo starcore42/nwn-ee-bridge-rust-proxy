@@ -1193,6 +1193,20 @@ Current status:
   stay focused on the actual source cursor/handoff bits rather than adding a
   special U/6 name-branch rescue. Verified with `cargo test -q -p
   hgbridge-proxy2 locstring_inline -- --nocapture`.
+- 2026-06-01 `P/05/01` typed item-create / full item-update handoff negative
+  proof: no packet behavior changed, but public fixture-free coverage now
+  captures the remaining CEP v2.3 source-bit shape directly. A preceding typed
+  `A/6` row may insert EE's active-property BOOL only transactionally; if the
+  following `U/6 0xFFFF_FFF3` bits select the vector-orientation branch while
+  the read-buffer bytes look like the scalar/direct-name item shape, the update
+  pass must roll back and leave bytes/bits untouched. Diamond `sub_467AE0` and
+  EE `sub_14079C050` branch on the orientation BOOL before reading orientation
+  bytes, so this is shifted-cursor evidence, not a safe scalar-byte rescue.
+  The CEP v2.3 starter capture remains active pending a real owner for those
+  source bits or the later `U/9`/`W` terminal tail. Verified with `cargo test
+  -q -p hgbridge-proxy2
+  typed_item_create_handoff_rejects_vector_selected_full_item_update --
+  --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
