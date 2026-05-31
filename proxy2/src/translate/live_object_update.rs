@@ -465,6 +465,19 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 verified_creature_appearance_next_bit_cursor = Some(next_bit_cursor);
             }
         }
+        if live_bytes.get(offset).copied() == Some(b'A')
+            && live_bytes.get(offset + 1).copied() == Some(ITEM_OBJECT_TYPE)
+        {
+            if let Some(verified_end) = appearance::try_get_verified_ee_item_create_record_end(
+                live_bytes,
+                offset + 2,
+                live_bytes.len(),
+                &fragment_bits,
+                bit_cursor,
+            ) {
+                record_end = verified_end;
+            }
+        }
         if live_bytes.get(offset).copied() == Some(b'G') {
             if let Some(verified_end) = gui::try_get_verified_ee_live_gui_record_end(
                 live_bytes,
@@ -3389,6 +3402,33 @@ pub fn rewrite_update_records_payload_if_possible(
                         creature_appearance_already_ee_shaped = true;
                     }
                 }
+            }
+        }
+        if opcode == b'A' && object_type == ITEM_OBJECT_TYPE && bit_cursor_reliable {
+            if let Some(legacy_end) =
+                appearance::try_get_legacy_item_create_record_end_with_fragment_proof(
+                    &live_bytes,
+                    offset + 2,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
+                // Typed `A/6` rows are lengthless wrappers around the shared
+                // item body. Active-property bytes can look like top-level
+                // live-object opcodes, so choose the decompile-owned item body
+                // endpoint before the generic boundary split.
+                record_end = legacy_end;
+            } else if let Some(verified_end) =
+                appearance::try_get_verified_ee_item_create_record_end(
+                    &live_bytes,
+                    offset + 2,
+                    live_bytes.len(),
+                    &fragment_bits,
+                    bit_cursor,
+                )
+            {
+                record_end = verified_end;
             }
         }
         if opcode == b'G' && bit_cursor_reliable {

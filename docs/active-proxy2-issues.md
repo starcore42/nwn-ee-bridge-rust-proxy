@@ -1157,6 +1157,23 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2
   live_object_update::fixture_free_tests -- --test-threads=1`, and private
   `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
+- 2026-06-01 `P/05/01` typed item-create property-tail boundary audit: fixed
+  the live-object rewrite/claim loops to prefer the fragment-proven shared item
+  body endpoint for typed `A/6` rows before trusting the generic byte-boundary
+  scanner. Diamond `sub_451020` and EE `sub_14076BD30` both consume the counted
+  active-property tail inside the item body, and those value bytes can legally
+  resemble a top-level `U/6` boundary. The public regression now injects a
+  `U/6`-looking sequence into valid active-property value bytes, proves the
+  byte-only scanner would split early, and verifies the decompile-backed item
+  parser plus fragment proof keeps the following full `U/6` cursor exact. The
+  private CEP v2.3 fixture still quarantines at the following shifted `U/6`, so
+  this closes another `A/6` boundary false-split risk without changing the
+  remaining source-cursor hypothesis. Verified with `cargo test -q -p
+  hgbridge-proxy2 typed_item_create -- --nocapture`, `cargo check -q -p
+  hgbridge-proxy2`, and private `RUSTFLAGS='--cfg hgbridge_private_fixtures'
+  cargo test -q -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`.
 - 2026-06-01 `P/05/01` item full-mask `U/6` scalar/vector audit: no packet
   behavior changed, but public fixture-free coverage now pins the exact
   all-bits item-update rule behind the remaining CEP v2.3 `U/6` boundary.

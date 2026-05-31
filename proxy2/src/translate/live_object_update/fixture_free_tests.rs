@@ -339,6 +339,25 @@ fn ee_shaped_model_type2_typed_item_create_live_bytes() -> Vec<u8> {
     live
 }
 
+fn inject_live_boundary_lookalike_into_item_property_values(live: &mut [u8]) {
+    let name_start = live
+        .windows(b"Lance".len())
+        .position(|window| window == b"Lance")
+        .expect("item name in typed item-create fixture");
+    let active_property_tail_start = name_start + b"Lance".len();
+    let value_bytes_start = active_property_tail_start + 11;
+    live[value_bytes_start..value_bytes_start + 8].copy_from_slice(&[
+        b'U',
+        super::ITEM_OBJECT_TYPE,
+        0xB8,
+        0x00,
+        0x00,
+        0x80,
+        0xF3,
+        0xFF,
+    ]);
+}
+
 fn legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
@@ -2762,6 +2781,49 @@ fn update_rewrite_typed_item_create_preserves_following_full_item_update_bits() 
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("rewritten typed item-create/full-update stream should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn typed_item_create_boundary_uses_item_body_proof_over_property_opcode_bytes() {
+    // Diamond `sub_451020` and EE `sub_14076BD30` both consume the counted
+    // active-property tail inside the typed `A/6` item body. Bytes in that tail
+    // can resemble a top-level `U/6`, so the boundary must be selected by the
+    // item parser plus fragment proof before the following update cursor is
+    // validated.
+    let mut item_create = ee_shaped_model_type2_typed_item_create_live_bytes();
+    inject_live_boundary_lookalike_into_item_property_values(&mut item_create);
+    let item_create_len = item_create.len();
+
+    let mut live = item_create;
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let generic_end = super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+        &live,
+        0,
+        live.len(),
+    );
+    assert!(
+        generic_end < item_create_len,
+        "the byte-only boundary scanner should see the interior U/6 lookalike"
+    );
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut owned_bits = source_item_create_bits.to_vec();
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("fragment-proven A/6 endpoint should beat the interior opcode lookalike");
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten item-create/update stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
 }
