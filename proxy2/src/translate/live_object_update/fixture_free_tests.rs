@@ -143,6 +143,13 @@ fn item_update_position_live_bytes(position_bytes: [u8; 6]) -> Vec<u8> {
     live
 }
 
+fn item_update_hidden_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+    live
+}
+
 fn inventory_2a00_word_list_live_bytes(
     word_entries: &[u16],
     feature25_second_ids: &[u32],
@@ -636,6 +643,44 @@ fn work_remaining_does_not_supply_missing_vector_update_fragment_bits() {
             "bit-short vector U/9 or U/10 before W must stay visible for quarantine/diagnostics"
         );
     }
+}
+
+#[test]
+fn work_remaining_does_not_supply_missing_item_hidden_bit() {
+    // Diamond `sub_451AF0` has no low-0x40 read-buffer tail; EE
+    // `sub_14076BD30` owns one hidden-state BOOL for item mask 0x40. `W current
+    // total` (`sub_44F160` / `sub_1407B85A0`) owns only its three read-buffer
+    // bytes, so it cannot donate the missing item BOOL or hide an extra one.
+    let mut live = item_update_hidden_live_bytes();
+    live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+
+    let payload = live_object_payload_with_bits(&live, vec![true]);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("item hidden update followed by W should exact-claim with one item BOOL");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.live_bytes_length, live.len());
+
+    let mut missing = live_object_payload_with_bits(&live, Vec::new());
+    let original_missing = missing.clone();
+    assert!(
+        super::claim_payload_if_verified(&missing).is_none(),
+        "W must not supply the missing item hidden-state BOOL"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut missing).is_none(),
+        "rewrite must not borrow the missing item bit from W"
+    );
+    assert_eq!(
+        missing, original_missing,
+        "bit-short U/6 before W must stay visible for quarantine/diagnostics"
+    );
+
+    let extra = live_object_payload_with_bits(&live, vec![true, false]);
+    assert!(
+        super::claim_payload_if_verified(&extra).is_none(),
+        "W must not hide an extra terminal fragment bit after item hidden state"
+    );
 }
 
 #[test]

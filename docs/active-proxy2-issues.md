@@ -1127,6 +1127,17 @@ Current status:
   after the token payload. Verified with `cargo test -q -p hgbridge-proxy2
   item_update_locstring_token_name -- --nocapture` and `cargo test -q -p
   hgbridge-proxy2 item_update_name -- --nocapture`.
+- 2026-05-31 `P/05/01` item `U/6` hidden-state before `W` audit: no packet
+  behavior changed, but public fixture-free coverage now pins the terminal-tail
+  negative proof for the item sibling of the CEP v2.3 evidence. Diamond
+  `sub_451AF0` has no low-`0x40` item read-buffer tail, EE `sub_14076BD30`
+  owns exactly one hidden-state BOOL for mask `0x40`, and `W current total`
+  (`sub_44F160` / `sub_1407B85A0`) owns only its three read-buffer bytes and
+  zero CNW BOOLs. An item hidden update before `W` therefore exact-claims with
+  one item BOOL, rejects a missing BOOL, and rejects an extra terminal BOOL
+  rather than borrowing or trimming through `W`. Verified with `cargo test -q
+  -p hgbridge-proxy2 work_remaining_does_not_supply_missing_item_hidden_bit
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
@@ -1242,7 +1253,8 @@ Current status:
   work_remaining_suffix_does_not_let_low_tail_update_trim_extra_fragment_bit
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 work_remaining --
   --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`,
-  and `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`.
+  and `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`
+  (341 passed).
 - 2026-05-30 `P/05/01` declared-length `W` tail boundary audit: hardened
   stale-declared split classification so a candidate whose CNW tail starts with
   aligned `W current total` is treated as an ambiguous live-object read boundary,
