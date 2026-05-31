@@ -1220,6 +1220,17 @@ Current status:
   unsupported vector-path gap. Verified with `cargo test -q -p
   hgbridge-proxy2 item_full_update -- --nocapture` and `cargo test -q -p
   hgbridge-proxy2 typed_item_create -- --nocapture`.
+- 2026-06-01 `P/05/01` full item `U/6` before `W` audit: no packet behavior
+  changed, but public fixture-free coverage now pins the item sibling of the
+  terminal `W` rule. A decompile-correct scalar full item update can translate
+  its Diamond `0xFFFF_FFF3` mask and exact-claim before `W current total`, but a
+  vector-selected/scalar-shaped `U/6` row remains unclaimed and unchanged even
+  when `W` follows. Diamond `sub_44F160` and EE `sub_1407B85A0` own only three
+  read-buffer bytes and zero fragment BOOLs, so the remaining CEP v2.3 starter
+  `U/6` failure is not a `W` suffix rescue. Verified with `cargo test -q -p
+  hgbridge-proxy2 work_remaining_does_not_rescue_shifted_full_item_update_cursor
+  -- --nocapture`. Next step remains finding the real owner for the shifted
+  source bits or proving the stream-boundary artifact.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

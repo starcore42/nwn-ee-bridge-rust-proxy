@@ -759,6 +759,59 @@ fn work_remaining_does_not_supply_missing_item_hidden_bit() {
 }
 
 #[test]
+fn work_remaining_does_not_rescue_shifted_full_item_update_cursor() {
+    // This is the item sibling of the CEP v2.3 U/6-W boundary evidence.
+    // Diamond `sub_467AE0` and EE `sub_14079C050` branch on the orientation
+    // BOOL before reading orientation bytes, while `W current total`
+    // (`sub_44F160` / `sub_1407B85A0`) owns no CNW fragment bits. A following W
+    // can therefore follow a fully proven item update, but it cannot relabel a
+    // vector-selected, scalar-shaped U/6 row.
+    let mut exact_live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    exact_live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+    let mut exact_payload =
+        live_object_payload_with_bits(&exact_live, item_update_full_mask_scalar_direct_name_bits());
+
+    assert!(
+        super::claim_payload_if_verified(&exact_payload).is_none(),
+        "the raw Diamond all-bits item mask is not an exact EE update before W"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("decompile-shaped full item update should translate before W");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("translated full item update followed by W should exact-claim");
+    assert_eq!(exact_claim.update_records, 1);
+    assert_eq!(exact_claim.world_status_records, 1);
+    assert_eq!(exact_claim.live_bytes_length, exact_live.len());
+
+    let mut shifted_live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    shifted_live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+    let shifted_bits = vec![
+        false, true, // position residual bits.
+        true, // vector orientation selector, despite scalar-shaped bytes.
+        true, false, true, false, true,  // state bits if the vector cursor were valid.
+        false, // direct CExoString item name if the scalar cursor were valid.
+        true,  // hidden BOOL if the scalar cursor were valid.
+    ];
+    let mut shifted_payload = live_object_payload_with_bits(&shifted_live, shifted_bits);
+    let original_shifted = shifted_payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "W must not make a shifted full item U/6 cursor exact"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "rewrite must not borrow U/6 orientation/name proof from a following W row"
+    );
+    assert_eq!(
+        shifted_payload, original_shifted,
+        "shifted full item U/6 before W must stay visible for quarantine/diagnostics"
+    );
+}
+
+#[test]
 fn exact_adapter_rolls_back_prior_rewrites_before_unproven_update_w_handoff() {
     // A bounded live-object adapter may stage earlier typed rewrites while it
     // searches for an exact final EE claim. If a later U/9-W handoff lacks the
