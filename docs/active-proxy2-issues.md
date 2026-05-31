@@ -671,6 +671,17 @@ Current status:
   EE's newer build-gated first tail scalar is DWORD-sized; proxy2 still claims
   only the Diamond/HG legacy BYTE path until an EE-to-EE or target-server
   reference needs that variant.
+- 2026-05-31 `P/05/01` inventory `0x0001` EE extended-tail width audit:
+  closed the earlier caveat by making the generic inventory cursor model accept
+  both decompile-backed true-branch tail widths. Diamond/HG legacy streams keep
+  the BYTE scalar plus final BYTE after the skill/string tail, while newer EE
+  streams own a DWORD scalar plus final BYTE at the same branch. Both variants
+  consume the same single `0x0001` selector BOOL and no additional fragment
+  bits before later mask branches such as `0x0400`. Verified with
+  `cargo test -q -p hgbridge-proxy2 inventory_0001 -- --nocapture`, `cargo
+  test -q -p hgbridge-proxy2 inventory -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`.
 - 2026-05-26 `P/05/01` inventory fragment-neutral branch audit: no packet
   behavior changed, but public fixture-free coverage now proves the
   decompile-backed cursor rules for adjacent generic mask branches that can
