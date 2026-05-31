@@ -1,23 +1,40 @@
-//! Verified trigger `A` add-record geometry shape.
+//! Verified trigger `A` add-record shape.
 //!
-//! EE `CNWSMessage::AddTriggerGeometryToMessage` writes a BYTE vertex count
-//! followed by that many XYZ float triples. Diamond/HG uses the same geometry
-//! block inside live-object trigger adds; no semantic byte rewrite is required,
-//! but the exact validator must still own the shape so trigger records do not
-//! fall through a generic live-object claim.
+//! Diamond `sub_4552E0` and EE `sub_1407B1670` read the same trigger add
+//! envelope: object id, name selector/payload, two state BOOLs, an optional
+//! third state BOOL when the first state BOOL is true, cursor BYTE, height
+//! FLOAT, vertex count BYTE, and XYZ FLOAT triples. No semantic byte rewrite is
+//! required, but the exact validator must still own both the read-buffer shape
+//! and the source fragment BOOL span so following live-object records stay
+//! aligned.
 
 use super::{
     LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_POSITION_FRAGMENT_BITS, LEGACY_UPDATE_POSITION_MASK,
-    LEGACY_UPDATE_POSITION_READ_BYTES, TRIGGER_OBJECT_TYPE, boundary, read_u32_le,
+    LEGACY_UPDATE_POSITION_READ_BYTES, TRIGGER_OBJECT_TYPE, boundary, locstring, read_f32_le,
+    read_u32_le,
 };
 
 pub(super) const TRIGGER_ADD_MIN_RECORD_BYTES: usize = 16;
-const TRIGGER_GEOMETRY_COUNT_OFFSET: usize = 15;
+const TRIGGER_SHORT_NAME_BYTES: usize = 4;
+const TRIGGER_POST_NAME_FIXED_BYTES: usize = 6;
+const TRIGGER_CURSOR_BYTES: usize = 1;
+const TRIGGER_HEIGHT_BYTES: usize = 4;
 const TRIGGER_VERTEX_FLOATS: usize = 3;
 const FLOAT_BYTES: usize = 4;
 const TRIGGER_VERTEX_BYTES: usize = TRIGGER_VERTEX_FLOATS * FLOAT_BYTES;
+const TRIGGER_MAX_VERTICES: usize = 64;
+const TRIGGER_MAX_ABS_VERTEX_COORDINATE: f32 = 100_000.0;
+const TRIGGER_MIN_HEIGHT: f32 = -1000.0;
+const TRIGGER_MAX_HEIGHT: f32 = 1000.0;
 const LEGACY_HG_TRIGGER_UPDATE_MASK_WITH_POSITION_TAIL: u32 = 0xFFFF_FFF3;
 const LEGACY_HG_TRIGGER_UPDATE_EXTRA_READ_BYTES: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+struct TriggerAddShape {
+    cursor_offset: usize,
+    vertex_count: usize,
+    record_end: usize,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LegacyTriggerUpdateRecord {
@@ -32,6 +49,22 @@ pub(super) fn try_get_trigger_add_record_end(
     offset: usize,
     scan_end: usize,
 ) -> Option<usize> {
+    read_trigger_add_shape(bytes, offset, scan_end).map(|shape| shape.record_end)
+}
+
+pub(super) fn trigger_add_geometry_start_and_count(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<(usize, usize)> {
+    let shape = read_trigger_add_shape(bytes, offset, record_end)?;
+    (shape.record_end == record_end).then_some((
+        shape.cursor_offset + TRIGGER_CURSOR_BYTES + TRIGGER_HEIGHT_BYTES + 1,
+        shape.vertex_count,
+    ))
+}
+
+fn read_trigger_add_shape(bytes: &[u8], offset: usize, scan_end: usize) -> Option<TriggerAddShape> {
     if offset + TRIGGER_ADD_MIN_RECORD_BYTES > scan_end
         || offset + TRIGGER_ADD_MIN_RECORD_BYTES > bytes.len()
         || bytes.get(offset).copied() != Some(b'A')
@@ -41,16 +74,68 @@ pub(super) fn try_get_trigger_add_record_end(
         return None;
     }
 
-    let vertex_count = bytes[offset + TRIGGER_GEOMETRY_COUNT_OFFSET] as usize;
-    let geometry_bytes = vertex_count.checked_mul(TRIGGER_VERTEX_BYTES)?;
-    let record_end = offset
-        .checked_add(TRIGGER_ADD_MIN_RECORD_BYTES)?
-        .checked_add(geometry_bytes)?;
-    if record_end <= scan_end && record_end <= bytes.len() {
-        Some(record_end)
-    } else {
-        None
+    let short_cursor_offset = offset.checked_add(6 + TRIGGER_SHORT_NAME_BYTES)?;
+    let mut cursor_offsets = Vec::with_capacity(2);
+    if let Some(direct_name_end) = locstring::inline_cexo_string_end(bytes, offset + 6) {
+        if direct_name_end >= short_cursor_offset
+            && direct_name_end != short_cursor_offset
+            && direct_name_end
+                .checked_add(TRIGGER_POST_NAME_FIXED_BYTES)
+                .is_some_and(|end| end <= scan_end.min(bytes.len()))
+        {
+            cursor_offsets.push(direct_name_end);
+        }
     }
+    cursor_offsets.push(short_cursor_offset);
+
+    cursor_offsets
+        .into_iter()
+        .find_map(|cursor_offset| read_trigger_add_shape_at_cursor(bytes, cursor_offset, scan_end))
+}
+
+fn read_trigger_add_shape_at_cursor(
+    bytes: &[u8],
+    cursor_offset: usize,
+    scan_end: usize,
+) -> Option<TriggerAddShape> {
+    let fixed_end = cursor_offset.checked_add(TRIGGER_POST_NAME_FIXED_BYTES)?;
+    if fixed_end > scan_end.min(bytes.len()) {
+        return None;
+    }
+
+    let height = read_f32_le(bytes, cursor_offset + TRIGGER_CURSOR_BYTES)?;
+    if !height.is_finite() || !(TRIGGER_MIN_HEIGHT..=TRIGGER_MAX_HEIGHT).contains(&height) {
+        return None;
+    }
+
+    let vertex_count = bytes[cursor_offset + TRIGGER_CURSOR_BYTES + TRIGGER_HEIGHT_BYTES] as usize;
+    if vertex_count == 0 || vertex_count > TRIGGER_MAX_VERTICES {
+        return None;
+    }
+
+    let geometry_start = fixed_end;
+    let geometry_bytes = vertex_count.checked_mul(TRIGGER_VERTEX_BYTES)?;
+    let record_end = geometry_start.checked_add(geometry_bytes)?;
+    if record_end > scan_end || record_end > bytes.len() {
+        return None;
+    }
+
+    let mut cursor = geometry_start;
+    for _ in 0..vertex_count {
+        for _ in 0..TRIGGER_VERTEX_FLOATS {
+            let value = read_f32_le(bytes, cursor)?;
+            if !value.is_finite() || value.abs() > TRIGGER_MAX_ABS_VERTEX_COORDINATE {
+                return None;
+            }
+            cursor = cursor.checked_add(FLOAT_BYTES)?;
+        }
+    }
+
+    Some(TriggerAddShape {
+        cursor_offset,
+        vertex_count,
+        record_end,
+    })
 }
 
 pub(super) fn verified_ee_trigger_add_record(
@@ -72,10 +157,30 @@ pub(super) fn advance_trigger_add_bit_cursor(
         return false;
     }
 
-    // `AddTriggerGeometryToMessage` writes BYTE/FLOAT fields only. It does not
-    // read or write CNW fragment BOOLs, so a verified trigger add leaves the
-    // shared fragment cursor unchanged.
-    *bit_cursor <= bits.len()
+    // Diamond and EE both read the name selector before the trigger state
+    // BOOLs. The locstring branch owns the client-TLK selector bit plus a
+    // DWORD strref in the read buffer; the direct branch owns only the outer
+    // selector before `ReadCExoString(32)`.
+    let Some(name_is_locstring) = bits.get(*bit_cursor).copied() else {
+        return false;
+    };
+    let minimum_bits = if name_is_locstring { 4 } else { 3 };
+    if bits.len().saturating_sub(*bit_cursor) < minimum_bits {
+        return false;
+    }
+    if !name_is_locstring && locstring::inline_cexo_string_end(bytes, record_offset + 6).is_none() {
+        return false;
+    }
+
+    let first_state_bit = *bit_cursor + if name_is_locstring { 2 } else { 1 };
+    let first_state = bits[first_state_bit];
+    let source_bits = minimum_bits + usize::from(first_state);
+    if bits.len().saturating_sub(*bit_cursor) < source_bits {
+        return false;
+    }
+
+    *bit_cursor = (*bit_cursor).saturating_add(source_bits);
+    true
 }
 
 pub(super) fn parse_legacy_trigger_update_for_ee(

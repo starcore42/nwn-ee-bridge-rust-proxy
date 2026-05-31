@@ -163,6 +163,23 @@ fn trigger_add_live_bytes(vertex_count: u8) -> Vec<u8> {
     live
 }
 
+fn direct_name_trigger_add_live_bytes(name: &[u8], vertex_count: u8) -> Vec<u8> {
+    let mut live = vec![b'A', super::TRIGGER_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live.push(0); // cursor byte
+    live.extend_from_slice(&0.0f32.to_le_bytes()); // height
+    live.push(vertex_count);
+    for index in 0..vertex_count {
+        let base = f32::from(index) + 1.0;
+        live.extend_from_slice(&base.to_le_bytes());
+        live.extend_from_slice(&(base + 0.25).to_le_bytes());
+        live.extend_from_slice(&(base + 0.5).to_le_bytes());
+    }
+    live
+}
+
 fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A'];
     live.extend_from_slice(&0x8001_69DCu32.to_le_bytes());
@@ -1510,25 +1527,52 @@ fn inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit() {
 }
 
 #[test]
-fn trigger_add_geometry_is_read_buffer_only() {
-    // Diamond `CNWSMessage::AddTriggerGeometryToMessage` and EE's matching
-    // trigger-add reader own BYTE vertex count plus XYZ FLOAT triples. They do
-    // not call `ReadBOOL`, so the live-object fragment cursor must not move
-    // between this add record and the next submessage.
+fn trigger_add_owns_name_state_bits_before_geometry() {
+    // Diamond `sub_4552E0` and EE `sub_1407B1670` read the same trigger add
+    // order: name selector/payload, two state BOOLs, an optional third state
+    // BOOL gated by the first state BOOL, then cursor/height/vertex geometry.
+    // The proxy preserves the bytes but must still advance that fragment span.
     let live = trigger_add_live_bytes(2);
-    let payload = live_object_payload_with_bits(&live, Vec::new());
+    let payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true,  // locstring/token name branch
+            false, // client-TLK selector bit
+            true,  // first state BOOL gates the third state BOOL
+            false, // second state BOOL
+            true,  // optional third state BOOL
+        ],
+    );
     let claim = super::claim_payload_if_verified(&payload)
-        .expect("trigger add geometry should exact-claim as read-buffer-only");
+        .expect("trigger add locstring/state bits should exact-claim");
 
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.live_bytes_length, live.len());
-    assert_eq!(claim.inventory_fragment_bits, 0);
-    assert_eq!(claim.live_gui_fragment_bits, 0);
 
-    let shifted = live_object_payload_with_bits(&live, vec![true]);
+    let missing_optional = live_object_payload_with_bits(&live, vec![true, false, true, false]);
+    assert!(
+        super::claim_payload_if_verified(&missing_optional).is_none(),
+        "the first trigger state BOOL gates one more source BOOL"
+    );
+
+    let direct = direct_name_trigger_add_live_bytes(b"Gate", 1);
+    let direct_payload = live_object_payload_with_bits(
+        &direct,
+        vec![
+            false, // direct CExoString name branch
+            false, // first state BOOL, so no optional third state BOOL
+            true,  // second state BOOL
+        ],
+    );
+    let direct_claim = super::claim_payload_if_verified(&direct_payload)
+        .expect("direct-name trigger add should exact-claim with its dynamic geometry cursor");
+    assert_eq!(direct_claim.add_records, 1);
+    assert_eq!(direct_claim.live_bytes_length, direct.len());
+
+    let shifted = live_object_payload_with_bits(&direct, vec![false, false, true, false]);
     assert!(
         super::claim_payload_if_verified(&shifted).is_none(),
-        "trigger add geometry must not consume or hide a following fragment bit"
+        "trigger add must not hide a terminal fragment bit after its state span"
     );
 }
 
@@ -1536,7 +1580,7 @@ fn trigger_add_geometry_is_read_buffer_only() {
 fn trigger_add_geometry_rejects_truncated_vertex_rows() {
     let mut live = trigger_add_live_bytes(1);
     live.truncate(live.len() - 1);
-    let payload = live_object_payload_with_bits(&live, Vec::new());
+    let payload = live_object_payload_with_bits(&live, vec![true, false, false, true]);
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),

@@ -903,14 +903,22 @@ Current status:
   strict validation. Verified with `cargo test -q -p hgbridge-proxy2
   trigger_update_ -- --nocapture` and `cargo test -q -p hgbridge-proxy2 3967
   -- --nocapture`.
-- 2026-05-27 `P/05/01` trigger add geometry cursor audit: no packet behavior
-  changed, but public fixture-free coverage now proves the decompile-owned
-  `A/7` geometry contract. Diamond `CNWSMessage::AddTriggerGeometryToMessage`
-  and EE's matching trigger-add reader own the BYTE vertex count and complete
-  XYZ FLOAT triples as read-buffer fields only; they consume no CNW fragment
-  BOOLs, and a byte-complete add with any extra fragment bit remains
-  unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
-  trigger_add_geometry -- --nocapture`.
+- ~~2026-05-27 `P/05/01` trigger add geometry cursor audit: superseded by the
+  2026-05-31 full-trigger-add cursor correction below. The geometry-only note
+  was incomplete because it ignored the decompile-owned name/state BOOL span
+  before the cursor/height/vertex fields.~~
+- 2026-05-31 `P/05/01` trigger add name/state cursor correction: fixed the Rust
+  proxy2 `A/7` model to match Diamond `sub_4552E0` and EE `sub_1407B1670`
+  rather than only `AddTriggerGeometryToMessage`. Both readers consume the
+  name selector first; the locstring/token branch owns the client-TLK selector
+  bit plus a DWORD StrRef in the read buffer, while the direct branch owns one
+  selector bit before `ReadCExoString(32)`. They then read two trigger state
+  BOOLs, an optional third state BOOL when the first state BOOL is true, a
+  cursor BYTE, height FLOAT, vertex-count BYTE, and complete XYZ FLOAT triples.
+  The proxy now preserves the trigger-add bytes while advancing exactly that
+  fragment span, supports dynamic geometry offsets for direct names, and keeps
+  terminal residual bits unclaimed. Verified with `cargo test -q -p
+  hgbridge-proxy2 trigger_add -- --nocapture`.
 - 2026-05-27 `P/05/01` door state update cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompile-backed
   `U/10` mask `0x10` state-BOOL handoff. Diamond `sub_44E2C0` owns five door

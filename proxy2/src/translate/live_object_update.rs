@@ -2349,36 +2349,17 @@ fn verified_record_bounds(
     opcode: u8,
     object_type: u8,
 ) -> Option<LiveObjectRecordBounds> {
-    const TRIGGER_GEOMETRY_COUNT_OFFSET: usize = 15;
-    const TRIGGER_VERTEX_START_OFFSET: usize = 16;
-    const TRIGGER_VERTEX_FLOATS: usize = 3;
     const FLOAT_BYTES: usize = 4;
-    const TRIGGER_VERTEX_BYTES: usize = TRIGGER_VERTEX_FLOATS * FLOAT_BYTES;
 
-    if opcode != b'A'
-        || object_type != TRIGGER_OBJECT_TYPE
-        || record_end > live_bytes.len()
-        || offset + TRIGGER_VERTEX_START_OFFSET > record_end
-    {
+    if opcode != b'A' || object_type != TRIGGER_OBJECT_TYPE || record_end > live_bytes.len() {
         return None;
     }
 
-    // EE `AddTriggerGeometryToMessage` writes a BYTE vertex count followed by
-    // XYZ float triples. The exact trigger-add validator has already bounded
-    // `record_end`; this parser only derives the clicked geometry center from
-    // that decompile-owned shape for protocol-state decisions.
-    let vertex_count = *live_bytes.get(offset + TRIGGER_GEOMETRY_COUNT_OFFSET)? as usize;
-    if vertex_count == 0 {
-        return None;
-    }
-    let geometry_bytes = vertex_count.checked_mul(TRIGGER_VERTEX_BYTES)?;
-    if offset
-        .checked_add(TRIGGER_VERTEX_START_OFFSET)?
-        .checked_add(geometry_bytes)?
-        != record_end
-    {
-        return None;
-    }
+    // The exact trigger-add validator owns the full name/state/cursor/geometry
+    // shape. Reuse that cursor so direct-string trigger names do not force the
+    // geometry parser back to the short-locstring offset.
+    let (geometry_start, vertex_count) =
+        trigger::trigger_add_geometry_start_and_count(live_bytes, offset, record_end)?;
 
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -2386,7 +2367,7 @@ fn verified_record_bounds(
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     let mut max_z = f32::NEG_INFINITY;
-    let mut cursor = offset + TRIGGER_VERTEX_START_OFFSET;
+    let mut cursor = geometry_start;
     for _ in 0..vertex_count {
         let x = read_f32_le(live_bytes, cursor)?;
         cursor += FLOAT_BYTES;
