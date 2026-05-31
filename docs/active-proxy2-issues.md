@@ -1228,6 +1228,21 @@ Current status:
   work_remaining_ -- --nocapture`, `cargo test -q -p hgbridge-proxy2
   door_placeable_update -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1` (334 passed).
+- 2026-05-31 `P/05/01` terminal `U/9`/`U/10` before `W` trim audit: fixed
+  Rust proxy2 so `W current total` remains fragment-neutral even when it is the
+  only row after a rewritten door/placeable update. Diamond `sub_44F160` and
+  EE `sub_1407B85A0` consume exactly the three read-buffer counter bytes and
+  zero CNW BOOLs; terminal family trim may cross a final `W` only when the
+  preceding typed rewrite has already removed or changed decompile-owned source
+  bits and the trimmed candidate exact-claims. Pure insertion-only `U/9`/`U/10`
+  rows before `W` now reject and preserve an unowned extra fragment bit instead
+  of letting `W` donate ownership. The separate post-`W` storage path is still
+  limited to the proven bounded CNW storage-byte promotion case. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  work_remaining_suffix_does_not_let_low_tail_update_trim_extra_fragment_bit
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 work_remaining --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`,
+  and `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`.
 - 2026-05-30 `P/05/01` declared-length `W` tail boundary audit: hardened
   stale-declared split classification so a candidate whose CNW tail starts with
   aligned `W current total` is treated as an ambiguous live-object read boundary,

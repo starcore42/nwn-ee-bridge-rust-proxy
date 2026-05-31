@@ -1231,6 +1231,42 @@ fn legacy_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_bit() 
 }
 
 #[test]
+fn work_remaining_suffix_does_not_let_low_tail_update_trim_extra_fragment_bit() {
+    // `W current total` is fragment-neutral in Diamond `sub_44F160` and EE
+    // `sub_1407B85A0`. A bounded legacy low-tail `U/9` or `U/10` may rewrite
+    // before W when its own source cursor is exact, but the following W row does
+    // not make an extra post-update fragment bit terminal-family storage.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let mut live = door_placeable_low_tail_update_live_bytes(object_type, &[0x34, 0x12, 0, 0]);
+        live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+
+        let mut exact_payload =
+            live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
+        let rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+            .expect("bounded low-tail update followed by W should rewrite when bits are exact");
+        assert_eq!(rewrite.update_records_rewritten, 1);
+        let claim = super::claim_payload_if_verified(&exact_payload)
+            .expect("rewritten low-tail update followed by W should exact-claim");
+        assert_eq!(claim.update_records, 1);
+        assert_eq!(claim.world_status_records, 1);
+
+        let mut shifted_bits = scalar_door_placeable_update_bits();
+        shifted_bits.push(true);
+        let mut shifted_payload = live_object_payload_with_bits(&live, shifted_bits);
+        let original = shifted_payload.clone();
+
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+            "W must not let object type {object_type:#04X} trim an unowned post-update bit"
+        );
+        assert_eq!(
+            shifted_payload, original,
+            "failed U/9-W low-tail rewrite must leave the evidence payload unchanged"
+        );
+    }
+}
+
+#[test]
 fn legacy_named_low_tail_door_placeable_rewrite_rejects_terminal_extra_fragment_bit() {
     for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
         let live = door_placeable_named_low_tail_update_live_bytes(object_type, b"Box");

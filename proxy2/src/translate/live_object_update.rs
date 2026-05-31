@@ -2898,6 +2898,7 @@ pub fn rewrite_update_records_payload_if_possible(
     };
 
     let mut changed = false;
+    let mut terminal_promoted_fragment_trim_cursor: Option<usize> = None;
     if let Some(promotion) = fragment_spans::promote_work_remaining_trailing_fragment_span_for_ee(
         &mut live_bytes,
         &mut fragment_bytes,
@@ -2916,6 +2917,14 @@ pub fn rewrite_update_records_payload_if_possible(
         summary.bytes_removed = summary
             .bytes_removed
             .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
+        if promotion.bits_promoted > 0 {
+            // The promoted bits came from a bounded CNW storage byte span that
+            // was stranded after a top-level `W current total` read-buffer row.
+            // `W` remains fragment-neutral; this cursor only allows those
+            // promoted storage bits to be trimmed when no later typed record
+            // consumes them.
+            terminal_promoted_fragment_trim_cursor = Some(CNW_FRAGMENT_HEADER_BITS);
+        }
     }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut bit_cursor_reliable = true;
@@ -2934,7 +2943,6 @@ pub fn rewrite_update_records_payload_if_possible(
     let mut terminal_family_fragment_trim_cursor: Option<usize> = None;
     let mut terminal_creature_update_trim_cursor: Option<usize> = None;
     let mut terminal_live_gui_item_fragment_trim_cursor: Option<usize> = None;
-    let mut terminal_promoted_fragment_trim_cursor: Option<usize> = None;
     let mut terminal_work_remaining_fragment_storage_record: Option<(usize, usize)> = None;
     let mut loop_iterations = 0usize;
     let max_loop_iterations = old_live_bytes_length.saturating_mul(4).saturating_add(64);
@@ -5116,13 +5124,18 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
-        // `W current total` is fragment-neutral in both Diamond and EE. It can
-        // be a suffix after a record-specific terminal storage proof, but it
-        // must never donate missing bits to the preceding update record.
-        let followed_only_by_terminal_work_remaining = record_end < live_bytes.len()
-            && terminal_work_remaining_suffix_legal_end(&live_bytes, record_end).is_some();
+        // `W current total` is fragment-neutral in Diamond `sub_44F160` and
+        // EE `sub_1407B85A0`: it never donates missing BOOLs to the preceding
+        // update. A final W suffix may only preserve the older family terminal
+        // trim when that rewrite has already removed or changed
+        // decompile-owned source bits; a pure insertion-only update followed
+        // by W is not enough evidence to trim arbitrary tail bits.
+        let family_trim_before_final_work_remaining = (record_rewrite.bits_removed > 0
+            || record_rewrite.bits_changed)
+            && verified_work_remaining_record_legal_end(&live_bytes, record_end)
+                == Some(live_bytes.len());
         if record_rewrite.terminal_fragment_trim_allowed
-            && (record_end == live_bytes.len() || followed_only_by_terminal_work_remaining)
+            && (record_end == live_bytes.len() || family_trim_before_final_work_remaining)
             && bit_cursor < fragment_bits.len()
         {
             terminal_family_fragment_trim_cursor = Some(bit_cursor);
@@ -5190,8 +5203,9 @@ pub fn rewrite_update_records_payload_if_possible(
                 &fragment_bits,
                 bit_cursor,
             );
-        let terminal_family_fragment_trim_allowed =
-            terminal_family_fragment_trim_cursor == Some(bit_cursor);
+        let terminal_family_fragment_trim_allowed = terminal_family_fragment_trim_cursor
+            == Some(bit_cursor)
+            && terminal_fragment_trim_exact_claim_allowed(&live_bytes, &fragment_bits, bit_cursor);
         if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
             eprintln!(
                 "live-object terminal fragment trim gate: bit_cursor={bit_cursor} fragment_bits={} family_cursor={terminal_family_fragment_trim_cursor:?} family_allowed={terminal_family_fragment_trim_allowed} creature_cursor={terminal_creature_update_trim_cursor:?} creature_allowed={terminal_creature_update_trim_allowed} live_gui_item_cursor={terminal_live_gui_item_fragment_trim_cursor:?} live_gui_item_allowed={terminal_live_gui_item_trim_allowed} promoted_cursor={terminal_promoted_fragment_trim_cursor:?} promoted_allowed={terminal_promoted_fragment_trim_allowed} work_remaining_record={terminal_work_remaining_fragment_storage_record:?} work_remaining_allowed={terminal_work_remaining_trim_allowed}",
@@ -5274,17 +5288,6 @@ fn verified_work_remaining_record_legal_end(live_bytes: &[u8], offset: usize) ->
     .then_some(legal_end)
 }
 
-fn terminal_work_remaining_suffix_legal_end(live_bytes: &[u8], offset: usize) -> Option<usize> {
-    let legal_end = verified_work_remaining_record_legal_end(live_bytes, offset)?;
-    if legal_end == live_bytes.len()
-        || looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
-    {
-        Some(legal_end)
-    } else {
-        None
-    }
-}
-
 fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
     live_bytes: &mut Vec<u8>,
     offset: usize,
@@ -5363,14 +5366,12 @@ fn terminal_work_remaining_fragment_bits_trim_allowed(
         return false;
     }
 
-    let live_candidate = if legal_end == live_bytes.len() {
-        live_bytes.to_vec()
-    } else {
-        if !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..]) {
-            return false;
-        }
-        live_bytes[..legal_end].to_vec()
-    };
+    if legal_end >= live_bytes.len()
+        || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+    {
+        return false;
+    }
+    let live_candidate = live_bytes[..legal_end].to_vec();
     terminal_fragment_trim_exact_claim_allowed(&live_candidate, fragment_bits, bit_cursor)
 }
 
