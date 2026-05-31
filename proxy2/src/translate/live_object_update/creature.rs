@@ -45,6 +45,12 @@ pub(super) const LEGACY_CREATURE_ADD_RECORD_BYTES: usize = 32;
 pub(super) const EE_CREATURE_ADD_RECORD_BYTES: usize = LEGACY_CREATURE_ADD_RECORD_BYTES
     + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactStatusEffectNoTablePolicy {
+    AssumeNoTarget,
+    KnownFeature0eFalseRowsOnly,
+}
+
 pub(super) fn looks_like_ee_creature_add_record(
     bytes: &[u8],
     offset: usize,
@@ -378,16 +384,17 @@ pub(super) struct CreatureStatusEffectZeroCountRepair {
     pub bytes_inserted: usize,
 }
 
-fn infer_compact_legacy_status_effect_row_count(
+fn infer_compact_legacy_status_effect_row_count_with_policy(
     bytes: &[u8],
     mut cursor: usize,
     entries_end: usize,
+    loaded_rows: Option<&[Option<usize>]>,
+    no_table_policy: CompactStatusEffectNoTablePolicy,
 ) -> Option<u16> {
     if cursor >= entries_end || entries_end > bytes.len() {
         return None;
     }
 
-    let loaded_rows = visual_effect_rows::loaded_visual_effect_target_payload_bytes();
     let mut count = 0u16;
     while cursor < entries_end {
         let change_opcode = bytes.get(cursor).copied()?;
@@ -395,9 +402,7 @@ fn infer_compact_legacy_status_effect_row_count(
             return None;
         }
         let row = read_u16_le(bytes, cursor + 1)?;
-        if loaded_rows.as_ref().is_some_and(|rows| {
-            visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row) != Some(0)
-        }) {
+        if !compact_status_effect_row_has_no_target_payload(row, loaded_rows, no_table_policy) {
             return None;
         }
         cursor = cursor.checked_add(3)?;
@@ -410,12 +415,68 @@ fn infer_compact_legacy_status_effect_row_count(
     (count > 0 && count <= 256).then_some(count)
 }
 
+fn compact_status_effect_row_has_no_target_payload(
+    row: u16,
+    loaded_rows: Option<&[Option<usize>]>,
+    no_table_policy: CompactStatusEffectNoTablePolicy,
+) -> bool {
+    if let Some(rows) = loaded_rows {
+        return visual_effect_rows::target_payload_bytes_for_loaded_row(rows, row) == Some(0);
+    }
+
+    match no_table_policy {
+        CompactStatusEffectNoTablePolicy::AssumeNoTarget => true,
+        CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly => {
+            legacy_feature0e_false_known_no_target_row(row)
+        }
+    }
+}
+
 fn repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee(
     bytes: &mut [u8],
     offset: usize,
     record_end: usize,
     raw_mask: u32,
     suffix_read_bytes: usize,
+) -> Option<CreatureC408CountRepair> {
+    repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_policy(
+        bytes,
+        offset,
+        record_end,
+        raw_mask,
+        suffix_read_bytes,
+        CompactStatusEffectNoTablePolicy::AssumeNoTarget,
+    )
+}
+
+fn repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_policy(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+    raw_mask: u32,
+    suffix_read_bytes: usize,
+    no_table_policy: CompactStatusEffectNoTablePolicy,
+) -> Option<CreatureC408CountRepair> {
+    let loaded_rows = visual_effect_rows::loaded_visual_effect_target_payload_bytes();
+    repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_rows(
+        bytes,
+        offset,
+        record_end,
+        raw_mask,
+        suffix_read_bytes,
+        loaded_rows.as_deref(),
+        no_table_policy,
+    )
+}
+
+fn repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_rows(
+    bytes: &mut [u8],
+    offset: usize,
+    record_end: usize,
+    raw_mask: u32,
+    suffix_read_bytes: usize,
+    loaded_rows: Option<&[Option<usize>]>,
+    no_table_policy: CompactStatusEffectNoTablePolicy,
 ) -> Option<CreatureC408CountRepair> {
     if offset + 12 > record_end
         || record_end > bytes.len()
@@ -432,8 +493,13 @@ fn repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee(
     if entries_end < entries_start {
         return None;
     }
-    let inferred_count =
-        infer_compact_legacy_status_effect_row_count(bytes, entries_start, entries_end)?;
+    let inferred_count = infer_compact_legacy_status_effect_row_count_with_policy(
+        bytes,
+        entries_start,
+        entries_end,
+        loaded_rows,
+        no_table_policy,
+    )?;
     bytes[offset + 10..offset + 12].copy_from_slice(&inferred_count.to_le_bytes());
     Some(CreatureC408CountRepair {
         entries: inferred_count,
@@ -446,41 +512,21 @@ pub(super) fn repair_legacy_effect_only_visual_effect_count_for_ee(
     offset: usize,
     record_end: usize,
 ) -> Option<CreatureC408CountRepair> {
-    // Local Chapter1 Diamond captures prove the standalone effect-only sibling
-    // of the existing malformed count-zero families:
-    //
-    //   U/5 mask=0x0000_0008
-    //   WORD count written as zero
-    //   one encoded `A/F3` LowLightVision effect row
-    //
-    // EE `sub_140781E80` reaches `sub_1407B1F00` only behind mask bit
-    // `0x0008`; that helper reads the count before the row triplets. A zero
-    // count would leave the `A/F3` triplet as the next live-object opcode and
-    // shift the following update. Repair only this exact no-target row already
-    // used by the legacy feature-0x0E-false validator, then let the normal
-    // creature update cursor proof own the final record.
-    const CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_ENTRY: [u8; 3] = [b'A', 0xF3, 0x00];
-    const CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT: u16 = 1;
-    const LEGACY_EFFECT_ONLY_ZERO_COUNT_RECORD_BYTES: usize = 15;
-
-    if offset + LEGACY_EFFECT_ONLY_ZERO_COUNT_RECORD_BYTES != record_end
-        || record_end > bytes.len()
-        || bytes.get(offset).copied() != Some(b'U')
-        || bytes.get(offset + 1).copied() != Some(0x05)
-        || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK)
-        || read_u16_le(bytes, offset + 10) != Some(0)
-        || bytes.get(offset + 12..offset + 15)? != CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_ENTRY
-    {
-        return None;
-    }
-
-    let count_bytes = CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT.to_le_bytes();
-    bytes[offset + 10] = count_bytes[0];
-    bytes[offset + 11] = count_bytes[1];
-    Some(CreatureC408CountRepair {
-        entries: CHAPTER1_EFFECT_ONLY_SINGLE_EFFECT_COUNT,
-        bytes_rewritten: 2,
-    })
+    // EE `sub_140781E80` reaches `sub_1407B1F00` behind mask bit `0x0008`;
+    // that helper reads the WORD count before the compact opcode/row triplets.
+    // A stale zero count leaves real effect rows to be misread as later
+    // live-object opcodes. Repair the count for the same no-target row family
+    // accepted by the effect-only validator: loaded `visualeffects.2da`
+    // Type_FD policy wins when available, while no-table mode stays limited to
+    // the previously proven feature-0x0E-false no-target row.
+    repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_policy(
+        bytes,
+        offset,
+        record_end,
+        LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK,
+        0,
+        CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+    )
 }
 
 pub(super) fn repair_legacy_4408_visual_effect_count_for_ee(
@@ -3874,11 +3920,10 @@ fn advance_verified_legacy_feature0e_false_effect_only_update_record(
 ) -> bool {
     // EE `sub_1407B1F00` first reads the compact status/effect row count and
     // one opcode/WORD row per entry. The negotiated legacy feature-0x0E path
-    // used by this bridge does not read an ObjectVisualTransformData map here.
-    // The local Dark Ranger row is resource-backed by visualeffects.2da as
-    // `VFX_DUR_LOWLIGHTVISION` (row 0x00F3), a duration effect with no target
-    // payload; accepting only this no-target row avoids promoting bytes that a
-    // future object-target visualeffects row would actually own.
+    // used by this bridge does not read an ObjectVisualTransformData map here,
+    // but Diamond/EE still use `visualeffects.2da` to decide whether a row owns
+    // the target payload. Loaded Type_FD policy is authoritative; without that
+    // table, keep only the previously proven no-target legacy row.
     let Some(mut cursor) = offset.checked_add(10) else {
         return false;
     };
@@ -3889,6 +3934,7 @@ fn advance_verified_legacy_feature0e_false_effect_only_update_record(
         return false;
     }
     cursor += 2;
+    let loaded_rows = visual_effect_rows::loaded_visual_effect_target_payload_bytes();
 
     for _ in 0..usize::from(count) {
         if record_end.saturating_sub(cursor) < 3 {
@@ -3903,7 +3949,11 @@ fn advance_verified_legacy_feature0e_false_effect_only_update_record(
         let Some(row) = read_u16_le(bytes, cursor + 1) else {
             return false;
         };
-        if !legacy_feature0e_false_effect_row_has_no_target_payload(row) {
+        if !compact_status_effect_row_has_no_target_payload(
+            row,
+            loaded_rows.as_deref(),
+            CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+        ) {
             return false;
         }
         cursor += 3;
@@ -3912,7 +3962,7 @@ fn advance_verified_legacy_feature0e_false_effect_only_update_record(
     cursor == record_end
 }
 
-fn legacy_feature0e_false_effect_row_has_no_target_payload(row: u16) -> bool {
+fn legacy_feature0e_false_known_no_target_row(row: u16) -> bool {
     matches!(row, VFX_DUR_LOWLIGHTVISION_ROW)
 }
 
@@ -4053,6 +4103,99 @@ mod tests {
             !simulate_ee_creature_update_status_effect_helper_cursor_with_rows(&mut cursor, &rows),
             "a P/B visualeffects row must own DWORD target id plus one BYTE before the map"
         );
+    }
+
+    #[test]
+    fn feature0e_false_effect_rows_use_loaded_visualeffects_policy() {
+        let mut rows = vec![None; 0x1236];
+        rows[0x00F3] = Some(0);
+        rows[0x1234] = Some(0);
+        rows[0x1235] = Some(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES);
+
+        assert!(
+            compact_status_effect_row_has_no_target_payload(
+                0x1234,
+                Some(&rows),
+                CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+            ),
+            "loaded non-P/B Type_FD rows own no target payload"
+        );
+        assert!(
+            !compact_status_effect_row_has_no_target_payload(
+                0x1235,
+                Some(&rows),
+                CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+            ),
+            "loaded P/B Type_FD rows still own the target payload"
+        );
+        assert!(
+            !compact_status_effect_row_has_no_target_payload(
+                0x1234,
+                None,
+                CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+            ),
+            "without loaded row state, arbitrary effect-only rows must stay unclaimed"
+        );
+        assert!(
+            compact_status_effect_row_has_no_target_payload(
+                VFX_DUR_LOWLIGHTVISION_ROW,
+                None,
+                CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+            ),
+            "the old no-table fallback remains limited to the proven no-target row"
+        );
+    }
+
+    #[test]
+    fn effect_only_zero_count_repair_uses_loaded_no_target_rows() {
+        let mut rows = vec![None; 0x1236];
+        rows[0x1234] = Some(0);
+        rows[0x1235] = Some(0);
+        let mut bytes = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
+        bytes.extend_from_slice(&LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&[b'A', 0x34, 0x12, b'D', 0x35, 0x12]);
+        let record_end = bytes.len();
+
+        let repair = repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_rows(
+            &mut bytes,
+            0,
+            record_end,
+            LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK,
+            0,
+            Some(&rows),
+            CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+        )
+        .expect("loaded no-target rows should repair the stale effect-only count");
+
+        assert_eq!(repair.entries, 2);
+        assert_eq!(read_u16_le(&bytes, 10), Some(2));
+    }
+
+    #[test]
+    fn effect_only_zero_count_repair_rejects_loaded_target_rows() {
+        let mut rows = vec![None; 0x1235];
+        rows[0x1234] = Some(CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES);
+        let mut bytes = vec![b'U', 0x05, 0x55, 0x00, 0x00, 0x80];
+        bytes.extend_from_slice(&LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&[b'A', 0x34, 0x12]);
+        let record_end = bytes.len();
+
+        assert!(
+            repair_legacy_zero_visual_effect_count_from_compact_rows_for_ee_with_rows(
+                &mut bytes,
+                0,
+                record_end,
+                LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK,
+                0,
+                Some(&rows),
+                CompactStatusEffectNoTablePolicy::KnownFeature0eFalseRowsOnly,
+            )
+            .is_none(),
+            "effect-only count repair must not erase a target-payload row"
+        );
+        assert_eq!(read_u16_le(&bytes, 10), Some(0));
     }
 
     #[test]

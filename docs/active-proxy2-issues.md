@@ -783,6 +783,18 @@ Current status:
   looping_effect_target_payload_owns_dword_object_id_plus_byte -- --nocapture`,
   `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`.~~
+- ~~2026-05-31 `P/05/01` effect-only status row-policy audit: generalized the
+  legacy `U/5 mask=0x00000008` feature-0x0E-false validator and stale
+  zero-count repair so they use the shared `visualeffects.2da` `Type_FD` row
+  policy when loaded. Diamond `sub_44ED20` and EE `sub_1407B1F00` both read
+  compact opcode/WORD rows, with no target payload for non-`P`/`B` rows and a
+  five-byte target payload for `P`/`B`; loaded row state now proves arbitrary
+  no-target rows instead of a named LowLightVision-only count repair. No-table
+  fallback remains limited to the previously proven feature-0x0E-false
+  no-target row. Verified with `cargo test -q -p hgbridge-proxy2
+  feature0e_false_effect_rows -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 effect_only_zero_count_repair -- --nocapture`, and
+  `cargo test -q -p hgbridge-proxy2 creature_status_effect_ -- --nocapture`.~~
 - ~~2026-05-27 `P/05/01` creature update interleaved-fragment cursor audit:
   removed the last adjacent `bit_cursor +/- 1` retry from the `U/5` compact
   fragment-span promoter. The EE/Diamond live-object dispatcher hands each
