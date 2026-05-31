@@ -9345,6 +9345,18 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_tail_only(mask: u16) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, mask);
+        if (mask & 0x2000) != 0 {
+            push_u16(&mut bytes, 0x99AA);
+            push_u32(&mut bytes, 0xBBCC_DDEE);
+        }
+        bytes
+    }
+
     fn partial_legacy_creature_scalar_only(mask: u16, name: Option<&[u8]>) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
@@ -10250,6 +10262,82 @@ mod public_tests {
                 &mut bad_cursor,
             ),
             "EE build-0x23 scalar WORD high byte must stay zero"
+        );
+    }
+
+    #[test]
+    fn partial_tail_only_appearance_inserts_ee_feature_byte_without_fragment_bits() {
+        let mask = 0x2000 | 0x4000 | LEGACY_APPEARANCE_IGNORED_HIGH_MASK;
+        let mut bytes = partial_legacy_creature_tail_only(mask);
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "Diamond tail-only P/5 rows end after the 0x2000 WORD+DWORD tail"
+        );
+
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 0,
+            "0x2000, legacy-skipped 0x4000, and ignored 0x8000 own no Diamond fragment BOOLs"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("tail-only partial appearance should widen to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 1,
+            "EE build-0x0E reads one neutral byte for mask 0x4000"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            &bytes[LEGACY_APPEARANCE_HEADER_BYTES..record_end],
+            &[
+                0xAA, 0x99, // 0x2000 WORD.
+                0xEE, 0xDD, 0xCC, 0xBB, // 0x2000 DWORD.
+                0x00, // EE-only 0x4000 build-gated byte.
+            ],
+            "the EE-only 0x4000 byte is after the 0x2000 tail and before any equipment count"
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
+
+        let mut nonzero_feature_byte = bytes.clone();
+        nonzero_feature_byte[record_end - 1] = 1;
+        let mut nonzero_cursor = 0usize;
+        assert!(
+            advance_verified_ee_creature_appearance_record(
+                &nonzero_feature_byte,
+                0,
+                record_end,
+                &fragment_bits,
+                &mut nonzero_cursor,
+            ),
+            "EE owns the 0x4000 byte value; it is not a fragment cursor field"
         );
     }
 

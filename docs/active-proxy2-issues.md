@@ -1964,6 +1964,20 @@ Current status:
   scalar_only_creature_appearance -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
   hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`.~~
+- ~~2026-05-31 `P/05/01` non-full creature tail-only appearance audit: no
+  packet behavior changed, but public regression coverage now pins the
+  decompile-backed order for a no-name/no-body/no-equipment partial mask with
+  `0x2000`, `0x4000`, and ignored `0x8000`. Diamond `sub_448E30` owns only the
+  `0x2000` WORD+DWORD read-buffer tail and no CNW BOOLs; EE
+  `sub_14077FE10` then reads the build-gated `0x4000` byte before any
+  equipment count, while `0x8000` remains zero-payload. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  partial_tail_only_appearance_inserts_ee_feature_byte_without_fragment_bits
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 partial_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 appearance --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`, `cargo check -q -p hgbridge-proxy2`, `cargo fmt
+  --all --check`, and `git diff --check`.~~
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty
