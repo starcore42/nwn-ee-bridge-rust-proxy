@@ -2196,6 +2196,81 @@ fn live_gui_character_sheet_combat_build_8193_35_owns_five_bit_actions() {
 }
 
 #[test]
+fn live_gui_character_sheet_build_mode_boundary_ambiguity_stays_unclaimed() {
+    // With a following record boundary, both the legacy four-bit and EE
+    // build-8193.35 five-bit combat-list branches can land on the same byte.
+    // That is not proof that either bit cursor is correct; the bridge must
+    // leave the row unclaimed until the build-width evidence is unique.
+    let mut body = Vec::new();
+    let mut bits = Vec::new();
+
+    push_msb_bits(&mut bits, 0, 3);
+    body.extend_from_slice(&[0x11, 0x22, 0x33]);
+    push_msb_bits(&mut bits, 0, 7);
+    push_msb_bits(&mut bits, 0, 5);
+    push_msb_bits(&mut bits, 0, 5);
+    push_msb_bits(&mut bits, 0, 5);
+    for row in 0..3 {
+        push_msb_bits(&mut bits, 0, 5);
+        push_msb_bits(&mut bits, 0, 5);
+        body.push(0x40 + row);
+    }
+    push_msb_bits(&mut bits, 0, 4);
+    push_msb_bits(&mut bits, 0, 3);
+    bits.push(false);
+    body.push(0);
+    body.push(1);
+    body.push(0x77);
+    push_msb_bits(&mut bits, 0b1_0001, 5);
+    push_msb_bits(&mut bits, 0b100, 3);
+    bits.extend_from_slice(&[false, false, false]);
+
+    let isolated = live_gui_character_sheet_payload(0x0000_0040, &body, bits.clone());
+    let isolated_claim = super::claim_payload_if_verified(&isolated)
+        .expect("isolated five-bit combat action should exact-claim");
+    assert_eq!(isolated_claim.live_gui_fragment_bits, bits.len() as u32);
+
+    let mut live = Vec::new();
+    live.extend_from_slice(&[b'G', b'S']);
+    live.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+    live.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+    live.extend_from_slice(&body);
+    let first_record_end = live.len();
+    live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    fragment_bits.extend(bits.clone());
+    assert!(
+        super::gui::try_get_verified_ee_live_gui_record_end(
+            &live,
+            0,
+            live.len(),
+            &fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .is_none(),
+        "same-byte character-sheet boundary with different legacy/EE bit widths must not be guessed"
+    );
+    assert!(
+        super::gui::try_get_verified_ee_live_gui_record_end(
+            &live[..first_record_end],
+            0,
+            first_record_end,
+            &fragment_bits,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .is_some(),
+        "the same bytes are claimable only when the isolated final bit cursor proves the five-bit branch"
+    );
+
+    let payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "a following W boundary cannot disambiguate the character-sheet combat build-width cursor"
+    );
+}
+
+#[test]
 fn live_gui_character_sheet_isolated_record_must_consume_all_fragment_bits() {
     // The EE character-sheet reader (`sub_1407B2740`) owns only the BOOLs
     // selected by the mask branches. With no following live-object boundary, a

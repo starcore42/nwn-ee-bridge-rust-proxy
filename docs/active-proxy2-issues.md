@@ -845,6 +845,17 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 live_gui -- --nocapture`, `cargo fmt
   --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`.~~
+- ~~2026-05-31 `P/05/01` live GUI `G/S` character-sheet build-width handoff
+  audit: no packet behavior changed, but fixture-free coverage now explicitly
+  pins the same-byte-boundary ambiguity from the decompile-backed
+  `sub_1407B2740` combat-info branches. An isolated `G S mask=0x40` row can
+  choose the EE build-8193.35 five-bit second-list action branch when the final
+  fragment cursor proves it, but the same bytes followed by a live-object `W`
+  boundary remain unclaimed if the legacy four-bit branch lands on the same
+  read cursor with a different bit cursor. Verified with `cargo test -q -p
+  hgbridge-proxy2
+  live_gui_character_sheet_build_mode_boundary_ambiguity_stays_unclaimed --
+  --nocapture`.~~
 - ~~2026-05-27 `P/05/01` live GUI inventory update row cursor audit: fixed the
   read-buffer-only `G I/i U` validator so it owns exactly ten bytes, not the
   wider repository update row shape. Diamond `sub_4589A0`
