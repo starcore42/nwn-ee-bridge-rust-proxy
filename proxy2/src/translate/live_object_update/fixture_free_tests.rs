@@ -328,6 +328,25 @@ fn ee_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     live
 }
 
+fn ee_door_placeable_full_vector_update_live_bytes(object_type: u8) -> Vec<u8> {
+    let mut live = vec![b'U', object_type];
+    live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
+    live.extend_from_slice(
+        &(super::LEGACY_UPDATE_POSITION_MASK
+            | super::LEGACY_UPDATE_ORIENTATION_MASK
+            | super::LEGACY_UPDATE_SCALE_STATE_MASK
+            | super::LEGACY_UPDATE_STATE_MASK
+            | super::LEGACY_UPDATE_APPEARANCE_MASK)
+            .to_le_bytes(),
+    );
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // position
+    live.extend_from_slice(&[0x20, 0x01, 0xE0, 0xFF, 0x00, 0x10]); // vector orientation
+    live.extend_from_slice(&0x0042u16.to_le_bytes()); // appearance row
+    live.extend_from_slice(&1.0f32.to_le_bytes());
+    live.extend_from_slice(&0x0016u16.to_le_bytes());
+    live
+}
+
 fn with_live_update_object_id(mut live: Vec<u8>, object_id: u32) -> Vec<u8> {
     live[2..6].copy_from_slice(&object_id.to_le_bytes());
     live
@@ -398,6 +417,15 @@ fn exact_scalar_door_placeable_update_bits() -> Vec<bool> {
     let mut bits = scalar_door_placeable_update_bits();
     bits.push(false); // EE-only neutral door/placeable state BOOL.
     bits
+}
+
+fn exact_vector_door_placeable_update_bits() -> Vec<bool> {
+    vec![
+        true, false, // position residual bits
+        true,  // vector orientation selector; vector branch has no scalar low bits
+        true, false, true, false, true,  // Diamond door/placeable state bits
+        false, // EE-only neutral door/placeable state BOOL
+    ]
 }
 
 #[test]
@@ -514,6 +542,64 @@ fn work_remaining_does_not_rescue_shifted_door_placeable_37_rows() {
         assert_eq!(
             bit_short_payload, original_bit_short,
             "bit-short U/9 or U/10 before W must stay visible for quarantine/diagnostics"
+        );
+    }
+}
+
+#[test]
+fn work_remaining_preserves_exact_vector_door_placeable_37_rows() {
+    // This is the vector-orientation sibling of the scalar U/9-W audit.
+    // Diamond `sub_467AE0` and EE `sub_14079C050` both branch on the
+    // orientation BOOL before reading either one scalar byte or six vector
+    // bytes; `W current total` is still a separate three-byte, zero-BOOL
+    // suffix after the update owns its own position/state bits.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let mut live = ee_door_placeable_full_vector_update_live_bytes(object_type);
+        live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+        let payload =
+            live_object_payload_with_bits(&live, exact_vector_door_placeable_update_bits());
+
+        let claim = super::claim_payload_if_verified(&payload)
+            .expect("exact vector U/9 or U/10 followed by W should claim");
+        assert_eq!(claim.update_records, 1);
+        assert_eq!(claim.world_status_records, 1);
+        assert_eq!(
+            claim.live_bytes_length,
+            live.len(),
+            "W remains a fragment-neutral suffix after the vector update"
+        );
+    }
+}
+
+#[test]
+fn work_remaining_does_not_supply_missing_vector_update_fragment_bits() {
+    // A vector update consumes only the orientation selector bit for the
+    // branch itself, but it still owns position and state BOOLs before any
+    // following W row. A bit-short vector-shaped record must remain visible
+    // for quarantine instead of borrowing from the W suffix.
+    for object_type in [super::DOOR_OBJECT_TYPE, super::PLACEABLE_OBJECT_TYPE] {
+        let mut live = ee_door_placeable_full_vector_update_live_bytes(object_type);
+        live.extend_from_slice(&[b'W', 0x0C, 0x20]);
+        let mut payload = live_object_payload_with_bits(
+            &live,
+            vec![
+                true, false, // position residual bits
+                true,  // vector orientation selector only
+            ],
+        );
+        let original = payload.clone();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "object type {object_type:#04X} must own vector update state bits before W"
+        );
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "the update pass must not borrow missing vector U/9 bits from W"
+        );
+        assert_eq!(
+            payload, original,
+            "bit-short vector U/9 or U/10 before W must stay visible for quarantine/diagnostics"
         );
     }
 }

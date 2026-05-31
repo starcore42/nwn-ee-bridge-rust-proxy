@@ -1170,6 +1170,19 @@ Current status:
   no_fragment_low_bits_placeable_update -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 after_37_fragment_audit -- --nocapture`, and `cargo test -q
   -p hgbridge-proxy2 -- --test-threads=1` (797 passed).
+- 2026-05-31 `P/05/01` vector door/placeable update before `W` audit: no
+  packet behavior changed, but public fixture-free coverage now pins the
+  vector-orientation sibling of the `U/9`/`U/10 mask=0x37` handoff rule.
+  Diamond `sub_467AE0` and EE `sub_14079C050` both read the generic
+  orientation selector before choosing one scalar byte or six vector bytes; a
+  following `W current total` still owns only its three read-buffer bytes and
+  zero CNW BOOLs. Exact vector updates followed by `W` claim only when the
+  update owns its position selector bits, vector selector, five state bits, and
+  EE-neutral sixth state bit; bit-short vector rows stay unclaimed and
+  unchanged for quarantine. Verified with `cargo test -q -p hgbridge-proxy2
+  work_remaining_ -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  door_placeable_update -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1` (334 passed).
 - 2026-05-30 `P/05/01` declared-length `W` tail boundary audit: hardened
   stale-declared split classification so a candidate whose CNW tail starts with
   aligned `W current total` is treated as an ambiguous live-object read boundary,
