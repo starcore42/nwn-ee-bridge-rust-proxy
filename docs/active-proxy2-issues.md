@@ -1246,6 +1246,28 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2 item_full_update --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2 work_remaining --
   --nocapture`.
+- 2026-06-01 `P/05/01` tail9-before-item handoff audit: no packet behavior
+  changed, but public fixture-free coverage now pins the upstream cursor that
+  makes the current CEP v2.3 starter failure significant. The preceding
+  `U/10 mask=0xFFFF_FFF7` tail9 door row owns eight Diamond source bits
+  (position residual, five state BOOLs, legacy name branch) and emits thirteen
+  EE bits (inserted scalar-orientation fragment, the same five state BOOLs,
+  EE-neutral state BOOL, with the legacy name branch removed). That net +5
+  shift before `A/6`, plus the typed item-create active-property insertion,
+  makes the following `U/6 mask=0xFFFF_FFF3` start at the observed source
+  cursor where the orientation selector is vector-shaped while the bytes are
+  scalar-shaped. The correct exact sibling still rewrites and claims, while the
+  CEP-like shifted sibling rejects and rolls back, so do not add a U/6 scalar
+  rescue here. Continue tracing the original Diamond writer/handoff or a real
+  stream-boundary artifact before the `U/10`/`A/6`/`U/6` sequence. Verified
+  with `cargo test -q -p hgbridge-proxy2 tail9_door_update_before_typed_item_create
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 typed_item_create --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 item_full_update --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 legacy_all_bits --
+  --nocapture`, and `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q
+  -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

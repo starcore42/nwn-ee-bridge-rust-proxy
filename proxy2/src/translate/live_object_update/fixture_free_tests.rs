@@ -200,6 +200,48 @@ fn item_update_full_mask_scalar_locstring_inline_bits() -> Vec<bool> {
     ]
 }
 
+fn legacy_tail9_door_update_without_name_payload_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'U', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_0004u32.to_le_bytes());
+    live.extend_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
+    live.extend_from_slice(&[0xD0, 0x07, 0xF4, 0x01, 0x0F, 0x0F]); // position read bytes.
+    live.extend_from_slice(&0x2EA8u16.to_le_bytes()); // legacy facing scalar.
+    live.push(0x02); // legacy generic state byte.
+    live.extend_from_slice(&1.0f32.to_le_bytes()); // scale.
+    live.extend_from_slice(&0x0016u16.to_le_bytes()); // legacy animation/state word.
+    live.extend_from_slice(&0x0000_14E5u32.to_le_bytes()); // legacy-only suffix, not CExoString.
+    live
+}
+
+fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
+    vec![
+        false, true, // position residual bits.
+        true, false, true, false, true,  // Diamond door state bits.
+        false, // Diamond legacy name branch bit removed before EE emission.
+    ]
+}
+
+fn ee_scalar_orientation_fragment_bits_from_legacy_facing(facing: u16) -> [bool; 5] {
+    let scalar12 = super::writer::encode_ee_scalar_orientation_from_legacy_facing(facing);
+    [
+        false,
+        ((scalar12 >> 3) & 1) != 0,
+        ((scalar12 >> 2) & 1) != 0,
+        ((scalar12 >> 1) & 1) != 0,
+        (scalar12 & 1) != 0,
+    ]
+}
+
+fn legacy_tail9_door_update_expected_ee_bits() -> Vec<bool> {
+    let mut bits = vec![false, true]; // position residual bits.
+    bits.extend_from_slice(&ee_scalar_orientation_fragment_bits_from_legacy_facing(
+        0x2EA8,
+    ));
+    bits.extend_from_slice(&[true, false, true, false, true]); // Diamond door state bits.
+    bits.push(false); // EE-only neutral door/placeable state BOOL.
+    bits
+}
+
 fn item_update_hidden_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -2768,6 +2810,85 @@ fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
         .expect("rewritten legacy item-create/full-update stream should claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn tail9_door_update_before_typed_item_create_preserves_following_full_item_update_bits() {
+    // Pin the CEP v2.3 upstream cursor: a preceding all-bits door `U/10`
+    // tail9 row owns eight Diamond source bits and emits thirteen EE bits
+    // before the typed `A/6` item create hands off to the following full `U/6`.
+    let mut live = legacy_tail9_door_update_without_name_payload_live_bytes();
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut bits = legacy_tail9_door_update_source_bits();
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed item-create source bits.
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("tail9 door update plus typed item-create handoff should rewrite when all source cursors are exact");
+    assert_eq!(rewrite.update_records_rewritten, 2);
+    assert_eq!(rewrite.masks_translated, 2);
+    assert_eq!(rewrite.bits_inserted, 7);
+    assert_eq!(rewrite.bits_removed, 1);
+    assert_eq!(rewrite.bytes_removed, 6);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = legacy_tail9_door_update_expected_ee_bits();
+    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "tail9 and A/6 rewrites must preserve every following U/6 cursor bit"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten tail9/A6/U6 stream should exact-claim");
+    assert_eq!(claim.update_records, 2);
+    assert_eq!(claim.add_records, 1);
+}
+
+#[test]
+fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_update() {
+    // CEP-like negative proof: after tail9's eight source bits and A/6's
+    // source bits, the following U/6 selects vector orientation while the
+    // bytes are scalar-shaped. That cursor remains unproven; it must not be
+    // rescued by the preceding generalized repairs.
+    let mut live = legacy_tail9_door_update_without_name_payload_live_bytes();
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut bits = legacy_tail9_door_update_source_bits();
+    bits.extend_from_slice(&[false, false, true, false, true]); // CEP-like typed A/6 source bits.
+    bits.extend_from_slice(&[
+        false, false, // position residual bits.
+        true,  // vector orientation selector, despite scalar-shaped bytes.
+        true, false, true, false, true,  // state bits if the cursor were valid.
+        false, // direct name if the scalar cursor were valid.
+        true,  // hidden BOOL if the scalar cursor were valid.
+    ]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "tail9/A6 repairs must not commit when the following U/6 cursor is shifted"
+    );
+    assert_eq!(
+        payload, original,
+        "failed tail9/A6/U6 proof must leave source bytes and bits untouched"
+    );
 }
 
 #[test]
