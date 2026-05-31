@@ -1268,6 +1268,28 @@ Current status:
   -p hgbridge-proxy2
   dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
   -- --nocapture`.
+- 2026-06-01 `P/05/01` item cursor-neighbor audit: no packet behavior
+  changed. Re-reading the item create decompiles confirmed the preceding typed
+  `A/6` row is not the missing owner: Diamond `sub_451680 -> sub_451020`
+  reads the item-name selector and four active-property BOOLs, while EE
+  `sub_14079FE30 -> sub_14076BD30` reads the same source shape plus one
+  inserted active-property/CanUseItem BOOL. Debug-only rejection tracing now
+  reports nearby item-update cursors when `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM`
+  is set; the current CEP v2.3 run still rejects at `offset=104`,
+  `bit_cursor=28`, `raw_mask=0xFFFFFFF3`, translated mask `0x00080073`, with
+  neighboring cursors `-4`, `-3`, `-2`, `+2`, and `+4` also capable of
+  validating if the parser were allowed to cheat. Public coverage now pins the
+  negative rule: a full scalar `U/6` remains unclaimed/unchanged when two
+  unowned pre-cursor fragment bits are present, even though the same item
+  validator would succeed after an external owner consumed those bits. Next
+  trace must prove the real fragment owner or stream-boundary handoff before
+  the `U/6`; do not add cursor search/skip behavior. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  full_item_update_does_not_skip_unowned_pre_cursor_residue -- --nocapture`
+  and private `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p
+  hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

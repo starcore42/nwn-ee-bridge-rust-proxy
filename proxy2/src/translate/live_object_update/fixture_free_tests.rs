@@ -2892,6 +2892,45 @@ fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_upd
 }
 
 #[test]
+fn full_item_update_does_not_skip_unowned_pre_cursor_residue() {
+    // Cursor-neighbor proof for the CEP v2.3 item handoff risk. A full `U/6`
+    // byte row can still look valid if two unowned fragment bits are read as
+    // its position residuals; that does not make those bits part of the item
+    // update. The packet-level rewrite must leave the stream unclaimed instead
+    // of retrying the item parser at a neighboring cursor that happens to fit.
+    let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    let exact_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut shifted_bits = vec![false, true];
+    shifted_bits.extend_from_slice(&exact_update_bits);
+
+    let mut translated_live = live.clone();
+    translated_live[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_live,
+            0,
+            translated_live.len(),
+            &shifted_bits,
+            2,
+        )
+        .is_some(),
+        "the decompiled item reader would validate if an external owner had consumed the two residue bits"
+    );
+
+    let mut payload = live_object_payload_with_bits(&live, shifted_bits);
+    let original = payload.clone();
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "item update rewriting must not skip unowned pre-cursor bits to make a full U/6 validate"
+    );
+    assert_eq!(
+        payload, original,
+        "failed neighboring-cursor proof must leave bytes and fragment bits untouched"
+    );
+}
+
+#[test]
 fn update_rewrite_typed_item_create_preserves_following_full_item_update_locstring_inline_bits() {
     // This is the locstring-inline sibling of the CEP v2.3 typed A/6 handoff
     // audit. The A/6 active-property insertion is allowed only if the following

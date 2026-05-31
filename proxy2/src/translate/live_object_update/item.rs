@@ -59,6 +59,32 @@ pub(super) fn rewrite_update_record_for_ee(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<ItemUpdateRewrite> {
+    let result = rewrite_update_record_for_ee_inner(
+        live_bytes,
+        record_offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    );
+    if result.is_none() && std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        trace_rejected_item_update_cursor(
+            live_bytes,
+            record_offset,
+            *record_end,
+            fragment_bits,
+            bit_cursor,
+        );
+    }
+    result
+}
+
+fn rewrite_update_record_for_ee_inner(
+    live_bytes: &mut Vec<u8>,
+    record_offset: usize,
+    record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<ItemUpdateRewrite> {
     if let Some(next_bit_cursor) = advance_verified_ee_item_update_record(
         live_bytes,
         record_offset,
@@ -134,6 +160,80 @@ pub(super) fn rewrite_update_record_for_ee(
         next_bit_cursor: verified_next,
         ..ItemUpdateRewrite::default()
     })
+}
+
+fn trace_rejected_item_update_cursor(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) {
+    let raw_mask = item_update_mask(bytes, offset, record_end);
+    let translated_mask = raw_mask.map(translate_update_mask);
+    let nearby = raw_mask
+        .zip(translated_mask)
+        .map(|(raw, translated)| {
+            verified_neighboring_item_update_cursors(
+                bytes,
+                offset,
+                record_end,
+                fragment_bits,
+                bit_cursor,
+                raw,
+                translated,
+            )
+        })
+        .unwrap_or_default();
+    eprintln!(
+        "live-object item update rejected: offset={offset} record_end={record_end} bit_cursor={bit_cursor} raw_mask={} translated_mask={} next_bits={:?} nearby_verified_cursors={nearby:?}",
+        raw_mask
+            .map(|mask| format!("0x{mask:08X}"))
+            .unwrap_or_else(|| "none".to_string()),
+        translated_mask
+            .map(|mask| format!("0x{mask:08X}"))
+            .unwrap_or_else(|| "none".to_string()),
+        fragment_bits
+            .get(bit_cursor..bit_cursor.saturating_add(16).min(fragment_bits.len()))
+            .unwrap_or(&[])
+    );
+}
+
+fn verified_neighboring_item_update_cursors(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    raw_mask: u32,
+    translated_mask: u32,
+) -> Vec<(isize, usize)> {
+    let mut candidate = bytes.to_vec();
+    if translated_mask != raw_mask
+        && write_u32_le(&mut candidate, offset + 6, translated_mask).is_none()
+    {
+        return Vec::new();
+    }
+
+    let start = bit_cursor.saturating_sub(4);
+    let end = bit_cursor.saturating_add(4).min(fragment_bits.len());
+    let mut verified = Vec::new();
+    for cursor in start..=end {
+        if cursor == bit_cursor {
+            continue;
+        }
+        if let Some(next_cursor) = advance_verified_ee_item_update_record(
+            &candidate,
+            offset,
+            record_end,
+            fragment_bits,
+            cursor,
+        ) {
+            let delta = cursor as isize - bit_cursor as isize;
+            verified.push((delta, next_cursor));
+        }
+    }
+    verified
 }
 
 pub(super) fn advance_verified_ee_item_update_record(
