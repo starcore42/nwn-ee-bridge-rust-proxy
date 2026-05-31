@@ -1207,6 +1207,19 @@ Current status:
   -q -p hgbridge-proxy2
   typed_item_create_handoff_rejects_vector_selected_full_item_update --
   --nocapture`.
+- 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
+  behavior changed, but public fixture-free coverage now pins the positive
+  vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
+  `sub_14079C050` branch on the orientation BOOL before reading orientation
+  bytes; when that BOOL is true, both readers consume six vector bytes and no
+  scalar residual orientation bits before appearance/state/name/hidden. Tests
+  now prove a correctly shaped vector `U/6 0xFFFF_FFF3` translates to EE mask
+  `0x0008_0073` without moving the cursor, and that a preceding typed `A/6`
+  active-property insert preserves those following vector bits exactly. This
+  keeps the CEP v2.3 capture narrowed to shifted source bits rather than an
+  unsupported vector-path gap. Verified with `cargo test -q -p
+  hgbridge-proxy2 item_full_update -- --nocapture` and `cargo test -q -p
+  hgbridge-proxy2 typed_item_create -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
