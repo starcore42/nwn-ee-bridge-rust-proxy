@@ -1863,6 +1863,22 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`,
   `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all --check`, and `git
   diff --check`.~~
+- ~~2026-05-31 `P/05/01` non-full creature scalar-only appearance audit: no
+  packet behavior changed, but public regression coverage now pins the
+  decompile-backed scalar branch order for masks without body/equipment deltas.
+  Diamond `sub_448E30` reads the name branch only when `0x0400` is set, then
+  scalar mask bits in order `0x0001`, `0x0002`, `0x0004`, `0x0080`, `0x0800`,
+  `0x1000`, `0x0008`, `0x0010`, `0x0020`, `0x0040`; EE `sub_14077FE10`
+  preserves that order, with only `0x0080` widened from Diamond BYTE to EE
+  build-`0x2001/0x23` WORD. Tests now prove scalar-only rows own no fragment
+  BOOLs unless the name bit is present, that the name selector is consumed
+  before scalar fields, that the widened high byte must be zero, and that
+  stale-declared transport cannot steal a short scalar-only `P/5` row as CNW
+  fragment storage. Verified with `cargo test -q -p hgbridge-proxy2
+  partial_scalar_only -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  scalar_only_creature_appearance -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`.~~
 - ~~2026-05-27 `P/11/03` client CharList RequestUpdateChar cursor audit:
   tightened the client-to-server character-list verifier so the byte-only
   `BYTE + CResRef(16)` body may have no tail or one `GetWriteMessage` empty

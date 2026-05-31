@@ -5287,6 +5287,43 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn creature_scalar_only_appearance_live_bytes(mask: u16) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        if (mask & 0x0001) != 0 {
+            live.extend_from_slice(&0x1234u16.to_le_bytes());
+        }
+        if (mask & 0x0002) != 0 {
+            live.push(0x12);
+        }
+        if (mask & 0x0004) != 0 {
+            live.push(0x34);
+        }
+        if (mask & 0x0080) != 0 {
+            live.push(0x56);
+        }
+        if (mask & 0x0800) != 0 {
+            live.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        }
+        if (mask & 0x1000) != 0 {
+            live.extend_from_slice(&0x0506_0708u32.to_le_bytes());
+        }
+        if (mask & 0x0008) != 0 {
+            live.push(0x78);
+        }
+        if (mask & 0x0010) != 0 {
+            live.push(0x9A);
+        }
+        if (mask & 0x0020) != 0 {
+            live.push(0xBC);
+        }
+        if (mask & 0x0040) != 0 {
+            live.push(0xDE);
+        }
+        live
+    }
+
     fn creature_direct_name_body_part_delta_appearance_live_bytes(
         mask: u16,
         selector: u8,
@@ -6232,6 +6269,95 @@ mod declared_length_repair_tests {
                 &enough_bits,
             ),
             "token first component plus inline second component consumes four P/5 name BOOLs after the CNW header"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_short_creature_scalar_only_appearance_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&creature_scalar_only_appearance_live_bytes(0x0080));
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "short scalar-only P/5 bytes can masquerade as compact CNW fragment storage"
+        );
+        assert!(
+            crate::translate::live_object_update::legacy_creature_appearance_record_end_for_transport(
+                &payload,
+                split,
+                payload.len(),
+            )
+            == Some(payload.len()),
+            "the semantic appearance translator owns scalar-only P/5 rows"
+        );
+        assert!(
+            fragment_tail_starts_with_aligned_short_creature_appearance_read_boundary(
+                &payload, split
+            ),
+            "aligned scalar-only P/5 remains a decompile-owned read-buffer row"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned scalar-only P/5 remains a read boundary, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned scalar-only P/5 row"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_scalar_only_creature_appearance_without_bool_bits() {
+        let mask =
+            0x0001 | 0x0002 | 0x0004 | 0x0080 | 0x0800 | 0x1000 | 0x0008 | 0x0010 | 0x0020 | 0x0040;
+        let mut live = creature_scalar_only_appearance_live_bytes(mask);
+        let appearance_end = live.len();
+        live.extend_from_slice(&creature_delete_live_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            appearance_end,
+            "transport scan must split after the scalar-only P/5 row before counting following delete bits"
+        );
+
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.push(true);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "scalar-only P/5 owns no BOOLs; the following D/5 owns exactly one"
+        );
+        let too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &too_few_bits,
+            ),
+            "capacity proof must still reserve the delete BOOL after scalar-only P/5"
         );
     }
 

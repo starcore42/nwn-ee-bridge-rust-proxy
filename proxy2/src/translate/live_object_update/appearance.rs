@@ -9345,6 +9345,47 @@ mod public_tests {
         bytes
     }
 
+    fn partial_legacy_creature_scalar_only(mask: u16, name: Option<&[u8]>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, mask);
+        if let Some(name) = name {
+            push_cexo_string(&mut bytes, name);
+        }
+        if (mask & 0x0001) != 0 {
+            push_u16(&mut bytes, 0x1234);
+        }
+        if (mask & 0x0002) != 0 {
+            bytes.push(0x12);
+        }
+        if (mask & 0x0004) != 0 {
+            bytes.push(0x34);
+        }
+        if (mask & 0x0080) != 0 {
+            bytes.push(0x56);
+        }
+        if (mask & 0x0800) != 0 {
+            push_u32(&mut bytes, 0x0102_0304);
+        }
+        if (mask & 0x1000) != 0 {
+            push_u32(&mut bytes, 0x0506_0708);
+        }
+        if (mask & 0x0008) != 0 {
+            bytes.push(0x78);
+        }
+        if (mask & 0x0010) != 0 {
+            bytes.push(0x9A);
+        }
+        if (mask & 0x0020) != 0 {
+            bytes.push(0xBC);
+        }
+        if (mask & 0x0040) != 0 {
+            bytes.push(0xDE);
+        }
+        bytes
+    }
+
     fn mixed_locstring_name_bits() -> Vec<bool> {
         vec![
             true,  // creature-name selector: two locstring components.
@@ -10130,6 +10171,133 @@ mod public_tests {
             &mut ee_cursor,
         ));
         assert_eq!(ee_cursor, 0);
+    }
+
+    #[test]
+    fn partial_scalar_only_appearance_widens_0080_without_fragment_bits() {
+        let mask =
+            0x0001 | 0x0002 | 0x0004 | 0x0080 | 0x0800 | 0x1000 | 0x0008 | 0x0010 | 0x0020 | 0x0040;
+        let mut bytes = partial_legacy_creature_scalar_only(mask, None);
+        let mut record_end = bytes.len();
+        let mut fragment_bits = Vec::new();
+
+        assert_eq!(
+            try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
+            Some(bytes.len()),
+            "scalar-only non-full P/5 rows are complete decompiled appearance records"
+        );
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 0,
+            "scalar-only masks without 0x0400 own no Diamond fragment BOOLs"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("legacy scalar-only appearance should widen to exact EE shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 1,
+            "only mask 0x0080 widens from Diamond BYTE to EE build-0x23 WORD"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            &bytes[LEGACY_APPEARANCE_HEADER_BYTES..record_end],
+            &[
+                0x34, 0x12, // 0x0001 WORD.
+                0x12, // 0x0002 BYTE.
+                0x34, // 0x0004 BYTE.
+                0x56, 0x00, // 0x0080 EE WORD, zero-extended from Diamond BYTE.
+                0x04, 0x03, 0x02, 0x01, // 0x0800 DWORD.
+                0x08, 0x07, 0x06, 0x05, // 0x1000 DWORD.
+                0x78, 0x9A, 0xBC, 0xDE, // 0x0008..0x0040 BYTEs.
+            ],
+            "Diamond/EE scalar field order must not shift around the widened 0x0080 value"
+        );
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(ee_cursor, 0);
+
+        let mut nonzero_high = bytes.clone();
+        nonzero_high[LEGACY_APPEARANCE_HEADER_BYTES + 5] = 1;
+        let mut bad_cursor = 0usize;
+        assert!(
+            !advance_verified_ee_creature_appearance_record(
+                &nonzero_high,
+                0,
+                record_end,
+                &fragment_bits,
+                &mut bad_cursor,
+            ),
+            "EE build-0x23 scalar WORD high byte must stay zero"
+        );
+    }
+
+    #[test]
+    fn partial_scalar_only_direct_name_consumes_name_bit_before_scalar_fields() {
+        let mut bytes =
+            partial_legacy_creature_scalar_only(LEGACY_APPEARANCE_NAME_MASK | 0x0080, Some(b""));
+        let mut record_end = bytes.len();
+        let mut fragment_bits = vec![false];
+
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 1,
+            "mask 0x0400 owns the name selector before scalar mask branches"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("named scalar-only appearance should widen to exact EE shape");
+
+        assert_eq!(rewrite.bytes_inserted, 1);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(
+            ee_cursor, 1,
+            "EE validation must preserve the one direct-name selector bit"
+        );
     }
 
     #[test]
