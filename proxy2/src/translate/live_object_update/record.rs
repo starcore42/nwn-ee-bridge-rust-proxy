@@ -132,13 +132,25 @@ pub(super) fn rewrite_update_record_for_ee(
         if !*bit_cursor_reliable {
             return None;
         }
-        let item_rewrite = item::rewrite_update_record_for_ee(
+        let Some(item_rewrite) = item::rewrite_update_record_for_ee(
             live_bytes,
             record_offset,
             record_end,
             bits,
             *bit_cursor,
-        )?;
+        ) else {
+            debug_update_record_reject(
+                "item-update-fragment-cursor-unowned",
+                live_bytes,
+                record_offset,
+                *record_end,
+                raw_mask,
+                item::translate_update_mask(raw_mask),
+                *bit_cursor,
+            );
+            *bit_cursor_reliable = false;
+            return None;
+        };
         *bit_cursor = item_rewrite.next_bit_cursor;
         let rewrite = RecordRewrite {
             rewritten: item_rewrite.rewritten,
@@ -2163,5 +2175,62 @@ mod tests {
                 "{label}: emitted EE state bits must match the source cursor"
             );
         }
+    }
+
+    fn scalar_item_update_with_full_legacy_mask() -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+        live.extend_from_slice(&[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F]);
+        live.push(0); // scalar-orientation read byte.
+        live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        live.extend_from_slice(&[0; 16]);
+        live.extend_from_slice(&5u32.to_le_bytes());
+        live.extend_from_slice(b"Lance");
+        live
+    }
+
+    #[test]
+    fn failed_item_update_marks_following_fragment_cursor_unreliable() {
+        // The CEP v2.3 handoff risk is a shared cursor rule, not an item-only
+        // special case. Diamond `sub_467AE0` and EE `sub_14079C050` branch on
+        // the item orientation BOOL before reading orientation bytes. If that
+        // selector says vector but the bounded `U/6` bytes are scalar-shaped,
+        // no later live-object row may reuse the old cursor as if the item
+        // update had consumed zero bits.
+        let mut live = scalar_item_update_with_full_legacy_mask();
+        let original_live = live.clone();
+        let mut record_end = live.len();
+        let mut bits = vec![
+            false, true, // position residual bits.
+            true, // vector orientation selector, despite scalar-shaped bytes.
+            true, false, true, false, true,  // state bits at the shifted cursor.
+            false, // direct CExoString item name if the scalar cursor were valid.
+            true,  // hidden BOOL if the scalar cursor were valid.
+        ];
+        let original_bits = bits.clone();
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        assert!(
+            rewrite_update_record_for_ee(
+                &mut live,
+                &mut record_end,
+                &mut bits,
+                &mut bit_cursor,
+                &mut bit_cursor_reliable,
+                0,
+            )
+            .is_none(),
+            "a vector-selected scalar item update has no decompile-owned cursor"
+        );
+        assert!(
+            !bit_cursor_reliable,
+            "later records must not be rewritten against the stale pre-item cursor"
+        );
+        assert_eq!(bit_cursor, 0);
+        assert_eq!(record_end, original_live.len());
+        assert_eq!(live, original_live);
+        assert_eq!(bits, original_bits);
     }
 }

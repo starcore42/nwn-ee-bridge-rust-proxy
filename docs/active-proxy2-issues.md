@@ -1343,6 +1343,23 @@ Current status:
   different fragment owner or stream-boundary explanation before the `U/6`.
   Verified with `cargo test -q -p hgbridge-proxy2
   ee_shaped_door_add_before_tail9_item_handoff -- --nocapture`.
+- 2026-06-01 `P/05/01` item-update stale downstream cursor audit: hardened the
+  live-object update walker so a bounded item `U/6` rewrite failure marks the
+  global fragment cursor unreliable instead of letting later rows rewrite from
+  the stale pre-item cursor. Diamond `sub_467AE0` and EE `sub_14079C050` both
+  branch on the item orientation BOOL before reading orientation bytes, so a
+  vector-selected/scalar-shaped item update has no decompile-owned cursor to
+  hand off. This does not claim the CEP v2.3 starter row; the private fixture
+  still quarantines unchanged, and the next trace still needs the real owner or
+  stream-boundary explanation before the `U/6`. Verified with `cargo test -p
+  hgbridge-proxy2 failed_item_update_marks_following_fragment_cursor_unreliable
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  full_item_update_does_not_skip_unowned_pre_cursor_residue -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 ee_shaped_door_add_before_tail9_item_handoff
+  -- --nocapture`, and private `RUSTFLAGS='--cfg hgbridge_private_fixtures'
+  cargo test -q -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
