@@ -2540,7 +2540,12 @@ fn compact_placeable_add_end_before_same_object_update_like_tail(
     };
 
     if update_body_start + 9 > scan_end
-        || read_u32_le(bytes, update_body_start + 1)? != object_id
+        || !read_u32_le(bytes, update_body_start + 1).is_some_and(|update_object_id| {
+            crate::translate::live_object_update::object_ids::equivalent_legacy_external_object_ids(
+                update_object_id,
+                object_id,
+            )
+        })
         || read_u32_le(bytes, update_body_start + 5).is_none_or(|mask| mask == 0)
     {
         return None;
@@ -4772,6 +4777,46 @@ mod live_object_id_tests {
             0,
             bytes.len(),
         ));
+    }
+
+    #[test]
+    fn compact_placeable_update_like_tail_accepts_compact_external_id_alias() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[
+            b'A',
+            PLACEABLE_OBJECT_TYPE,
+            0x84,
+            0x00,
+            0x00,
+            0x80,
+            0x18,
+            0x16,
+            0x00,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]);
+        bytes.extend_from_slice(&[
+            0x00,
+            PLACEABLE_OBJECT_TYPE,
+            0x84,
+            0x00,
+            0x00,
+            0x00,
+            0xF7,
+            0x00,
+            0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            compact_placeable_add_end_before_same_object_update_like_tail(&bytes, 0, bytes.len()),
+            Some(15),
+            "compact add/update-like split must use the same external/compact id alias rule as the exact update verifier"
+        );
     }
 }
 

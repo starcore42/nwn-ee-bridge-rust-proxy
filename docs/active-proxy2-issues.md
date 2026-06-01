@@ -1909,6 +1909,21 @@ Current status:
   prior_low_tail_rewrite_rolls_back_when_compact_alias_add_has_only_five_bits
   -- --nocapture`. The upstream bit-owner search before the terminal compact
   handoff remains active.
+- 2026-06-02 `P/05/01` compact `A/09` missing-opcode alias-boundary audit:
+  fixed the shared door/placeable missing-opcode update-body and low-tail span
+  boundary guards, plus the older visual/add-map update-like splitter, so they
+  use the same compact/external legacy OBJECTID equivalence
+  (`0x0000NNNN`/`0x8000NNNN`) as the exact add/update verifier. Diamond and EE
+  still read the object id field as a DWORD; this is only the proxy scanner's
+  same-object guard before typed update parsing proves the rest of the body and
+  cursor. Public regressions cover an external-id compact `A/09` followed by a
+  compact-id missing-opcode `U/09` body and the same alias in the low-tail span
+  scanner. Verified with focused alias tests plus `cargo test -q -p
+  hgbridge-proxy2 live_object_update::boundary::tests:: -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 compact_placeable_token -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`, `cargo test -q
+  -p hgbridge-proxy2 object_id -- --nocapture`, `cargo fmt --all --check`,
+  `cargo check -q -p hgbridge-proxy2`, and `git diff --check`.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

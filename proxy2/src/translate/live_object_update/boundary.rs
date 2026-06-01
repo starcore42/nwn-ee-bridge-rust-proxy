@@ -11,8 +11,8 @@ use super::{
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_MASK,
     LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK, LEGACY_UPDATE_STATE_MASK,
     MAX_LIVE_OBJECT_NAME_BYTES, PLACEABLE_OBJECT_TYPE, TRIGGER_OBJECT_TYPE, appearance, creature,
-    door, effects, gui, inventory, item, locstring, placeable, read_u16_le, read_u32_le, reader,
-    trigger, world_status,
+    door, effects, gui, inventory, item, locstring, object_ids, placeable, read_u16_le,
+    read_u32_le, reader, trigger, world_status,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,7 +547,9 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after
     };
 
     if body_offset + LEGACY_UPDATE_HEADER_BYTES - 1 > scan_end
-        || read_u32_le(bytes, body_offset + 1)? != expected_object_id
+        || !read_u32_le(bytes, body_offset + 1).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, expected_object_id)
+        })
     {
         return None;
     }
@@ -643,7 +645,9 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_low_tail_fragment_spa
     };
 
     if body_offset + LEGACY_UPDATE_HEADER_BYTES - 1 > scan_end
-        || read_u32_le(bytes, body_offset + 1)? != expected_object_id
+        || !read_u32_le(bytes, body_offset + 1).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, expected_object_id)
+        })
     {
         return None;
     }
@@ -2077,6 +2081,39 @@ mod tests {
     }
 
     #[test]
+    fn compact_placeable_missing_opcode_update_accepts_compact_external_id_alias() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x84, 0x00, 0x00, 0x80, 0x18, 0x16, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+            0x00,
+        ]);
+        live.extend_from_slice(&[
+            0x00, 0x09, 0x84, 0x00, 0x00, 0x00, 0xF7, 0x00, 0x00, 0x00, 0xE5, 0x37, 0xFF, 0x1B,
+            0xE3, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x18, 0x16,
+        ]);
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x85, 0x00, 0x00, 0x80, 0x18, 0x16, 0x00, 0x00, 0x05, 0x0E, 0x00, 0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            try_get_legacy_placeable_short_name_add_record_end_for_transport(&live, 0, live.len(),),
+            Some(15),
+            "compact add boundary must accept a same-object compact-id missing-opcode body"
+        );
+        assert_eq!(
+            try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+                &live,
+                15,
+                live.len(),
+                PLACEABLE_OBJECT_TYPE,
+                0x8000_0084,
+            ),
+            Some(42)
+        );
+    }
+
+    #[test]
     fn missing_opcode_low_tail_fragment_span_proves_same_object_update() {
         let live = [
             0x00, 0x09, 0xCA, 0x18, 0x00, 0x00, 0xF7, 0x00, 0x00, 0x00, 0xA0, 0x05, 0xF6, 0x04,
@@ -2097,6 +2134,21 @@ mod tests {
                 span_end: 26,
                 low_tail_bits: 2,
             })
+        );
+        assert_eq!(
+            try_get_legacy_missing_opcode_door_placeable_low_tail_fragment_span_after_add(
+                &live,
+                0,
+                live.len(),
+                PLACEABLE_OBJECT_TYPE,
+                0x8000_18CA,
+            ),
+            Some(MissingOpcodeLowTailFragmentSpan {
+                span_start: 25,
+                span_end: 26,
+                low_tail_bits: 2,
+            }),
+            "low-tail missing-opcode span must accept the same external/compact object id alias"
         );
     }
 
