@@ -2824,6 +2824,38 @@ fn compact_placeable_token_add_rejects_five_bit_residue_before_low_tail_update()
 }
 
 #[test]
+fn compact_placeable_token_add_rejects_unowned_bit_before_low_tail_update_bits() {
+    // The two source-only compact selector bits are an exact count, not a cue to
+    // resync the following update. If one extra bit sits between that compact
+    // add cursor and a same-object low-tail update's own source bits, the update
+    // can still look byte-plausible from a shifted cursor. It must stay
+    // unclaimed instead of borrowing the residue.
+    let object_id = 0x8000_18CAu32;
+    let mut live = compact_placeable_token_name_add_live_bytes();
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        object_id,
+    ));
+
+    let mut bits = vec![false; 7];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "compact add repair must not skip one residue bit before the following low-tail update"
+    );
+    assert_eq!(
+        payload, original,
+        "failed shifted compact-add/low-tail proof must leave source bytes and bits untouched"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

@@ -1885,6 +1885,18 @@ Current status:
   replay still rolls back at the same upstream bit-owner problem; continue
   tracing which earlier row consumed or stranded the bits before offset 953,
   not GUI search/skip behavior.
+- 2026-06-02 `P/05/01` compact `A/09` shifted low-tail bit audit: no packet
+  behavior changed, but public fixture-free coverage now proves the two
+  source-only compact selector bits after the four Diamond compact add tail
+  BOOLs are an exact count, not a resync window. One extra unowned bit before a
+  following same-object low-tail `U/09 mask=0xF7` with otherwise plausible
+  update bits must roll back and leave both bytes and bits untouched. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  compact_placeable_token_add_rejects_unowned_bit_before_low_tail_update_bits
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 compact_placeable_token
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail --
+  --nocapture`, `cargo fmt --all --check`, and `cargo check -q -p
+  hgbridge-proxy2`.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
