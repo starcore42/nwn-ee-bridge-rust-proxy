@@ -435,6 +435,21 @@ fn legacy_width_model_type2_typed_item_create_with_visual_map_live_bytes() -> Ve
     live
 }
 
+fn legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+    live.extend_from_slice(&0x01u32.to_le_bytes()); // stock base item with model type 2.
+    live.extend_from_slice(&[0x0C, 0x0B, 0x0B]); // Diamond BYTE model parts.
+    live.push(0); // fourth Diamond model-type-2 appearance byte.
+    live.extend_from_slice(&5u32.to_le_bytes());
+    live.extend_from_slice(b"Lance");
+    live.extend_from_slice(&2u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.extend_from_slice(&[0, 0, 0xFF]);
+    live.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    live
+}
+
 fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_18CAu32.to_le_bytes());
@@ -2936,6 +2951,54 @@ fn legacy_width_typed_item_create_preserves_following_full_item_update_bits() {
 }
 
 #[test]
+fn legacy_width_typed_item_create_without_visual_map_preserves_following_full_item_update_bits() {
+    // Generalized CEP v2.3 `A/6` sibling: Diamond `sub_451020` stops after the
+    // model-type-2 BYTE appearance fields, while EE `sub_14079FAC0` widens
+    // those parts and reads an object visual-transform map before active item
+    // properties. Both byte insertions are inside the item-create row and must
+    // preserve the following `U/6` fragment cursor.
+    let mut live = legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes();
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let source_item_create_bits = [false, false, true, false, false];
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut owned_bits = source_item_create_bits.to_vec();
+    owned_bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload).expect(
+        "legacy typed item-create visual-map insertion should preserve the following U/6 cursor",
+    );
+    assert_eq!(rewrite.bits_inserted, 1);
+    assert_eq!(
+        rewrite.bytes_inserted,
+        3 + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "model-type-2 BYTE parts widen and EE's item visual-transform map is inserted"
+    );
+    assert_eq!(rewrite.masks_translated, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = vec![false, false, false, true, false, false];
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "item-create byte insertion must not steal any following U/6 bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten legacy item-create/no-map full-update stream should claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
 fn tail9_door_update_before_typed_item_create_preserves_following_full_item_update_bits() {
     // Pin the CEP v2.3 upstream cursor: a preceding all-bits door `U/10`
     // tail9 row owns eight Diamond source bits and emits thirteen EE bits
@@ -3060,6 +3123,52 @@ fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_
 }
 
 #[test]
+fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_preserves_u6_bits() {
+    // This matches the generalized private CEP v2.3 handoff shape without
+    // depending on that fixture: a legacy door add, `U/10` tail9 with its
+    // four-byte legacy name suffix, a Diamond-width typed item create missing
+    // EE's item visual map, then the following full item update.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(
+        &legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes(),
+    );
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("CEP-like tail9/no-map A6/U6 stream should rewrite exactly");
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = legacy_short_strref_door_add_expected_ee_bits();
+    expected.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "door/tail9/A6 rewrites must preserve the following no-map U/6 cursor"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten CEP-like no-map door/tail9/A6/U6 stream should exact-claim");
+    assert_eq!(claim.add_records, 2);
+    assert_eq!(claim.update_records, 2);
+}
+
+#[test]
 fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
     // Negative sibling for the exact CEP tail9 bit pattern. Even with the
     // legacy name branch true and the four-byte suffix removed from the read
@@ -3103,6 +3212,56 @@ fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
     assert_eq!(
         payload, original,
         "failed CEP-like residue proof must leave the source stream untouched"
+    );
+}
+
+#[test]
+fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does_not_supply_residue_bits()
+ {
+    // Negative sibling for the no-visual-map typed item-create branch above.
+    // The EE visual-map bytes and active-property BOOL are inserted
+    // transactionally inside `A/6`; neither insertion can consume two unrelated
+    // source bits before the following `U/6`.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(
+        &legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes(),
+    );
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut shifted_item_bits = vec![false, true];
+    shifted_item_bits.extend_from_slice(&item_update_full_mask_scalar_direct_name_bits());
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            2,
+        )
+        .is_some(),
+        "the item reader would accept the U/6 only after an external two-bit owner"
+    );
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "no-map A/6 byte/bit insertion must not skip unowned bits before the following U/6"
+    );
+    assert_eq!(
+        payload, original,
+        "failed no-map residue proof must leave the source stream untouched"
     );
 }
 
