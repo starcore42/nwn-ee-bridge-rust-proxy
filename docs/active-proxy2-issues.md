@@ -1331,6 +1331,18 @@ Current status:
   stream-boundary explanation before the `U/6`. Verified with `cargo test -q
   -p hgbridge-proxy2 short_strref_door_add_before_tail9_item_handoff --
   --nocapture`.
+- 2026-06-01 `P/05/01` EE-shaped door-add prefix audit: no packet behavior
+  changed, but public fixture-free coverage now pins the direct-empty generic
+  `A/10` shape seen at the start of the current CEP v2.3 debug stream. The
+  already-EE-shaped add owns the two door DWORDs, EE object visual-map, empty
+  direct `CExoString`, state WORD, and exactly six fragment BOOLs; it is a
+  valid boundary before `U/10` tail9 but cannot donate the two residue bits
+  before the later full `U/6`. The positive sibling rewrites and exact-claims
+  `A/10` + `U/10` tail9 + typed `A/6` + full `U/6`, while the same prefix with
+  two unowned pre-`U/6` bits rolls back unchanged. Next trace still needs a
+  different fragment owner or stream-boundary explanation before the `U/6`.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  ee_shaped_door_add_before_tail9_item_handoff -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
