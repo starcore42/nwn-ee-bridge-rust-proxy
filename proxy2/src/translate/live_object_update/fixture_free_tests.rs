@@ -2955,6 +2955,61 @@ fn prior_low_tail_rewrite_rolls_back_when_compact_alias_add_has_only_five_bits()
 }
 
 #[test]
+fn prior_low_tail_rewrite_rolls_back_when_compact_add_has_shifted_xp2_low_tail_bits() {
+    // Generalized from the later XP2 seq19 rollback trace: after a prior
+    // low-tail row rewrites, a compact token-name `A/09` may be followed by a
+    // same-object `U/09 mask=0xF7` whose first twelve source bits look
+    // plentiful but are shifted for both legal compact-add handoffs. Diamond
+    // `sub_44E4A0` owns exactly four compact add BOOLs, with the two extra
+    // token selector bits allowed only when the following update exact-proves
+    // its own cursor. The traced `1000_11_101101` run proves neither update
+    // cursor, so the whole candidate must roll back unchanged.
+    let prior_object_id = 0x8000_002Au32;
+    let compact_object_id = 0x8000_0001u32;
+    let mut add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        compact_object_id,
+    );
+    add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        prior_object_id,
+    );
+    live.extend_from_slice(&add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        compact_object_id,
+    ));
+
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "shifted XP2 compact-add/low-tail bits must not commit a prior low-tail rewrite"
+    );
+    assert_eq!(
+        payload, original,
+        "failed shifted low-tail proof must leave all source bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the shifted compact low-tail handoff remains active cursor evidence"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

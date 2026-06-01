@@ -1941,8 +1941,23 @@ Current status:
   --nocapture`, plus `cargo fmt --all --check`, `cargo check -q -p
   hgbridge-proxy2`, and `git diff --check`. The private XP2 seq19 replay
   advances from the prior offset 953 rollback to offset 1145
-  (`add-record-cursor-advance-failed`), so the active next trace should compare
-  the bits and row boundary around that later compact add/update cluster.
+  (`add-record-cursor-advance-failed`).
+- 2026-06-02 `P/05/01` compact `A/09` shifted low-tail replay audit: no packet
+  behavior changed, but public coverage now pins the later raw XP2 seq19
+  rollback shape. After a valid prior low-tail rewrite, the raw trace reaches
+  compact `A/09` bytes `41 09 01 00 00 80 7B 74 01 00 05 00 00 00 00` at
+  rewritten offset 1145, followed by same-object `U/09 mask=0xF7`. The next
+  source bits are `1000_11_101101`: Diamond `sub_44E4A0` owns exactly four
+  compact add BOOLs, and the known two source-only token selector bits are
+  allowed only when the following update exact-proves its own cursor. Neither
+  handoff proves the low-tail update's decompiled position/orientation/state
+  cursor, so the whole candidate must roll back rather than committing the
+  prior low-tail rewrite. Verified with `cargo test -q -p hgbridge-proxy2
+  prior_low_tail_rewrite_rolls_back_when_compact_add_has_shifted_xp2_low_tail_bits
+  -- --nocapture`. The separate current XP2 Chapter1 area-entry seq19 fixture
+  exact-claims; keep it distinct from the older raw unclaimed door/placeable
+  GUI stream. Next trace should find the real bit owner or stream-boundary
+  artifact before offset 1145, not add a compact-add/low-tail cursor resync.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
