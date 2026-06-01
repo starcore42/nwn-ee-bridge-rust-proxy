@@ -967,117 +967,199 @@ pub(super) fn promote_legacy_live_gui_item_fragment_span_for_ee(
             return None;
         }
     };
-    let span = bytes.get(span_start..span_end)?;
-    if span.is_empty() || span.len() > MAX_GUI_ITEM_FRAGMENT_SPAN_BYTES {
+    let span_len = span_end.saturating_sub(span_start);
+    let span_preview = bytes
+        .get(span_start..span_start.saturating_add(span_len.min(16)))
+        .unwrap_or(&[])
+        .to_vec();
+    if span_len == 0 || span_len > MAX_GUI_ITEM_FRAGMENT_SPAN_BYTES {
         if debug {
             eprintln!(
                 "live-gui item fragment span rejected: reason=span-len span_start={span_start} span_end={span_end} len={}",
-                span.len()
+                span_len
             );
         }
         return None;
     }
 
-    let mut promoted_bits = match bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS) {
+    // Fragment storage after a GUI item row is independent of whether the item
+    // body itself still needs Diamond-to-EE byte/bit edits. Diamond
+    // `sub_4589A0` and EE `sub_1407B3F30` both hand `G I/i A` and `G R/r A`
+    // rows to the shared item-create reader. If the row is already EE-shaped,
+    // do not reuse a shorter byte-only legacy endpoint: search for the latest
+    // exact EE item endpoint before the terminal storage span, then prove that
+    // moving only that trailing span satisfies the same validator.
+    if let Some(promotion) = promote_already_ee_live_gui_item_fragment_span_for_ee(
+        bytes,
+        fragment_bits,
+        offset,
+        record_end,
+        bit_cursor,
+        span_start,
+        span_end,
+    ) {
+        return Some(promotion);
+    }
+
+    let span = bytes.get(span_start..span_end)?;
+    let promoted_bits = match decode_nonzero_live_gui_item_fragment_span_bits(span) {
         Some(bits) => bits,
         None => {
             if debug {
                 eprintln!(
-                    "live-gui item fragment span rejected: reason=decode span_start={span_start} span_end={span_end} preview={:02X?}",
-                    span.get(..span.len().min(16)).unwrap_or(&[])
+                    "live-gui item fragment span rejected: reason=decode-or-zero span_start={span_start} span_end={span_end} preview={:02X?}",
+                    span_preview
+                );
+            }
+            Vec::new()
+        }
+    };
+
+    if !promoted_bits.is_empty() {
+        let mut proof_bits = fragment_bits.clone();
+        if bits::insert_msb_bits(&mut proof_bits, bit_cursor, &promoted_bits).is_none() {
+            if debug {
+                eprintln!(
+                    "live-gui item fragment span rejected: reason=proof-bit-insert bit_cursor={bit_cursor} promoted_bits={}",
+                    promoted_bits.len()
                 );
             }
             return None;
         }
-    };
-    if promoted_bits.len() < CNW_FRAGMENT_HEADER_BITS {
-        if debug {
-            eprintln!(
-                "live-gui item fragment span rejected: reason=short-bits span_start={span_start} span_end={span_end} bits={}",
-                promoted_bits.len()
-            );
+
+        let mut trial_bytes = bytes.clone();
+        trial_bytes.drain(span_start..span_end);
+        let mut trial_record_end = *record_end;
+        if insert_ee_live_gui_item_extras_for_ee(
+            &mut trial_bytes,
+            offset,
+            &mut trial_record_end,
+            &mut proof_bits,
+            bit_cursor,
+        )
+        .is_some()
+        {
+            let mut proof_cursor = bit_cursor;
+            if advance_verified_live_gui_record(
+                &trial_bytes,
+                offset,
+                trial_record_end,
+                &proof_bits,
+                &mut proof_cursor,
+            )
+            .is_some()
+            {
+                bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+                let old_record_end = span_end;
+                let bytes_promoted = span_len;
+                let bits_promoted = promoted_bits.len();
+                bytes.drain(span_start..span_end);
+                *record_end = span_start;
+
+                return Some(LiveGuiItemFragmentSpanPromotion {
+                    old_record_end,
+                    bytes_promoted,
+                    bits_promoted,
+                });
+            }
         }
+    }
+
+    if debug {
+        let next_bits = fragment_bits
+            .get(bit_cursor..bit_cursor.saturating_add(16).min(fragment_bits.len()))
+            .unwrap_or(&[]);
+        let promoted_preview = promoted_bits
+            .get(..promoted_bits.len().min(16))
+            .unwrap_or(&[]);
+        eprintln!(
+            "live-gui item fragment span rejected: reason=advance offset={offset} record_end={} bit_cursor={bit_cursor} span_start={span_start} span_end={span_end} promoted_bits={} promoted_preview={:?} next_bits={:?} span_preview={:02X?}",
+            *record_end,
+            promoted_bits.len(),
+            promoted_preview,
+            next_bits,
+            span_preview
+        );
+    }
+    None
+}
+
+fn promote_already_ee_live_gui_item_fragment_span_for_ee(
+    bytes: &mut Vec<u8>,
+    fragment_bits: &mut Vec<bool>,
+    offset: usize,
+    record_end: &mut usize,
+    bit_cursor: usize,
+    first_possible_span_start: usize,
+    span_end: usize,
+) -> Option<LiveGuiItemFragmentSpanPromotion> {
+    let search_start = first_possible_span_start.checked_add(1)?;
+    if search_start >= span_end || span_end > bytes.len() {
+        return None;
+    }
+
+    for span_start in (search_start..span_end).rev() {
+        if legacy_live_gui_item_create_prefix(bytes, span_start, bytes.len()).is_some()
+            || boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, span_start)
+        {
+            continue;
+        }
+
+        let span = bytes.get(span_start..span_end)?;
+        if span.is_empty() || span.len() > MAX_GUI_ITEM_FRAGMENT_SPAN_BYTES {
+            continue;
+        }
+
+        let promoted_bits = match decode_nonzero_live_gui_item_fragment_span_bits(span) {
+            Some(bits) => bits,
+            None => continue,
+        };
+        let mut proof_bits = fragment_bits.clone();
+        bits::insert_msb_bits(&mut proof_bits, bit_cursor, &promoted_bits)?;
+
+        let mut trial_bytes = bytes.clone();
+        trial_bytes.drain(span_start..span_end);
+        let mut proof_cursor = bit_cursor;
+        let Some(claim) = advance_verified_live_gui_record(
+            &trial_bytes,
+            offset,
+            span_start,
+            &proof_bits,
+            &mut proof_cursor,
+        ) else {
+            continue;
+        };
+        if !claim.item_create || proof_cursor < bit_cursor.saturating_add(promoted_bits.len()) {
+            continue;
+        }
+
+        bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+        let old_record_end = span_end;
+        let bytes_promoted = span.len();
+        let bits_promoted = promoted_bits.len();
+        bytes.drain(span_start..span_end);
+        *record_end = span_start;
+
+        return Some(LiveGuiItemFragmentSpanPromotion {
+            old_record_end,
+            bytes_promoted,
+            bits_promoted,
+        });
+    }
+
+    None
+}
+
+fn decode_nonzero_live_gui_item_fragment_span_bits(span: &[u8]) -> Option<Vec<bool>> {
+    let mut promoted_bits = bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS)?;
+    if promoted_bits.len() < CNW_FRAGMENT_HEADER_BITS {
         return None;
     }
     promoted_bits.drain(0..CNW_FRAGMENT_HEADER_BITS);
-    if promoted_bits.iter().all(|bit| !*bit) {
-        if debug {
-            eprintln!(
-                "live-gui item fragment span rejected: reason=zero-padding span_start={span_start} span_end={span_end}"
-            );
-        }
-        return None;
-    }
-
-    let mut proof_bits = fragment_bits.clone();
-    if bits::insert_msb_bits(&mut proof_bits, bit_cursor, &promoted_bits).is_none() {
-        if debug {
-            eprintln!(
-                "live-gui item fragment span rejected: reason=proof-bit-insert bit_cursor={bit_cursor} promoted_bits={}",
-                promoted_bits.len()
-            );
-        }
-        return None;
-    }
-
-    let mut trial_bytes = bytes.clone();
-    trial_bytes.drain(span_start..span_end);
-    let mut trial_record_end = *record_end;
-    if insert_ee_live_gui_item_extras_for_ee(
-        &mut trial_bytes,
-        offset,
-        &mut trial_record_end,
-        &mut proof_bits,
-        bit_cursor,
-    )
-    .is_none()
-    {
-        if debug {
-            eprintln!(
-                "live-gui item fragment span rejected: reason=item-rewrite offset={offset} record_end={} span_start={span_start} span_end={span_end}",
-                *record_end
-            );
-        }
-        return None;
-    }
-    let mut proof_cursor = bit_cursor;
-    if advance_verified_live_gui_record(
-        &trial_bytes,
-        offset,
-        trial_record_end,
-        &proof_bits,
-        &mut proof_cursor,
-    )
-    .is_none()
-    {
-        if debug {
-            eprintln!(
-                "live-gui item fragment span rejected: reason=advance offset={offset} record_end={trial_record_end} bit_cursor={bit_cursor} span_start={span_start} span_end={span_end} promoted_bits={} promoted_preview={:?} next_bits={:?} span_preview={:02X?}",
-                promoted_bits.len(),
-                promoted_bits
-                    .get(..promoted_bits.len().min(16))
-                    .unwrap_or(&[]),
-                proof_bits
-                    .get(bit_cursor..bit_cursor.saturating_add(16).min(proof_bits.len()))
-                    .unwrap_or(&[]),
-                span.get(..span.len().min(16)).unwrap_or(&[])
-            );
-        }
-        return None;
-    }
-
-    bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
-    let old_record_end = span_end;
-    let bytes_promoted = span.len();
-    let bits_promoted = promoted_bits.len();
-    bytes.drain(span_start..span_end);
-    *record_end = span_start;
-
-    Some(LiveGuiItemFragmentSpanPromotion {
-        old_record_end,
-        bytes_promoted,
-        bits_promoted,
-    })
+    promoted_bits
+        .iter()
+        .any(|bit| *bit)
+        .then_some(promoted_bits)
 }
 
 pub(super) fn remove_zero_fragment_storage_after_verified_live_gui_item_record_for_ee(

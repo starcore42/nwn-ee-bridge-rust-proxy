@@ -408,6 +408,14 @@ fn ee_shaped_model_type2_typed_item_create_live_bytes() -> Vec<u8> {
     live
 }
 
+fn ee_shaped_gui_inventory_model_type2_item_create_live_bytes() -> Vec<u8> {
+    let typed = ee_shaped_model_type2_typed_item_create_live_bytes();
+    let mut live = vec![b'G', b'I', b'A'];
+    live.extend_from_slice(&0u32.to_le_bytes()); // inventory slot/container payload.
+    live.extend_from_slice(&typed[2..]); // GUI rows start at the item OBJECTID.
+    live
+}
+
 fn inject_live_boundary_lookalike_into_item_property_values(live: &mut [u8]) {
     let name_start = live
         .windows(b"Lance".len())
@@ -1201,6 +1209,47 @@ fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
         payload, original,
         "failed GUI item-create proof must leave bytes and fragment bits untouched"
     );
+}
+
+#[test]
+fn live_gui_terminal_item_fragment_span_promotes_already_ee_shaped_item_bits() {
+    // GUI inventory item-create rows use the same item-create helper as typed
+    // `A/6` rows after the `G I A` prefix. Interleaved CNW fragment storage can
+    // therefore carry only the item-name/active-property bits even when the
+    // item body already has EE appearance and visual-transform bytes; promotion
+    // is still valid only after exact EE item validation consumes those bits.
+    let mut live = ee_shaped_gui_inventory_model_type2_item_create_live_bytes();
+    let gui_item_len = live.len();
+    let item_bits = [false, false, false, true, false, false];
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(&item_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+    live.extend_from_slice(&storage);
+
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw GUI row has its item fragment bits stranded in the read buffer"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("terminal GUI item fragment storage should promote through exact item proof");
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(
+        rewrite.interleaved_fragment_bytes_promoted,
+        storage.len() as u32
+    );
+    assert_eq!(
+        rewrite.interleaved_fragment_bits_promoted,
+        item_bits.len() as u32
+    );
+    assert_eq!(rewrite.new_live_bytes_length, gui_item_len);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("promoted GUI item-create row should exact-claim");
+    assert_eq!(claim.live_gui_item_create_records, 1);
+    assert_eq!(claim.live_gui_fragment_bits, item_bits.len() as u32);
+    assert_eq!(claim.live_bytes_length, gui_item_len);
 }
 
 #[test]
