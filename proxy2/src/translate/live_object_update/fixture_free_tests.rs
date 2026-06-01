@@ -2763,6 +2763,35 @@ fn compact_placeable_token_add_rejects_shifted_or_bit_short_37_update() {
 }
 
 #[test]
+fn compact_placeable_token_add_rejects_five_bit_residue_before_low_tail_update() {
+    // Generalized XP2 seq19 proof: after many prior door/placeable rewrites, a
+    // compact token-name A/09 can reach the cursor with five all-zero bits before
+    // a same-object U/09 mask=0xF7 low-tail row. Diamond owns four compact add
+    // tail BOOLs, but the single remaining bit cannot prove the following
+    // position/orientation/state cursor. The bridge must leave the stream
+    // unclaimed instead of materializing a full EE add guard run and starving the
+    // low-tail update.
+    let object_id = 0x8000_18CAu32;
+    let mut live = compact_placeable_token_name_add_live_bytes();
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(super::PLACEABLE_OBJECT_TYPE, &[0x00, 0x00]),
+        object_id,
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, vec![false; 5]);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "five residual bits do not prove compact add expansion plus following low-tail update"
+    );
+    assert_eq!(
+        payload, original,
+        "failed compact-add/low-tail proof must leave source bytes and bits untouched"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

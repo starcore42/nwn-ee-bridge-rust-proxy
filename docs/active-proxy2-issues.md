@@ -1875,6 +1875,16 @@ Current status:
   `U/09 mask=0xF7`; no GUI cursor search/skip behavior is proven. Verified
   with focused low-tail, compact-placeable-token, object-id, and private XP2
   replay tests.
+- 2026-06-02 `P/05/01` compact `A/09` five-bit low-tail handoff audit: no
+  packet behavior changed, but public coverage now pins the generalized XP2
+  seq19 terminal shape. A compact token-name `A/09` with only five all-zero
+  source bits before a same-object `U/09 mask=0xF7` remains unclaimed and
+  unchanged: Diamond `sub_44E4A0` owns four compact add tail BOOLs, while the
+  single remaining bit cannot prove the following update's
+  position/orientation/state cursor or EE's inserted add guard run. The private
+  replay still rolls back at the same upstream bit-owner problem; continue
+  tracing which earlier row consumed or stranded the bits before offset 953,
+  not GUI search/skip behavior.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static
