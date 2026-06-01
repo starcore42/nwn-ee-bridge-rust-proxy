@@ -2856,6 +2856,56 @@ fn compact_placeable_token_add_rejects_unowned_bit_before_low_tail_update_bits()
 }
 
 #[test]
+fn prior_low_tail_rewrite_rolls_back_when_compact_alias_add_has_only_five_bits() {
+    // Generalized from the XP2 seq19 rollback trace: an earlier low-tail
+    // `U/09` may be independently rewriteable, but a later compact token-name
+    // `A/09` with external OBJECTID followed by a same-object compact-id
+    // `U/09 mask=0xF7` still needs its own exact cursor proof. Five all-zero
+    // bits are enough to look plausible but not enough to cover Diamond's four
+    // compact add BOOLs plus the following update cursor, so the whole pass must
+    // roll back rather than committing the preceding low-tail repair.
+    let prior_object_id = 0x8000_0019u32;
+    let external_object_id = 0x8000_11FFu32;
+    let compact_object_id = external_object_id & !0x8000_0000;
+    let mut live = with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        prior_object_id,
+    );
+    live.extend_from_slice(&with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        external_object_id,
+    ));
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        compact_object_id,
+    ));
+
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.extend_from_slice(&[false; 5]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a valid earlier low-tail row must not commit before a failed compact alias handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed low-tail/add/compact-id proof must roll the whole candidate back"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the shifted compact alias handoff remains active evidence"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

@@ -1897,6 +1897,18 @@ Current status:
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 low_tail --
   --nocapture`, `cargo fmt --all --check`, and `cargo check -q -p
   hgbridge-proxy2`.
+- 2026-06-02 `P/05/01` low-tail/add transaction rollback audit: no packet
+  behavior changed, but public fixture-free coverage now pins the XP2 seq19
+  rollback shape with a valid prior low-tail `U/09`, then an external-id compact
+  token-name `A/09` followed by a compact-id alias `U/09 mask=0xF7` and only
+  five all-zero source bits. The prior low-tail row is independently
+  rewriteable, but Diamond `sub_44E4A0` still owns four compact add BOOLs and
+  the following update must prove its own cursor; the bridge must roll back the
+  whole candidate instead of committing the earlier repair. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  prior_low_tail_rewrite_rolls_back_when_compact_alias_add_has_only_five_bits
+  -- --nocapture`. The upstream bit-owner search before the terminal compact
+  handoff remains active.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
