@@ -1958,6 +1958,17 @@ Current status:
   exact-claims; keep it distinct from the older raw unclaimed door/placeable
   GUI stream. Next trace should find the real bit owner or stream-boundary
   artifact before offset 1145, not add a compact-add/low-tail cursor resync.
+- 2026-06-02 `P/05/01` post-`W` promoted compact-pair rollback audit: no
+  packet behavior changed, but public coverage now pins the generalized second
+  XP2 seq19 storage-span hazard. A bounded post-`W` CNW storage span can feed
+  earlier compact token `A/09` plus same-object low-tail `U/09` pairs and exact
+  claim, but if a later pair exposes the shifted `1000_11_101101` handoff then
+  the whole promoted-storage candidate must roll back unchanged. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  work_remaining_storage_rolls_back_when_later_compact_pair_is_shifted --
+  --nocapture`. This proves the storage span is not the rejected byte owner;
+  the unresolved search stays with the per-record source-bit owner before the
+  later compact add/update handoff.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

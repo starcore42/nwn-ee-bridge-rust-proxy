@@ -637,6 +637,30 @@ fn with_live_update_object_id(mut live: Vec<u8>, object_id: u32) -> Vec<u8> {
     live
 }
 
+fn work_remaining_compact_pairs_with_storage(object_ids: &[u32], source_bits: &[bool]) -> Vec<u8> {
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(source_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+
+    let mut live = vec![b'W', 0x0C, 0x0E];
+    live.extend_from_slice(&storage);
+    for object_id in object_ids.iter().copied() {
+        let compact_object_id = object_id & !0x8000_0000;
+        live.extend_from_slice(&with_live_update_object_id(
+            compact_placeable_token_name_add_live_bytes(),
+            object_id,
+        ));
+        live.extend_from_slice(&with_live_update_object_id(
+            door_placeable_low_tail_update_live_bytes(
+                super::PLACEABLE_OBJECT_TYPE,
+                &[0x7B, 0x74, 0x01, 0x00],
+            ),
+            compact_object_id,
+        ));
+    }
+    live
+}
+
 fn scale_first_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
@@ -1139,6 +1163,56 @@ fn work_remaining_midstream_storage_promotes_bits_before_compact_add_update() {
     assert_eq!(claim.world_status_records, 1);
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn work_remaining_storage_rolls_back_when_later_compact_pair_is_shifted() {
+    // Generalized from the XP2 seq19 trace after the second post-W storage
+    // promotion: the CNW span can be valid storage for earlier compact
+    // add/update pairs, but a later shifted compact add must still roll the
+    // whole transaction back instead of committing the earlier rewrites.
+    let good_pairs = [0x8000_1103u32, 0x8000_1119u32];
+    let shifted_pair = 0x8000_1101u32;
+
+    let mut good_source_bits = Vec::new();
+    for _ in good_pairs {
+        good_source_bits.extend_from_slice(&[false; 6]);
+        good_source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    let good_live = work_remaining_compact_pairs_with_storage(&good_pairs, &good_source_bits);
+    let mut good_payload = live_object_payload_with_bits(&good_live, Vec::new());
+
+    let good_rewrite = super::rewrite_update_records_payload_if_possible(&mut good_payload)
+        .expect("bounded post-W storage should feed the valid compact pairs");
+    assert_eq!(good_rewrite.interleaved_fragment_spans_promoted, 1);
+    let good_claim = super::claim_payload_if_verified(&good_payload)
+        .expect("valid compact pairs after promoted W storage should exact-claim");
+    assert_eq!(good_claim.world_status_records, 1);
+    assert_eq!(good_claim.add_records, good_pairs.len() as u32);
+    assert_eq!(good_claim.update_records, good_pairs.len() as u32);
+
+    let mut shifted_source_bits = good_source_bits;
+    shifted_source_bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut all_pairs = good_pairs.to_vec();
+    all_pairs.push(shifted_pair);
+    let shifted_live = work_remaining_compact_pairs_with_storage(&all_pairs, &shifted_source_bits);
+    let mut shifted_payload = live_object_payload_with_bits(&shifted_live, Vec::new());
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "a later shifted compact pair must not commit earlier post-W storage rewrites"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "failed promoted-storage compact-pair proof must leave bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "the shifted post-W compact handoff remains active cursor evidence"
+    );
 }
 
 #[test]
