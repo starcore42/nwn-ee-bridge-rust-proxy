@@ -1212,6 +1212,42 @@ fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
 }
 
 #[test]
+fn live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof() {
+    // Diamond/EE GUI handlers dispatch `G I/i A` into the shared item-create
+    // reader. Local Diamond captures can lose that inner `A`, but the zero byte
+    // is repairable only when the inherited CNW cursor proves the item body and
+    // active-property bits at the exact row boundary.
+    let mut live = ee_shaped_gui_inventory_model_type2_item_create_live_bytes();
+    live[2] = 0x00;
+    let item_bits = vec![false, false, false, true, false, false];
+    let mut payload = live_object_payload_with_bits(&live, item_bits.clone());
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the exact EE GUI validator must not accept a missing inner add opcode"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("proven missing GUI add opcode should be repaired");
+    assert_eq!(rewrite.live_gui_missing_add_opcodes_repaired, 1);
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("rewritten live-object declared length") as usize;
+    assert_eq!(
+        payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + 2],
+        b'A'
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("repaired GUI item-create row should exact-claim");
+    assert_eq!(claim.live_gui_item_create_records, 1);
+    assert_eq!(claim.live_gui_fragment_bits, item_bits.len() as u32);
+    assert_eq!(
+        claim.live_bytes_length + super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES,
+        declared
+    );
+}
+
+#[test]
 fn live_gui_terminal_item_fragment_span_promotes_already_ee_shaped_item_bits() {
     // GUI inventory item-create rows use the same item-create helper as typed
     // `A/6` rows after the `G I A` prefix. Interleaved CNW fragment storage can
