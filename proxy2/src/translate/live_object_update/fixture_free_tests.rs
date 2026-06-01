@@ -3373,6 +3373,73 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does
 }
 
 #[test]
+fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
+    // Replay the public shape of the raw CEP v2.3 no-map handoff observed in
+    // the private stream: A/10 `11010`, U/10 `01100011`, A/6 `00100`, then a
+    // following U/6 whose first bits are `01110101100000`. The U/6 reader fits
+    // only at cursor +2; without a decompile-backed owner for those two leading
+    // bits, the packet-level rewrite must leave the stream unclaimed.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(
+        &legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes(),
+    );
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let shifted_item_bits = vec![
+        false, true, // unowned pre-cursor residue.
+        true, true, // position residuals if a prior owner consumed the residue.
+        false, true, false, true, true, // scalar orientation selector plus residual bits.
+        false, false, false, false, false, // item state bits.
+        false, // direct CExoString item name.
+        false, // EE hidden-state BOOL after item name.
+    ];
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            0,
+        )
+        .is_none(),
+        "at the true cursor the item row selects vector orientation but has scalar-shaped bytes"
+    );
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            2,
+        )
+        .is_some(),
+        "the item reader would accept the raw U/6 bits only after an external two-bit owner"
+    );
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "raw CEP no-map handoff must not skip two unowned bits before the following U/6"
+    );
+    assert_eq!(
+        payload, original,
+        "failed raw CEP handoff proof must leave the source stream untouched"
+    );
+}
+
+#[test]
 fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update() {
     // The CEP v2.3 cursor-neighbor evidence is not limited to an isolated U/6.
     // Even after the preceding U/10 tail9 row and typed A/6 item-create row are

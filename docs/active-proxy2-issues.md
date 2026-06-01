@@ -1413,6 +1413,29 @@ Current status:
   hgbridge-proxy2 cep_tail9_name_suffix_with_actual_short_strref_state --
   --nocapture`, `cargo test -q -p hgbridge-proxy2 cep_tail9_name_suffix --
   --nocapture`, and the private CEP quarantine audit.
+- 2026-06-01 `P/05/01` CEP raw handoff bit replay: no packet behavior changed,
+  but public fixture-free coverage now replays the unresolved private-stream
+  source bits without relying on semantic-looking helper defaults. The replay
+  uses raw `A/10` bits `11010`, CEP `U/10` tail9 bits `01100011`, no-map
+  `A/6` bits `00100`, and following `U/6` bits beginning
+  `01110101100000`. After the decompile-owned `A/10`, `U/10`, and `A/6`
+  rewrites, the real `U/6` cursor still selects vector orientation while the
+  bytes are scalar-shaped; the translated item reader accepts only at
+  `cursor + 2`. Those two leading bits therefore remain unowned rather than a
+  license for cursor search/skip behavior. Continue tracing a real fragment
+  owner or stream-boundary artifact before offset 104. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair --
+  --nocapture`.
+- 2026-06-01 `P/05/01` live-object exact-adapter sweep debt: the broader
+  `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`
+  check still fails two existing exact-adapter fixture expectations
+  (`local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape`
+  and
+  `local_xp2_seq19_door_placeable_gui_stream_rewrites_after_door_add_37_cursor_audit`).
+  Keep these as generalized placeable/door update cursor-handoff debt, not
+  chapter- or module-specific workarounds; the CEP raw `U/6` replay above and
+  focused CEP/private quarantine checks still pass unchanged.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
