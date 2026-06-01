@@ -2540,7 +2540,9 @@ fn compact_ee_placeable_add_repair_claims_following_same_object_update(
     let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
         return false;
     };
-    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
+    if !read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
+        object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+    }) {
         return false;
     }
 
@@ -2623,7 +2625,7 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-) -> bool {
+) -> Option<usize> {
     if record_end >= live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
@@ -2633,15 +2635,20 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
             live_bytes, offset, record_end,
         ) != Some(record_end)
     {
-        return false;
+        return None;
     }
 
     let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
-        return false;
+        return None;
     };
-    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
-        return false;
+    if !read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
+        object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+    }) {
+        return None;
     }
+
+    let legacy_short_name_token =
+        read_u32_le(live_bytes, offset + 6).is_some_and(|name_token| name_token != 0);
 
     let mut legacy_cursor = bit_cursor;
     if !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
@@ -2651,7 +2658,7 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         record_end,
         &mut legacy_cursor,
     ) {
-        return false;
+        return None;
     }
 
     let mut exact_cursor = bit_cursor;
@@ -2662,7 +2669,7 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         fragment_bits,
         &mut exact_cursor,
     ) {
-        return false;
+        return None;
     }
 
     let mut candidate_live = live_bytes.to_vec();
@@ -2678,14 +2685,14 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
             offset,
         )
     else {
-        return false;
+        return None;
     };
     if add_rewrite.maps_inserted == 0
         && add_rewrite.bytes_inserted == 0
         && add_rewrite.bytes_removed == 0
         && !add_rewrite.fragment_bits_changed
     {
-        return false;
+        return None;
     }
 
     let after_add_cursor = candidate_cursor;
@@ -2698,14 +2705,16 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         &mut verified_add_cursor,
     ) || verified_add_cursor != after_add_cursor
     {
-        return false;
+        return None;
     }
 
     if candidate_live.get(candidate_record_end).copied() != Some(b'U')
         || candidate_live.get(candidate_record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
-        || read_u32_le(&candidate_live, candidate_record_end + 2) != Some(add_object_id)
+        || !read_u32_le(&candidate_live, candidate_record_end + 2).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+        })
     {
-        return false;
+        return None;
     }
 
     let following_end = boundary::find_next_legacy_live_object_sub_message_boundary_after(
@@ -2715,33 +2724,59 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
     )
     .min(candidate_live.len());
     if following_end <= candidate_record_end {
-        return false;
+        return None;
     }
 
-    let mut candidate_following_end = following_end;
-    let mut candidate_reliable = true;
-    if record::rewrite_update_record_for_ee(
-        &mut candidate_live,
-        &mut candidate_following_end,
-        &mut candidate_bits,
-        &mut candidate_cursor,
-        &mut candidate_reliable,
-        candidate_record_end,
-    )
-    .is_none()
-        || !candidate_reliable
-    {
-        return false;
+    for extra_compact_source_bits in [0usize, 2usize] {
+        if extra_compact_source_bits != 0 && !legacy_short_name_token {
+            continue;
+        }
+        let mut trial_live = candidate_live.clone();
+        let mut trial_bits = candidate_bits.clone();
+        let mut trial_cursor = after_add_cursor;
+        if extra_compact_source_bits != 0 {
+            let drain_end = trial_cursor.checked_add(extra_compact_source_bits)?;
+            if drain_end > trial_bits.len() {
+                continue;
+            }
+            // XP2 `A/09` short-name/token compact rows can carry two selector
+            // bits immediately after the four compact tail BOOLs. Those bits
+            // are source-only; keep this path gated by the following
+            // same-object update's exact EE cursor proof so unrelated compact
+            // adds cannot borrow update bits.
+            trial_bits.drain(trial_cursor..drain_end);
+        }
+
+        let mut candidate_following_end = following_end;
+        let mut candidate_reliable = true;
+        if record::rewrite_update_record_for_ee(
+            &mut trial_live,
+            &mut candidate_following_end,
+            &mut trial_bits,
+            &mut trial_cursor,
+            &mut candidate_reliable,
+            candidate_record_end,
+        )
+        .is_none()
+            || !candidate_reliable
+        {
+            continue;
+        }
+
+        let mut verified_cursor = after_add_cursor;
+        if record::advance_verified_update_record_for_ee(
+            &trial_live,
+            candidate_record_end,
+            candidate_following_end,
+            &trial_bits,
+            &mut verified_cursor,
+        ) && verified_cursor == trial_cursor
+        {
+            return Some(extra_compact_source_bits);
+        }
     }
 
-    let mut verified_cursor = after_add_cursor;
-    record::advance_verified_update_record_for_ee(
-        &candidate_live,
-        candidate_record_end,
-        candidate_following_end,
-        &candidate_bits,
-        &mut verified_cursor,
-    ) && verified_cursor == candidate_cursor
+    None
 }
 
 fn legacy_door_add_repair_claims_following_same_object_update(
@@ -2763,7 +2798,9 @@ fn legacy_door_add_repair_claims_following_same_object_update(
     let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
         return false;
     };
-    if read_u32_le(live_bytes, record_end + 2) != Some(add_object_id) {
+    if !read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
+        object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+    }) {
         return false;
     }
     let mut candidate_live = live_bytes.to_vec();
@@ -2792,7 +2829,9 @@ fn legacy_door_add_repair_claims_following_same_object_update(
 
     if candidate_live.get(candidate_record_end).copied() != Some(b'U')
         || candidate_live.get(candidate_record_end + 1).copied() != Some(DOOR_OBJECT_TYPE)
-        || read_u32_le(&candidate_live, candidate_record_end + 2) != Some(add_object_id)
+        || !read_u32_le(&candidate_live, candidate_record_end + 2).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+        })
     {
         return false;
     }
@@ -3590,13 +3629,15 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
-                if compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    &fragment_bits,
-                    bit_cursor,
-                ) {
+                if let Some(extra_compact_source_bits) =
+                    compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                    )
+                {
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(add_rewrite) =
                         crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
@@ -3607,10 +3648,18 @@ pub fn rewrite_update_records_payload_if_possible(
                             offset,
                         )
                     {
+                        if extra_compact_source_bits != 0 {
+                            let drain_end = bit_cursor.checked_add(extra_compact_source_bits)?;
+                            if drain_end > fragment_bits.len() {
+                                return None;
+                            }
+                            fragment_bits.drain(bit_cursor..drain_end);
+                        }
                         changed |= add_rewrite.maps_inserted != 0
                             || add_rewrite.bytes_inserted != 0
                             || add_rewrite.bytes_removed != 0
                             || add_rewrite.fragment_bits_changed
+                            || extra_compact_source_bits != 0
                             || add_rewrite.legacy_door_model_tokens_removed != 0;
                         summary.bytes_inserted = summary
                             .bytes_inserted

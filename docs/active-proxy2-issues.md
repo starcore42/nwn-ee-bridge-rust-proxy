@@ -1396,6 +1396,20 @@ Current status:
   --nocapture` and `cargo test -q -p hgbridge-proxy2
   cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map --
   --nocapture`.
+- 2026-06-02 `P/05/01` creature `U/5` zero-mask/visual-selector boundary
+  audit: no packet behavior changed. The XP2 seq19 debug replay showed an early
+  `U/5` row that byte-aligns like `OBJECTID + DWORD mask 0`, but the legacy
+  creature visual-transform selector branch also starts `U/5 + OBJECTID + 00`
+  and owns only that selector byte before interleaved CNW fragment storage.
+  Public fixture-free coverage now pins both sides: a zero-looking selector row
+  must wait for the following live-object boundary, while an isolated ten-byte
+  zero-mask `U/5` exact-claims as a creature update. This rules out adding a raw
+  ten-byte split before proving a real boundary at that cursor. The XP2 seq19
+  terminal `G I 00` issue remains active; continue tracing later
+  door/placeable/update cursor ownership rather than GUI search/skip behavior.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  zero_mask_looking_creature_selector_storage_waits_for_following_boundary --
+  --nocapture` and the filtered private XP2 debug replay.
 - 2026-06-01 `P/05/01` active-property tail and short-strref state audit:
   no packet behavior changed, but the generalized handoff proof now covers the
   exact leading `A/10` short-strref fragment values seen in the CEP v2.3
@@ -1847,6 +1861,20 @@ Current status:
   untouched so shifted-cursor evidence remains quarantinable. Verified with
   `cargo test -q -p hgbridge-proxy2 compact_placeable_token_add --
   --nocapture`.
+- 2026-06-02 `P/05/01` low-tail/compact placeable cursor audit: promoted the
+  top-level `U/09`/`U/0A` low-tail transport boundary to the same bounded
+  `0x40`/`0x80` control-suffix proof used by the typed row rewriter, so a
+  full update no longer swallows a following compact add. The compact `A/09`
+  token-name bridge may now drop two extra source-only selector bits after the
+  four compact tail BOOLs only when the following same-object low-tail update
+  exact-validates at the resulting cursor. Same-object proof accepts compact
+  and external live-object id aliases (`0x0000NNNN`/`0x8000NNNN`) before later
+  EE canonicalization. The XP2 seq19 private fixture now advances past the
+  earlier offset-131 and offset-566 add/update handoffs but remains active at
+  offset 953 on an all-zero compact-add source run before compact-id
+  `U/09 mask=0xF7`; no GUI cursor search/skip behavior is proven. Verified
+  with focused low-tail, compact-placeable-token, object-id, and private XP2
+  replay tests.
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

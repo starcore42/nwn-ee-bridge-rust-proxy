@@ -249,6 +249,13 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             return record_end;
         }
         if let Some(record_end) =
+            try_get_legacy_door_placeable_low_tail_update_record_end_for_transport(
+                bytes, offset, scan_end,
+            )
+        {
+            return record_end;
+        }
+        if let Some(record_end) =
             try_get_ee_door_placeable_update_record_end_for_transport(bytes, offset, scan_end)
         {
             return record_end;
@@ -1268,6 +1275,68 @@ pub(super) fn try_get_ee_door_placeable_update_record_end_for_transport(
     proven_end
 }
 
+fn try_get_legacy_door_placeable_low_tail_update_record_end_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<usize> {
+    if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end
+        || scan_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || !matches!(
+            bytes.get(offset + 1).copied()?,
+            PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE
+        )
+        || !looks_like_legacy_live_object_id_at(bytes, offset + 2)
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    let translated_mask = match bytes[offset + 1] {
+        PLACEABLE_OBJECT_TYPE => placeable::translate_update_mask(raw_mask),
+        DOOR_OBJECT_TYPE => door::translate_update_mask(raw_mask),
+        _ => return None,
+    };
+    let unsupported_low_tail = raw_mask & !translated_mask;
+    if translated_mask == 0
+        || unsupported_low_tail == 0
+        || (unsupported_low_tail & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
+        || (unsupported_low_tail & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) == 0
+        || (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
+    {
+        return None;
+    }
+
+    let mut proven_end = None;
+    for vector_orientation in [false, true] {
+        let Some(prefix_end) = missing_opcode_update_body_read_end(
+            bytes,
+            offset.checked_add(1)?,
+            scan_end,
+            translated_mask,
+            vector_orientation,
+        ) else {
+            continue;
+        };
+        for suffix_len in [2usize, 4usize, 6usize] {
+            let record_end = prefix_end.checked_add(suffix_len)?;
+            if record_end <= scan_end
+                && reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
+                && record_end_lands_on_boundary(bytes, record_end, scan_end)
+            {
+                proven_end = match proven_end {
+                    Some(existing) if existing != record_end => return None,
+                    Some(existing) => Some(existing),
+                    None => Some(record_end),
+                };
+            }
+        }
+    }
+
+    proven_end
+}
+
 fn is_bridge_empty_state_update_mask(mask: u32) -> bool {
     let ee_supported_all = LEGACY_UPDATE_POSITION_MASK
         | LEGACY_UPDATE_ORIENTATION_MASK
@@ -1937,6 +2006,27 @@ mod tests {
         assert_eq!(
             find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
             15
+        );
+    }
+
+    #[test]
+    fn low_tail_placeable_update_boundary_precedes_following_compact_add() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[
+            b'U', 0x09, 0x1B, 0x00, 0x00, 0x80, 0xF7, 0x00, 0x00, 0x00, 0x1B, 0x05, 0xC1, 0x08,
+            0x0F, 0x0F, 0x70, 0x03, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x7B, 0x74, 0x01,
+            0x00,
+        ]);
+        let update_end = live.len();
+        live.extend_from_slice(&[
+            b'A', 0x09, 0x09, 0x00, 0x00, 0x80, 0x7B, 0x74, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00,
+            0x00,
+        ]);
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            update_end,
+            "bounded 0x40/0x80 low-tail suffix must not swallow the following compact A/09 row"
         );
     }
 

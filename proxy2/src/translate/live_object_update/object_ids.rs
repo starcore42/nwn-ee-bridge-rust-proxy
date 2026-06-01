@@ -259,7 +259,32 @@ pub(crate) fn is_compact_legacy_object_id(object_id: u32) -> bool {
     (MIN_COMPACT_LEGACY_LIVE_OBJECT_ID..=MAX_COMPACT_LEGACY_LIVE_OBJECT_ID).contains(&object_id)
 }
 
+pub(crate) fn equivalent_legacy_external_object_ids(left: u32, right: u32) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (
+        compact_external_object_id_from_live_object_wire(left),
+        compact_external_object_id_from_live_object_wire(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn compact_creature_id_from_live_object_wire(object_id: u32) -> Option<u32> {
+    if is_compact_legacy_object_id(object_id) {
+        return Some(object_id);
+    }
+    if (object_id & EXTERNAL_OBJECT_ID_BIT) == 0 {
+        return None;
+    }
+    let compact_id = object_id & !EXTERNAL_OBJECT_ID_BIT;
+    is_compact_legacy_object_id(compact_id).then_some(compact_id)
+}
+
+fn compact_external_object_id_from_live_object_wire(object_id: u32) -> Option<u32> {
     if is_compact_legacy_object_id(object_id) {
         return Some(object_id);
     }
@@ -325,6 +350,18 @@ mod tests {
         assert!(looks_like_legacy_live_object_id_value_with_compact_min(
             0xAC00_0001,
             0x0000_1000,
+        ));
+    }
+
+    #[test]
+    fn compact_and_external_forms_compare_as_same_live_object() {
+        assert!(equivalent_legacy_external_object_ids(
+            0x0000_11FE,
+            0x8000_11FE,
+        ));
+        assert!(!equivalent_legacy_external_object_ids(
+            0x0000_11FE,
+            0x8000_11FF,
         ));
     }
 }

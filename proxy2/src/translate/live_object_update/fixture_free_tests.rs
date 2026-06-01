@@ -1679,6 +1679,96 @@ fn legacy_low_tail_door_placeable_updates_drop_only_bounded_control_suffix() {
 }
 
 #[test]
+fn legacy_low_tail_update_splits_before_following_compact_add() {
+    // XP2-style door/placeable streams can put another live-object row
+    // immediately after the bounded low 0x40/0x80 control suffix. The suffix
+    // is still owned by the same typed low-tail rule as terminal rows; it must
+    // not be treated as an inline-string span that swallows the following add.
+    // The compact add itself is only source-backed once the next same-object
+    // update proves the cursor handoff, so keep the update/add/update shape.
+    let object_id = 0x8000_18CAu32;
+    let mut live = with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        object_id,
+    );
+    live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.extend_from_slice(&[true, false, true, false]);
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("low-tail update should split before the following compact add");
+    assert!(
+        rewrite.update_records_rewritten >= 2,
+        "both door/placeable updates should be rewritten without losing the compact add boundary"
+    );
+    assert!(
+        rewrite.bytes_removed >= 4,
+        "only the bounded low-tail suffix should be removed from the update"
+    );
+    assert!(
+        rewrite.bytes_inserted
+            >= super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "following compact add should receive EE's visual-transform map"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten low-tail update plus compact add should exact-claim");
+    assert_eq!(claim.update_records, 2);
+    assert_eq!(claim.add_records, 1);
+}
+
+#[test]
+fn compact_placeable_token_add_can_own_selector_bits_before_low_tail_update() {
+    // XP2 placeable rows can encode a four-byte short-name/token slot, then
+    // carry two source-only selector bits before the four compact tail BOOLs
+    // hand off to the following same-object low-tail update. The add repair may
+    // drop those two extra source bits only when the update exact-validates at
+    // the resulting cursor. The same-object proof accepts Diamond's compact
+    // OBJECTID form because EE canonicalization runs after exact claim.
+    let object_id = 0x8000_18CAu32;
+    let compact_object_id = object_id & !0x8000_0000;
+    let mut live = with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        object_id,
+    );
+    live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        compact_object_id,
+    ));
+
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.extend_from_slice(&[false, false, false, false, false, false]);
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("token add should prove the six-bit compact source before the low-tail update");
+    assert_eq!(
+        rewrite.bits_inserted, 8,
+        "two low-tail updates insert one EE state bit each, while the six-bit compact add nets six EE bits"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten low-tail update/add/update sequence should exact-claim");
+    assert_eq!(claim.update_records, 2);
+    assert_eq!(claim.add_records, 1);
+}
+
+#[test]
 fn legacy_low_tail_door_placeable_rewrite_requires_bounded_suffix() {
     let live = door_placeable_low_tail_update_live_bytes(super::DOOR_OBJECT_TYPE, &[0x34, 0x12, 0]);
     let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
