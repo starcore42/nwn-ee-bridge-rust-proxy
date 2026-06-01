@@ -93,11 +93,12 @@ enum ItemAppearanceWireDialect {
 }
 
 fn ee_active_property_extra_bool_insert_offset(name_bits: usize) -> usize {
-    // After the item-name selector/name branch, Diamond `sub_451020` reads one
-    // BOOL, two DWORDs, then three more BOOLs before the property-count BYTE.
-    // EE `sub_14076BD30` reads one BOOL, the same two DWORDs, then four BOOLs.
-    // The EE-only BOOL is therefore the first post-DWORD BOOL, immediately
-    // after the shared pre-DWORD BOOL in fragment-stream order.
+    // After the item-name selector/name branch, Diamond `sub_451020`
+    // (0x45110D..0x45114A) reads one BOOL, two DWORDs, then three more BOOLs
+    // before the property-count BYTE. EE `sub_14076BD30`
+    // (0x14076BF1E..0x14076BF75) reads one BOOL, the same two DWORDs, then
+    // four BOOLs. The EE-only BOOL is therefore the first post-DWORD BOOL,
+    // immediately after the shared pre-DWORD BOOL in fragment-stream order.
     name_bits.saturating_add(1)
 }
 
@@ -8933,6 +8934,10 @@ fn parse_legacy_active_item_properties_tail_after_name(tail: &[u8], cursor: usiz
     if cursor > tail.len() || tail.len() - cursor < 11 {
         return false;
     }
+    // Diamond `sub_451020` (0x4511B9..0x451488) and EE `sub_14076BD30`
+    // (0x14076C00D..0x14076C39D) read active-property rows, trailer masks,
+    // and value-mask payloads through byte reads only; none of this tail owns
+    // additional CNW fragment BOOLs.
     let fixed_end = cursor + 8;
     let property_count = tail[fixed_end];
     if property_count > 32 {

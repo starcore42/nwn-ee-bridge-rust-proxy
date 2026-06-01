@@ -1360,6 +1360,59 @@ Current status:
   cargo test -q -p hgbridge-proxy2
   dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
   -- --nocapture`.
+- 2026-06-01 `P/05/01` item-update post-rewrite rollback audit: hardened the
+  shared live-object rewriter so a bounded item `U/6` cursor failure after a
+  reliable cursor had already staged earlier rewrites aborts final emit instead
+  of committing those partial changes. This is the transactional half of the
+  stale-downstream-cursor rule above; an item update with unowned or shifted
+  orientation/name bits now leaves the whole source payload unchanged. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  tail9_door_update_before_typed_item_create -- --nocapture`, which covers the
+  exact-positive sibling and the shifted-following-`U/6` rollback.
+- 2026-06-01 `P/05/01` CEP tail9 name-suffix cursor audit: no additional packet
+  behavior changed, but public fixture-free coverage now pins the exact raw CEP
+  v2.3 `U/10 0xFFFF_FFF7` tail9 source bits (`01100011`). The final legacy name
+  branch is true and owns the four-byte suffix after the tail9 state WORD, but
+  Diamond consumes only that one legacy name BOOL before returning to the next
+  `A/6`; EE drops the branch and suffix while preserving the later `U/6` cursor.
+  Positive/negative tests prove this tail9 variant exact-claims when the
+  following `U/6` cursor is decompile-correct and rolls back when two unowned
+  bits precede the `U/6`. The CEP fixture remains active; next trace still needs
+  a different owner or stream-boundary explanation before the `U/6`. Verified
+  with `cargo test -q -p hgbridge-proxy2 cep_tail9_name_suffix -- --nocapture`.
+- 2026-06-01 `P/05/01` no-visual-map typed item-create handoff audit: no
+  packet behavior changed, but public coverage now pins the generalized `A/6`
+  sibling seen in the CEP v2.3 handoff. Diamond `sub_451020` owns the
+  model-type-2 BYTE appearance body, item-name selector, and four active-item
+  property BOOLs; EE `sub_14079FAC0` widens the model bytes, reads the object
+  visual-transform map before active properties, and `sub_14076BD30` adds only
+  the active-property/CanUseItem BOOL. The rewrite may insert those bytes/bits
+  transactionally inside `A/6`, but it must preserve a following full `U/6`
+  cursor and must roll back when two unowned bits precede that `U/6`. This
+  rules out the missing EE item visual-map branch as the two-bit owner; the CEP
+  fixture still needs a different fragment owner or stream-boundary
+  explanation before offset 104. Verified with `cargo test -q -p
+  hgbridge-proxy2 legacy_width_typed_item_create_without_visual_map --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2
+  cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map --
+  --nocapture`.
+- 2026-06-01 `P/05/01` active-property tail and short-strref state audit:
+  no packet behavior changed, but the generalized handoff proof now covers the
+  exact leading `A/10` short-strref fragment values seen in the CEP v2.3
+  fixture (`11011`: short-name branch plus post-name state bits `1011`).
+  Diamond `sub_451020` and EE `sub_14076BD30` confirm the active-property
+  body after an item name owns only the four Diamond BOOLs plus EE's single
+  inserted post-DWORD BOOL; property rows, trailer masks, and value-mask bytes
+  are read-buffer bytes, not fragment bits. Public coverage proves that the
+  actual short-strref state variant plus CEP `U/10` suffix and no-visual-map
+  `A/6` still preserves a following decompile-correct full `U/6`, while the
+  shifted sibling rolls back unchanged. This rules out the first `A/10` state
+  variation and the active-property value-mask tail as the two-bit owner; the
+  CEP fixture still needs a different fragment owner or stream-boundary
+  explanation before offset 104. Verified with `cargo test -q -p
+  hgbridge-proxy2 cep_tail9_name_suffix_with_actual_short_strref_state --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 cep_tail9_name_suffix --
+  --nocapture`, and the private CEP quarantine audit.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
