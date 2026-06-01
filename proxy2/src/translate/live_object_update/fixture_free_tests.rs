@@ -1171,6 +1171,39 @@ fn live_gui_inventory_delete_row_is_read_buffer_only() {
 }
 
 #[test]
+fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
+    // This is the generalized terminal-GI hazard from local XP2 evidence: the
+    // row bytes can expose plausible no-name and token-name item endpoints, but
+    // the nested item body still owns at least four source BOOLs. If the
+    // inherited fragment cursor has fewer bits available, neither Diamond nor EE
+    // may promote nearby bytes or choose a neighboring cursor just to make the
+    // row validate.
+    let live = [
+        b'G', b'I', 0x00, 0x00, 0x00, 0x00, 0x00, 0x76, 0x12, 0x00, 0x80, 0x10, 0x00, 0x00, 0x00,
+        0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x08, 0x10, 0x0B, 0x01, 0x10, 0x10, 0x04, 0x04, 0x0F,
+        0x0F, 0x01, 0x01, 0x00, 0x0F, 0x0C, 0x0F, 0x14, 0x00, 0x00, 0x00, 0x00, 0x0B, 0x36, 0x00,
+        0x00, 0xA6, 0x1A, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, b'G', b'I', 0x00, 0x10, 0x00, 0x00, 0x00, 0x77, 0x12, 0x00,
+        0x80,
+    ];
+    let mut payload = live_object_payload_with_bits(&live, vec![false, false, false]);
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw shifted GUI item-create row must stay unclaimed"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "GUI item-create rewrite must not invent name-branch proof from shifted bits"
+    );
+    assert_eq!(
+        payload, original,
+        "failed GUI item-create proof must leave bytes and fragment bits untouched"
+    );
+}
+
+#[test]
 fn live_object_delete_records_own_exact_fragment_bits() {
     for object_type in [
         super::CREATURE_OBJECT_TYPE,

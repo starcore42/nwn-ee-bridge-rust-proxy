@@ -1435,15 +1435,22 @@ Current status:
   the current fragment position. The XP2 seq19 stream rewrites many
   door/placeable rows but ultimately reaches terminal `GI` live-GUI rows that
   the focused GUI reader still cannot prove. Both fixtures now assert that the
-  exact adapter rolls back without emitting partial rewrites. Keep these as
-  generalized compact-add and live-GUI cursor-handoff evidence until the real
-  bit owner or stream-boundary artifact is proven. Verified with focused
+  exact adapter rolls back without emitting partial rewrites. Public
+  fixture-free coverage now pins the live-GUI side of the rule: a missing
+  inner item-create opcode row may expose plausible no-name or token-name byte
+  endpoints, but the nested item body still owns at least four source BOOLs
+  (seven for the token-name branch) before EE's inserted active-property BOOL.
+  If the inherited cursor cannot prove those bits, the bridge must not promote
+  nearby bytes or choose a neighboring cursor. Keep these as generalized
+  compact-add and live-GUI cursor-handoff evidence until the real bit owner or
+  stream-boundary artifact is proven. Verified with focused
   `cargo test -q -p hgbridge-proxy2
   local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit
   -- --nocapture`,
   `cargo test -q -p hgbridge-proxy2
   local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_gui_cursor_audit
-  -- --nocapture`, and the serial `live_object_update` suite.
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 live_gui_ --
+  --nocapture`, and the serial `live_object_update` suite.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
