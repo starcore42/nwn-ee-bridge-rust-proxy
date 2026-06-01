@@ -221,6 +221,14 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
     ]
 }
 
+fn legacy_tail9_door_update_cep_name_suffix_source_bits() -> Vec<bool> {
+    vec![
+        false, true, // position residual bits.
+        true, false, false, false, true, // Diamond door state bits from the CEP v2.3 stream.
+        true, // legacy name branch owning the following four-byte suffix.
+    ]
+}
+
 fn ee_scalar_orientation_fragment_bits_from_legacy_facing(facing: u16) -> [bool; 5] {
     let scalar12 = super::writer::encode_ee_scalar_orientation_from_legacy_facing(facing);
     [
@@ -238,6 +246,16 @@ fn legacy_tail9_door_update_expected_ee_bits() -> Vec<bool> {
         0x2EA8,
     ));
     bits.extend_from_slice(&[true, false, true, false, true]); // Diamond door state bits.
+    bits.push(false); // EE-only neutral door/placeable state BOOL.
+    bits
+}
+
+fn legacy_tail9_door_update_cep_name_suffix_expected_ee_bits() -> Vec<bool> {
+    let mut bits = vec![false, true]; // position residual bits.
+    bits.extend_from_slice(&ee_scalar_orientation_fragment_bits_from_legacy_facing(
+        0x2EA8,
+    ));
+    bits.extend_from_slice(&[true, false, false, false, true]); // CEP v2.3 Diamond door state bits.
     bits.push(false); // EE-only neutral door/placeable state BOOL.
     bits
 }
@@ -2993,6 +3011,98 @@ fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_upd
     assert_eq!(
         payload, original,
         "failed tail9/A6/U6 proof must leave source bytes and bits untouched"
+    );
+}
+
+#[test]
+fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_update_bits() {
+    // The live CEP v2.3 stream differs from the older constructed tail9 sibling:
+    // the U/10 source bits have the legacy name branch set and the read buffer
+    // carries a four-byte legacy suffix after the tail9 state WORD. Diamond owns
+    // only that one name BOOL before returning to the next A/6 row; it does not
+    // donate extra fragment bits to the following U/6.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("CEP-like tail9 name suffix plus A/6/U6 stream should rewrite exactly");
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = legacy_short_strref_door_add_expected_ee_bits();
+    expected.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "CEP-like tail9 name suffix must not move the following U/6 cursor"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten CEP-like door/tail9/A6/U6 stream should exact-claim");
+    assert_eq!(claim.add_records, 2);
+    assert_eq!(claim.update_records, 2);
+}
+
+#[test]
+fn cep_tail9_name_suffix_does_not_supply_two_residue_bits_before_item_update() {
+    // Negative sibling for the exact CEP tail9 bit pattern. Even with the
+    // legacy name branch true and the four-byte suffix removed from the read
+    // buffer, the next U/6 may validate at cursor +2 only if some separate
+    // decompile-backed owner consumed those two bits first.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut shifted_item_bits = vec![false, true];
+    shifted_item_bits.extend_from_slice(&item_update_full_mask_scalar_direct_name_bits());
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            2,
+        )
+        .is_some(),
+        "the item reader would accept the U/6 only after an external two-bit owner"
+    );
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "CEP-like tail9 name suffix must not skip unowned bits before the following U/6"
+    );
+    assert_eq!(
+        payload, original,
+        "failed CEP-like residue proof must leave the source stream untouched"
     );
 }
 

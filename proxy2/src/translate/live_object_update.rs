@@ -2945,6 +2945,7 @@ pub fn rewrite_update_records_payload_if_possible(
     }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut bit_cursor_reliable = true;
+    let mut fatal_item_update_cursor_failure = false;
     let mut pending_creature_p_tail_repair: Option<
         tail_repair::PendingCreatureAppearanceTailRepair,
     > = None;
@@ -5154,6 +5155,7 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
+        let bit_cursor_was_reliable = bit_cursor_reliable;
         let Some(record_rewrite) = record::rewrite_update_record_for_ee(
             &mut live_bytes,
             &mut record_end,
@@ -5169,6 +5171,9 @@ pub fn rewrite_update_records_payload_if_possible(
                     live_bytes.get(offset + 1).copied().unwrap_or_default(),
                     read_u32_le(&live_bytes, offset + 6).map(|mask| format!("0x{mask:08X}"))
                 );
+            }
+            if object_type == ITEM_OBJECT_TYPE && bit_cursor_was_reliable && !bit_cursor_reliable {
+                fatal_item_update_cursor_failure = true;
             }
             offset = record_end.max(offset + 1);
             continue;
@@ -5322,6 +5327,17 @@ pub fn rewrite_update_records_payload_if_possible(
     }
 
     if !changed {
+        return None;
+    }
+
+    if fatal_item_update_cursor_failure {
+        trace_update_rewrite_cursor_unreliable(
+            "item-update-cursor-failed-after-rewrite",
+            &live_bytes,
+            last_verified_record_end.min(live_bytes.len()),
+            live_bytes.len(),
+            bit_cursor,
+        );
         return None;
     }
 
