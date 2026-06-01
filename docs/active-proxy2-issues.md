@@ -1319,6 +1319,18 @@ Current status:
   behavior. Verified with `cargo test -q -p hgbridge-proxy2
   tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update
   -- --nocapture`.
+- 2026-06-01 `P/05/01` short-strref door-add prefix audit: no packet behavior
+  changed, but the CEP v2.3 prefix trace now also rules out the preceding
+  raw `A/10` door add as the two-bit owner. Diamond short-strref door adds own
+  five source BOOLs (name branch plus four post-name state bits), and the EE
+  normalization emits the canonical six-bit empty-name/state shape by inserting
+  one BOOL; it must not borrow the two following residue bits. Public coverage
+  proves the exact `A/10` + `U/10` tail9 + typed `A/6` + full `U/6` sibling
+  rewrites and claims, while the same prefix with two unowned pre-`U/6` bits
+  rolls back unchanged. Next trace still needs a different fragment owner or a
+  stream-boundary explanation before the `U/6`. Verified with `cargo test -q
+  -p hgbridge-proxy2 short_strref_door_add_before_tail9_item_handoff --
+  --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

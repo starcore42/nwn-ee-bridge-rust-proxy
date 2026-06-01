@@ -242,6 +242,31 @@ fn legacy_tail9_door_update_expected_ee_bits() -> Vec<bool> {
     bits
 }
 
+fn legacy_short_strref_door_add_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::DOOR_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_0004u32.to_le_bytes());
+    live.extend_from_slice(&0u32.to_le_bytes()); // generic door row follows.
+    live.extend_from_slice(&0x0000_000Du32.to_le_bytes());
+    live.extend_from_slice(&0x0000_14E5u32.to_le_bytes()); // legacy short-name token.
+    live.extend_from_slice(&0x0016u16.to_le_bytes()); // door state tail.
+    live
+}
+
+fn legacy_short_strref_door_add_source_bits() -> Vec<bool> {
+    vec![
+        true, // Diamond short-name/locstring branch.
+        true, false, true, false, // four post-name door state bits.
+    ]
+}
+
+fn legacy_short_strref_door_add_expected_ee_bits() -> Vec<bool> {
+    vec![
+        false, // canonical EE direct empty-name branch.
+        false, // inserted first post-name state BOOL for the normalized empty name.
+        true, false, true, false, // preserved Diamond post-name state bits.
+    ]
+}
+
 fn item_update_hidden_live_bytes() -> Vec<u8> {
     let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
@@ -2996,6 +3021,96 @@ fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update()
     assert_eq!(
         payload, original,
         "failed residue proof must leave the source stream untouched"
+    );
+}
+
+#[test]
+fn short_strref_door_add_before_tail9_item_handoff_preserves_full_item_update_bits() {
+    // The full CEP-like prefix includes a short-strref `A/10` door add before
+    // the `U/10` tail9 row. Diamond owns five source bits for that add; EE
+    // receives the canonical six-bit empty-name/state shape after one inserted
+    // BOOL. That normalization must not move the following item `U/6` cursor.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed item-create source bits.
+    let following_update_bits = item_update_full_mask_scalar_direct_name_bits();
+    bits.extend_from_slice(&following_update_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+
+    super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("short-strref door add plus tail9/A6/U6 stream should rewrite exactly");
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let fragment_bits =
+        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
+            .expect("rewritten fragment bits");
+    let mut expected = legacy_short_strref_door_add_expected_ee_bits();
+    expected.extend_from_slice(&legacy_tail9_door_update_expected_ee_bits());
+    expected.extend_from_slice(&[false, false, false, true, false, false]); // A/6 plus EE BOOL.
+    expected.extend_from_slice(&following_update_bits);
+    assert_eq!(
+        &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..],
+        expected.as_slice(),
+        "door-add, tail9, and A/6 rewrites must preserve the following U/6 cursor"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten short-strref door/tail9/A6/U6 stream should exact-claim");
+    assert_eq!(claim.add_records, 2);
+    assert_eq!(claim.update_records, 2);
+}
+
+#[test]
+fn short_strref_door_add_before_tail9_item_handoff_does_not_supply_two_residue_bits() {
+    // Negative sibling for the CEP v2.3 handoff: the initial `A/10` short-name
+    // row owns exactly five Diamond bits, not seven. The later U/6 may validate
+    // at cursor + 2 only if some separate reader consumed those two bits first.
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut shifted_item_bits = vec![false, true];
+    shifted_item_bits.extend_from_slice(&item_update_full_mask_scalar_direct_name_bits());
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            2,
+        )
+        .is_some(),
+        "the item reader would accept the U/6 only after an external two-bit owner"
+    );
+
+    let mut bits = legacy_short_strref_door_add_source_bits();
+    bits.extend_from_slice(&legacy_tail9_door_update_source_bits());
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed item-create source bits.
+    bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "A/10 door-add normalization must not supply unowned bits before the following U/6"
+    );
+    assert_eq!(
+        payload, original,
+        "failed short-strref door/tail9/A6 residue proof must leave the source stream untouched"
     );
 }
 
