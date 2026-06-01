@@ -89,6 +89,11 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
     }
 
     if bytes.get(offset).copied() == Some(b'U') && bytes.get(offset + 1).copied() == Some(0x05) {
+        // Do not special-case raw mask zero here. The legacy creature visual
+        // selector bridge also starts `U/5 + OBJECTID + 00`, then owns only that
+        // selector byte before interleaved CNW storage. A ten-byte zero-mask
+        // creature update is exact only when the generic scan lands on a real
+        // boundary at that cursor.
         if let Some(boundary) =
             try_get_looping_visual_effect_update_record_end_for_transport(bytes, offset, scan_end)
         {

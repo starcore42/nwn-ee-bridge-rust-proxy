@@ -4218,6 +4218,41 @@ fn creature_effect_only_status_update_boundary_owns_embedded_add_rows() {
 }
 
 #[test]
+fn zero_mask_looking_creature_selector_storage_waits_for_following_boundary() {
+    // `U/5 + OBJECTID + 00 00 00 00` is ambiguous without a stream boundary:
+    // the creature update reader treats the four zero bytes as a mask and owns
+    // no body, while the legacy visual-transform selector branch owns only the
+    // first zero byte and treats the following bytes as CNW fragment storage.
+    // Do not split at the ten-byte mask cursor unless it is a real boundary.
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
+    live.push(0x00);
+    let storage =
+        super::bits::pack_msb_valid_bits(vec![false; 64], super::CNW_FRAGMENT_HEADER_BITS);
+    assert_eq!(storage.len(), 8);
+    live.extend_from_slice(&storage);
+    let visual_selector_end = live.len();
+    live.extend_from_slice(&[b'W', 0x10, 0x20]);
+
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        visual_selector_end,
+        "zero-looking selector storage belongs to the visual-transform bridge candidate"
+    );
+
+    let exact_zero_update = super::claim_payload_if_verified(&live_object_payload_with_bits(
+        &live[..super::LEGACY_UPDATE_HEADER_BYTES],
+        Vec::new(),
+    ))
+    .expect("isolated ten-byte zero-mask U/5 should exact-claim");
+    assert_eq!(exact_zero_update.creature_update_records, 1);
+}
+
+#[test]
 fn creature_effect_only_target_shape_yields_to_shorter_live_boundary() {
     let mut live = ee_creature_effect_only_update_live(&[(b'A', 0x00F3)]);
     live.truncate(12 + 3);
