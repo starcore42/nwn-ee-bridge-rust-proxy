@@ -1093,6 +1093,55 @@ fn work_remaining_fragment_storage_before_compact_add_does_not_supply_low_tail_b
 }
 
 #[test]
+fn work_remaining_midstream_storage_promotes_bits_before_compact_add_update() {
+    // `W current total` is fragment-neutral, but a bounded CNW storage span can
+    // sit between that read-buffer row and the next top-level bit-owning record.
+    // When the following compact add/update consumes those bits exactly, the
+    // span must be promoted into the fragment cursor instead of discarded.
+    let object_id = 0x8000_18CAu32;
+    let compact_object_id = object_id & !0x8000_0000;
+    let mut source_bits = vec![false; 6];
+    source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(&source_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+
+    let mut live = vec![b'W', 0x01, 0x0E];
+    live.extend_from_slice(&storage);
+    live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        compact_object_id,
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw post-W storage bytes are not owned by the fragment-neutral W row"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("post-W storage should promote into the following compact add/update cursor");
+    assert_eq!(
+        rewrite.interleaved_fragment_bytes_promoted,
+        storage.len() as u32
+    );
+    assert_eq!(
+        rewrite.interleaved_fragment_bits_promoted,
+        source_bits.len() as u32
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("promoted post-W storage plus compact add/update should exact-claim");
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
 fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_proof() {
     let live = [b'W', 0x10, 0x20, 0xA0];
     let mut payload = live_object_payload_with_bits(&live, Vec::new());

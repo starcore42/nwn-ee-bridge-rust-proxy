@@ -1924,6 +1924,25 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 low_tail -- --nocapture`, `cargo test -q
   -p hgbridge-proxy2 object_id -- --nocapture`, `cargo fmt --all --check`,
   `cargo check -q -p hgbridge-proxy2`, and `git diff --check`.
+- 2026-06-02 `P/05/01` post-`W` interleaved storage audit: fixed the
+  midstream top-level cleanup so a bounded CNW storage span after `W current
+  total` is promoted into the live-object fragment cursor when the next
+  top-level row is a bit-owning live-object family, instead of being discarded
+  as `W` trailing bytes. Diamond `sub_44F160` and EE `sub_1407B85A0` still read
+  only `W current total`; the promoted span is not `W` payload, it is
+  interleaved CNW fragment storage for the following `A/U/G/I/P` row and must
+  pass the exact downstream row claim. Public coverage pins a `W + storage +
+  compact A/09 + same-object low-tail U/09` stream. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  work_remaining_midstream_storage_promotes_bits_before_compact_add_update --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 work_remaining --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 compact_placeable_token --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 low_tail --
+  --nocapture`, plus `cargo fmt --all --check`, `cargo check -q -p
+  hgbridge-proxy2`, and `git diff --check`. The private XP2 seq19 replay
+  advances from the prior offset 953 rollback to offset 1145
+  (`add-record-cursor-advance-failed`), so the active next trace should compare
+  the bits and row boundary around that later compact add/update cluster.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

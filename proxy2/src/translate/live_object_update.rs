@@ -3487,12 +3487,12 @@ pub fn rewrite_update_records_payload_if_possible(
             continue;
         }
 
-        if let Some(bytes_removed) =
+        if let Some((bytes_removed, bits_promoted)) =
             remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
                 &mut live_bytes,
                 offset,
                 &mut record_end,
-                &fragment_bits,
+                &mut fragment_bits,
                 bit_cursor,
             )
         {
@@ -3500,6 +3500,17 @@ pub fn rewrite_update_records_payload_if_possible(
             summary.bytes_removed = summary
                 .bytes_removed
                 .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+            if bits_promoted != 0 {
+                summary.interleaved_fragment_spans_promoted = summary
+                    .interleaved_fragment_spans_promoted
+                    .saturating_add(1);
+                summary.interleaved_fragment_bytes_promoted = summary
+                    .interleaved_fragment_bytes_promoted
+                    .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+                summary.interleaved_fragment_bits_promoted = summary
+                    .interleaved_fragment_bits_promoted
+                    .saturating_add(u32::try_from(bits_promoted).unwrap_or(u32::MAX));
+            }
             terminal_work_remaining_fragment_storage_record = None;
         }
 
@@ -5446,9 +5457,9 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
     live_bytes: &mut Vec<u8>,
     offset: usize,
     record_end: &mut usize,
-    fragment_bits: &[bool],
+    fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     // Only the top-level live-object boundary loop may call this. `W`-shaped
     // bytes inside appearance, GUI, inventory, or item bodies remain owned by
     // those nested record parsers.
@@ -5469,6 +5480,22 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
         return None;
     }
 
+    let mut bits_promoted = 0usize;
+    if work_remaining_midstream_span_should_promote_bits(live_bytes, *record_end) {
+        // Diamond sub_44F160 / EE sub_1407B85A0 stop after `W current total`.
+        // This bounded CNW span is storage for the following bit-owning row.
+        let mut promoted_bits = bits::decode_msb_valid_bits(
+            &live_bytes[legal_end..*record_end],
+            CNW_FRAGMENT_HEADER_BITS,
+        )?;
+        if promoted_bits.len() <= CNW_FRAGMENT_HEADER_BITS {
+            return None;
+        }
+        promoted_bits.drain(0..CNW_FRAGMENT_HEADER_BITS);
+        bits_promoted = promoted_bits.len();
+        bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+    }
+
     let removed = *record_end - legal_end;
     trace_work_remaining_fragment_storage_removed(
         "midstream-top-level",
@@ -5479,7 +5506,29 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
     );
     live_bytes.drain(legal_end..*record_end);
     *record_end = legal_end;
-    Some(removed)
+    Some((removed, bits_promoted))
+}
+
+fn work_remaining_midstream_span_should_promote_bits(
+    live_bytes: &[u8],
+    following_offset: usize,
+) -> bool {
+    let Some(opcode) = live_bytes.get(following_offset).copied() else {
+        return false;
+    };
+    let object_type = live_bytes.get(following_offset + 1).copied();
+
+    matches!(opcode, b'G' | b'I')
+        || matches!(
+            (opcode, object_type),
+            (
+                b'A' | b'U',
+                Some(DOOR_OBJECT_TYPE)
+                    | Some(PLACEABLE_OBJECT_TYPE)
+                    | Some(ITEM_OBJECT_TYPE)
+                    | Some(CREATURE_OBJECT_TYPE)
+            ) | (b'P', Some(CREATURE_OBJECT_TYPE))
+        )
 }
 
 fn remove_terminal_work_remaining_fragment_storage_with_final_claim(
