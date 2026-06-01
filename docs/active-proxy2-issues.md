@@ -1307,6 +1307,18 @@ Current status:
   hgbridge-proxy2
   dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
   -- --nocapture`.
+- 2026-06-01 `P/05/01` tail9/A6 two-bit residue audit: no packet behavior
+  changed, but public fixture-free coverage now ties the cursor-neighbor rule
+  back to the full CEP-like prefix. After the `U/10 0xFFFF_FFF7` tail9 rewrite
+  and typed `A/6` item-create active-property insertion both succeed, two
+  extra fragment bits before the following full `U/6` still remain unowned. A
+  translated item reader would accept the `U/6` at `cursor + 2`, but neither
+  preceding record may skip or consume those bits, so the combined rewrite must
+  roll back unchanged. Next trace still needs the real source owner or a
+  stream-boundary explanation before the `U/6`; do not add cursor search/skip
+  behavior. Verified with `cargo test -q -p hgbridge-proxy2
+  tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

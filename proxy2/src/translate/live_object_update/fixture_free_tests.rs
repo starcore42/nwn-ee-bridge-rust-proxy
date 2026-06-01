@@ -2954,6 +2954,52 @@ fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_upd
 }
 
 #[test]
+fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update() {
+    // The CEP v2.3 cursor-neighbor evidence is not limited to an isolated U/6.
+    // Even after the preceding U/10 tail9 row and typed A/6 item-create row are
+    // both decompile-owned, neither row owns two extra fragment bits before the
+    // following full item update. A neighboring item cursor may validate only if
+    // some separate reader has consumed those bits first.
+    let mut live = legacy_tail9_door_update_without_name_payload_live_bytes();
+    live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut shifted_item_bits = vec![false, true];
+    shifted_item_bits.extend_from_slice(&item_update_full_mask_scalar_direct_name_bits());
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &shifted_item_bits,
+            2,
+        )
+        .is_some(),
+        "the item reader would accept the U/6 only after an external two-bit owner"
+    );
+
+    let mut bits = legacy_tail9_door_update_source_bits();
+    bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "tail9/A6 repairs must not skip unowned bits before the following U/6"
+    );
+    assert_eq!(
+        payload, original,
+        "failed residue proof must leave the source stream untouched"
+    );
+}
+
+#[test]
 fn full_item_update_does_not_skip_unowned_pre_cursor_residue() {
     // Cursor-neighbor proof for the CEP v2.3 item handoff risk. A full `U/6`
     // byte row can still look valid if two unowned fragment bits are read as
