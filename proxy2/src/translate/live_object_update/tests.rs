@@ -2034,41 +2034,32 @@ fn local_diamond_bw167demo_u5_4408_inventory_stream_rewrites_to_exact_shape() {
 }
 
 #[test]
-fn local_diamond_auto_inventory_u5_4408_gui_rows_stream_rewrites_to_exact_shape() {
+fn local_diamond_auto_inventory_u5_4408_gui_rows_stream_stays_unclaimed_after_gui_cursor_audit() {
     // Local Diamond harness capture from 2026-05-19 after the driver opened
     // inventory immediately after Area_AreaLoaded. It starts with the same
     // `U/5 0x00004408` compact creature status family as the shorter bw167demo
     // fixture, then continues with the GUI inventory/repository row block
-    // emitted by the inventory panel. The live-object stream owner must keep
-    // this whole packet in the typed 0x4408 + GUI-row path instead of buffering
-    // it as an unclaimed continuation.
+    // emitted by the inventory panel. The first `G I 00` row can be repaired
+    // from the inherited item bits, but later missing-inner-opcode rows would
+    // need byte-span promotion to invent their item bits. Keep the packet as
+    // shifted-cursor evidence until a real fragment owner is proven.
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_diamond_seq18_auto_inventory_u5_4408_gui_rows_20260519_unclaimed.bin"
     )
     .to_vec();
+    let original = payload.clone();
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "raw local Diamond auto-inventory stream lacks the exact EE live-object opcode shape"
     );
-
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("local Diamond auto-inventory 0x4408 stream should rewrite");
     assert!(
-        rewrite.update_records_rewritten >= 1
-            || rewrite.bytes_inserted > 0
-            || rewrite.bytes_removed > 0
-            || rewrite.interleaved_fragment_spans_promoted > 0,
-        "auto-inventory 0x4408 stream should make typed rewrite progress: {rewrite:?}"
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "auto-inventory GUI rows must not promote item-body bytes as missing G I 00 fragment bits"
     );
-
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten local Diamond auto-inventory stream should validate exactly");
-    assert!(claim.creature_update_records >= 1);
-    assert!(claim.inventory_records >= 1);
-    assert!(
-        claim.live_gui_item_create_records >= 1,
-        "GUI inventory/repository rows should remain owned by exact live-object claim"
+    assert_eq!(
+        payload, original,
+        "failed auto-inventory GUI proof must leave the source stream unchanged"
     );
 }
 

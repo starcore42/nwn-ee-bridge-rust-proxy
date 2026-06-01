@@ -1466,6 +1466,60 @@ Current status:
   hgbridge-proxy2
   local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit
   -- --nocapture`, and the XP2 terminal-GI private check.
+- 2026-06-01 `P/05/01` live-GUI terminal item fragment storage audit:
+  tightened `G I/i A` / `G R/r A` promotion so already EE-shaped GUI
+  item-create rows can recover stranded CNW item-name/active-property bits
+  only by first finding the latest exact EE item endpoint before the storage
+  span. This prevents a shorter legacy byte endpoint from swallowing EE item
+  body bytes as promoted fragment storage while preserving the older
+  Diamond-to-EE item-extra rewrite path when no exact EE endpoint exists.
+  Public coverage now proves a terminal, already EE-shaped GUI inventory item
+  promotes only the two storage bytes / six owned bits and exact-claims after
+  rewrite. The XP2 seq19 terminal `GI` evidence remains active because the
+  private stream still rolls back unclaimed under the stricter path. Verified
+  with `cargo test -q -p hgbridge-proxy2 live_gui_ -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 compact_placeable_token -- --nocapture`,
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p
+  hgbridge-proxy2
+  local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_gui_cursor_audit
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --nocapture`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-01 `P/05/01` live-GUI missing-add-opcode proof audit: no packet
+  behavior changed. The public fixture-free suite now covers the positive side
+  of the Diamond capture quirk documented for `G I/i 00`: the zero inner opcode
+  may be rewritten to `A` only when the inherited item-create cursor proves the
+  shared item body and active-property bits at that exact row. The filtered XP2
+  seq19 debug replay reached the terminal `G I 00` row with `bit_cursor=932`
+  and no remaining source bits; its apparent suffix would decode as 85 promoted
+  bits, so the row remains evidence that an upstream row consumed/translated the
+  real bit owner or that the stream boundary is still mis-modeled. Do not add a
+  GUI cursor search/skip for this case. Next verification should compare the
+  final pre-GUI placeable/update bit cursor against Diamond/EE reader widths to
+  find where the terminal item bits disappeared. Verified with
+  `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge cargo test -p
+  hgbridge-proxy2
+  live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof --
+  --nocapture` and the filtered private XP2 debug replay.
+- 2026-06-01 `P/05/01` live-GUI missing-add-opcode fragment-span guard:
+  tightened the GUI item fragment-span promoter so `G I/i 00` and `G R/r 00`
+  rows cannot use following item-body bytes as invented fragment storage. Missing
+  inner add opcodes are still repairable only when the inherited item-create
+  cursor proves the shared item body and active-property bits at that exact row.
+  The low-level update rewriter now also aborts the whole staged rewrite when
+  any later row makes the bit cursor unreliable, preventing a valid earlier
+  typed update insertion from leaking into a stream whose terminal GUI item bits
+  are unproven. Public fixture-free coverage pins the XP2-style sequence of a
+  valid door-state rewrite, fragment-neutral `W current total`, and terminal
+  `G I 00` with no item bits as rollback-only. The older local Diamond
+  auto-inventory `U/5 0x4408` + GUI rows fixture has been reclassified from a
+  positive rewrite to active shifted-cursor evidence: the first `G I 00` row has
+  inherited proof, but later missing-inner-opcode rows still need a real fragment
+  owner. Verified with `cargo test -q -p hgbridge-proxy2
+  exact_adapter_rolls_back_prior_update_before_terminal_gui_missing_item_bits --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  local_diamond_auto_inventory_u5_4408_gui_rows_stream_stays_unclaimed_after_gui_cursor_audit
+  -- --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

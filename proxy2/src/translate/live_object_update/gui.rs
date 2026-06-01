@@ -929,10 +929,19 @@ pub(super) fn promote_legacy_live_gui_item_fragment_span_for_ee(
         }
         return None;
     }
-    if legacy_live_gui_item_create_prefix(bytes, offset, *record_end).is_none() {
+    let Some(prefix) = legacy_live_gui_item_create_prefix(bytes, offset, *record_end) else {
         if debug {
             eprintln!(
                 "live-gui item fragment span rejected: reason=prefix offset={offset} record_end={}",
+                *record_end
+            );
+        }
+        return None;
+    };
+    if prefix.missing_add_inner_opcode {
+        if debug {
+            eprintln!(
+                "live-gui item fragment span rejected: reason=missing-add-opcode offset={offset} record_end={}",
                 *record_end
             );
         }

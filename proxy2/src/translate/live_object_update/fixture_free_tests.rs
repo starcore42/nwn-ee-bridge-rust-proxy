@@ -1248,6 +1248,41 @@ fn live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof() {
 }
 
 #[test]
+fn exact_adapter_rolls_back_prior_update_before_terminal_gui_missing_item_bits() {
+    // Generalized XP2 seq19 terminal handoff: a prior legacy update may stage
+    // a valid EE bit insertion, and `W current total` may follow it, but W is
+    // fragment-neutral (`sub_44F160` / `sub_1407B85A0`). A following `G I 00`
+    // still needs exact item-create bits at its own row boundary.
+    let mut live = door_state_update_live_bytes();
+    live.extend_from_slice(&[b'W', 0x0E, 0x0E]);
+    let mut gui = ee_shaped_gui_inventory_model_type2_item_create_live_bytes();
+    gui[2] = 0x00;
+    live.extend_from_slice(&gui);
+
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![true, false, true, false, true], // Diamond door state bits only.
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw stream is missing EE's door state bit and GUI item proof"
+    );
+    assert!(
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "adapter must not emit staged update rewrites when terminal G I 00 has no item bits"
+    );
+    assert_eq!(
+        payload, original,
+        "failed terminal GUI proof must roll back the earlier update rewrite"
+    );
+}
+
+#[test]
 fn live_gui_terminal_item_fragment_span_promotes_already_ee_shaped_item_bits() {
     // GUI inventory item-create rows use the same item-create helper as typed
     // `A/6` rows after the `G I A` prefix. Interleaved CNW fragment storage can

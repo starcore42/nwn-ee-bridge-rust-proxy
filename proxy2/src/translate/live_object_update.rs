@@ -5343,6 +5343,16 @@ pub fn rewrite_update_records_payload_if_possible(
         );
         return None;
     }
+    if !bit_cursor_reliable {
+        trace_update_rewrite_cursor_unreliable(
+            "live-object-cursor-failed-after-rewrite",
+            &live_bytes,
+            last_verified_record_end.min(live_bytes.len()),
+            live_bytes.len(),
+            bit_cursor,
+        );
+        return None;
+    }
 
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
