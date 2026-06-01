@@ -783,6 +783,11 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
     if span.is_empty() || span.len() > MAX_WORK_REMAINING_TRAILING_FRAGMENT_SPAN_BYTES {
         return None;
     }
+    if work_remaining_trailing_span_contains_top_level_boundary_after_fragment_prefix(
+        live_bytes, span_start,
+    ) {
+        return None;
+    }
 
     // `W current total` is the decompiled fragment-neutral work-remaining
     // record. Local Chapter1 door-transition evidence can put the CNW
@@ -811,6 +816,53 @@ pub(super) fn promote_work_remaining_trailing_fragment_span_for_ee(
         bytes_promoted: fragment_bytes.len(),
         bits_promoted,
     })
+}
+
+fn work_remaining_trailing_span_contains_top_level_boundary_after_fragment_prefix(
+    live_bytes: &[u8],
+    span_start: usize,
+) -> bool {
+    let Some(span) = live_bytes.get(span_start..) else {
+        return false;
+    };
+
+    for split in 1..span.len() {
+        let prefix = &span[..split];
+        if prefix.len() > MAX_WORK_REMAINING_TRAILING_FRAGMENT_SPAN_BYTES {
+            return false;
+        }
+        let prefix_is_fragment_storage =
+            bits::decode_msb_valid_bits(prefix, CNW_FRAGMENT_HEADER_BITS)
+                .is_some_and(|decoded| decoded.len() > CNW_FRAGMENT_HEADER_BITS);
+        if !prefix_is_fragment_storage {
+            continue;
+        }
+        let boundary_offset = span_start + split;
+        if top_level_boundary_walk_reaches_end(live_bytes, boundary_offset) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn top_level_boundary_walk_reaches_end(live_bytes: &[u8], mut offset: usize) -> bool {
+    while offset < live_bytes.len() {
+        if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset) {
+            return false;
+        }
+        let next = boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            live_bytes,
+            offset,
+            live_bytes.len(),
+        );
+        if next <= offset || next > live_bytes.len() {
+            return false;
+        }
+        offset = next;
+    }
+
+    true
 }
 
 fn work_remaining_offset_is_top_level_suffix(live_bytes: &[u8], work_offset: usize) -> bool {

@@ -1885,6 +1885,22 @@ Current status:
   replay still rolls back at the same upstream bit-owner problem; continue
   tracing which earlier row consumed or stranded the bits before offset 953,
   not GUI search/skip behavior.
+- ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
+  audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
+  `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
+  BOOLs; Diamond `sub_44E4A0` still owns the four compact `A/09` tail BOOLs as
+  a separate top-level add row. The trailing-span promoter now refuses a
+  proposed post-`W` CNW storage tail when a bounded CNW prefix is followed by a
+  valid top-level live-object boundary walk, so it cannot manufacture compact
+  add guard bits or a following low-tail update cursor. Midstream post-`W`
+  storage removal also requires exact ownership of the prefix through `W` at
+  the current fragment cursor. Verified with `cargo test -q -p hgbridge-proxy2
+  work_remaining -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  compact_placeable_token -- --nocapture`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, `git diff --check`, and the
+  private XP2 seq19 replay. The replay still remains active at offset 953, so
+  the unresolved upstream bit-owner search stays with the preceding low-tail
+  handoff note.~~
 - 2026-05-27 `P/04/01` static-placeable fragment-cursor audit: no packet
   behavior changed, but public fixture-free coverage now proves the Diamond
   and EE static-placeable row contract around the post-tile lists. The static

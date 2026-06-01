@@ -1061,6 +1061,38 @@ fn work_remaining_midstream_fragment_storage_requires_top_level_following_bounda
 }
 
 #[test]
+fn work_remaining_fragment_storage_before_compact_add_does_not_supply_low_tail_bits() {
+    // XP2-style streams can carry a bounded post-W CNW storage span before the
+    // next compact `A/09` row. `W current total` remains fragment-neutral
+    // (`sub_44F160` / `sub_1407B85A0`), so removing that top-level storage
+    // collision must not manufacture the following compact add's EE guard run
+    // or the same-object low-tail update cursor.
+    let object_id = 0x8000_18CAu32;
+    let mut live = vec![b'W', 0x01, 0x0E, 0xA0];
+    live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(super::PLACEABLE_OBJECT_TYPE, &[0x00, 0x00]),
+        object_id,
+    ));
+
+    let mut payload = live_object_payload_with_bits(&live, vec![false; 5]);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "post-W storage removal must not prove compact-add/low-tail source bits"
+    );
+    assert_eq!(
+        payload, original,
+        "failed W/add/low-tail proof must leave the evidence payload untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the raw stream stays active evidence until the upstream bit owner is proven"
+    );
+}
+
+#[test]
 fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_proof() {
     let live = [b'W', 0x10, 0x20, 0xA0];
     let mut payload = live_object_payload_with_bits(&live, Vec::new());

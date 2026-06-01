@@ -3492,6 +3492,8 @@ pub fn rewrite_update_records_payload_if_possible(
                 &mut live_bytes,
                 offset,
                 &mut record_end,
+                &fragment_bits,
+                bit_cursor,
             )
         {
             changed = true;
@@ -5444,12 +5446,21 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
     live_bytes: &mut Vec<u8>,
     offset: usize,
     record_end: &mut usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
 ) -> Option<usize> {
     // Only the top-level live-object boundary loop may call this. `W`-shaped
     // bytes inside appearance, GUI, inventory, or item bodies remain owned by
     // those nested record parsers.
     let legal_end = verified_work_remaining_record_legal_end(live_bytes, offset)?;
     if *record_end <= legal_end || *record_end >= live_bytes.len() {
+        return None;
+    }
+    if !terminal_fragment_trim_exact_claim_allowed(
+        &live_bytes[..legal_end],
+        fragment_bits,
+        bit_cursor,
+    ) {
         return None;
     }
     if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, *record_end)
