@@ -2655,47 +2655,22 @@ fn door_add_visual_map_repair_rejects_shifted_or_bit_short_37_update() {
 }
 
 #[test]
-fn update_pass_expands_compact_placeable_token_add_with_no_source_bits() {
+fn compact_placeable_token_add_with_no_source_bits_stays_unclaimed_without_prior_cursor_owner() {
     let live = compact_placeable_token_name_add_live_bytes();
     let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let original = payload.clone();
 
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
-        .expect("compact token-name add should expand at the proven update cursor");
-    assert_eq!(
-        rewrite.bytes_inserted,
-        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
-    );
-    assert_eq!(
-        rewrite.bits_inserted, 12,
-        "EE placeable add needs outer+inner name bits and the guard/state run"
-    );
-
-    let claim = super::claim_payload_if_verified(&payload).expect("rewritten add should claim");
-    assert_eq!(claim.add_records, 1);
-    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES).unwrap() as usize;
-    let live = &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
-    assert_eq!(
-        super::read_u32_le(live, 6),
-        Some(0),
-        "legacy short-name token is canonicalized to an empty CExoString"
-    );
-    assert_eq!(
-        live.get(15..),
-        Some(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES[..])
-    );
-
-    let fragment_bits =
-        super::bits::decode_msb_valid_bits(&payload[declared..], super::CNW_FRAGMENT_HEADER_BITS)
-            .expect("rewritten compact add fragment bits");
-    let add_bits = &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..];
-    assert_eq!(add_bits.len(), 12);
     assert!(
-        add_bits[0],
-        "outer locstring helper selects the empty CExoString"
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw compact placeable add cannot exact-claim without its four Diamond source BOOLs"
     );
     assert!(
-        add_bits[1..].iter().all(|bit| !*bit),
-        "the helper inner bit and EE guard/state bits are neutral"
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "zero-source compact add expansion needs a prior update-repair cursor owner"
+    );
+    assert_eq!(
+        payload, original,
+        "unowned compact add bits must stay visible for quarantine/diagnostics"
     );
 }
 

@@ -1451,6 +1451,21 @@ Current status:
   local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_gui_cursor_audit
   -- --nocapture`, `cargo test -q -p hgbridge-proxy2 live_gui_ --
   --nocapture`, and the serial `live_object_update` suite.
+- 2026-06-01 `P/05/01` compact `A/09` zero-source fallback audit: tightened the
+  update-family compact placeable-add fallback so it cannot expand an isolated
+  short-name/token `A/09` when the current CNW cursor has zero source bits.
+  Diamond `sub_44E4A0` owns four compact tail BOOLs for that shape; a byte-only
+  compact add with an empty bitstream is therefore shifted-cursor evidence
+  unless an earlier update rewrite in the same pass proves those source bits
+  were already consumed before the add row. Public coverage now keeps the
+  isolated zero-source compact add unclaimed/unchanged, while the Chapter1 seq20
+  private reclassification still rolls back without partial rewrites.
+  Verified with `cargo test -q -p hgbridge-proxy2 compact_placeable_token --
+  --nocapture`,
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p
+  hgbridge-proxy2
+  local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit
+  -- --nocapture`, and the XP2 terminal-GI private check.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

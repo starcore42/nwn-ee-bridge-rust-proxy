@@ -3642,8 +3642,11 @@ pub fn rewrite_update_records_payload_if_possible(
                 // A compact Diamond `A/09` with source BOOLs is handled by the
                 // same-object update trial above. This zero-source fallback is
                 // only for packets where earlier update repairs consumed every
-                // compact tail BOOL before the add row reached this pass.
+                // compact tail BOOL before the add row reached this pass; an
+                // isolated compact add with an empty bitstream is shifted-cursor
+                // evidence because Diamond owns four source BOOLs here.
                 let zero_source_compact_placeable_add = object_type == PLACEABLE_OBJECT_TYPE
+                    && summary.update_records_rewritten != 0
                     && bit_cursor == fragment_bits.len()
                     && boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
                         &live_bytes,
