@@ -4308,11 +4308,12 @@ fn local_xp2_seq26_current_player_d5ff_inventory_terminal_tail_rewrites_to_exact
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_xp2_seq19_door_placeable_gui_stream_rewrites_after_door_add_37_cursor_audit() {
+fn local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_gui_cursor_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_xp2_seq19_door_placeable_gui_stream_20260522_unclaimed.bin"
     )
     .to_vec();
+    let original = payload.clone();
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
@@ -4320,25 +4321,15 @@ fn local_xp2_seq19_door_placeable_gui_stream_rewrites_after_door_add_37_cursor_a
     );
 
     assert!(
-        crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
             &mut payload,
             None
         ),
-        "XP2 seq19 should rewrite once the preceding door add is gated by an exact same-object 0x37 update"
-    );
-    assert!(
-        !contains_stale_scale_first_door_placeable_update_37(&payload),
-        "rewritten XP2 seq19 must not reproduce stale scale-first 0x37 door/placeable rows"
-    );
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("rewritten XP2 seq19 door/placeable + GUI stream should exact-claim");
-    assert!(
-        claim.add_records > 0 && claim.update_records > 0,
-        "door/placeable add/update records should both be owned after rewrite: {claim:?}"
+        "XP2 seq19 must stay unclaimed until the terminal GI rows have decompile-backed cursor proof"
     );
     assert_eq!(
-        claim.live_gui_item_create_records, 8,
-        "the terminal GUI item-create records own the final fragment cursor"
+        payload, original,
+        "failed XP2 seq19 proof must not emit partial door/placeable rewrites"
     );
 }
 
@@ -4403,25 +4394,28 @@ fn local_chapter1_seq19_transition_pending_claimed_stream_stays_unclaimed_after_
 
 #[cfg(hgbridge_private_fixtures)]
 #[test]
-fn local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape() {
+fn local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit() {
     let mut payload = include_bytes!(
         "../../../fixtures/live_object/local_chapter1_seq20_transition_placeable_stream_20260523_unclaimed.bin"
     )
     .to_vec();
+    let original = payload.clone();
 
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "raw Chapter1 transition stream documents the unclaimed Diamond placeable shape"
     );
 
-    let claim = rewrite_payload_to_exact_claim_for_test(&mut payload);
-    assert!(claim.add_records >= 1);
-    assert!(claim.update_records >= 1);
     assert!(
-        claim.mentions.iter().any(|mention| {
-            mention.opcode == b'U' && mention.object_type == super::PLACEABLE_OBJECT_TYPE
-        }),
-        "rewritten Chapter1 transition stream should retain placeable updates"
+        !crate::translate::m_frame::rewrite_live_object_payload_to_exact_ee_for_test(
+            &mut payload,
+            None
+        ),
+        "Chapter1 seq20 must stay unclaimed until the compact A/09 cursor owns real source bits"
+    );
+    assert_eq!(
+        payload, original,
+        "failed Chapter1 seq20 proof must leave the fixture unchanged"
     );
 }
 

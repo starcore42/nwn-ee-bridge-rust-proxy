@@ -1427,15 +1427,23 @@ Current status:
   `cargo test -q -p hgbridge-proxy2
   cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair --
   --nocapture`.
-- 2026-06-01 `P/05/01` live-object exact-adapter sweep debt: the broader
-  `cargo test -q -p hgbridge-proxy2 live_object_update -- --test-threads=1`
-  check still fails two existing exact-adapter fixture expectations
-  (`local_chapter1_seq20_transition_placeable_stream_rewrites_to_exact_shape`
-  and
-  `local_xp2_seq19_door_placeable_gui_stream_rewrites_after_door_add_37_cursor_audit`).
-  Keep these as generalized placeable/door update cursor-handoff debt, not
-  chapter- or module-specific workarounds; the CEP raw `U/6` replay above and
-  focused CEP/private quarantine checks still pass unchanged.
+- 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
+  packet behavior changed, but the two stale positive private expectations
+  from the live-object sweep now stay unclaimed under the bit-order standard.
+  The Chapter1 seq20 stream reaches a compact `A/09` whose byte shape is
+  plausible but whose decompile-owned add cursor has no valid source bits at
+  the current fragment position. The XP2 seq19 stream rewrites many
+  door/placeable rows but ultimately reaches terminal `GI` live-GUI rows that
+  the focused GUI reader still cannot prove. Both fixtures now assert that the
+  exact adapter rolls back without emitting partial rewrites. Keep these as
+  generalized compact-add and live-GUI cursor-handoff evidence until the real
+  bit owner or stream-boundary artifact is proven. Verified with focused
+  `cargo test -q -p hgbridge-proxy2
+  local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit
+  -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  local_xp2_seq19_door_placeable_gui_stream_stays_unclaimed_after_gui_cursor_audit
+  -- --nocapture`, and the serial `live_object_update` suite.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE
