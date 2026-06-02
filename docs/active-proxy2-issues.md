@@ -2023,6 +2023,16 @@ Current status:
   -- --nocapture`. The remaining owner search moves before the post-`W`
   storage/stale-gap run or to a still-unmodeled stream-boundary artifact; no
   compact-add/low-tail cursor resync is justified.
+- 2026-06-02 `P/05/01` long post-`W` storage-span audit: no packet behavior
+  changed. Public fixture-free coverage now pins the span-size side of the XP2
+  seq19 evidence: a 31-byte CNW storage span after `W current total` can commit
+  only when repeated compact token-name `A/09` plus same-object stale-gap
+  `U/09 mask=0x17` rows consume every promoted bit from their decompiled
+  cursors. The sibling regression adds one unowned bit to the same long span and
+  proves the whole candidate rolls back unchanged. Verified with `cargo test -q
+  -p hgbridge-proxy2 long_storage_span -- --nocapture`. The unresolved search
+  remains upstream of the long storage/stale-gap run or in an unmodeled
+  stream-boundary artifact.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

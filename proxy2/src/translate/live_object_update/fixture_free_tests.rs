@@ -1304,6 +1304,73 @@ fn work_remaining_storage_rolls_back_after_stale_gap_pair_run_before_shifted_low
 }
 
 #[test]
+fn work_remaining_long_storage_span_claims_only_when_stale_gap_run_consumes_every_bit() {
+    // The XP2 seq19 private trace uses a much larger post-`W` storage span than
+    // the minimal public siblings above. Span length is not ownership proof:
+    // Diamond `sub_44E4A0` owns four compact add BOOLs per `A/09`, and each
+    // stale-gap `U/09 mask=0x17` owns only its decompiled update cursor. The
+    // promoted span may commit only when those exact rows consume every bit.
+    let object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1200u32 + index).collect();
+    let mut source_bits = Vec::new();
+    for _ in &object_ids {
+        source_bits.extend_from_slice(&[true, false, true, false]);
+        source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+
+    let live = work_remaining_compact_stale_gap_pairs_with_storage(&object_ids, &source_bits);
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("long post-W storage should feed the exact compact/stale-gap run");
+
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(
+        rewrite.interleaved_fragment_bytes_promoted, 31,
+        "3 CNW header bits plus 240 row-owned bits pack into the long XP2-sized span"
+    );
+    assert_eq!(
+        rewrite.interleaved_fragment_bits_promoted,
+        source_bits.len() as u32
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("long promoted storage plus exact stale-gap run should claim");
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.add_records, object_ids.len() as u32);
+    assert_eq!(claim.update_records, object_ids.len() as u32);
+}
+
+#[test]
+fn work_remaining_long_storage_span_rolls_back_with_one_unowned_bit() {
+    // A long bounded post-`W` storage span must still be exact at the bit
+    // cursor. One extra bit after the repeated compact/stale-gap run is active
+    // evidence for an upstream owner or stream-boundary artifact, not terminal
+    // storage that the `W` row or the repeated rows may trim.
+    let object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1300u32 + index).collect();
+    let mut source_bits = Vec::new();
+    for _ in &object_ids {
+        source_bits.extend_from_slice(&[true, false, true, false]);
+        source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    source_bits.push(true);
+
+    let live = work_remaining_compact_stale_gap_pairs_with_storage(&object_ids, &source_bits);
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "one unowned bit must roll back the long post-W storage candidate"
+    );
+    assert_eq!(
+        payload, original,
+        "failed long-storage proof must leave bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the extra long-storage bit remains active cursor evidence"
+    );
+}
+
+#[test]
 fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_proof() {
     let live = [b'W', 0x10, 0x20, 0xA0];
     let mut payload = live_object_payload_with_bits(&live, Vec::new());
