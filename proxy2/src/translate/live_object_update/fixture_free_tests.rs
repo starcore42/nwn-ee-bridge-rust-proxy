@@ -3543,6 +3543,49 @@ fn compact_placeable_token_add_accepts_following_exact_37_update() {
 }
 
 #[test]
+fn compact_placeable_token_add_rejects_stream_start_bit_shift_before_exact_37_update() {
+    // Generalized from the XP2 seq19 stream-start audit: the first live-object
+    // row starts at CNW fragment cursor 3. An extra bit before the first
+    // compact add's four Diamond tail BOOLs is not a packet-boundary artifact
+    // the add/update translator may skip, even when the following U/09
+    // `mask=0x37` row is byte-exact and would otherwise prove its own cursor.
+    let object_id = 0x8000_18CAu32;
+    let mut live = compact_placeable_token_name_add_live_bytes();
+    live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        object_id,
+    ));
+
+    let mut exact_bits = vec![true, false, true, false];
+    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut exact_payload = live_object_payload_with_bits(&live, exact_bits.clone());
+    super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("unshifted compact add plus exact update should rewrite");
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("unshifted compact add plus exact update should claim");
+    assert_eq!(exact_claim.add_records, 1);
+    assert_eq!(exact_claim.update_records, 1);
+
+    let mut shifted_bits = vec![true];
+    shifted_bits.extend_from_slice(&exact_bits);
+    let mut shifted_payload = live_object_payload_with_bits(&live, shifted_bits);
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "stream-start bit shift must not be resynchronized before compact add/update rows"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "failed stream-start bit proof must leave the evidence payload untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "the extra stream-start bit remains active cursor evidence"
+    );
+}
+
+#[test]
 fn compact_placeable_token_add_rejects_shifted_or_bit_short_37_update() {
     // Same-length scale/state-before-appearance rows and fragment-short rows
     // are still shifted-cursor evidence. They must not prove the preceding

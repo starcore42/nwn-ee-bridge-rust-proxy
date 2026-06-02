@@ -5278,7 +5278,13 @@ pub fn rewrite_update_records_payload_if_possible(
             || record_rewrite.bits_changed)
             && verified_work_remaining_record_legal_end(&live_bytes, record_end)
                 == Some(live_bytes.len());
+        // Pure EE insertions, such as the door/placeable state-bit widen, do
+        // not prove any source tail bits are disposable. Terminal trim needs a
+        // source-bit removal/change at the same final record.
+        let terminal_record_owns_source_bit_trim =
+            record_rewrite.bits_removed > 0 || record_rewrite.bits_changed;
         if record_rewrite.terminal_fragment_trim_allowed
+            && terminal_record_owns_source_bit_trim
             && (record_end == live_bytes.len() || family_trim_before_final_work_remaining)
             && bit_cursor < fragment_bits.len()
         {

@@ -2114,6 +2114,38 @@ Current status:
   The unresolved bit-owner search moves upstream of the pre-`W` full-update run
   or to a stream-boundary artifact; no compact-add / low-tail resync is
   justified.
+- 2026-06-02 `P/05/01` leading creature/door pre-run boundary audit: no packet
+  behavior changed. The same private XP2 seq19 replay starts with two
+  EE-shaped `U/05` creature visual-transform rows, then a door `A/0A` plus full
+  `U/0A mask=0x37`, before the compact placeable full-update run. Public
+  fixture-free coverage now proves those leading rows exact-claim at their own
+  cursors, can coexist with the later pre-`W` full-update run and 31-byte
+  post-`W` storage/stale-gap run, and still must roll back unchanged when the
+  later compact `A/09` plus low-tail `U/09 mask=0xF7` exposes the shifted
+  `1000_11_101101` source bits. Verified with `cargo test -q -p
+  hgbridge-proxy2 leading_creature_and_door_run_does_not_resync_shifted_low_tail
+  -- --nocapture`, plus the focused pre-`W`, work-remaining, compact-token, and
+  low-tail suites. The unresolved bit-owner search moves to the stream start or
+  a still-unmodeled stream-boundary / packet-framing artifact; no compact-add /
+  low-tail resync is justified.
+- ~~2026-06-03 `P/05/01` stream-start terminal-trim audit: fixed a generalized
+  shifted-cursor hazard in the update rewrite terminal trim gate. A compact
+  token-name `A/09` followed by a byte-exact full `U/09 mask=0x37` legitimately
+  inserts EE-only add/update bits, but that insertion-only final update does not
+  prove any source bits may be discarded. The old gate could trim leftover
+  terminal bits after the final update and thereby hide an extra bit inserted
+  before the first compact add cursor. Terminal trim now requires the same final
+  record to remove or change source bits before truncating the fragment tail.
+  Public fixture-free coverage proves the unshifted compact add/full-update pair
+  still rewrites and exact-claims, while the same bytes with one stream-start
+  extra bit stay unclaimed and unchanged. Verified with `cargo test -q -p
+  hgbridge-proxy2
+  compact_placeable_token_add_rejects_stream_start_bit_shift_before_exact_37_update
+  -- --nocapture`, focused compact-token, low-tail, work-remaining, leading
+  creature/door, and pre-`W` full-update suites. Re-run the private/live XP2
+  seq19 stream next to determine whether the remaining shifted handoff is
+  resolved by this generalized trim fix or still needs a separate
+  stream-boundary owner.~~
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
