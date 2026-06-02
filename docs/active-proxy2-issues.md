@@ -2088,6 +2088,18 @@ Current status:
   --nocapture`. The unresolved owner search stays upstream of the long
   storage/stale-gap run or in a still-unmodeled boundary artifact; it is not
   justified by the row after the shifted low-tail update.
+- 2026-06-02 `P/05/01` pre-`W` compact/stale-gap boundary audit: no packet
+  behavior changed. Public fixture-free coverage now moves one boundary
+  upstream of the long post-`W` storage span: a valid compact token-name `A/09`
+  plus same-object stale-gap `U/09 mask=0x17` immediately before `W current
+  total` exact-claims by itself and can coexist with the 31-byte promoted
+  storage/stale-gap run, but still cannot donate, skip, or resync bits for the
+  later shifted compact `A/09` plus low-tail `U/09 mask=0xF7` handoff. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  work_remaining_long_storage_span_rolls_back_after_preceding_pair_before_shifted_low_tail
+  -- --nocapture` using `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge`.
+  The unresolved owner search remains before that pre-`W` pair or in a
+  still-unmodeled stream-boundary artifact.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
