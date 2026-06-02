@@ -2045,6 +2045,18 @@ Current status:
   mixed-prefix variants. The final shifted low-tail handoff at rewritten offset
   1145 remains unresolved, so the search stays upstream or at an unmodeled
   stream-boundary artifact; do not add compact-add/low-tail resync.
+- 2026-06-02 `P/05/01` long post-`W` mixed-prefix storage audit: no packet
+  behavior changed. Public fixture-free coverage now ties the private XP2
+  mixed compact-add prefixes (`1101`, `0001`, `0010`, `1110`) to the same
+  31-byte post-`W` promoted storage span as the repeated-prefix sibling.
+  Diamond `sub_44E4A0` still owns only the four source compact-add BOOLs per
+  `A/09`; the following same-object `U/09 mask=0x17` stale-gap row must then
+  consume its own decompiled update cursor exactly. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  work_remaining_long_storage_span_accepts_mixed_compact_add_prefix_bits --
+  --nocapture` using `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge`.
+  The later shifted low-tail handoff remains active; this only closes the
+  repeated-prefix assumption in the long-span proof.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

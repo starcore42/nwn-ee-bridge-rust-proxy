@@ -1339,6 +1339,47 @@ fn work_remaining_long_storage_span_claims_only_when_stale_gap_run_consumes_ever
 }
 
 #[test]
+fn work_remaining_long_storage_span_accepts_mixed_compact_add_prefix_bits() {
+    // The XP2 seq19 private replay shows the same long post-`W` span carrying
+    // mixed compact-add source prefixes (`1101`, `0001`, `0010`, `1110`) before
+    // exact `U/09 mask=0x17` stale-gap cursors. Those four bits are still owned
+    // by Diamond `sub_44E4A0` and drained as source-only compact add state; their
+    // values must not be reinterpreted as EE guard bits or a cursor resync point.
+    let object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1400u32 + index).collect();
+    let compact_prefixes: &[&[bool]] = &[
+        &[true, true, false, true],
+        &[false, false, false, true],
+        &[false, false, true, false],
+        &[true, true, true, false],
+    ];
+    let mut source_bits = Vec::new();
+    for (index, _) in object_ids.iter().enumerate() {
+        source_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+
+    let live = work_remaining_compact_stale_gap_pairs_with_storage(&object_ids, &source_bits);
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("mixed-prefix long post-W storage should feed exact compact/stale-gap rows");
+
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(
+        rewrite.interleaved_fragment_bytes_promoted, 31,
+        "3 CNW header bits plus 240 mixed-prefix row bits pack into the XP2-sized span"
+    );
+    assert_eq!(
+        rewrite.interleaved_fragment_bits_promoted,
+        source_bits.len() as u32
+    );
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("mixed-prefix long promoted storage plus exact stale-gap run should claim");
+    assert_eq!(claim.world_status_records, 1);
+    assert_eq!(claim.add_records, object_ids.len() as u32);
+    assert_eq!(claim.update_records, object_ids.len() as u32);
+}
+
+#[test]
 fn work_remaining_long_storage_span_rolls_back_with_one_unowned_bit() {
     // A long bounded post-`W` storage span must still be exact at the bit
     // cursor. One extra bit after the repeated compact/stale-gap run is active
