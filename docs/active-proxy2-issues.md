@@ -2070,6 +2070,24 @@ Current status:
   -- --nocapture` plus the focused work-remaining/long-storage/compact-token/
   low-tail suites. The unresolved search remains upstream of the long
   storage/stale-gap run or in an unmodeled stream-boundary artifact.
+- 2026-06-02 `P/05/01` shifted low-tail following-boundary audit: no packet
+  behavior changed. The private XP2 seq19 replay has a plausible top-level
+  compact row after the shifted compact `A/09` plus same-object
+  `U/09 mask=0xF7` handoff. Public fixture-free coverage now proves that a
+  valid following compact token-name `A/09` plus same-object stale-gap
+  `U/09 mask=0x17` pair still cannot act as a stream resync point: the
+  long promoted-storage transaction must roll back unchanged before the
+  shifted low-tail handoff, and the following pair is only accepted when tested
+  by itself with its own decompiled add/update bits. Verified with `cargo test
+  -q -p hgbridge-proxy2
+  work_remaining_long_storage_span_rolls_back_before_shifted_low_tail_with_following_boundary
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2 work_remaining_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 long_storage_span --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 compact_placeable_token --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2 low_tail --
+  --nocapture`. The unresolved owner search stays upstream of the long
+  storage/stale-gap run or in a still-unmodeled boundary artifact; it is not
+  justified by the row after the shifted low-tail update.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

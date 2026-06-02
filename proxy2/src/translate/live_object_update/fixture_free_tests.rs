@@ -1438,6 +1438,86 @@ fn work_remaining_long_storage_span_rolls_back_before_shifted_low_tail_handoff()
 }
 
 #[test]
+fn work_remaining_long_storage_span_rolls_back_before_shifted_low_tail_with_following_boundary() {
+    // In the XP2 seq19 private replay the shifted compact add/low-tail update
+    // is followed by another top-level compact row. That later plausible
+    // boundary is not a stream resync proof: the shifted pair still owns only
+    // its decompiled compact-add and low-tail update cursors, so the whole
+    // promoted-storage transaction must roll back unchanged.
+    let object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1600u32 + index).collect();
+    let compact_prefixes: &[&[bool]] = &[
+        &[true, true, false, true],
+        &[false, false, false, true],
+        &[false, false, true, false],
+        &[true, true, true, false],
+    ];
+    let mut source_bits = Vec::new();
+    for (index, _) in object_ids.iter().enumerate() {
+        source_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+
+    let following_object_id = 0x8000_1700u32;
+    let mut following_live = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        following_object_id,
+    );
+    following_live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(
+        following_object_id,
+    ));
+    let mut following_bits = vec![false, false, false, true];
+    following_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut following_payload =
+        live_object_payload_with_bits(&following_live, following_bits.clone());
+    let following_rewrite =
+        super::rewrite_update_records_payload_if_possible(&mut following_payload)
+            .expect("the following compact/stale-gap boundary should be valid by itself");
+    assert_eq!(following_rewrite.update_records_rewritten, 1);
+    let following_claim = super::claim_payload_if_verified(&following_payload)
+        .expect("the following compact/stale-gap boundary should exact-claim by itself");
+    assert_eq!(following_claim.add_records, 1);
+    assert_eq!(following_claim.update_records, 1);
+
+    let shifted_object_id = 0x8000_0001u32;
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = work_remaining_compact_stale_gap_pairs_with_storage(&object_ids, &source_bits);
+    live.extend_from_slice(&shifted_add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+    live.extend_from_slice(&following_live);
+
+    let mut bits = vec![
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ];
+    bits.extend_from_slice(&following_bits);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a following compact boundary must not resync a shifted low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed low-tail/following-boundary proof must leave source bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the shifted handoff remains active even with a plausible following boundary"
+    );
+}
+
+#[test]
 fn work_remaining_long_storage_span_rolls_back_with_one_unowned_bit() {
     // A long bounded post-`W` storage span must still be exact at the bit
     // cursor. One extra bit after the repeated compact/stale-gap run is active
