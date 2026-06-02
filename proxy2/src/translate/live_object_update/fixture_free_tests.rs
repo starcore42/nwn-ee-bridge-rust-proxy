@@ -3183,6 +3183,76 @@ fn prior_compact_stale_gap_pair_rolls_back_before_shifted_compact_low_tail_bits(
 }
 
 #[test]
+fn prior_compact_stale_gap_pair_run_rolls_back_before_shifted_compact_low_tail_bits() {
+    // The XP2 seq19 replay shows a run of compact token-name `A/09` plus
+    // same-object `U/09 mask=0x17` stale-gap pairs before the offset-1145
+    // shifted low-tail handoff. Each pair owns only its own four Diamond add
+    // BOOLs and stale-gap update cursor; repeating the pair does not create a
+    // source-bit reservoir or resync point for the later compact add/update.
+    let prior_object_ids = [0x8000_1072u32, 0x8000_1120u32];
+    let shifted_object_id = 0x8000_0001u32;
+
+    let mut good_live = Vec::new();
+    let mut good_bits = Vec::new();
+    for object_id in prior_object_ids {
+        good_live.extend_from_slice(&with_live_update_object_id(
+            compact_placeable_token_name_add_live_bytes(),
+            object_id,
+        ));
+        good_live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+        good_bits.extend_from_slice(&[true, false, true, false]);
+        good_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    let mut good_payload = live_object_payload_with_bits(&good_live, good_bits.clone());
+    let good_rewrite = super::rewrite_update_records_payload_if_possible(&mut good_payload)
+        .expect("the compact/stale-gap pair run should own its exact source bits");
+    assert_eq!(
+        good_rewrite.update_records_rewritten,
+        prior_object_ids.len() as u32
+    );
+    let good_claim = super::claim_payload_if_verified(&good_payload)
+        .expect("the compact/stale-gap pair run should exact-claim after rewrite");
+    assert_eq!(good_claim.add_records, prior_object_ids.len() as u32);
+    assert_eq!(good_claim.update_records, prior_object_ids.len() as u32);
+
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = good_live;
+    live.extend_from_slice(&shifted_add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+
+    let mut bits = good_bits;
+    bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a compact/stale-gap run must not commit before a shifted compact low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed repeated-pair/add/low-tail proof must roll the whole candidate back"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the preceding compact/stale-gap run is not the shifted pair's bit owner"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

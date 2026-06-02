@@ -1994,6 +1994,21 @@ Current status:
   -- --nocapture`. The remaining owner search moves before that preceding
   compact/stale-gap pair or to an upstream stream-boundary artifact; do not add
   compact-add/low-tail cursor resync.
+- 2026-06-02 `P/05/01` repeated compact/stale-gap pair-run audit: no packet
+  behavior changed. A debug replay of the raw XP2 seq19 stream with
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1` shows the two rows before the immediate
+  neighbor are the same generalized shape: compact `A/09` at rewritten offset
+  1049 followed by same-object stale-gap `U/09 mask=0x17` at 1072, then compact
+  `A/09` at 1097 followed by stale-gap `U/09 mask=0x17` at 1120, before the
+  shifted offset-1145 compact `A/09`/low-tail `U/09 mask=0xF7` handoff. Public
+  coverage now proves a run of exact compact/stale-gap pairs can claim its own
+  decompiled four add BOOLs plus stale-gap update cursor, but must still roll
+  back unchanged when the following compact low-tail handoff exposes
+  `1000_11_101101`. Verified with `cargo test -q -p hgbridge-proxy2
+  prior_compact_stale_gap_pair_run_rolls_back_before_shifted_compact_low_tail_bits
+  -- --nocapture`. The remaining owner search moves before the repeated
+  compact/stale-gap run or to an upstream stream-boundary artifact; no
+  compact-add/low-tail resync is justified.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
