@@ -2033,6 +2033,18 @@ Current status:
   -p hgbridge-proxy2 long_storage_span -- --nocapture`. The unresolved search
   remains upstream of the long storage/stale-gap run or in an unmodeled
   stream-boundary artifact.
+- 2026-06-02 `P/05/01` compact-add source-bit pattern audit: no packet behavior
+  changed. Private XP2 seq19 replay after the 31-byte post-`W` storage
+  promotion shows the exact compact `A/09` plus `U/09 mask=0x17` rows before
+  offset 1145 carry mixed four-bit compact add prefixes including `1101`,
+  `0001`, `0010`, and `1110`, then exact-claim their following stale-gap update
+  cursors. Diamond `sub_44E4A0` still owns exactly four compact tail BOOLs for
+  compact token-name/no-optional-object `A/09` rows; the bridge must drain those
+  source-only bits and materialize neutral EE guard/state BOOLs instead of
+  interpreting their values. Public writer coverage now pins the observed
+  mixed-prefix variants. The final shifted low-tail handoff at rewritten offset
+  1145 remains unresolved, so the search stays upstream or at an unmodeled
+  stream-boundary artifact; do not add compact-add/low-tail resync.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

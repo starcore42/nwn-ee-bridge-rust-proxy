@@ -5010,11 +5010,20 @@ mod placeable_add_semantic_tests {
 
     #[test]
     fn compact_placeable_add_drains_any_bounded_source_residue_before_ee_guards() {
-        for residue_bits in 0..=LEGACY_COMPACT_PLACEABLE_ADD_BOOL_BITS {
+        let cases: &[(&str, &[bool])] = &[
+            ("empty", &[]),
+            ("one-bit", &[true]),
+            ("two-bit", &[true, false]),
+            ("three-bit", &[true, false, true]),
+            ("alternating-four", &[true, false, true, false]),
+            ("xp2-1101", &[true, true, false, true]),
+            ("xp2-0001", &[false, false, false, true]),
+            ("xp2-0010", &[false, false, true, false]),
+            ("xp2-1110", &[true, true, true, false]),
+        ];
+        for (label, residue) in cases {
             let (mut bytes, mut record_end) = compact_short_name_placeable_add_record();
-            let mut bits = (0..residue_bits)
-                .map(|index| index % 2 == 0)
-                .collect::<Vec<_>>();
+            let mut bits = residue.to_vec();
             let mut bit_cursor = 0usize;
 
             let rewrite = rewrite_legacy_placeable_add_record_for_ee(
@@ -5030,13 +5039,10 @@ mod placeable_add_semantic_tests {
             assert_eq!(rewrite.maps_inserted, 1);
             assert_eq!(bit_cursor, 12);
             assert_eq!(bits.len(), 12);
-            assert_eq!(
-                bits[0], true,
-                "outer locstring branch for residue {residue_bits}"
-            );
+            assert_eq!(bits[0], true, "outer locstring branch for residue {label}");
             assert!(
                 bits[1..].iter().all(|bit| !*bit),
-                "compact source residue {residue_bits} should be replaced by neutral EE guards"
+                "compact source residue {label} should be replaced by neutral EE guards"
             );
             assert!(has_ee_identity_visual_transform_map_at(
                 &bytes, 15, record_end
@@ -5051,7 +5057,7 @@ mod placeable_add_semantic_tests {
                     &bits,
                     &mut verified_cursor,
                 ),
-                "rewritten compact add with {residue_bits} residual bits should exact-claim"
+                "rewritten compact add with {label} residual bits should exact-claim"
             );
             assert_eq!(verified_cursor, bit_cursor);
         }
