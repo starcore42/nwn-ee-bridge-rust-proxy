@@ -356,9 +356,45 @@ fn append_pending_live_object_clean_fragment(
             first_sequence,
             chunks: 0,
         });
+    let mut normalized = bytes.to_vec();
+    if let Some(summary) =
+        live_object::normalize_prefixed_fragments_payload_if_needed(&mut normalized)
+        && summary.dropped_leadin_bytes == 0
+        && !summary.salvaged_partial_leadin
+        && append_normalized_live_object_fragment(pending, &normalized)
+    {
+        pending.chunks = pending.chunks.saturating_add(1);
+        return;
+    }
+
     pending.fragment_bytes.extend_from_slice(&bytes[3..7]);
     pending.read_bytes.extend_from_slice(&bytes[7..]);
     pending.chunks = pending.chunks.saturating_add(1);
+}
+
+fn append_normalized_live_object_fragment(
+    pending: &mut PendingLiveObjectStream,
+    normalized: &[u8],
+) -> bool {
+    let Some(declared) = read_live_object_declared(normalized) else {
+        return false;
+    };
+    if declared < 7 || declared > normalized.len() {
+        return false;
+    }
+
+    pending
+        .read_bytes
+        .extend_from_slice(&normalized[7..declared]);
+    pending
+        .fragment_bytes
+        .extend_from_slice(&normalized[declared..]);
+    true
+}
+
+fn read_live_object_declared(payload: &[u8]) -> Option<usize> {
+    let declared = u32::from_le_bytes(payload.get(3..7)?.try_into().ok()?);
+    usize::try_from(declared).ok()
 }
 
 fn append_pending_live_object_prefixed_fragment(
@@ -632,6 +668,56 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
             state.deflate.server_zlib_stream_epoch.saturating_add(1);
     }
     state.deflate.server_zlib_stream_owner = Some(owner);
+}
+
+#[cfg(test)]
+mod fixture_free_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_clean_fragment_append_keeps_fragment_tail_out_of_read_bytes() {
+        // Generalized from multi-window XP2 live-object evidence: a legacy
+        // high-level fragment may carry the zero/invalid EE declared slot at
+        // bytes 3..7 and a real CNW fragment-storage tail after the final
+        // decompile-owned read-buffer row. Stream assembly must append the
+        // normalized read/tail split for each chunk; otherwise per-chunk tail
+        // bits become midstream live bytes and later shift add/update cursors.
+        let live = vec![
+            b'D', 0x05, 0x01, 0x00, 0x00, 0x80, // decompile-owned delete row
+            b'W', 0x0C, 0x0E, // fragment-neutral work-remaining row
+        ];
+        let fragment = vec![0xA0];
+        let declared = 7usize + live.len();
+        let mut normalized = vec![
+            b'P', 0x05, 0x01, // GameObjUpdate_LiveObject
+        ];
+        normalized.extend_from_slice(&(declared as u32).to_le_bytes());
+        normalized.extend_from_slice(&live);
+        normalized.extend_from_slice(&fragment);
+
+        let mut pending = PendingLiveObjectStream {
+            kind: PendingLiveObjectStreamKind::LegacyHighLevelFragmentPrefix,
+            read_bytes: Vec::new(),
+            fragment_bytes: Vec::new(),
+            first_sequence: 19,
+            chunks: 0,
+        };
+        assert!(append_normalized_live_object_fragment(
+            &mut pending,
+            &normalized
+        ));
+
+        assert_eq!(
+            pending.read_bytes,
+            vec![b'D', 0x05, 0x01, 0x00, 0x00, 0x80, b'W', 0x0C, 0x0E],
+            "only decompile-owned live-object read bytes belong in the pending read stream"
+        );
+        assert_eq!(
+            pending.fragment_bytes,
+            vec![0xA0],
+            "the per-chunk trailing CNW tail must not be stranded in read bytes"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]
