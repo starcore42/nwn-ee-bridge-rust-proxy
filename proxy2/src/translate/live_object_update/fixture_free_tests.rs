@@ -3084,6 +3084,51 @@ fn prior_low_tail_rewrite_rolls_back_when_compact_add_has_shifted_xp2_low_tail_b
 }
 
 #[test]
+fn prior_stale_gap_rewrite_rolls_back_when_compact_add_has_shifted_low_tail_bits() {
+    // The sibling `U/09 mask=0x17` stale absent-appearance repair owns the
+    // decompiled position, scalar-orientation, and five Diamond state BOOLs
+    // only. It must not donate or skip bits for a later compact add/low-tail
+    // pair whose source cursor is shifted.
+    let prior_object_id = 0x8000_0055u32;
+    let compact_object_id = 0x8000_0001u32;
+    let mut add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        compact_object_id,
+    );
+    add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = placeable_stale_gap_update_live_bytes_for_object(prior_object_id);
+    live.extend_from_slice(&add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        compact_object_id,
+    ));
+
+    let mut bits = scalar_door_placeable_update_bits();
+    bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a valid stale-gap row must not commit before a failed compact low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed stale-gap/add/low-tail proof must roll the whole candidate back"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the stale-gap row is not the source-bit owner for the shifted compact pair"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);

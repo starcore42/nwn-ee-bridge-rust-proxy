@@ -1969,6 +1969,18 @@ Current status:
   --nocapture`. This proves the storage span is not the rejected byte owner;
   the unresolved search stays with the per-record source-bit owner before the
   later compact add/update handoff.
+- 2026-06-02 `P/05/01` mask-`0x17` stale-gap/compact-pair audit: no packet
+  behavior changed. Public regression now proves a preceding valid `U/09
+  mask=0x17` stale absent-appearance repair also cannot be the shifted
+  compact-pair bit owner: it consumes only the decompiled position residuals,
+  scalar-orientation selector/bits, and five Diamond state BOOLs, plus EE's
+  inserted neutral state BOOL in the rewritten stream. If the following compact
+  `A/09` and same-object low-tail `U/09 mask=0xF7` expose the XP2
+  `1000_11_101101` bit run, the whole candidate must roll back unchanged.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  prior_stale_gap_rewrite_rolls_back_when_compact_add_has_shifted_low_tail_bits
+  -- --nocapture`. The unresolved owner search remains before the later
+  compact add/update handoff, but not in the earlier stale-gap update row.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
