@@ -2057,6 +2057,19 @@ Current status:
   --nocapture` using `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge`.
   The later shifted low-tail handoff remains active; this only closes the
   repeated-prefix assumption in the long-span proof.
+- 2026-06-02 `P/05/01` long post-`W` storage plus shifted low-tail audit: no
+  packet behavior changed. Public fixture-free coverage now combines the
+  XP2-sized 31-byte post-`W` mixed-prefix storage span, the exact compact
+  token-name `A/09` plus same-object stale-gap `U/09 mask=0x17` run, and the
+  later shifted compact `A/09` plus same-object low-tail `U/09 mask=0xF7`
+  handoff. The bridge must roll back the whole promoted-storage candidate
+  rather than committing the exact upstream rows when the final
+  `1000_11_101101` low-tail cursor is still unowned. Verified with `cargo test
+  -q -p hgbridge-proxy2
+  work_remaining_long_storage_span_rolls_back_before_shifted_low_tail_handoff
+  -- --nocapture` plus the focused work-remaining/long-storage/compact-token/
+  low-tail suites. The unresolved search remains upstream of the long
+  storage/stale-gap run or in an unmodeled stream-boundary artifact.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

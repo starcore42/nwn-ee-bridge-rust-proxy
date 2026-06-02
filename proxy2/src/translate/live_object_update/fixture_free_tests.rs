@@ -1380,6 +1380,64 @@ fn work_remaining_long_storage_span_accepts_mixed_compact_add_prefix_bits() {
 }
 
 #[test]
+fn work_remaining_long_storage_span_rolls_back_before_shifted_low_tail_handoff() {
+    // The XP2 seq19 private replay combines the long post-`W` storage span with
+    // a later compact `A/09` plus same-object `U/09 mask=0xF7` handoff. The long
+    // span can feed the preceding compact/stale-gap run, but it must not make
+    // the later shifted `1000_11_101101` bit run look owned.
+    let object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1500u32 + index).collect();
+    let compact_prefixes: &[&[bool]] = &[
+        &[true, true, false, true],
+        &[false, false, false, true],
+        &[false, false, true, false],
+        &[true, true, true, false],
+    ];
+    let mut source_bits = Vec::new();
+    for (index, _) in object_ids.iter().enumerate() {
+        source_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+
+    let shifted_object_id = 0x8000_0001u32;
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = work_remaining_compact_stale_gap_pairs_with_storage(&object_ids, &source_bits);
+    live.extend_from_slice(&shifted_add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, false, false, true, true, true, false, true, true, false, true,
+        ],
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "long storage plus exact stale-gap rows must roll back before the shifted compact low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed long-storage/add/low-tail proof must leave source bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the later shifted low-tail handoff remains active cursor evidence"
+    );
+}
+
+#[test]
 fn work_remaining_long_storage_span_rolls_back_with_one_unowned_bit() {
     // A long bounded post-`W` storage span must still be exact at the bit
     // cursor. One extra bit after the repeated compact/stale-gap run is active
