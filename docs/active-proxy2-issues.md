@@ -1981,6 +1981,19 @@ Current status:
   prior_stale_gap_rewrite_rolls_back_when_compact_add_has_shifted_low_tail_bits
   -- --nocapture`. The unresolved owner search remains before the later
   compact add/update handoff, but not in the earlier stale-gap update row.
+- 2026-06-02 `P/05/01` compact-add/stale-gap neighbor audit: no packet behavior
+  changed. The private XP2 seq19 trace shows the immediate neighbor before the
+  offset-1145 compact `A/09`/low-tail `U/09` rollback is itself a compact
+  token-name `A/09` plus same-object `U/09 mask=0x17` stale-gap pair. Public
+  regression now proves that complete pair can consume its own decompiled four
+  add BOOLs plus the stale-gap update cursor exactly, but still must roll back
+  unchanged when the following compact add exposes the shifted
+  `1000_11_101101` low-tail handoff. Verified with `cargo test -q -p
+  hgbridge-proxy2
+  prior_compact_stale_gap_pair_rolls_back_before_shifted_compact_low_tail_bits
+  -- --nocapture`. The remaining owner search moves before that preceding
+  compact/stale-gap pair or to an upstream stream-boundary artifact; do not add
+  compact-add/low-tail cursor resync.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

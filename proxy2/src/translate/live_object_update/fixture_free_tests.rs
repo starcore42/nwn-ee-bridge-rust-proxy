@@ -3129,6 +3129,60 @@ fn prior_stale_gap_rewrite_rolls_back_when_compact_add_has_shifted_low_tail_bits
 }
 
 #[test]
+fn prior_compact_stale_gap_pair_rolls_back_before_shifted_compact_low_tail_bits() {
+    // Generalized from the XP2 seq19 neighbor before the offset-1145 rollback:
+    // a compact token-name `A/09` plus same-object `U/09 mask=0x17` stale-gap
+    // update can consume its own decompiled add/update bits exactly. That
+    // complete pair still must not donate, skip, or resync bits for a following
+    // shifted compact add/low-tail handoff.
+    let prior_object_id = 0x8000_1101u32;
+    let shifted_object_id = 0x8000_0001u32;
+
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut live = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        prior_object_id,
+    );
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(
+        prior_object_id,
+    ));
+    live.extend_from_slice(&shifted_add);
+    live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+
+    let mut bits = vec![true, false, true, false];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a prior compact/stale-gap pair must not commit before a shifted compact low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed compact/stale-gap/add/low-tail proof must roll the whole candidate back"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the preceding compact/stale-gap pair is not the shifted pair's bit owner"
+    );
+}
+
+#[test]
 fn door_add_visual_map_repair_is_gated_by_following_same_object_update() {
     let object_id = 0x8000_34D1u32;
     let mut live = door_direct_name_add_live_bytes_without_visual_map(object_id);
