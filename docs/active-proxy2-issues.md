@@ -2009,6 +2009,20 @@ Current status:
   -- --nocapture`. The remaining owner search moves before the repeated
   compact/stale-gap run or to an upstream stream-boundary artifact; no
   compact-add/low-tail resync is justified.
+- 2026-06-02 `P/05/01` post-`W` storage plus stale-gap run audit: no packet
+  behavior changed, but public coverage now pins the upstream storage sibling
+  from the same XP2 seq19 trace. A bounded CNW storage span after
+  `W current total` can feed a run of compact token-name `A/09` plus
+  same-object `U/09 mask=0x17` stale-gap pairs, and those pairs exact-claim
+  when their four Diamond compact add BOOLs and stale-gap update cursors are
+  present. If a following compact `A/09` plus same-object low-tail
+  `U/09 mask=0xF7` exposes the shifted `1000_11_101101` bit run, the
+  promoted-storage candidate still rolls back unchanged. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  work_remaining_storage_rolls_back_after_stale_gap_pair_run_before_shifted_low_tail
+  -- --nocapture`. The remaining owner search moves before the post-`W`
+  storage/stale-gap run or to a still-unmodeled stream-boundary artifact; no
+  compact-add/low-tail cursor resync is justified.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

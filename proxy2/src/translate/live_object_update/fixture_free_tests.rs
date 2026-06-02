@@ -661,6 +661,26 @@ fn work_remaining_compact_pairs_with_storage(object_ids: &[u32], source_bits: &[
     live
 }
 
+fn work_remaining_compact_stale_gap_pairs_with_storage(
+    object_ids: &[u32],
+    source_bits: &[bool],
+) -> Vec<u8> {
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(source_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+
+    let mut live = vec![b'W', 0x0C, 0x0E];
+    live.extend_from_slice(&storage);
+    for object_id in object_ids.iter().copied() {
+        live.extend_from_slice(&with_live_update_object_id(
+            compact_placeable_token_name_add_live_bytes(),
+            object_id,
+        ));
+        live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+    }
+    live
+}
+
 fn scale_first_door_placeable_full_update_live_bytes(object_type: u8) -> Vec<u8> {
     let mut live = vec![b'U', object_type];
     live.extend_from_slice(&0x8000_3400u32.to_le_bytes());
@@ -1212,6 +1232,74 @@ fn work_remaining_storage_rolls_back_when_later_compact_pair_is_shifted() {
     assert!(
         super::claim_payload_if_verified(&shifted_payload).is_none(),
         "the shifted post-W compact handoff remains active cursor evidence"
+    );
+}
+
+#[test]
+fn work_remaining_storage_rolls_back_after_stale_gap_pair_run_before_shifted_low_tail() {
+    // The XP2 seq19 replay reaches a post-`W` CNW storage span before a run of
+    // compact token-name `A/09` plus same-object `U/09 mask=0x17` stale-gap
+    // pairs. `W` itself is fragment-neutral; the storage span can feed those
+    // exact pairs, but it does not create a later resync point for a shifted
+    // compact add followed by `U/09 mask=0xF7`.
+    let good_pairs = [0x8000_1072u32, 0x8000_1120u32];
+    let shifted_object_id = 0x8000_0001u32;
+
+    let mut good_source_bits = Vec::new();
+    for _ in good_pairs {
+        good_source_bits.extend_from_slice(&[true, false, true, false]);
+        good_source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    let good_live =
+        work_remaining_compact_stale_gap_pairs_with_storage(&good_pairs, &good_source_bits);
+    let mut good_payload = live_object_payload_with_bits(&good_live, Vec::new());
+
+    let good_rewrite = super::rewrite_update_records_payload_if_possible(&mut good_payload)
+        .expect("post-W storage should feed exact compact/stale-gap pairs");
+    assert_eq!(good_rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(
+        good_rewrite.interleaved_fragment_bits_promoted,
+        good_source_bits.len() as u32
+    );
+    let good_claim = super::claim_payload_if_verified(&good_payload)
+        .expect("compact/stale-gap pairs after promoted W storage should exact-claim");
+    assert_eq!(good_claim.world_status_records, 1);
+    assert_eq!(good_claim.add_records, good_pairs.len() as u32);
+    assert_eq!(good_claim.update_records, good_pairs.len() as u32);
+
+    let mut shifted_source_bits = good_source_bits;
+    shifted_source_bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut shifted_live =
+        work_remaining_compact_stale_gap_pairs_with_storage(&good_pairs, &shifted_source_bits);
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+    shifted_live.extend_from_slice(&shifted_add);
+    shifted_live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+    let mut shifted_payload = live_object_payload_with_bits(&shifted_live, Vec::new());
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "post-W storage plus exact stale-gap pairs must roll back before shifted compact low-tail bits"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "failed storage/stale-gap/low-tail proof must leave bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "the shifted post-W stale-gap handoff remains active cursor evidence"
     );
 }
 
