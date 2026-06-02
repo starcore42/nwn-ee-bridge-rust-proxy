@@ -2100,6 +2100,20 @@ Current status:
   -- --nocapture` using `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge`.
   The unresolved owner search remains before that pre-`W` pair or in a
   still-unmodeled stream-boundary artifact.
+- 2026-06-02 `P/05/01` pre-`W` full-update run boundary audit: no packet
+  behavior changed. A filtered private XP2 seq19 debug replay shows a long run
+  of compact token-name `A/09` plus full `U/09 mask=0x37` placeable updates
+  before the first `W current total`; public fixture-free coverage now proves
+  that run can exact-claim with its own four compact-add BOOLs and
+  decompile-backed full-update cursors, and it can coexist with the later
+  31-byte post-`W` storage/stale-gap run. The same proven run still must roll
+  back unchanged when the later compact `A/09` plus same-object low-tail
+  `U/09 mask=0xF7` exposes the shifted `1000_11_101101` source bits. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  pre_w_full_update_run_does_not_resync_shifted_low_tail -- --nocapture`.
+  The unresolved bit-owner search moves upstream of the pre-`W` full-update run
+  or to a stream-boundary artifact; no compact-add / low-tail resync is
+  justified.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

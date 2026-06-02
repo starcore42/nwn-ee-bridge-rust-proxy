@@ -1611,6 +1611,110 @@ fn work_remaining_long_storage_span_rolls_back_after_preceding_pair_before_shift
 }
 
 #[test]
+fn pre_w_full_update_run_does_not_resync_shifted_low_tail() {
+    // Move the XP2 seq19 proof upstream across the long run before the first
+    // `W`: compact token-name `A/09` rows followed by full `U/09 mask=0x37`
+    // updates own only their decompiled add/update cursors. Even a long exact
+    // run before `W` cannot donate, skip, or resync bits for the later shifted
+    // compact add plus low-tail update handoff.
+    let pre_w_object_ids: Vec<u32> = (0..8).map(|index| 0x8000_1900u32 + index).collect();
+    let compact_prefixes: &[&[bool]] = &[
+        &[true, false, true, false],
+        &[false, false, false, true],
+        &[true, true, false, true],
+        &[false, false, true, false],
+    ];
+
+    let mut pre_w_live = Vec::new();
+    let mut pre_w_bits = Vec::new();
+    for (index, object_id) in pre_w_object_ids.iter().copied().enumerate() {
+        pre_w_live.extend_from_slice(&with_live_update_object_id(
+            compact_placeable_token_name_add_live_bytes(),
+            object_id,
+        ));
+        pre_w_live.extend_from_slice(&with_live_update_object_id(
+            ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+            object_id,
+        ));
+        pre_w_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    }
+
+    let mut pre_w_payload = live_object_payload_with_bits(&pre_w_live, pre_w_bits.clone());
+    let pre_w_rewrite = super::rewrite_update_records_payload_if_possible(&mut pre_w_payload)
+        .expect("the pre-W compact/full-update run should own its exact source cursor");
+    assert_eq!(pre_w_rewrite.update_records_rewritten, 0);
+    let pre_w_claim = super::claim_payload_if_verified(&pre_w_payload)
+        .expect("the pre-W compact/full-update run should exact-claim by itself");
+    assert_eq!(pre_w_claim.add_records, pre_w_object_ids.len() as u32);
+    assert_eq!(pre_w_claim.update_records, pre_w_object_ids.len() as u32);
+
+    let storage_object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1A00u32 + index).collect();
+    let mut storage_bits = Vec::new();
+    for (index, _) in storage_object_ids.iter().enumerate() {
+        storage_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        storage_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    let storage_live =
+        work_remaining_compact_stale_gap_pairs_with_storage(&storage_object_ids, &storage_bits);
+
+    let mut positive_live = pre_w_live.clone();
+    positive_live.extend_from_slice(&storage_live);
+    let mut positive_payload = live_object_payload_with_bits(&positive_live, pre_w_bits.clone());
+    let positive_rewrite = super::rewrite_update_records_payload_if_possible(&mut positive_payload)
+        .expect("pre-W full-update run plus long storage/stale-gap run should exact-rewrite");
+    assert_eq!(positive_rewrite.interleaved_fragment_spans_promoted, 1);
+    let positive_claim = super::claim_payload_if_verified(&positive_payload)
+        .expect("pre-W full-update run plus long promoted storage should exact-claim");
+    assert_eq!(positive_claim.world_status_records, 1);
+    assert_eq!(
+        positive_claim.add_records,
+        (pre_w_object_ids.len() + storage_object_ids.len()) as u32
+    );
+    assert_eq!(
+        positive_claim.update_records,
+        (pre_w_object_ids.len() + storage_object_ids.len()) as u32
+    );
+
+    let shifted_object_id = 0x8000_0001u32;
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut shifted_live = positive_live;
+    shifted_live.extend_from_slice(&shifted_add);
+    shifted_live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+
+    let mut bits = pre_w_bits;
+    bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&shifted_live, bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "a pre-W full-update run must not resync a later shifted low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed pre-W/full-update/storage proof must leave source bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the shifted handoff remains active even after a proven pre-W full-update run"
+    );
+}
+
+#[test]
 fn work_remaining_long_storage_span_rolls_back_with_one_unowned_bit() {
     // A long bounded post-`W` storage span must still be exact at the bit
     // cursor. One extra bit after the repeated compact/stale-gap run is active
