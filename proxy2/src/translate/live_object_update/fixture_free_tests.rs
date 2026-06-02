@@ -83,6 +83,14 @@ fn ee_creature_effect_only_update_live(rows: &[(u8, u16)]) -> Vec<u8> {
     live
 }
 
+fn ee_creature_visual_transform_update_live_bytes(object_id: u32, selector: u8) -> Vec<u8> {
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.push(selector);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live
+}
+
 fn legacy_zero_count_creature_4408_payload(
     rows: &[(u8, u16)],
     extra_before_scalar: &[u8],
@@ -1711,6 +1719,135 @@ fn pre_w_full_update_run_does_not_resync_shifted_low_tail() {
     assert!(
         super::claim_payload_if_verified(&payload).is_none(),
         "the shifted handoff remains active even after a proven pre-W full-update run"
+    );
+}
+
+#[test]
+fn leading_creature_and_door_run_does_not_resync_shifted_low_tail() {
+    // The XP2 seq19 private replay starts with two EE-shaped `U/05` creature
+    // visual-transform rows and a door add/full-update pair before the compact
+    // placeable full-update run. Those rows own no compact-placeable source
+    // bits, so they cannot donate, skip, or resync the later shifted
+    // compact-add plus low-tail update handoff.
+    let mut leading_live = ee_creature_visual_transform_update_live_bytes(0x8000_123C, 0);
+    leading_live.extend_from_slice(&ee_creature_visual_transform_update_live_bytes(
+        0x8000_1250,
+        0,
+    ));
+    let door_object_id = 0x8000_11FDu32;
+    leading_live.extend_from_slice(&door_direct_name_add_live_bytes_without_visual_map(
+        door_object_id,
+    ));
+    leading_live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::DOOR_OBJECT_TYPE),
+        door_object_id,
+    ));
+
+    let mut leading_bits = vec![true, false, true, false, false, true, true];
+    leading_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut leading_payload = live_object_payload_with_bits(&leading_live, leading_bits.clone());
+    let leading_rewrite = super::rewrite_update_records_payload_if_possible(&mut leading_payload)
+        .expect("leading creature/door run should own its exact cursor");
+    assert_eq!(
+        leading_rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+    let leading_claim = super::claim_payload_if_verified(&leading_payload)
+        .expect("leading creature/door run should exact-claim by itself");
+    assert_eq!(leading_claim.creature_visual_transform_update_records, 2);
+    assert_eq!(leading_claim.add_records, 1);
+    assert_eq!(leading_claim.update_records, 1);
+
+    let pre_w_object_ids: Vec<u32> = (0..8).map(|index| 0x8000_1900u32 + index).collect();
+    let compact_prefixes: &[&[bool]] = &[
+        &[true, false, true, false],
+        &[false, false, false, true],
+        &[true, true, false, true],
+        &[false, false, true, false],
+    ];
+
+    let mut pre_w_live = Vec::new();
+    let mut pre_w_bits = Vec::new();
+    for (index, object_id) in pre_w_object_ids.iter().copied().enumerate() {
+        pre_w_live.extend_from_slice(&with_live_update_object_id(
+            compact_placeable_token_name_add_live_bytes(),
+            object_id,
+        ));
+        pre_w_live.extend_from_slice(&with_live_update_object_id(
+            ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+            object_id,
+        ));
+        pre_w_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        pre_w_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    }
+
+    let storage_object_ids: Vec<u32> = (0..15).map(|index| 0x8000_1A00u32 + index).collect();
+    let mut storage_bits = Vec::new();
+    for (index, _) in storage_object_ids.iter().enumerate() {
+        storage_bits.extend_from_slice(compact_prefixes[index % compact_prefixes.len()]);
+        storage_bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    }
+    let storage_live =
+        work_remaining_compact_stale_gap_pairs_with_storage(&storage_object_ids, &storage_bits);
+
+    let mut positive_live = leading_live.clone();
+    positive_live.extend_from_slice(&pre_w_live);
+    positive_live.extend_from_slice(&storage_live);
+    let mut positive_bits = leading_bits.clone();
+    positive_bits.extend_from_slice(&pre_w_bits);
+    let mut positive_payload = live_object_payload_with_bits(&positive_live, positive_bits);
+    let positive_rewrite = super::rewrite_update_records_payload_if_possible(&mut positive_payload)
+        .expect("leading run plus pre-W/storage rows should exact-rewrite");
+    assert_eq!(positive_rewrite.interleaved_fragment_spans_promoted, 1);
+    let positive_claim = super::claim_payload_if_verified(&positive_payload)
+        .expect("leading run plus pre-W/storage rows should exact-claim");
+    assert_eq!(positive_claim.creature_visual_transform_update_records, 2);
+    assert_eq!(
+        positive_claim.add_records,
+        (1 + pre_w_object_ids.len() + storage_object_ids.len()) as u32
+    );
+    assert_eq!(
+        positive_claim.update_records,
+        (1 + pre_w_object_ids.len() + storage_object_ids.len()) as u32
+    );
+    assert_eq!(positive_claim.world_status_records, 1);
+
+    let shifted_object_id = 0x8000_0001u32;
+    let mut shifted_add = with_live_update_object_id(
+        compact_placeable_token_name_add_live_bytes(),
+        shifted_object_id,
+    );
+    shifted_add[6..10].copy_from_slice(&0x0001_747Bu32.to_le_bytes());
+
+    let mut shifted_live = positive_live;
+    shifted_live.extend_from_slice(&shifted_add);
+    shifted_live.extend_from_slice(&with_live_update_object_id(
+        door_placeable_low_tail_update_live_bytes(
+            super::PLACEABLE_OBJECT_TYPE,
+            &[0x7B, 0x74, 0x01, 0x00],
+        ),
+        shifted_object_id,
+    ));
+
+    let mut shifted_bits = leading_bits;
+    shifted_bits.extend_from_slice(&pre_w_bits);
+    shifted_bits.extend_from_slice(&[
+        true, false, false, false, true, true, true, false, true, true, false, true,
+    ]);
+    let mut payload = live_object_payload_with_bits(&shifted_live, shifted_bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "leading creature/door rows must not resync a later shifted low-tail handoff"
+    );
+    assert_eq!(
+        payload, original,
+        "failed leading/pre-W/storage/low-tail proof must leave source bytes and bits untouched"
+    );
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the shifted handoff remains active even after the leading creature/door rows"
     );
 }
 
