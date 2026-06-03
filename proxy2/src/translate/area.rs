@@ -9289,6 +9289,79 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn module_context_state_allows_zero_appearance_only_with_full_row_identity() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "zero_appearance_locked_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        };
+        let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let info = module_info_with_placeables(vec![placeable]);
+
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&info),
+                0,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            Some(AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: true,
+                trap_disarmable: true,
+                lockable: true,
+                locked: true,
+            }),
+            "a zero appearance WORD is treated as missing only after all placement coordinates and the direction triplet prove the static GIT row"
+        );
+
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&info),
+                0,
+                10.0,
+                20.0,
+                99.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            None,
+            "zero appearance does not relax module-state context to a two-coordinate match"
+        );
+
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&info),
+                83,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            None,
+            "only literal zero appearance is treated as missing; nonzero mismatches must not inherit GIT state"
+        );
+    }
+
+    #[test]
     fn module_context_state_requires_unique_static_resource_row() {
         let placeable = ModuleAreaPlaceable {
             tag: "locked_chest".to_string(),

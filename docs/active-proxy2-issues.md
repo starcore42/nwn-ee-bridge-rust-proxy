@@ -406,7 +406,7 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2 area::tests:: --
   --test-threads=1`, `cargo fmt --all --check`, `cargo check -q -p
   hgbridge-proxy2`, and `git diff --check`.~~
-- 2026-05-27 `P/04/01` module-backed zero-appearance static-row audit:
+- ~~2026-05-27 `P/04/01` module-backed zero-appearance static-row audit:
   extended the same GIT repair rule for legacy rows whose appearance WORD is
   zero while the decompiled static cursor and local module resource prove the
   row. Nonzero appearances must still match the GIT appearance with at least
@@ -420,14 +420,18 @@ Current status:
   EE proof under that generalized rule. Verified with `cargo test -q -p hgbridge-proxy2
   module_static_row_repair_allows_zero_appearance_only_with_all_coordinates --
   --nocapture` and `cargo test -q -p hgbridge-proxy2 area::tests:: -- --nocapture`.
-- 2026-05-27 `P/04/01` static-placeable context proof audit: corrected the HG
+  2026-06-03 re-audit added context-boundary coverage with
+  `module_context_state_allows_zero_appearance_only_with_full_row_identity`.~~
+- ~~2026-05-27 `P/04/01` static-placeable context proof audit: corrected the HG
   Docks zero-sound-count fixture expectation so absent local module proof stays
   absent. The test now supplies an explicit empty module context and proves that
   static-row context does not invent GIT trap/use/lock state when no module ARE
   resource is resolved; module-backed state remains reserved for rows uniquely
   matched to a proven local resource. Verified with `cargo test -q -p
   hgbridge-proxy2 docksofascension_rewrite_repairs_legacy_zero_sound_counts --
-  --nocapture` and `cargo test -q -p hgbridge-proxy2`.
+  --nocapture` and `cargo test -q -p hgbridge-proxy2`. 2026-06-03 re-audit
+  added `module_context_state_allows_zero_appearance_only_with_full_row_identity`
+  to prove the same strict row identity rule at the module-state handoff.~~
 - 2026-05-27 `P/04/01` transition direct-label cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompiled
   transition-row CExoString branch owns exactly the visibility BOOL and
