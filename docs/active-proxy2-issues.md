@@ -2146,7 +2146,7 @@ Current status:
   seq19 stream next to determine whether the remaining shifted handoff is
   resolved by this generalized trim fix or still needs a separate
   stream-boundary owner.~~
-- 2026-06-03 `P/05/01` clean-fragment stream assembly audit: fixed the pending
+- ~~2026-06-03 `P/05/01` clean-fragment stream assembly audit: fixed the pending
   legacy high-level fragment append path so it uses the same normalized
   read-buffer / CNW tail split that the clean-fragment detector already proves.
   The XP2 seq19 `pending-live-object-unclaimed-seq19-chunks1..6` diagnostics show
@@ -2165,8 +2165,24 @@ Current status:
   and that per-chunk CNW tails (`0xA0`, `0x80`) stay out of rebuilt read bytes.
   Verified with `cargo test -q -p hgbridge-proxy2
   zero_declared_clean_fragment_chunks_keep_each_tail_out_of_read_bytes --
-  --nocapture`. A fresh local XP2 replay is still needed before closing the
-  stream-boundary owner search.
+  --nocapture`. Fresh local XP2 Chapter 2 replay
+  `C:\nwnbridge\local-diamond-bridge-20260603-110950` confirmed the former
+  seq19 stream-boundary owner search no longer reproduces: `P/05/01` sequence
+  19 exact-claims through `GameObjUpdate_LiveObjectCombinedRecords`
+  (`old_payload_length=112`, `new_payload_length=120`), no
+  `pending-live-object-*` dumps are emitted, and the run has no quarantine
+  files.~~
+- ~~2026-06-03 client `P/1E/02 GuiQuickbar_SetButton` CNW-wrapper audit: fixed
+  the client-originated quickbar SetButton verifier so it reads the declared CNW
+  window before the slot/type bytes, validates the single no-BOOL fragment
+  cursor byte, and keeps type-specific bodies bounded to the declared read
+  window. Fresh XP2 Chapter 2 inventory-open replay previously quarantined two
+  valid client frames (`slot=5,type=0` and `slot=5,type=43`) because the old
+  parser treated the declared length byte as the slot. After the fix the same
+  run claims both as `ClientQuickbar` with `body_kind=NoParam` and
+  `body_kind=IntParam`; verified with `cargo test -q -p hgbridge-proxy2
+  client_quickbar -- --nocapture` and local replay
+  `C:\nwnbridge\local-diamond-bridge-20260603-110950`.~~
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW
