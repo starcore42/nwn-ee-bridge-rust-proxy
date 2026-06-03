@@ -1910,6 +1910,30 @@ fn work_remaining_terminal_fragment_storage_requires_cnw_shape_and_final_exact_p
 }
 
 #[test]
+fn work_remaining_terminal_storage_rejects_nonzero_unowned_bits() {
+    // `W current total` remains fragment-neutral even when the trailing bytes
+    // decode as a CNW fragment-storage span. Terminal cleanup may drop an empty
+    // all-zero storage shell, but nonzero payload bits need a following
+    // decompile-owned family reader; otherwise they are active cursor evidence.
+    let live = [b'W', 0x10, 0x20, 0xF8];
+    let mut payload = live_object_payload_with_bits(&live, Vec::new());
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "terminal nonzero storage bytes after W must block raw exact claim"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "terminal W storage cleanup must not trim nonzero unowned fragment bits"
+    );
+    assert_eq!(
+        payload, original,
+        "nonzero terminal W storage evidence must stay visible for quarantine"
+    );
+}
+
+#[test]
 fn work_remaining_fragment_span_promoter_ignores_w_inside_gui_read_buffer() {
     // The pre-loop post-W span repair may only use a top-level `W current total`
     // boundary. Diamond `sub_4589A0` / EE `sub_1407B3F30` read `G I U` as one

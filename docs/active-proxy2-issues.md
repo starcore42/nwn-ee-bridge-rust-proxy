@@ -2213,6 +2213,15 @@ Current status:
   `body_kind=IntParam`; verified with `cargo test -q -p hgbridge-proxy2
   client_quickbar -- --nocapture` and local replay
   `C:\nwnbridge\local-diamond-bridge-20260603-110950`.~~
+- ~~2026-06-03 `P/05/01` terminal `W current total` storage-bit ownership
+  audit: tightened the terminal post-`W` cleanup path so a `W current total`
+  row can remove only empty/all-zero CNW storage when no following family
+  consumes it. Diamond `sub_44F160` and EE `sub_1407B85A0` read no CNW BOOLs;
+  nonzero promoted storage bits now require a later decompile-owned family
+  reader to advance the cursor or the update rewrite rolls back unchanged.
+  Verified with `cargo test -q -p hgbridge-proxy2 work_remaining_terminal --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 work_remaining_ --
+  --nocapture`.~~
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

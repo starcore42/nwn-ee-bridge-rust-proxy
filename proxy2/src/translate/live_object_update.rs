@@ -2973,12 +2973,16 @@ pub fn rewrite_update_records_payload_if_possible(
         summary.bytes_removed = summary
             .bytes_removed
             .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
-        if promotion.bits_promoted > 0 {
-            // The promoted bits came from a bounded CNW storage byte span that
-            // was stranded after a top-level `W current total` read-buffer row.
-            // `W` remains fragment-neutral; this cursor only allows those
-            // promoted storage bits to be trimmed when no later typed record
-            // consumes them.
+        if promotion.bits_promoted > 0
+            && fragment_bits
+                .iter()
+                .skip(CNW_FRAGMENT_HEADER_BITS)
+                .all(|bit| !*bit)
+        {
+            // The promoted bits came from an empty CNW storage byte span after
+            // top-level `W current total`. `W` itself remains fragment-neutral;
+            // nonzero promoted bits need a decompile-owned family reader to
+            // advance the cursor before any terminal trim is allowed.
             terminal_promoted_fragment_trim_cursor = Some(CNW_FRAGMENT_HEADER_BITS);
         }
     }
@@ -5548,6 +5552,7 @@ fn remove_terminal_work_remaining_fragment_storage_with_final_claim(
     }
     if legal_end >= live_bytes.len()
         || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+        || !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..])
     {
         return None;
     }
@@ -5586,11 +5591,21 @@ fn terminal_work_remaining_fragment_bits_trim_allowed(
 
     if legal_end >= live_bytes.len()
         || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+        || !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..])
     {
         return false;
     }
     let live_candidate = live_bytes[..legal_end].to_vec();
     terminal_fragment_trim_exact_claim_allowed(&live_candidate, fragment_bits, bit_cursor)
+}
+
+fn terminal_work_remaining_fragment_storage_span_is_empty(span: &[u8]) -> bool {
+    bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS).is_some_and(|decoded| {
+        decoded
+            .iter()
+            .skip(CNW_FRAGMENT_HEADER_BITS)
+            .all(|bit| !*bit)
+    })
 }
 
 fn promoted_fragment_storage_trim_cursor(
