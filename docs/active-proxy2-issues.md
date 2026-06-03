@@ -394,6 +394,18 @@ Current status:
   module_static_row_repair_requires_appearance_plus_two_coordinates --
   --nocapture` and `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`.
+- ~~2026-06-03 `P/04/01` named static module-resource candidate audit: tightened
+  the named-area static-placeable resource selector so area resref, tileset,
+  tile grid, and static count are not enough to authorize a GIT-backed
+  candidate. The selector now reuses the same decompile-owned static-row cursor
+  and unique appearance/coordinate row-identity proof as the staged repair
+  writer before any module state can seed static-row repair/context. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  named_static_resource_candidate_requires_unique_row_identity_not_count --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 module_static_row_repair --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 area::tests:: --
+  --test-threads=1`, `cargo fmt --all --check`, `cargo check -q -p
+  hgbridge-proxy2`, and `git diff --check`.~~
 - 2026-05-27 `P/04/01` module-backed zero-appearance static-row audit:
   extended the same GIT repair rule for legacy rows whose appearance WORD is
   zero while the decompiled static cursor and local module resource prove the

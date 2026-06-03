@@ -3496,35 +3496,14 @@ fn repair_module_resource_static_placeable_rows(
         return Some(0);
     }
 
-    let mut remaining = (0..static_placeables.len()).collect::<Vec<_>>();
-    let mut matches = Vec::with_capacity(static_placeables.len());
-    let mut cursor = proof.static_rows_read_offset;
-    for _ in 0..proof.static_rows_count {
-        let appearance = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?;
-        let x = read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?;
-        let y = read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?;
-        let z = read_area_f32(payload, fragment_offset, cursor.checked_add(14)?)?;
-        let candidates = remaining
-            .iter()
-            .copied()
-            .filter(|index| {
-                module_static_placeable_row_matches_resource(
-                    appearance,
-                    x,
-                    y,
-                    z,
-                    static_placeables[*index],
-                )
-            })
-            .collect::<Vec<_>>();
-        if candidates.len() != 1 {
-            return Some(0);
-        }
-        let matched = candidates[0];
-        matches.push((cursor, matched));
-        remaining.retain(|index| *index != matched);
-        cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
-    }
+    let Some(matches) = unique_module_static_placeable_row_matches(
+        payload,
+        fragment_offset,
+        &proof,
+        &static_placeables,
+    ) else {
+        return Some(0);
+    };
 
     let mut candidate = payload.to_vec();
     let mut repaired = 0u32;
@@ -3615,6 +3594,51 @@ fn repair_module_resource_static_placeable_rows(
     payload.copy_from_slice(&candidate);
 
     Some(repaired)
+}
+
+fn unique_module_static_placeable_row_matches(
+    payload: &[u8],
+    fragment_offset: usize,
+    proof: &LegacyAreaSourceTailProof,
+    static_placeables: &[&ModuleAreaPlaceable],
+) -> Option<Vec<(usize, usize)>> {
+    if proof.zero_static_placeable_rows != 0
+        || static_placeables.len() != usize::from(proof.static_rows_count)
+    {
+        return None;
+    }
+
+    let mut remaining = (0..static_placeables.len()).collect::<Vec<_>>();
+    let mut matches = Vec::with_capacity(static_placeables.len());
+    let mut cursor = proof.static_rows_read_offset;
+    for _ in 0..proof.static_rows_count {
+        let appearance = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?;
+        let x = read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?;
+        let y = read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?;
+        let z = read_area_f32(payload, fragment_offset, cursor.checked_add(14)?)?;
+        let candidates = remaining
+            .iter()
+            .copied()
+            .filter(|index| {
+                module_static_placeable_row_matches_resource(
+                    appearance,
+                    x,
+                    y,
+                    z,
+                    static_placeables[*index],
+                )
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return None;
+        }
+        let matched = candidates[0];
+        matches.push((cursor, matched));
+        remaining.retain(|index| *index != matched);
+        cursor = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
+    }
+
+    Some(matches)
 }
 
 fn module_static_placeable_row_matches_resource(
@@ -4868,8 +4892,9 @@ fn module_named_static_placeable_packet_matches_resource(
         .placeables
         .iter()
         .filter(|placeable| placeable.static_object)
-        .count();
-    static_placeables == usize::from(proof.static_rows_count)
+        .collect::<Vec<_>>();
+    unique_module_static_placeable_row_matches(payload, fragment_offset, &proof, &static_placeables)
+        .is_some()
 }
 
 fn module_table_matches_observed_context(
@@ -8919,6 +8944,68 @@ mod public_static_direction_tests {
         assert_eq!(
             payload, original,
             "ambiguous module matches must not rewrite appearance, position, or direction"
+        );
+    }
+
+    #[test]
+    fn named_static_resource_candidate_requires_unique_row_identity_not_count() {
+        let (payload, fragment_offset, mut scan) =
+            static_placeable_source_row_payload(82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0);
+        scan.width = 1;
+        scan.packet_height = 1;
+        scan.inferred_height = 1;
+        scan.tile_count = 1;
+        legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("synthetic named static row should have exact source cursor proof");
+
+        let weak_count_only_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
+            tag: "wrong_count_only_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 99.0,
+            z: 88.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        }]);
+        assert!(
+            !module_named_static_placeable_packet_matches_resource(
+                &payload,
+                fragment_offset,
+                &scan,
+                "ttr01",
+                &weak_count_only_info,
+            ),
+            "same area resref/tileset/tile grid/static count must not select a module resource without the static-row identity proof"
+        );
+
+        let two_coordinate_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
+            tag: "two_coordinate_named_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 88.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        }]);
+        assert!(
+            module_named_static_placeable_packet_matches_resource(
+                &payload,
+                fragment_offset,
+                &scan,
+                "ttr01",
+                &two_coordinate_info,
+            ),
+            "appearance plus two placement coordinates may still select the unique module row for staged repair"
         );
     }
 
