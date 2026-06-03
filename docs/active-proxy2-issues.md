@@ -810,6 +810,18 @@ Current status:
   looping_effect_target_payload_owns_dword_object_id_plus_byte -- --nocapture`,
   `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`.~~
+- ~~2026-06-03 `P/05/01` visualeffects.2da duplicate-row policy audit:
+  hardened the loaded row-policy parser so duplicate numeric
+  `visualeffects.2da` rows reject the table instead of letting the later row
+  overwrite the earlier target/no-target proof. The row policy is used as
+  packet-boundary evidence for Diamond `sub_44ED20` / EE `sub_1407B1F00`
+  target-payload ownership, so ambiguous resource metadata cannot certify a
+  shifted `ObjectVisualTransformData` cursor. Verified with `cargo test -q -p
+  hgbridge-proxy2 duplicate_visualeffects_rows_are_not_boundary_proof --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 loaded_visualeffects --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 looping_effect --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2
+  creature_status_effect -- --nocapture`.~~
 - ~~2026-05-31 `P/05/01` effect-only status row-policy audit: generalized the
   legacy `U/5 mask=0x00000008` feature-0x0E-false validator and stale
   zero-count repair so they use the shared `visualeffects.2da` `Type_FD` row

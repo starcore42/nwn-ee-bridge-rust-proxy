@@ -429,6 +429,12 @@ fn parse_visual_effect_target_payload_bytes_2da(text: &str) -> Option<Vec<Option
         if rows.len() <= row {
             rows.resize(row + 1, None);
         }
+        if rows[row].is_some() {
+            // Row policy is used as packet-boundary proof. A duplicate numeric
+            // row id means the active 2DA source is ambiguous, even if both
+            // rows happen to spell the same Type_FD value.
+            return None;
+        }
         let type_fd = fields[type_fd_column + 1];
         let target_bytes = if type_fd.eq_ignore_ascii_case("P") || type_fd.eq_ignore_ascii_case("B")
         {
@@ -477,6 +483,22 @@ mod tests {
             target_payload_bytes_for_loaded_row(&rows, 21),
             None,
             "loaded tables do not silently prove absent rows"
+        );
+    }
+
+    #[test]
+    fn duplicate_visualeffects_rows_are_not_boundary_proof() {
+        let duplicate = r#"
+2DA V2.0
+
+      Label          Type_FD
+18    BeamToObject   B
+18    BeamNoTarget   ****
+"#;
+
+        assert!(
+            parse_visual_effect_target_payload_bytes_2da(duplicate).is_none(),
+            "duplicate visualeffects.2da row ids cannot prove target-payload bit boundaries"
         );
     }
 }
