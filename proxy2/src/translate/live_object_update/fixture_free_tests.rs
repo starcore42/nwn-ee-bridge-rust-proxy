@@ -1212,7 +1212,7 @@ fn work_remaining_storage_rolls_back_when_later_compact_pair_is_shifted() {
 
     let mut good_source_bits = Vec::new();
     for _ in good_pairs {
-        good_source_bits.extend_from_slice(&[false; 6]);
+        good_source_bits.extend_from_slice(&[false; 4]);
         good_source_bits.extend_from_slice(&scalar_door_placeable_update_bits());
     }
     let good_live = work_remaining_compact_pairs_with_storage(&good_pairs, &good_source_bits);
@@ -1931,6 +1931,71 @@ fn work_remaining_terminal_storage_rejects_nonzero_unowned_bits() {
         payload, original,
         "nonzero terminal W storage evidence must stay visible for quarantine"
     );
+}
+
+#[test]
+fn work_remaining_terminal_storage_after_source_update_rewrite_is_bounded_transport_tail() {
+    // The final `W current total` still owns no BOOLs. This shape is accepted
+    // only because the immediately preceding placeable update removes a
+    // decompile-unowned legacy low-tail byte suffix, reaches an exact cursor,
+    // and the W-legal candidate exact-claims after the bounded CNW storage span
+    // is dropped.
+    let mut live = door_placeable_low_tail_update_live_bytes(
+        super::PLACEABLE_OBJECT_TYPE,
+        &[0x7B, 0x74, 0x01, 0x00],
+    );
+    live.extend_from_slice(&[b'W', 0x0E, 0x0E]);
+    let storage_payload_bits = [true, false, true, true, false, true, false, true, false];
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(&storage_payload_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+    live.extend_from_slice(&storage);
+
+    let mut source_bits = scalar_door_placeable_update_bits();
+    source_bits.extend_from_slice(&storage_payload_bits);
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+
+    let summary = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("terminal W storage should trim only after the preceding update rewrite is exact");
+    assert!(summary.fragment_bits_trimmed >= storage_payload_bits.len() as u32);
+    assert!(summary.bytes_removed >= storage.len() as u32);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("terminal W storage trim must leave an exact EE stream");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
+}
+
+#[test]
+fn work_remaining_terminal_storage_after_exact_cursor_update_rewrite_is_byte_tail() {
+    // CEP-style zero-declared streams can carry bounded storage bytes after a
+    // terminal `W current total` even when the preceding source rewrite lands
+    // exactly at the end of the real fragment cursor. The storage bytes are
+    // still not W payload; they can be dropped only after the W-legal stream
+    // exact-claims with the already-consumed cursor.
+    let mut live = door_placeable_low_tail_update_live_bytes(
+        super::PLACEABLE_OBJECT_TYPE,
+        &[0x7B, 0x74, 0x01, 0x00],
+    );
+    live.extend_from_slice(&[b'W', 0x0E, 0x0E]);
+    let storage_payload_bits = [true, false, true, true, false, true, false, true, false];
+    let mut storage_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    storage_bits.extend_from_slice(&storage_payload_bits);
+    let storage = super::bits::pack_msb_valid_bits(storage_bits, super::CNW_FRAGMENT_HEADER_BITS);
+    live.extend_from_slice(&storage);
+
+    let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
+
+    let summary = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("terminal W storage bytes should drop after an exact-cursor source rewrite");
+    assert_eq!(
+        summary.fragment_bits_trimmed, 0,
+        "the exact-cursor case removes only terminal storage bytes"
+    );
+    assert!(summary.bytes_removed >= storage.len() as u32);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("byte-only terminal W storage cleanup must leave an exact EE stream");
+    assert_eq!(claim.update_records, 1);
+    assert_eq!(claim.world_status_records, 1);
 }
 
 #[test]
@@ -5562,13 +5627,14 @@ fn live_gui_character_sheet_isolated_record_must_consume_all_fragment_bits() {
 }
 
 #[test]
-fn creature_status_effect_single_target_payload_is_exact_ee_shape() {
+fn creature_status_effect_single_target_payload_requires_2da_row_policy() {
     let payload =
         creature_status_effect_4008_payload(&[(0x1234, Some(&[0x44, 0x33, 0x22, 0x80, 0x66]))]);
 
-    let claim = super::claim_payload_if_verified(&payload)
-        .expect("single target-payload status-effect row should be exact-owned");
-    assert_eq!(claim.creature_update_records, 1);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "without visualeffects.2da Type_FD proof, target-payload shape must stay unclaimed"
+    );
 }
 
 #[test]

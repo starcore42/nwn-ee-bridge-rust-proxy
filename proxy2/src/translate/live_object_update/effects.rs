@@ -17,10 +17,9 @@
 //! `sub_44ED20` both check `visualeffects.2da` `Type_FD`; `P`/`B` rows read a
 //! DWORD object id plus one BYTE at `0x1407B214A..0x1407B2165`, then EE always
 //! checks build `2001/0x0E` and reads `ObjectVisualTransformData` at
-//! `0x1407B218F..0x1407B21AE`. Until resource state exposes the client
-//! `visualeffects.2da` row type, only the exact single-entry target shape
-//! observed in Starcore5 captures is accepted; multi-entry target-payload lists
-//! remain quarantined rather than guessed.
+//! `0x1407B218F..0x1407B21AE`. Without loaded row state, target-width shapes
+//! are only ambiguity evidence for the stream scanner; they are not positive
+//! packet-boundary proof.
 
 use super::{
     CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, LEGACY_UPDATE_HEADER_BYTES, PLACEABLE_OBJECT_TYPE,
@@ -31,7 +30,7 @@ pub(super) const LOOPING_VISUAL_EFFECT_UPDATE_MASK: u32 = 0x0000_0008;
 const MAX_REASONABLE_LOOPING_EFFECT_CHANGES: u16 = 256;
 const LOOPING_EFFECT_SHORT_ENTRY_BYTES: usize = 3;
 const LOOPING_EFFECT_TARGET_PAYLOAD_BYTES: usize = 5;
-const MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: u16 = 1;
+const MAX_TARGET_PAYLOAD_AMBIGUITY_PROBE_ENTRIES_WITHOUT_2DA: u16 = 1;
 const LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES: [u8;
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN] =
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES;
@@ -45,6 +44,12 @@ pub(super) struct LoopingVisualEffectRewrite {
 struct LoopingVisualEffectList {
     insert_offsets_after_short_entries: Vec<usize>,
     already_ee_shaped: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct LoopingVisualEffectRecordEndCandidates {
+    pub proven: Vec<usize>,
+    pub ambiguous: Vec<usize>,
 }
 
 pub(super) fn rewrite_legacy_looping_visual_effect_update_for_ee(
@@ -128,7 +133,7 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
     }
     let no_target_end =
         try_get_verified_ee_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0);
-    let target_end = if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+    let target_end = if count <= MAX_TARGET_PAYLOAD_AMBIGUITY_PROBE_ENTRIES_WITHOUT_2DA {
         try_get_verified_ee_looping_visual_effect_entries_end(
             bytes,
             cursor,
@@ -144,11 +149,11 @@ pub(super) fn try_get_verified_ee_looping_visual_effect_update_record_end(
         (Some(no_target_end), Some(target_end)) if no_target_end != target_end => {
             // Without visualeffects.2da row proof, a stream boundary that can be
             // both "no target + map" and "five-byte target + map" is not owned
-            // by either decompiled branch. Exact record validation still accepts
-            // either shape when the caller has already proven the record end.
+            // by either decompiled branch.
             None
         }
-        (Some(end), _) | (_, Some(end)) => Some(end),
+        (Some(end), _) => Some(end),
+        (None, Some(_)) => None,
         (None, None) => None,
     }
 }
@@ -157,7 +162,7 @@ pub(super) fn legacy_looping_visual_effect_update_record_end_candidates(
     bytes: &[u8],
     offset: usize,
     scan_end: usize,
-) -> Option<Vec<usize>> {
+) -> Option<LoopingVisualEffectRecordEndCandidates> {
     if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end || scan_end > bytes.len() {
         return None;
     }
@@ -181,14 +186,17 @@ pub(super) fn legacy_looping_visual_effect_update_record_end_candidates(
         return legacy_looping_visual_effect_entries_end_with_rows(
             bytes, cursor, count, scan_end, &rows,
         )
-        .map(|end| vec![end]);
+        .map(|end| LoopingVisualEffectRecordEndCandidates {
+            proven: vec![end],
+            ambiguous: Vec::new(),
+        });
     }
 
-    let mut candidates = Vec::with_capacity(2);
+    let mut candidates = LoopingVisualEffectRecordEndCandidates::default();
     if let Some(end) = legacy_looping_visual_effect_entries_end(bytes, cursor, count, scan_end, 0) {
-        candidates.push(end);
+        candidates.proven.push(end);
     }
-    if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
+    if count <= MAX_TARGET_PAYLOAD_AMBIGUITY_PROBE_ENTRIES_WITHOUT_2DA {
         if let Some(end) = legacy_looping_visual_effect_entries_end(
             bytes,
             cursor,
@@ -196,13 +204,13 @@ pub(super) fn legacy_looping_visual_effect_update_record_end_candidates(
             scan_end,
             LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
         ) {
-            if !candidates.contains(&end) {
-                candidates.push(end);
+            if !candidates.proven.contains(&end) {
+                candidates.ambiguous.push(end);
             }
         }
     }
 
-    (!candidates.is_empty()).then_some(candidates)
+    (!candidates.proven.is_empty() || !candidates.ambiguous.is_empty()).then_some(candidates)
 }
 
 fn parse_looping_visual_effect_update(
@@ -249,16 +257,6 @@ fn parse_looping_visual_effect_body(
     }
     if let Some(shape) = parse_looping_visual_effect_entries(bytes, cursor, count, record_end, 0) {
         return Some(shape);
-    }
-
-    if count <= MAX_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
-        return parse_looping_visual_effect_entries(
-            bytes,
-            cursor,
-            count,
-            record_end,
-            LOOPING_EFFECT_TARGET_PAYLOAD_BYTES,
-        );
     }
 
     None
@@ -557,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn looping_effect_target_payload_owns_dword_object_id_plus_byte() {
+    fn looping_effect_target_payload_requires_loaded_row_policy() {
         let mut record = vec![
             b'U',
             CREATURE_OBJECT_TYPE,
@@ -583,18 +581,36 @@ mod tests {
         record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
 
         assert!(
-            is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
+            !is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
+            "without visualeffects.2da row proof, target-payload byte shape is not boundary proof"
+        );
+
+        let mut rows = vec![None; 0x1235];
+        rows[0x1234] = Some(LOOPING_EFFECT_TARGET_PAYLOAD_BYTES);
+        let shape = parse_looping_visual_effect_entries_with_rows(
+            &record,
+            LEGACY_UPDATE_HEADER_BYTES + 2,
+            1,
+            record.len(),
+            &rows,
+        )
+        .expect("loaded P/B visualeffects row should prove the target-payload cursor");
+        assert!(
+            shape.already_ee_shaped,
             "P/B visualeffects rows own DWORD target id plus one BYTE before the transform map"
         );
 
         let mut stale_short_target = record.clone();
         stale_short_target.drain(18..20);
         assert!(
-            !is_verified_ee_looping_visual_effect_update_record(
+            parse_looping_visual_effect_entries_with_rows(
                 &stale_short_target,
-                0,
-                stale_short_target.len()
-            ),
+                LEGACY_UPDATE_HEADER_BYTES + 2,
+                1,
+                stale_short_target.len(),
+                &rows,
+            )
+            .is_none(),
             "the old three-byte target-payload shape must not exact-claim"
         );
     }
@@ -622,8 +638,8 @@ mod tests {
         record.extend_from_slice(&LOOPING_EFFECT_IDENTITY_TRANSFORM_BYTES);
 
         assert!(
-            is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
-            "exact record validation can still own the one-target row shape"
+            !is_verified_ee_looping_visual_effect_update_record(&record, 0, record.len()),
+            "exact record validation must not own target rows without visualeffects.2da row proof"
         );
         assert_eq!(
             try_get_verified_ee_looping_visual_effect_update_record_end(&record, 0, record.len()),

@@ -2629,8 +2629,6 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
     if record_end >= live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
-        || live_bytes.get(record_end).copied() != Some(b'U')
-        || live_bytes.get(record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
         || boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
             live_bytes, offset, record_end,
         ) != Some(record_end)
@@ -2641,9 +2639,21 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
     let Some(add_object_id) = read_u32_le(live_bytes, offset + 2) else {
         return None;
     };
-    if !read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
-        object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
-    }) {
+    let has_top_level_following_update = live_bytes.get(record_end).copied() == Some(b'U')
+        && live_bytes.get(record_end + 1).copied() == Some(PLACEABLE_OBJECT_TYPE)
+        && read_u32_le(live_bytes, record_end + 2).is_some_and(|object_id| {
+            object_ids::equivalent_legacy_external_object_ids(object_id, add_object_id)
+        });
+    let has_missing_opcode_following_update =
+        boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+            live_bytes,
+            record_end,
+            live_bytes.len(),
+            PLACEABLE_OBJECT_TYPE,
+            add_object_id,
+        )
+        .is_some();
+    if !has_top_level_following_update && !has_missing_opcode_following_update {
         return None;
     }
 
@@ -2708,6 +2718,30 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         return None;
     }
 
+    if !(candidate_live.get(candidate_record_end).copied() == Some(b'U')
+        && candidate_live.get(candidate_record_end + 1).copied() == Some(PLACEABLE_OBJECT_TYPE))
+    {
+        if boundary::try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+            &candidate_live,
+            candidate_record_end,
+            candidate_live.len(),
+            PLACEABLE_OBJECT_TYPE,
+            add_object_id,
+        )
+        .is_some()
+        {
+            if candidate_live.get(candidate_record_end).copied() == Some(0)
+                && candidate_live.get(candidate_record_end + 1).copied()
+                    == Some(PLACEABLE_OBJECT_TYPE)
+            {
+                candidate_live[candidate_record_end] = b'U';
+            } else {
+                candidate_live.insert(candidate_record_end, b'U');
+            }
+        } else {
+            return None;
+        }
+    }
     if candidate_live.get(candidate_record_end).copied() != Some(b'U')
         || candidate_live.get(candidate_record_end + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
         || !read_u32_le(&candidate_live, candidate_record_end + 2).is_some_and(|object_id| {
@@ -2776,7 +2810,14 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         }
     }
 
-    None
+    // The compact add rewrite above already proved the legacy `A/9` byte
+    // shape, advanced the decompile-owned source BOOLs, emitted an exact EE add
+    // row, and found a following same-object update boundary. Some mixed
+    // streams need that add inserted before the following update's terminal
+    // low-tail cursor can be proven by the normal record pass. Let the next
+    // iteration own that update; the transaction still cannot emit unless the
+    // final exact live-object validator accepts the whole stream.
+    Some(0)
 }
 
 fn legacy_door_add_repair_claims_following_same_object_update(
@@ -3519,6 +3560,19 @@ pub fn rewrite_update_records_payload_if_possible(
         }
 
         if let Some(legal_end) = verified_work_remaining_record_legal_end(&live_bytes, offset) {
+            if legal_end < live_bytes.len()
+                && (record_end == legal_end || record_end == live_bytes.len())
+                && !boundary::looks_like_legacy_live_object_sub_message_boundary(
+                    &live_bytes,
+                    legal_end,
+                )
+                && looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+                && !work_remaining_suffix_has_following_top_level_boundary(&live_bytes, legal_end)
+            {
+                terminal_work_remaining_fragment_storage_record = Some((offset, legal_end));
+                offset = live_bytes.len();
+                continue;
+            }
             if record_end == live_bytes.len() && legal_end < record_end {
                 terminal_work_remaining_fragment_storage_record = Some((offset, legal_end));
                 offset = record_end.max(offset + 1);
@@ -5275,20 +5329,29 @@ pub fn rewrite_update_records_payload_if_possible(
         // `W current total` is fragment-neutral in Diamond `sub_44F160` and
         // EE `sub_1407B85A0`: it never donates missing BOOLs to the preceding
         // update. A final W suffix may only preserve the older family terminal
-        // trim when that rewrite has already removed or changed
-        // decompile-owned source bits; a pure insertion-only update followed
-        // by W is not enough evidence to trim arbitrary tail bits.
-        let family_trim_before_final_work_remaining = (record_rewrite.bits_removed > 0
-            || record_rewrite.bits_changed)
-            && verified_work_remaining_record_legal_end(&live_bytes, record_end)
-                == Some(live_bytes.len());
+        // trim when the immediately preceding rewrite changed source-side
+        // bits; a pure EE insertion-only update followed by W is not enough
+        // evidence to trim arbitrary tail bits. The final W can itself be
+        // followed by bounded CNW storage bytes; those bytes are removed only
+        // after the W-legal candidate exact-claims below.
+        let terminal_record_owns_source_trim =
+            record_rewrite.bits_removed > 0 || record_rewrite.bits_changed;
+        let work_remaining_after_final_record = verified_work_remaining_record_legal_end(
+            &live_bytes,
+            record_end,
+        )
+        .is_some_and(|legal_end| {
+            legal_end == live_bytes.len()
+                || (legal_end < live_bytes.len()
+                    && looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..]))
+        });
+        let family_trim_before_final_work_remaining =
+            terminal_record_owns_source_trim && work_remaining_after_final_record;
         // Pure EE insertions, such as the door/placeable state-bit widen, do
         // not prove any source tail bits are disposable. Terminal trim needs a
-        // source-bit removal/change at the same final record.
-        let terminal_record_owns_source_bit_trim =
-            record_rewrite.bits_removed > 0 || record_rewrite.bits_changed;
+        // source-side removal/change at the same final record.
         if record_rewrite.terminal_fragment_trim_allowed
-            && terminal_record_owns_source_bit_trim
+            && terminal_record_owns_source_trim
             && (record_end == live_bytes.len() || family_trim_before_final_work_remaining)
             && bit_cursor < fragment_bits.len()
         {
@@ -5330,6 +5393,15 @@ pub fn rewrite_update_records_payload_if_possible(
         }
     }
 
+    // Non-empty storage after terminal `W` is not W payload. It can be removed
+    // only when prior rewrites have already proven a cursor at least as long
+    // as the decoded storage payload; longer suffixes remain active evidence.
+    let terminal_work_remaining_non_empty_storage_allowed = changed
+        && terminal_work_remaining_has_bounded_storage_suffix_within_cursor(
+            &live_bytes,
+            terminal_work_remaining_fragment_storage_record,
+            bit_cursor,
+        );
     if bit_cursor_reliable
         && bit_cursor >= CNW_FRAGMENT_HEADER_BITS
         && bit_cursor < fragment_bits.len()
@@ -5338,13 +5410,6 @@ pub fn rewrite_update_records_payload_if_possible(
         // final cursor also proves the remaining bits are chunk-local fragment
         // storage. A prior rewrite in the stream is not enough evidence after
         // fragment-neutral GUI/delete/W records can take over the tail.
-        let terminal_work_remaining_trim_allowed =
-            terminal_work_remaining_fragment_bits_trim_allowed(
-                &live_bytes,
-                &fragment_bits,
-                bit_cursor,
-                terminal_work_remaining_fragment_storage_record,
-            );
         let terminal_promoted_fragment_trim_allowed =
             terminal_promoted_fragment_trim_cursor == Some(bit_cursor);
         let terminal_creature_update_trim_allowed = terminal_creature_update_trim_cursor
@@ -5360,6 +5425,14 @@ pub fn rewrite_update_records_payload_if_possible(
         let terminal_family_fragment_trim_allowed = terminal_family_fragment_trim_cursor
             == Some(bit_cursor)
             && terminal_fragment_trim_exact_claim_allowed(&live_bytes, &fragment_bits, bit_cursor);
+        let terminal_work_remaining_trim_allowed =
+            terminal_work_remaining_fragment_bits_trim_allowed(
+                &live_bytes,
+                &fragment_bits,
+                bit_cursor,
+                terminal_work_remaining_fragment_storage_record,
+                terminal_work_remaining_non_empty_storage_allowed,
+            );
         if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
             eprintln!(
                 "live-object terminal fragment trim gate: bit_cursor={bit_cursor} fragment_bits={} family_cursor={terminal_family_fragment_trim_cursor:?} family_allowed={terminal_family_fragment_trim_allowed} creature_cursor={terminal_creature_update_trim_cursor:?} creature_allowed={terminal_creature_update_trim_allowed} live_gui_item_cursor={terminal_live_gui_item_fragment_trim_cursor:?} live_gui_item_allowed={terminal_live_gui_item_trim_allowed} promoted_cursor={terminal_promoted_fragment_trim_cursor:?} promoted_allowed={terminal_promoted_fragment_trim_allowed} work_remaining_record={terminal_work_remaining_fragment_storage_record:?} work_remaining_allowed={terminal_work_remaining_trim_allowed}",
@@ -5386,18 +5459,29 @@ pub fn rewrite_update_records_payload_if_possible(
     }
 
     if let Some((offset, legal_end)) = terminal_work_remaining_fragment_storage_record {
+        let must_remove_terminal_storage = legal_end < live_bytes.len();
         if let Some(bytes_removed) =
             remove_terminal_work_remaining_fragment_storage_with_final_claim(
                 &mut live_bytes,
                 &fragment_bits,
                 offset,
                 legal_end,
+                terminal_work_remaining_non_empty_storage_allowed,
             )
         {
             changed = true;
             summary.bytes_removed = summary
                 .bytes_removed
                 .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+        } else if must_remove_terminal_storage {
+            trace_update_rewrite_cursor_unreliable(
+                "terminal-work-remaining-storage-unowned-after-rewrite",
+                &live_bytes,
+                offset,
+                live_bytes.len(),
+                bit_cursor,
+            );
+            return None;
         }
     }
 
@@ -5541,18 +5625,35 @@ fn work_remaining_midstream_span_should_promote_bits(
         )
 }
 
+fn work_remaining_suffix_has_following_top_level_boundary(
+    live_bytes: &[u8],
+    legal_end: usize,
+) -> bool {
+    if legal_end >= live_bytes.len() {
+        return false;
+    }
+    (legal_end + 1..live_bytes.len()).any(|following_offset| {
+        boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, following_offset)
+            && looks_like_bounded_cnw_fragment_storage_span(
+                &live_bytes[legal_end..following_offset],
+            )
+    })
+}
+
 fn remove_terminal_work_remaining_fragment_storage_with_final_claim(
     live_bytes: &mut Vec<u8>,
     fragment_bits: &[bool],
     offset: usize,
     legal_end: usize,
+    allow_non_empty_storage: bool,
 ) -> Option<usize> {
     if verified_work_remaining_record_legal_end(live_bytes, offset)? != legal_end {
         return None;
     }
     if legal_end >= live_bytes.len()
         || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
-        || !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..])
+        || (!allow_non_empty_storage
+            && !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..]))
     {
         return None;
     }
@@ -5578,6 +5679,7 @@ fn terminal_work_remaining_fragment_bits_trim_allowed(
     fragment_bits: &[bool],
     bit_cursor: usize,
     terminal_record: Option<(usize, usize)>,
+    allow_non_empty_storage: bool,
 ) -> bool {
     let Some((offset, legal_end)) = terminal_record else {
         return false;
@@ -5591,12 +5693,35 @@ fn terminal_work_remaining_fragment_bits_trim_allowed(
 
     if legal_end >= live_bytes.len()
         || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
-        || !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..])
+        || (!allow_non_empty_storage
+            && !terminal_work_remaining_fragment_storage_span_is_empty(&live_bytes[legal_end..]))
     {
         return false;
     }
     let live_candidate = live_bytes[..legal_end].to_vec();
     terminal_fragment_trim_exact_claim_allowed(&live_candidate, fragment_bits, bit_cursor)
+}
+
+fn terminal_work_remaining_has_bounded_storage_suffix_within_cursor(
+    live_bytes: &[u8],
+    terminal_record: Option<(usize, usize)>,
+    bit_cursor: usize,
+) -> bool {
+    let Some((_offset, legal_end)) = terminal_record else {
+        return false;
+    };
+    if legal_end >= live_bytes.len()
+        || !looks_like_bounded_cnw_fragment_storage_span(&live_bytes[legal_end..])
+    {
+        return false;
+    }
+    let Some(decoded) =
+        bits::decode_msb_valid_bits(&live_bytes[legal_end..], CNW_FRAGMENT_HEADER_BITS)
+    else {
+        return false;
+    };
+    let payload_bits = decoded.len().saturating_sub(CNW_FRAGMENT_HEADER_BITS);
+    payload_bits != 0 && payload_bits <= bit_cursor
 }
 
 fn terminal_work_remaining_fragment_storage_span_is_empty(span: &[u8]) -> bool {

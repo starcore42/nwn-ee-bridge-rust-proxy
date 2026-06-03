@@ -14,7 +14,7 @@ const LEGACY_CREATURE_UPDATE_C44F_MASK: u32 = 0x0000_C44F;
 const LEGACY_CREATURE_UPDATE_EFFECT_ONLY_MASK: u32 = 0x0000_0008;
 const VFX_DUR_LOWLIGHTVISION_ROW: u16 = 0x00F3;
 const CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES: usize = 5;
-const MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA: usize = 1;
+const MAX_CREATURE_STATUS_EFFECT_TARGET_AMBIGUITY_PROBE_ENTRIES_WITHOUT_2DA: usize = 1;
 const EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN: usize =
     super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
 const LEGACY_CREATURE_UPDATE_3967_ACTION0_BRIDGE_FOLLOWUP_BYTES: [u8; 2] = [0, 0];
@@ -807,22 +807,24 @@ fn try_get_ee_creature_status_effect_entries_end_without_2da(
     let no_target_end = try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
         bytes, cursor, count, scan_end, 0,
     );
-    let target_end =
-        if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
-            try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
-                bytes,
-                cursor,
-                count,
-                scan_end,
-                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
-            )
-        } else {
-            None
-        };
+    let target_end = if usize::from(count)
+        <= MAX_CREATURE_STATUS_EFFECT_TARGET_AMBIGUITY_PROBE_ENTRIES_WITHOUT_2DA
+    {
+        try_get_ee_creature_status_effect_entries_end_with_fixed_target_width(
+            bytes,
+            cursor,
+            count,
+            scan_end,
+            CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
+        )
+    } else {
+        None
+    };
 
     match (no_target_end, target_end) {
         (Some(no_target_end), Some(target_end)) if no_target_end != target_end => None,
-        (Some(end), _) | (_, Some(end)) => Some(end),
+        (Some(end), _) => Some(end),
+        (None, Some(_)) => None,
         (None, None) => None,
     }
 }
@@ -1243,30 +1245,11 @@ fn legacy_creature_status_effect_identity_map_insert_plans(
         .collect();
     }
 
-    let mut plans = Vec::new();
-    if let Some(plan) =
-        legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
-            bytes, cursor, count, record_end, 0,
-        )
-    {
-        plans.push(plan);
-    }
-    if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
-        if let Some(plan) =
-            legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
-                bytes,
-                cursor,
-                count,
-                record_end,
-                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
-            )
-        {
-            if !plans.contains(&plan) {
-                plans.push(plan);
-            }
-        }
-    }
-    plans
+    legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+        bytes, cursor, count, record_end, 0,
+    )
+    .into_iter()
+    .collect()
 }
 
 fn legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
@@ -1352,30 +1335,11 @@ fn compact_legacy_creature_status_effect_identity_map_insert_plans(
         .collect();
     }
 
-    let mut plans = Vec::new();
-    if let Some(plan) =
-        compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
-            bytes, cursor, count, record_end, 0,
-        )
-    {
-        plans.push(plan);
-    }
-    if usize::from(count) <= MAX_CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_ENTRIES_WITHOUT_2DA {
-        if let Some(plan) =
-            compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
-                bytes,
-                cursor,
-                count,
-                record_end,
-                CREATURE_STATUS_EFFECT_TARGET_PAYLOAD_BYTES,
-            )
-        {
-            if !plans.contains(&plan) {
-                plans.push(plan);
-            }
-        }
-    }
-    plans
+    compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
+        bytes, cursor, count, record_end, 0,
+    )
+    .into_iter()
+    .collect()
 }
 
 fn compact_legacy_creature_status_effect_identity_map_insert_plan_with_fixed_target_width(
@@ -4018,9 +3982,8 @@ fn simulate_ee_creature_update_status_effect_helper_cursor_without_2da(
         // EE `sub_1407B1F00` and Diamond `sub_44ED20` check the resolved
         // visualeffects.2da row before optionally reading a DWORD object id
         // plus one BYTE for `Type_FD` `P`/`B` rows. Until proxy2 has row-type
-        // state at this cursor, only a single unambiguous target-payload shape
-        // can be exact-owned. Mixed, multi-entry target, or same-row no-target
-        // versus target/map ambiguity stays unclaimed.
+        // state at this cursor, target-width byte shapes are only ambiguity
+        // evidence; they are not exact-owned by the creature reader.
         return false;
     };
     cursor.read_cursor = read_cursor;
@@ -4232,7 +4195,7 @@ mod tests {
     }
 
     #[test]
-    fn creature_status_effect_boundary_accepts_unambiguous_target_payload_without_2da() {
+    fn creature_status_effect_boundary_rejects_target_payload_without_2da() {
         let mut bytes =
             creature_4008_live_bytes_with_status_row(Some(&[0x44, 0x33, 0x22, 0x80, 0x66]));
         bytes.extend_from_slice(
@@ -4241,8 +4204,8 @@ mod tests {
 
         assert_eq!(
             try_get_ee_creature_update_4008_record_end(&bytes, 0, bytes.len()),
-            Some(bytes.len()),
-            "with no row table, a single unambiguous P/B-shaped status row may own the five-byte target payload before the map"
+            None,
+            "without visualeffects.2da row proof, target-payload shape is not boundary proof"
         );
     }
 
@@ -4261,38 +4224,26 @@ mod tests {
     }
 
     #[test]
-    fn creature_status_effect_rewrite_inserts_map_after_target_payload_cursor() {
+    fn creature_status_effect_rewrite_rejects_target_payload_without_2da() {
         let mut bytes =
             creature_4008_live_bytes_with_status_row(Some(&[0x44, 0x33, 0x22, 0x80, 0x66]));
+        let original = bytes.clone();
         let mut record_end = bytes.len();
         let fragment_bits = vec![false; 7];
 
-        let rewrite = insert_creature_update_status_effect_identity_maps_for_ee(
-            &mut bytes,
-            0,
-            &mut record_end,
-            &fragment_bits,
-            0,
-        )
-        .expect("single unambiguous target-payload row should receive the EE map after the target cursor");
-
-        assert_eq!(rewrite.entries, 1);
-        assert_eq!(
-            rewrite.bytes_inserted,
-            EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
-        );
-        assert_eq!(record_end, bytes.len());
-        assert_eq!(
-            try_get_ee_creature_update_4008_record_end(&bytes, 0, bytes.len()),
-            Some(bytes.len())
-        );
-        assert_eq!(
-            bytes.get(20..28),
-            Some(
-                super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES
-                    .as_slice()
+        assert!(
+            insert_creature_update_status_effect_identity_maps_for_ee(
+                &mut bytes,
+                0,
+                &mut record_end,
+                &fragment_bits,
+                0,
             )
+            .is_none(),
+            "target-payload map insertion requires loaded visualeffects.2da row policy"
         );
+        assert_eq!(bytes, original);
+        assert_eq!(record_end, original.len());
     }
 
     #[test]

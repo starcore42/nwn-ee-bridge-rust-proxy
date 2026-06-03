@@ -822,6 +822,50 @@ Current status:
   --nocapture`, `cargo test -q -p hgbridge-proxy2 looping_effect --
   --nocapture`, and `cargo test -q -p hgbridge-proxy2
   creature_status_effect -- --nocapture`.~~
+- ~~2026-06-03 `P/05/01` no-table visual-effect target-payload fallback audit:
+  removed the remaining single-row no-`visualeffects.2da` target-payload
+  acceptance path from looping-effect exact validation, creature status-effect
+  exact validation, and legacy status-effect identity-map insertion. Diamond
+  `sub_44ED20` and EE `sub_1407B1F00` both branch on resolved
+  `visualeffects.2da` `Type_FD`; without loaded row state, a five-byte
+  target-width shape is only negative ambiguity evidence for stream-boundary
+  scanning and cannot prove packet ownership. Loaded row policy still proves
+  `P`/`B` target width and non-`P`/`B` no-target width. Verified with
+  `cargo test -q -p hgbridge-proxy2 target_payload -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 creature_status_effect -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 looping_effect -- --nocapture`, and
+  `cargo test -q -p hgbridge-proxy2 loaded_visualeffects -- --nocapture`.~~
+- ~~2026-06-03 `P/05/01` compact placeable add/missing-opcode update proof:
+  generalized the compact token-name `A/09` same-object update proof so a
+  following legacy body that has lost its top-level `U` opcode is tested using
+  the same missing-opcode door/placeable boundary repair as the normal update
+  walker. The add rewrite must still exact-claim at the EE add cursor, and the
+  following update must either exact-prove in the compact proof or be owned by
+  the next record pass and final exact validator; typed add-marker rows no
+  longer fall through to the legacy cursor fallback. Verified with the
+  Chapter1 seq19 compact door/placeable stream plus focused
+  `local_chapter1_seq19_placeable_door_stream_rewrites_to_exact_shape` and
+  `live_object_update` tests.~~
+- ~~2026-06-03 `P/05/01` terminal `W current total` storage audit: Diamond
+  `sub_44F160` and EE `sub_1407B85A0` read exactly `W` plus current/total
+  counters and no CNW BOOLs. A bounded non-empty storage suffix after terminal
+  `W` may now be removed only as transport cleanup when prior rewrites have
+  already proven a cursor at least as long as the decoded storage payload and
+  the truncated `W`-legal stream exact-claims; this includes the exact-cursor
+  case where only terminal storage bytes remain after the preceding source
+  rewrite. A standalone or longer nonzero terminal storage suffix still
+  rejects. Verified with `work_remaining_terminal_storage`,
+  `work_remaining_terminal_storage_after_exact_cursor_update_rewrite_is_byte_tail`,
+  `local_cepv22_seq11_zero_declared_stream`, and full `live_object_update`
+  coverage.~~
+- ~~2026-06-03 `P/05/01` post-`W` compact-pair source-bit fixture audit:
+  tightened the promoted-storage regression seed so valid compact `A/09`
+  pairs use Diamond `sub_44E4A0`'s four compact add BOOLs plus the following
+  update's own scalar/state cursor bits. The previous six-zero "valid" seed
+  left one terminal low-tail bit unowned; terminal `U/09 mask=0xF7` correctly
+  rejects that extra bit. The shifted `1000_11_101101` handoff still rolls the
+  whole promoted-storage candidate back unchanged. Verified with
+  `work_remaining_storage_rolls_back_when_later_compact_pair_is_shifted`.~~
 - ~~2026-05-31 `P/05/01` effect-only status row-policy audit: generalized the
   legacy `U/5 mask=0x00000008` feature-0x0E-false validator and stale
   zero-count repair so they use the shared `visualeffects.2da` `Type_FD` row

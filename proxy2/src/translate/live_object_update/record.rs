@@ -5,17 +5,19 @@
 //! record and bit stream should be emitted?
 
 use super::{
-    CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE, EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
-    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
-    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS, EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
-    EE_UPDATE_SCALE_STATE_READ_BYTES, ITEM_OBJECT_TYPE, LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK,
-    LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES, LEGACY_UPDATE_NAME_MASK,
-    LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+    CNW_FRAGMENT_HEADER_BITS, CREATURE_OBJECT_TYPE, DOOR_OBJECT_TYPE,
+    EE_UPDATE_APPEARANCE_WORD_READ_BYTES, EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+    EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES, EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+    EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES, EE_UPDATE_SCALE_STATE_READ_BYTES, ITEM_OBJECT_TYPE,
+    LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK, LEGACY_UPDATE_APPEARANCE_MASK, LEGACY_UPDATE_HEADER_BYTES,
+    LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, door, effects, item, locstring, placeable, read_f32_le, read_u16_le,
-    read_u32_le, reader, trigger, world_status, write_u32_le, writer,
+    TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, placeable, read_f32_le,
+    read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
 };
+
+const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RecordRewrite {
@@ -447,7 +449,7 @@ pub(super) fn rewrite_update_record_for_ee(
     {
         let mut low_tail_candidate_mask = translated_mask;
         let mut low_tail_prefix_end =
-            door_placeable_update_read_end_for_current_orientation_branch(
+            verified_door_placeable_update_read_end_for_current_orientation_branch(
                 live_bytes,
                 record_offset,
                 *record_end,
@@ -500,7 +502,7 @@ pub(super) fn rewrite_update_record_for_ee(
                 low_tail_candidate_mask = without_appearance;
                 low_tail_prefix_end = Some(prefix_end);
             } else if let Some(prefix_end) =
-                door_placeable_update_read_end_for_current_orientation_branch(
+                verified_door_placeable_update_read_end_for_current_orientation_branch(
                     live_bytes,
                     record_offset,
                     *record_end,
@@ -542,29 +544,31 @@ pub(super) fn rewrite_update_record_for_ee(
                     low_tail_zero_fragment_bits_to_insert =
                         low_prefix_door_placeable_update_source_fragment_bits(without_appearance);
                 }
-            } else if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
-                live_bytes,
-                record_offset,
-                *record_end,
-                without_appearance,
-                false,
-            )
-            .filter(|prefix_end| {
-                (*prefix_end == *record_end
-                    || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
-                    || reader::legacy_low_bit_control_tail_ready(
-                        live_bytes,
-                        *prefix_end,
-                        *record_end,
-                    ))
-                    && door_placeable_update_read_end_for_orientation_branch(
-                        live_bytes,
-                        record_offset,
-                        *prefix_end,
-                        without_appearance,
-                        true,
-                    ) != Some(*prefix_end)
-            }) {
+            } else if let Some(prefix_end) =
+                verified_door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    without_appearance,
+                    false,
+                )
+                .filter(|prefix_end| {
+                    (*prefix_end == *record_end
+                        || reader::legacy_name_tail_ready(live_bytes, *prefix_end, *record_end)
+                        || reader::legacy_low_bit_control_tail_ready(
+                            live_bytes,
+                            *prefix_end,
+                            *record_end,
+                        ))
+                        && door_placeable_update_read_end_for_orientation_branch(
+                            live_bytes,
+                            record_offset,
+                            *prefix_end,
+                            without_appearance,
+                            true,
+                        ) != Some(*prefix_end)
+                })
+            {
                 // Prelude's local `U/9 0xF7` shape combines the same absent
                 // appearance bit with the bounded low 0x40/0x80 suffix, but the
                 // source fragment stream resumes at state bits where EE would
@@ -581,16 +585,18 @@ pub(super) fn rewrite_update_record_for_ee(
             && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
             && !suffix_is_fragment_neutral_work_remaining_only(live_bytes, *record_end)
         {
-            if let Some(prefix_end) = door_placeable_update_read_end_for_orientation_branch(
-                live_bytes,
-                record_offset,
-                *record_end,
-                low_tail_candidate_mask,
-                false,
-            )
-            .filter(|prefix_end| {
-                reader::legacy_low_bit_control_tail_ready(live_bytes, *prefix_end, *record_end)
-            }) {
+            if let Some(prefix_end) =
+                verified_door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    low_tail_candidate_mask,
+                    false,
+                )
+                .filter(|prefix_end| {
+                    reader::legacy_low_bit_control_tail_ready(live_bytes, *prefix_end, *record_end)
+                })
+            {
                 if door_placeable_update_read_end_for_orientation_branch(
                     live_bytes,
                     record_offset,
@@ -626,14 +632,14 @@ pub(super) fn rewrite_update_record_for_ee(
                 && prefix_end < *record_end
                 && reader::legacy_low_bit_control_tail_ready(live_bytes, prefix_end, *record_end)
                 && !suffix_is_fragment_neutral_work_remaining_only(live_bytes, *record_end)
-                && door_placeable_update_read_end_for_orientation_branch(
+                && verified_door_placeable_update_read_end_for_orientation_branch(
                     live_bytes,
                     record_offset,
                     prefix_end,
                     low_tail_candidate_mask,
                     false,
                 ) == Some(prefix_end)
-                && door_placeable_update_read_end_for_orientation_branch(
+                && verified_door_placeable_update_read_end_for_orientation_branch(
                     live_bytes,
                     record_offset,
                     prefix_end,
@@ -679,20 +685,21 @@ pub(super) fn rewrite_update_record_for_ee(
                     & !translated_mask
                     & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK)
                     .count_ones() as usize;
-                let scalar_prefix_proven = door_placeable_update_read_end_for_orientation_branch(
-                    live_bytes,
-                    record_offset,
-                    prefix_end,
-                    translated_mask,
-                    false,
-                ) == Some(prefix_end)
-                    && door_placeable_update_read_end_for_orientation_branch(
+                let scalar_prefix_proven =
+                    verified_door_placeable_update_read_end_for_orientation_branch(
                         live_bytes,
                         record_offset,
                         prefix_end,
                         translated_mask,
-                        true,
-                    ) != Some(prefix_end);
+                        false,
+                    ) == Some(prefix_end)
+                        && verified_door_placeable_update_read_end_for_orientation_branch(
+                            live_bytes,
+                            record_offset,
+                            prefix_end,
+                            translated_mask,
+                            true,
+                        ) != Some(prefix_end);
                 let low_tail_suffix_proven =
                     reader::legacy_low_bit_control_tail_ready(live_bytes, prefix_end, *record_end);
                 let missing_scalar_bits_at_low_tail = low_tail_suffix_proven
@@ -794,6 +801,61 @@ pub(super) fn rewrite_update_record_for_ee(
             }
             fragment_source_mask = translated_mask;
             orientation_fragment_rewrite = OrientationFragmentRewrite::ForceScalar;
+        }
+    }
+    if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        && raw_mask == translated_mask
+        && can_translate_read_buffer
+        && inline_name_drop_begin.is_none()
+        && byte_gap_drop_range.is_none()
+        && update_record_owns_fragment_bits(object_type, translated_mask)
+        && *record_end < live_bytes.len()
+        && boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, *record_end)
+    {
+        let prefix_end = match orientation_fragment_rewrite {
+            OrientationFragmentRewrite::ForceScalar
+            | OrientationFragmentRewrite::InsertLegacyByteScalarPad
+            | OrientationFragmentRewrite::InsertScalar(_) => {
+                verified_door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    translated_mask,
+                    false,
+                )
+            }
+            OrientationFragmentRewrite::ForceVector => {
+                verified_door_placeable_update_read_end_for_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    translated_mask,
+                    true,
+                )
+            }
+            OrientationFragmentRewrite::PreserveExisting => {
+                verified_door_placeable_update_read_end_for_current_orientation_branch(
+                    live_bytes,
+                    record_offset,
+                    *record_end,
+                    translated_mask,
+                    bits,
+                    *bit_cursor,
+                )
+            }
+        };
+        if let Some(prefix_end) = prefix_end.filter(|prefix_end| {
+            door_placeable_update_interleaved_fragment_storage_suffix_ready(
+                live_bytes,
+                *prefix_end,
+                *record_end,
+            )
+        }) {
+            // Diamond `sub_467AE0` and EE `sub_14079C050` both stop this
+            // generic door/placeable update at the typed prefix proven above.
+            // A bounded CNW fragment-storage span before the next top-level
+            // live-object boundary is transport storage, not scale/state data.
+            inline_name_drop_begin = Some(prefix_end);
         }
     }
 
@@ -1767,6 +1829,25 @@ fn suffix_is_fragment_neutral_work_remaining_only(bytes: &[u8], mut offset: usiz
         offset = offset.saturating_add(3);
     }
     true
+}
+
+fn door_placeable_update_interleaved_fragment_storage_suffix_ready(
+    bytes: &[u8],
+    prefix_end: usize,
+    record_end: usize,
+) -> bool {
+    if prefix_end >= record_end || record_end > bytes.len() {
+        return false;
+    }
+    let span = &bytes[prefix_end..record_end];
+    if span.len() > MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES
+        || reader::legacy_name_tail_ready(bytes, prefix_end, record_end)
+        || reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
+    {
+        return false;
+    }
+    bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS)
+        .is_some_and(|decoded| decoded.len() > CNW_FRAGMENT_HEADER_BITS)
 }
 
 fn first_msb_bits(bytes: &[u8], bit_count: usize) -> Option<Vec<bool>> {

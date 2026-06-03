@@ -825,19 +825,24 @@ fn try_get_looping_visual_effect_update_record_end_for_transport(
     let candidates = effects::legacy_looping_visual_effect_update_record_end_candidates(
         bytes, offset, scan_end,
     )?;
-    let legacy_candidates = candidates;
-    let mut candidates = legacy_candidates.clone();
+    let legacy_proven_candidates = candidates.proven;
+    let legacy_ambiguous_candidates = candidates.ambiguous;
+    let mut candidates = legacy_proven_candidates.clone();
     if let Some(end) = effects::try_get_verified_ee_looping_visual_effect_update_record_end(
         bytes, offset, scan_end,
     ) {
-        let shorter_legacy_boundary = legacy_candidates.iter().any(|legacy_end| {
+        let shorter_legacy_boundary = legacy_proven_candidates.iter().any(|legacy_end| {
             *legacy_end < end && record_end_lands_on_boundary(bytes, *legacy_end, scan_end)
         });
         if !shorter_legacy_boundary && !candidates.contains(&end) {
             candidates.push(end);
         }
     }
-    let floor = candidates.iter().copied().min()?;
+    let floor = candidates
+        .iter()
+        .chain(legacy_ambiguous_candidates.iter())
+        .copied()
+        .min()?;
     let mut proven_end = None;
     for candidate in candidates {
         if !record_end_lands_on_boundary(bytes, candidate, scan_end) {
@@ -848,6 +853,12 @@ fn try_get_looping_visual_effect_update_record_end_for_transport(
             Some(existing) => Some(existing),
             None => Some(candidate),
         };
+    }
+    if legacy_ambiguous_candidates
+        .iter()
+        .any(|candidate| record_end_lands_on_boundary(bytes, *candidate, scan_end))
+    {
+        return Some(TransportBoundary::Ambiguous);
     }
     proven_end
         .map(TransportBoundary::Proven)
@@ -1048,8 +1059,10 @@ fn try_get_ee_creature_update_0008_record_end_for_transport(
     if let Some(legacy_candidates) =
         effects::legacy_looping_visual_effect_update_record_end_candidates(bytes, offset, scan_end)
     {
-        if legacy_candidates.iter().any(|legacy_end| {
+        if legacy_candidates.proven.iter().any(|legacy_end| {
             *legacy_end < record_end && record_end_lands_on_boundary(bytes, *legacy_end, scan_end)
+        }) || legacy_candidates.ambiguous.iter().any(|legacy_end| {
+            *legacy_end <= record_end && record_end_lands_on_boundary(bytes, *legacy_end, scan_end)
         }) {
             // Without visualeffects.2da row proof, a single status-effect row
             // can parse as either legacy no-target `A/D + WORD` followed by a
@@ -1948,7 +1961,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_target_payload_boundary_uses_target_width_when_unambiguous() {
+    fn effect_target_payload_boundary_rejects_target_width_without_row_policy() {
         let mut live = Vec::new();
         live.extend_from_slice(&[b'U', 0x05]);
         live.extend_from_slice(&0x8000_000Fu32.to_le_bytes());
@@ -1965,10 +1978,14 @@ mod tests {
             !looks_like_legacy_live_object_sub_message_boundary(&live, short_row_end),
             "the target payload prefix does not prove a no-target row boundary"
         );
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, target_row_end),
+            "the five-byte target payload is followed by a real boundary but still lacks Type_FD proof"
+        );
         assert_eq!(
             find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
-            target_row_end,
-            "a single target-payload row may claim its five-byte width only when no shorter boundary also fits"
+            live.len(),
+            "without visualeffects.2da row proof, target-payload width is ambiguity evidence only"
         );
     }
 
