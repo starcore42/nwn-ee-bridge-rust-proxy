@@ -394,6 +394,15 @@ Current status:
   module_static_row_repair_requires_appearance_plus_two_coordinates --
   --nocapture` and `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`.
+- ~~2026-06-03 `P/04/01` malformed module static-geometry proof audit:
+  tightened module-backed static-placeable repair/context so a local GIT row can
+  only serve as packet proof when its replacement coordinates and bearing stay
+  inside the same decompiled static-row value domain accepted by the source and
+  EE row validators. Appearance plus two coordinates still proves the intended
+  generalized repair, but malformed finite resource geometry no longer poisons
+  the packet cursor proof or seeds later trap/use/lock state context. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  malformed_module_static_geometry_is_not_resource_proof -- --nocapture`.~~
 - ~~2026-06-03 `P/04/01` named static module-resource candidate audit: tightened
   the named-area static-placeable resource selector so area resref, tileset,
   tile grid, and static count are not enough to authorize a GIT-backed

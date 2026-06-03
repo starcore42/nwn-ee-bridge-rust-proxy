@@ -138,6 +138,7 @@ const GFF_TYPE_CEXO_LOCSTRING: u32 = 12;
 const GFF_TYPE_LIST: u32 = 15;
 const AREA_SOUND_X_OFFSET: usize = 40;
 const AREA_SOUND_Y_OFFSET: usize = 44;
+const MAX_STATIC_PLACEABLE_COMPONENT_ABS: f32 = 100_000.0;
 const AREA_SOUND_Z_OFFSET: usize = 48;
 const AREA_SOUND_RESREF_COUNT_OFFSET: usize = 52;
 const AREA_SOUND_BASE_BYTES: usize = 54;
@@ -3120,6 +3121,7 @@ fn module_static_placeable_context_state(
         .iter()
         .filter(|placeable| {
             if !placeable.static_object
+                || !module_static_placeable_resource_row_safe(placeable)
                 || !module_static_placeable_row_matches_resource(appearance, x, y, z, placeable)
             {
                 return false;
@@ -3376,7 +3378,7 @@ fn area_static_placeable_source_row_shape_valid(
         else {
             return false;
         };
-        if !value.is_finite() || value.abs() > 100_000.0 {
+        if !value.is_finite() || value.abs() > MAX_STATIC_PLACEABLE_COMPONENT_ABS {
             return false;
         }
     }
@@ -3481,7 +3483,9 @@ fn repair_module_resource_static_placeable_rows(
     let static_placeables = info
         .placeables
         .iter()
-        .filter(|placeable| placeable.static_object)
+        .filter(|placeable| {
+            placeable.static_object && module_static_placeable_resource_row_safe(placeable)
+        })
         .collect::<Vec<_>>();
     let proof = legacy_area_source_tail_exact_read_proof(payload, fragment_offset, scan)?;
     if proof.zero_static_placeable_rows != 0 {
@@ -3670,6 +3674,21 @@ fn module_static_placeable_row_matches_resource(
     appearance == 0 && component_matches.into_iter().all(|matches| matches)
 }
 
+fn module_static_placeable_resource_row_safe(placeable: &ModuleAreaPlaceable) -> bool {
+    // Local GIT rows are evidence for repairing a packet row only when their
+    // replacement values still live inside the same decompiled static-row value
+    // domain that the packet proof accepts. Otherwise malformed module data can
+    // turn an appearance/two-coordinate match into a failed cursor rewrite or a
+    // false trap/use/lock state handoff.
+    [placeable.x, placeable.y, placeable.z, placeable.bearing]
+        .into_iter()
+        .all(f32::is_finite)
+        && [placeable.x, placeable.y, placeable.z]
+            .into_iter()
+            .all(|value| value.abs() <= MAX_STATIC_PLACEABLE_COMPONENT_ABS)
+        && static_placeable_direction_from_bearing(placeable.bearing).is_some()
+}
+
 fn area_float_close(actual: f32, expected: f32, tolerance: f32) -> bool {
     (actual - expected).abs() <= tolerance
 }
@@ -3688,9 +3707,9 @@ fn normalize_static_placeable_direction_components(
     if !dir_x.is_finite()
         || !dir_y.is_finite()
         || !dir_z.is_finite()
-        || dir_x.abs() > 100_000.0
-        || dir_y.abs() > 100_000.0
-        || dir_z.abs() > 100_000.0
+        || dir_x.abs() > MAX_STATIC_PLACEABLE_COMPONENT_ABS
+        || dir_y.abs() > MAX_STATIC_PLACEABLE_COMPONENT_ABS
+        || dir_z.abs() > MAX_STATIC_PLACEABLE_COMPONENT_ABS
     {
         return None;
     }
@@ -8890,7 +8909,7 @@ mod public_static_direction_tests {
     }
 
     #[test]
-    fn module_static_row_repair_rejects_nonfinite_bearing_without_partial_write() {
+    fn module_static_row_repair_ignores_nonfinite_bearing_without_partial_write() {
         let placeables = vec![
             ModuleAreaPlaceable {
                 tag: "valid_bearing_chest".to_string(),
@@ -8937,12 +8956,12 @@ mod public_static_direction_tests {
                 &scan,
                 &info,
             ),
-            None,
-            "one module row without a finite bearing must reject the whole staged static repair"
+            Some(0),
+            "a module row without finite bearing is not resource proof, but it must not poison the packet cursor proof"
         );
         assert_eq!(
             payload, original,
-            "rejected module static-row repair must not partially rewrite earlier rows"
+            "unsafe module static-row repair candidates must not partially rewrite earlier rows"
         );
     }
 
@@ -9277,6 +9296,63 @@ mod public_static_direction_tests {
         assert_eq!(
             wrong_appearance_payload, wrong_original,
             "nonzero appearance mismatches must not be repaired from coordinates alone"
+        );
+    }
+
+    #[test]
+    fn malformed_module_static_geometry_is_not_resource_proof() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "bad_static_geometry_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: MAX_STATIC_PLACEABLE_COMPONENT_ABS + 1.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        };
+        let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let info = module_info_with_placeables(vec![placeable]);
+
+        let (mut payload, fragment_offset, scan) =
+            static_placeable_source_row_payload(82, 10.0, 20.0, 0.0, 0.0, 1.0, 0.0);
+        legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("packet row should still have exact decompiled static cursor proof");
+        let original = payload.clone();
+
+        let repairs = repair_module_resource_static_placeable_rows(
+            &mut payload,
+            fragment_offset,
+            &scan,
+            &info,
+        )
+        .expect("malformed resource row should be ignored without poisoning packet proof");
+        assert_eq!(
+            repairs, 0,
+            "a GIT row outside the static-row value domain must not authorize repair"
+        );
+        assert_eq!(
+            payload, original,
+            "bad resource geometry must not rewrite appearance, position, or direction bytes"
+        );
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&info),
+                82,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            None,
+            "unsafe resource geometry must not seed later trap/use/lock state context"
         );
     }
 
