@@ -6704,6 +6704,160 @@ mod public_static_direction_tests {
         }
     }
 
+    fn module_area_info(
+        resref: &str,
+        width: u32,
+        height: u32,
+        tileset: &str,
+    ) -> ModuleAreaResourceInfo {
+        ModuleAreaResourceInfo {
+            resref: resref.to_string(),
+            name: resref.to_string(),
+            width,
+            height,
+            tileset: tileset.to_string(),
+            tiles: Vec::new(),
+            map_notes: Vec::new(),
+            sounds: Vec::new(),
+            placeables: Vec::new(),
+        }
+    }
+
+    fn no_name_area_payload_with_fragmented_resref(
+        fragments: &[&str],
+        tileset: &str,
+    ) -> (Vec<u8>, usize) {
+        let mut payload = vec![HIGH_LEVEL_ENVELOPE, AREA_MAJOR, AREA_CLIENT_AREA_MINOR];
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+        payload.resize(LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET, 0);
+        push_u32(&mut payload, 0x8000_0042);
+
+        let mut area_resref = [0u8; CRESREF_TEXT_BYTES];
+        let mut cursor = 0usize;
+        for fragment in fragments {
+            let bytes = fragment.as_bytes();
+            assert!(cursor + bytes.len() <= CRESREF_TEXT_BYTES);
+            area_resref[cursor..cursor + bytes.len()].copy_from_slice(bytes);
+            cursor += bytes.len().saturating_add(1);
+        }
+        payload.extend_from_slice(&area_resref);
+
+        pad_to_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        push_u32(&mut payload, 0xFFFF_FFFF);
+        let name_end = AREA_NAME_READ_OFFSET + DIAMOND_NO_AREA_NAME_BYTES;
+
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 0);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        push_u32(&mut payload, 0);
+        pad_to_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_fixed_resref(&mut payload, tileset);
+
+        let read_size = payload.len() - HIGH_LEVEL_HEADER_BYTES;
+        write_u32_le(
+            &mut payload,
+            HIGH_LEVEL_HEADER_BYTES,
+            (HIGH_LEVEL_HEADER_BYTES + read_size) as u32,
+        )
+        .expect("declared read size should fit in the synthetic no-name area payload");
+        let fragment_offset = HIGH_LEVEL_HEADER_BYTES + read_size;
+        let fragment = encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+                - CNW_FRAGMENT_HEADER_BITS
+        ])
+        .expect("legacy Area_ClientArea pre-tile bits should encode");
+        payload.extend_from_slice(&fragment);
+
+        (payload, fragment_offset)
+    }
+
+    #[test]
+    fn fragmented_no_name_area_resource_requires_unique_resref_tileset_match() {
+        let (payload, fragment_offset) =
+            no_name_area_payload_with_fragmented_resref(&["a08_bar", "ks"], "tin01");
+        let layout = area_static_layout(&payload, fragment_offset)
+            .expect("synthetic no-name area should expose a static layout");
+        assert_eq!(
+            layout.area_name_encoding,
+            AreaNameEncoding::DiamondNoAreaName
+        );
+        assert_eq!(
+            compact_packet_area_resref_fragments(&payload, fragment_offset)
+                .expect("packet area resref should expose compact fragments"),
+            vec!["a08_bar".to_string(), "ks".to_string()]
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.width_read_offset),
+            Some(0)
+        );
+        assert_eq!(
+            read_area_u32(&payload, fragment_offset, layout.height_read_offset),
+            Some(0)
+        );
+
+        let mut one_match = ModuleAreaResourceTable {
+            module_name: None,
+            module_resref: None,
+            area_order: Vec::new(),
+            areas: vec![
+                module_area_info("a08_barracks", 5, 3, "tin01"),
+                module_area_info("a08_caves", 4, 4, "tin01"),
+            ],
+        };
+        let info = unique_no_name_area_resource_for_fragmented_packet_resref(
+            &payload,
+            fragment_offset,
+            &layout,
+            &one_match,
+            Some(&["a08_bar".to_string(), "ks".to_string()]),
+        )
+        .expect("one fragmented resref plus tileset match may identify the module ARE");
+        assert_eq!(info.resref, "a08_barracks");
+
+        one_match
+            .areas
+            .push(module_area_info("a08_barracks2", 6, 3, "tin01"));
+        assert!(
+            unique_no_name_area_resource_for_fragmented_packet_resref(
+                &payload,
+                fragment_offset,
+                &layout,
+                &one_match,
+                Some(&["a08_bar".to_string(), "ks".to_string()]),
+            )
+            .is_none(),
+            "zero-dimension fragmented packets must not select a module ARE when more than one local resource has the same resref fragments and tileset"
+        );
+
+        let wrong_tileset = ModuleAreaResourceTable {
+            module_name: None,
+            module_resref: None,
+            area_order: Vec::new(),
+            areas: vec![module_area_info("a08_barracks", 5, 3, "tcn01")],
+        };
+        assert!(
+            unique_no_name_area_resource_for_fragmented_packet_resref(
+                &payload,
+                fragment_offset,
+                &layout,
+                &wrong_tileset,
+                Some(&["a08_bar".to_string(), "ks".to_string()]),
+            )
+            .is_none(),
+            "packet-local tileset is part of the decompile-owned area resource proof"
+        );
+    }
+
     fn static_placeable_source_row_payload(
         appearance: u16,
         x: f32,

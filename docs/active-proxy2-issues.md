@@ -403,6 +403,16 @@ Current status:
   the packet cursor proof or seeds later trap/use/lock state context. Verified
   with `cargo test -q -p hgbridge-proxy2
   malformed_module_static_geometry_is_not_resource_proof -- --nocapture`.~~
+- ~~2026-06-03 `P/04/01` fragmented no-name area resource ambiguity audit: no
+  packet behavior changed, but public fixture-free coverage now pins the
+  resource selector used by zero-dimension no-name area packets whose static
+  CResRef bytes are split into multiple ASCII fragments. The packet-local
+  tileset and fragmented resref may identify one module ARE, but duplicate
+  matching ARE rows or a tileset mismatch stay unowned so module-backed tile and
+  static-placeable repair cannot become a wildcard resource guess. Verified
+  with `cargo test -q -p hgbridge-proxy2
+  fragmented_no_name_area_resource_requires_unique_resref_tileset_match --
+  --nocapture`.~~
 - ~~2026-06-03 `P/04/01` named static module-resource candidate audit: tightened
   the named-area static-placeable resource selector so area resref, tileset,
   tile grid, and static count are not enough to authorize a GIT-backed
