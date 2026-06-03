@@ -1561,6 +1561,20 @@ Current status:
   Verified with `cargo test -q -p hgbridge-proxy2
   zero_mask_looking_creature_selector_storage_waits_for_following_boundary --
   --nocapture` and the filtered private XP2 debug replay.
+- ~~2026-06-04 `P/05/01` creature `U/5 0x47` action-4 zero-followup cursor
+  audit: no packet behavior changed, but public fixture-free coverage now pins
+  the existing Diamond/EE movement-followup cursor rule used by local XP2 replay
+  traces. Diamond/EE read position, scalar/vector orientation, optional target,
+  action scalar/code, action-state byte, then the action follow-up count; action
+  code 4 with zero follow-up count may carry one implicit 2D point only when the
+  remaining read buffer still includes that point plus the full `0x0040` state
+  tail, and the sibling no-point form remains exact when the state tail begins
+  immediately. The exact validator rejects a truncated implicit-point/state-tail
+  shape and restores the fragment cursor. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-creature-0047 cargo test -q -p hgbridge-proxy2 creature_update_0047_action4 -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 creature_update_mask_0047 -- --nocapture`,
+  and `cargo test -q -p hgbridge-proxy2 live_object_update --
+  --test-threads=1`.~~
 - 2026-06-01 `P/05/01` active-property tail and short-strref state audit:
   no packet behavior changed, but the generalized handoff proof now covers the
   exact leading `A/10` short-strref fragment values seen in the CEP v2.3

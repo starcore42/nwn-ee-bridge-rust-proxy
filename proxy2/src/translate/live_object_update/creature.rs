@@ -4015,6 +4015,44 @@ mod tests {
         bytes
     }
 
+    fn creature_update_0047_action4_zero_followup_live_bytes(
+        include_implicit_point: bool,
+    ) -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_0047u32.to_le_bytes());
+        bytes.extend_from_slice(&0x0DA1u16.to_le_bytes()); // position X low 16 bits.
+        bytes.extend_from_slice(&0x0F8Bu16.to_le_bytes()); // position Y low 16 bits.
+        bytes.extend_from_slice(&0x0FD1u16.to_le_bytes()); // position Z low 16 bits.
+        bytes.push(0x6F); // scalar orientation low 8 bits.
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // action scalar.
+        bytes.extend_from_slice(&4u16.to_le_bytes()); // movement action code.
+        bytes.push(1); // action state byte.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // zero follow-up count.
+        if include_implicit_point {
+            bytes.extend_from_slice(&0x0D9Au16.to_le_bytes());
+            bytes.extend_from_slice(&0x0E0Eu16.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // 0x0040 branch first field.
+        bytes.push(1); // 0x0040 branch mode without optional object id.
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.push(1);
+        bytes
+    }
+
+    fn creature_update_0047_action4_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            false, false, // position Z high bits.
+            false, // scalar orientation branch.
+            false, false, false, false, // scalar orientation residual bits.
+            false, // no orientation target object.
+            false, // no post-state extra float.
+            false, // 0x0040 state BOOL.
+        ]);
+        bits
+    }
+
     #[test]
     fn loaded_visualeffects_rows_drive_creature_status_target_payload_width() {
         let mut rows = vec![None; 0x1235];
@@ -4159,6 +4197,65 @@ mod tests {
             "effect-only count repair must not erase a target-payload row"
         );
         assert_eq!(read_u16_le(&bytes, 10), Some(0));
+    }
+
+    #[test]
+    fn creature_update_0047_action4_zero_followup_consumes_optional_point_before_state_tail() {
+        let bits = creature_update_0047_action4_fragment_bits();
+        let mut with_point = creature_update_0047_action4_zero_followup_live_bytes(true);
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &with_point,
+                0,
+                with_point.len(),
+                &bits,
+                &mut bit_cursor,
+            ),
+            "action-4 zero-followup records may own one implicit 2D point before the 0x0040 state tail"
+        );
+        assert_eq!(
+            bit_cursor,
+            bits.len(),
+            "the record owns only position/orientation/target, extra-float, and state BOOLs"
+        );
+
+        with_point.truncate(with_point.len() - 2);
+        let mut truncated_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &with_point,
+                0,
+                with_point.len(),
+                &bits,
+                &mut truncated_cursor,
+            ),
+            "the implicit point is accepted only when the remaining bytes still include the full 0x0040 state tail"
+        );
+        assert_eq!(
+            truncated_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+            "failed 0x47 cursor proof must restore the fragment cursor"
+        );
+    }
+
+    #[test]
+    fn creature_update_0047_action4_zero_followup_does_not_require_implicit_point() {
+        let bytes = creature_update_0047_action4_zero_followup_live_bytes(false);
+        let bits = creature_update_0047_action4_fragment_bits();
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ),
+            "zero follow-up count remains valid without the optional implicit point when the 0x0040 tail begins immediately"
+        );
+        assert_eq!(bit_cursor, bits.len());
     }
 
     #[test]
