@@ -105,11 +105,12 @@
 //! broader input-family shape.
 //! - The old in-process bridge had to translate a second click on an already
 //!   opened transition door from `Input_ChangeDoorState(close)` into a
-//!   server-owned transition action. When the verified live-object registry
-//!   proves a nearby transition-named trigger/placeable, the proxy emits the
-//!   exact `Input_WalkToWaypoint` shape above. When the door is verified but no
-//!   transition anchor has been observed on the wire, the proxy still emits the
-//!   exact walk-to-door shape using the verified door position and current area.
+//!   server-owned transition action. The proxy emits the exact
+//!   `Input_WalkToWaypoint` shape above only when the client recently opened
+//!   the same verified door and the wire-derived state has both the current
+//!   area OBJECTID and the door position. It deliberately does not classify
+//!   nearby placeables/triggers by display name; the legacy server remains
+//!   authoritative for whether walking to that door fires a transition.
 //!   The EE server decompile shows `Input_ChangeDoorState(close)` only queues
 //!   `AddCloseDoorAction`; `HandlePlayerToServerInputWalkToWaypoint` owns the
 //!   movement/transition path. The legacy server remains authoritative: the
@@ -621,52 +622,6 @@ fn claim_or_rewrite_transition_door_close(
         );
         return None;
     };
-    let Some(anchor) = state
-        .objects
-        .nearby_transition_anchor_for_door(door.door_id)
-    else {
-        let rewritten = build_transition_door_walk_payload(
-            area_id,
-            door.door_id,
-            door_position.x,
-            door_position.y,
-            door_position.z,
-        )?;
-        let parsed = parse_walk_to_waypoint(&rewritten)?;
-        *payload = rewritten;
-        state.client_input.recent_open_door_id = None;
-        state.client_input.recent_open_at = None;
-        state.client_input.transition_door_close_rewrites = state
-            .client_input
-            .transition_door_close_rewrites
-            .saturating_add(1);
-        tracing::info!(
-            door_id = format_args!("0x{:08X}", door.door_id),
-            requested_state = format_args!("0x{:04X}", door.state),
-            area_id = format_args!("0x{:08X}", area_id),
-            x = door_position.x,
-            y = door_position.y,
-            z = door_position.z,
-            door_active = door_object.active,
-            door_name = door_object.latest_name.as_deref().unwrap_or(""),
-            door_orientation_tenths = ?door_object
-                .orientation
-                .map(|orientation| orientation.scalar_tenths_degrees),
-            reason = "no-nearby-transition-anchor-door-position-walk",
-            known_objects = state.objects.known.len(),
-            "client Input_ChangeDoorState transition-door close rewritten to Input_WalkToWaypoint"
-        );
-        return Some(ClientInputClaimSummary {
-            packet_name: "Input_WalkToWaypoint",
-            kind: ClientInputKind::WalkToWaypoint,
-            declared: WALK_DECLARED_BYTES,
-            fragment_bytes: ONE_FRAGMENT_BYTE,
-            primary_object_id: parsed.area_id,
-            rewritten_self_object_id: false,
-            rewritten_transition_door_close: true,
-        });
-    };
-
     let rewritten = build_transition_door_walk_payload(
         area_id,
         door.door_id,
@@ -688,15 +643,13 @@ fn claim_or_rewrite_transition_door_close(
         area_id = format_args!("0x{:08X}", area_id),
         x = door_position.x,
         y = door_position.y,
-        z = if door_position.z == 0.0 {
-            0.002
-        } else {
-            door_position.z
-        },
-        anchor_id = format_args!("0x{:08X}", anchor.object_id),
-        anchor_type = anchor.object_type,
-        anchor_name = anchor.name,
-        anchor_distance = anchor.distance,
+        z = door_position.z,
+        door_active = door_object.active,
+        door_name = door_object.latest_name.as_deref().unwrap_or(""),
+        door_orientation_tenths = ?door_object
+            .orientation
+            .map(|orientation| orientation.scalar_tenths_degrees),
+        known_objects = state.objects.known.len(),
         "client Input_ChangeDoorState transition-door close rewritten to Input_WalkToWaypoint"
     );
     Some(ClientInputClaimSummary {
@@ -1671,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_door_close_rewrites_to_decompile_owned_walk_payload() {
+    fn transition_door_close_uses_verified_door_position_not_named_placeable() {
         let mut state = SemanticSessionState::default();
         state.area.current_area_object_id = Some(0x8000_34CB);
         state.objects.observe_mentions(&[
@@ -1701,7 +1654,7 @@ mod tests {
                 opcode: b'A',
                 object_type: 0x09,
                 object_id: 0x8000_3566,
-                name: Some("The Sooty Crow".to_string()),
+                name: Some("Portal marker".to_string()),
                 position: None,
                 orientation: None,
                 bounds: None,
@@ -1735,6 +1688,9 @@ mod tests {
         assert!(close_summary.rewritten_transition_door_close);
         assert_eq!(close[0], CLIENT_INPUT_ENVELOPE);
         assert_eq!(walk.area_id, 0x8000_34CB);
+        assert_eq!(walk.x, 47.50);
+        assert_eq!(walk.y, 43.08);
+        assert_eq!(walk.z, 0.002);
         assert_eq!(walk.action_object_id, 0x8000_34D1);
         assert_eq!(walk.input_byte, 0);
         assert_eq!(walk.action_byte, 0);
@@ -1744,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_door_close_without_anchor_rewrites_to_decompile_owned_walk_payload() {
+    fn transition_door_close_without_nearby_objects_uses_verified_door_position() {
         let mut state = SemanticSessionState::default();
         state.area.current_area_object_id = Some(0x8000_F6A9);
         state.objects.observe_mentions(&[
@@ -1787,6 +1743,9 @@ mod tests {
         assert!(close_summary.rewritten_transition_door_close);
         assert_eq!(close[0], CLIENT_INPUT_ENVELOPE);
         assert_eq!(walk.area_id, 0x8000_F6A9);
+        assert_eq!(walk.x, 15.0);
+        assert_eq!(walk.y, 3.33);
+        assert_eq!(walk.z, 0.001);
         assert_eq!(walk.action_object_id, 0x8000_F6AC);
         assert_eq!(walk.input_byte, 0);
         assert_eq!(walk.action_byte, 0);

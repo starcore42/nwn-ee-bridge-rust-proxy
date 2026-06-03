@@ -332,53 +332,6 @@ impl ObjectRegistry {
             .get(&compact_id)
             .copied()
     }
-
-    pub(crate) fn nearby_transition_anchor_for_door(
-        &self,
-        door_id: u32,
-    ) -> Option<NearbyTransitionAnchor<'_>> {
-        const DOOR_OBJECT_TYPE: u8 = 0x0A;
-        const TRIGGER_OBJECT_TYPE: u8 = 0x07;
-        const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
-        const MAX_DISTANCE: f32 = 3.5;
-
-        let door = self.get(DOOR_OBJECT_TYPE, door_id)?;
-        let door_position = door.click_point()?;
-        if !door.active {
-            return None;
-        }
-
-        self.known
-            .values()
-            .filter(|entry| {
-                let transition_like = match entry.object_type {
-                    // Trigger adds carry decompile-owned geometry but not always a
-                    // useful display name. Treat a verified nearby active trigger
-                    // as a transition anchor without requiring a name heuristic.
-                    TRIGGER_OBJECT_TYPE => true,
-                    PLACEABLE_OBJECT_TYPE => entry
-                        .latest_name
-                        .as_deref()
-                        .is_some_and(name_looks_transition_related),
-                    _ => false,
-                };
-                transition_like && entry.active && entry.click_point().is_some()
-            })
-            .filter_map(|entry| {
-                let position = entry.click_point()?;
-                let dx = position.x - door_position.x;
-                let dy = position.y - door_position.y;
-                let dz = position.z - door_position.z;
-                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-                (distance <= MAX_DISTANCE).then_some(NearbyTransitionAnchor {
-                    object_id: entry.object_id,
-                    object_type: entry.object_type,
-                    name: entry.latest_name.as_deref().unwrap_or(""),
-                    distance,
-                })
-            })
-            .min_by(|left, right| left.distance.total_cmp(&right.distance))
-    }
 }
 
 fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
@@ -411,55 +364,6 @@ pub(crate) struct KnownObjectState {
     pub(crate) delete_before_add_mentions: u64,
 }
 
-impl KnownObjectState {
-    fn click_point(&self) -> Option<LiveObjectPosition> {
-        if let Some(position) = self.position {
-            return Some(position);
-        }
-        let bounds = self.bounds?;
-        if !bounds.min_x.is_finite()
-            || !bounds.min_y.is_finite()
-            || !bounds.min_z.is_finite()
-            || !bounds.max_x.is_finite()
-            || !bounds.max_y.is_finite()
-            || !bounds.max_z.is_finite()
-            || bounds.min_x > bounds.max_x
-            || bounds.min_y > bounds.max_y
-            || bounds.min_z > bounds.max_z
-        {
-            return None;
-        }
-        Some(LiveObjectPosition {
-            x: (bounds.min_x + bounds.max_x) * 0.5,
-            y: (bounds.min_y + bounds.max_y) * 0.5,
-            z: (bounds.min_z + bounds.max_z) * 0.5,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct NearbyTransitionAnchor<'a> {
-    pub(crate) object_id: u32,
-    pub(crate) object_type: u8,
-    pub(crate) name: &'a str,
-    pub(crate) distance: f32,
-}
-
-fn name_looks_transition_related(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [
-        "door",
-        "portal",
-        "transition",
-        "inn",
-        "tavern",
-        "crow",
-        "moon",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct UiState {
     pub(crate) quickbar_packets: u64,
@@ -475,10 +379,7 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition,
-        ObjectRegistry, PlayerListObjectIds,
-    };
+    use super::{LiveObjectMention, LiveObjectOrientation, ObjectRegistry, PlayerListObjectIds};
 
     #[test]
     fn duplicate_same_type_add_is_idempotent_protocol_state() {
@@ -656,56 +557,5 @@ mod tests {
         assert_eq!(object.object_type, 0x09);
         assert!(object.active);
         assert_eq!(object.add_mentions, 1);
-    }
-
-    #[test]
-    fn nearby_transition_anchor_accepts_verified_trigger_bounds_without_name() {
-        let mut registry = ObjectRegistry::default();
-        registry.observe_mentions(&[
-            LiveObjectMention {
-                opcode: b'A',
-                object_type: 0x0A,
-                object_id: 0x8000_F6AC,
-                name: Some("Door".to_string()),
-                position: None,
-                orientation: None,
-                bounds: None,
-            },
-            LiveObjectMention {
-                opcode: b'U',
-                object_type: 0x0A,
-                object_id: 0x8000_F6AC,
-                name: None,
-                position: Some(LiveObjectPosition {
-                    x: 15.0,
-                    y: 3.33,
-                    z: 0.0,
-                }),
-                orientation: None,
-                bounds: None,
-            },
-            LiveObjectMention {
-                opcode: b'A',
-                object_type: 0x07,
-                object_id: 0x8000_F700,
-                name: None,
-                position: None,
-                orientation: None,
-                bounds: Some(LiveObjectBounds {
-                    min_x: 14.5,
-                    min_y: 3.0,
-                    min_z: 0.0,
-                    max_x: 15.5,
-                    max_y: 4.0,
-                    max_z: 0.0,
-                }),
-            },
-        ]);
-
-        let anchor = registry
-            .nearby_transition_anchor_for_door(0x8000_F6AC)
-            .expect("verified trigger bounds should provide a transition anchor");
-        assert_eq!(anchor.object_id, 0x8000_F700);
-        assert_eq!(anchor.object_type, 0x07);
     }
 }

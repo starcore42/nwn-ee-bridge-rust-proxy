@@ -2339,6 +2339,18 @@ Current status:
   untouched. Verified with `cargo test -q -p hgbridge-proxy2
   compact_post_tile_tail_repair_requires_exact_fragment_cursor --
   --nocapture`.
+- ~~2026-06-03 client `P/06/03 Input_ChangeDoorState` transition-close cleanup:
+  no emitted packet behavior changed, but the semantic-state registry no longer
+  carries a nearby-placeable display-name classifier for transition anchors.
+  That classifier included module/place-name-like substrings while the actual
+  rewrite already emitted the same decompile-owned `Input_WalkToWaypoint`
+  shape from only the recent same-door open, verified current area OBJECTID,
+  verified door object type, and verified door position. Public tests now prove
+  a nearby transition-sounding placeable is ignored and the rewritten walk uses
+  the door coordinates and exact two-BOOL fragment cursor. Verified with
+  `cargo test -q -p hgbridge-proxy2 transition_door_close_ -- --nocapture`
+  and `cargo test -q -p hgbridge-proxy2 semantic::state::tests --
+  --nocapture`.~~
 - 2026-05-28 `P/04/01` static-row staged-repair audit: hardened the remaining
   static-placeable row mutators so direction normalization, module GIT-backed
   appearance/position/bearing repair, and zero-count tail dropping commit only
