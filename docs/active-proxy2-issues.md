@@ -1047,6 +1047,15 @@ Current status:
   boundary-looking low-tail suffix stays unclaimed for both missing-opcode and
   missing-type handoffs. Verified with `cargo test -q -p hgbridge-proxy2
   missing_opcode_low_tail_record_end_must_be_unique -- --nocapture`.~~
+- ~~2026-06-04 `P/05/01` door/placeable scalar/vector boundary fallback audit:
+  tightened the top-level live-object boundary scanner so a focused `U/9`/`U/10`
+  transport ambiguity is a hard stop instead of falling through to the generic
+  opcode search. Diamond `sub_467AE0` and EE `sub_14079C050` both read the
+  orientation selector BOOL before choosing one scalar byte or six vector bytes,
+  so W-shaped bytes inside a vector body cannot prove a scalar boundary.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  door_placeable_update_boundary_keeps_scalar_vector_ambiguity_unclaimed --
+  --nocapture`.~~
 - 2026-05-29 `P/05/01` terminal trigger/low-tail residual-bit audit: hardened
   the legacy `U/7 0xFFFF_FFF3` trigger repair and shared `U/9`/`U/10`
   no-name low-tail repairs so a terminal record may not use the outer

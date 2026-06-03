@@ -255,10 +255,14 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         {
             return record_end;
         }
-        if let Some(record_end) =
-            try_get_ee_door_placeable_update_record_end_for_transport(bytes, offset, scan_end)
+        if let Some(boundary) =
+            try_get_ee_door_placeable_update_record_boundary_for_transport(bytes, offset, scan_end)
         {
-            return record_end;
+            match boundary {
+                TransportBoundary::Proven(record_end) => return record_end,
+                TransportBoundary::Ambiguous => return scan_end,
+                TransportBoundary::Floor(floor) => scan_floor_override = Some(floor),
+            }
         }
     }
 
@@ -1134,6 +1138,17 @@ pub(super) fn try_get_ee_door_placeable_update_record_end_for_transport(
     offset: usize,
     scan_end: usize,
 ) -> Option<usize> {
+    match try_get_ee_door_placeable_update_record_boundary_for_transport(bytes, offset, scan_end)? {
+        TransportBoundary::Proven(record_end) => Some(record_end),
+        TransportBoundary::Ambiguous | TransportBoundary::Floor(_) => None,
+    }
+}
+
+fn try_get_ee_door_placeable_update_record_boundary_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    scan_end: usize,
+) -> Option<TransportBoundary> {
     if offset + LEGACY_UPDATE_HEADER_BYTES > scan_end
         || offset + LEGACY_UPDATE_HEADER_BYTES > bytes.len()
         || bytes.get(offset).copied()? != b'U'
@@ -1245,9 +1260,9 @@ pub(super) fn try_get_ee_door_placeable_update_record_end_for_transport(
                 if header_end <= scan_end
                     && looks_like_legacy_live_object_sub_message_boundary(bytes, header_end)
                 {
-                    return Some(header_end);
+                    return Some(TransportBoundary::Proven(header_end));
                 }
-                continue;
+                return None;
             } else {
                 continue;
             }
@@ -1255,13 +1270,15 @@ pub(super) fn try_get_ee_door_placeable_update_record_end_for_transport(
 
         if record_end_lands_on_boundary(bytes, read_cursor, scan_end) {
             proven_end = match proven_end {
-                Some(existing) if existing != read_cursor => return None,
+                Some(existing) if existing != read_cursor => {
+                    return Some(TransportBoundary::Ambiguous);
+                }
                 Some(existing) => Some(existing),
                 None => Some(read_cursor),
             };
         }
     }
-    proven_end
+    proven_end.map(TransportBoundary::Proven)
 }
 
 fn try_get_legacy_door_placeable_low_tail_update_record_end_for_transport(
@@ -1877,6 +1894,32 @@ mod tests {
         assert_eq!(
             find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
             LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES
+        );
+    }
+
+    #[test]
+    fn door_placeable_update_boundary_keeps_scalar_vector_ambiguity_unclaimed() {
+        // The transport scanner has no CNW orientation selector bit. Diamond
+        // `sub_467AE0` and EE `sub_14079C050` branch on that bit before reading
+        // either one scalar byte or six vector bytes, so a scalar cursor that
+        // lands on W-shaped bytes inside the vector body cannot prove a split.
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_ORIENTATION_MASK.to_le_bytes());
+        live.extend_from_slice(&[0x70, b'W', 0x0C, 0x0E, 0x88, 0x99]);
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_007Eu32.to_le_bytes());
+
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            live.len(),
+            "ambiguous scalar/vector door-placeable rows must not fall back to an internal W boundary"
+        );
+        assert_eq!(
+            try_get_ee_door_placeable_update_record_end_for_transport(&live, 0, live.len()),
+            None,
+            "public transport endpoint stays unproven when branch endpoints conflict"
         );
     }
 
