@@ -9953,6 +9953,22 @@ mod public_tests {
             ee_cursor, 0,
             "EE validation must not invent a creature-name selector for masks without 0x0400"
         );
+
+        // Selector byte, first fixed body value low byte, first high byte.
+        let first_full_body_high_byte = LEGACY_APPEARANCE_HEADER_BYTES + 1 + 1;
+        let mut nonzero_high = bytes.clone();
+        nonzero_high[first_full_body_high_byte] = 1;
+        let mut bad_cursor = 0usize;
+        assert!(
+            !advance_verified_ee_creature_appearance_record(
+                &nonzero_high,
+                0,
+                record_end,
+                &fragment_bits,
+                &mut bad_cursor,
+            ),
+            "EE build-0x23 fixed body table WORD high bytes must be zero"
+        );
     }
 
     #[test]

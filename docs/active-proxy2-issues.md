@@ -2851,6 +2851,15 @@ Current status:
   hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
   hgbridge-proxy2`, and full serial `cargo test -q -p hgbridge-proxy2 --
   --test-threads=1`.
+- ~~2026-06-04 `P/05/01` partial creature full-body selector EE-width audit:
+  no packet behavior changed, but public coverage now proves the exact EE
+  validator rejects shifted fixed-table high bytes for non-full body-delta rows.
+  Diamond `sub_448E30` reads selector `>= 0x0A` followed by nineteen body-part
+  BYTEs; EE `sub_14077FE10` keeps the selector byte but reads those nineteen
+  values as WORDs under the build-0x23 gate. The writer inserts zero high bytes
+  after each value, and the exact verifier now rejects a nonzero high byte so a
+  byte-plausible shifted body table cannot move following appearance/equipment
+  fields. Verified with `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex-verify/run-20260604-partial-body-highbyte cargo test -q -p hgbridge-proxy2 partial_body_delta_full_selector_survives_ee_widening_without_name_bits -- --nocapture`.~~
 - ~~2026-05-31 `P/05/01` compact partial creature body-delta EE-width audit:
   fixed the structured non-full `P/5` body-delta reader/writer for selector
   counts `1..=9`. Diamond `sub_448E30` reads selector count, then BYTE
