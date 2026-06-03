@@ -2918,6 +2918,47 @@ fn item_update_position_hands_off_after_full_position_body() {
 }
 
 #[test]
+fn item_update_scalar_vector_boundary_ambiguity_stays_unclaimed() {
+    // The transport scanner has no orientation BOOL. A scalar item cursor can
+    // land on bytes that look exactly like `W current total` while the vector
+    // cursor lands on the real following `D/6` boundary. Diamond `sub_467AE0`
+    // and EE `sub_14079C050` choose that branch from the fragment bit before
+    // reading orientation bytes, so byte-only splitting must keep this
+    // ambiguity visible instead of claiming the shorter scalar-looking record.
+    let mask = super::LEGACY_UPDATE_POSITION_MASK | super::LEGACY_UPDATE_ORIENTATION_MASK;
+    let mut live = vec![b'U', super::ITEM_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2201u32.to_le_bytes());
+    live.extend_from_slice(&mask.to_le_bytes());
+    live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    live.extend_from_slice(&[0x70, b'W', 0x0C, 0x0E, 0x88, 0x99]);
+    live.extend_from_slice(&[b'D', super::ITEM_OBJECT_TYPE]);
+    live.extend_from_slice(&0x8000_2201u32.to_le_bytes());
+
+    let mut payload = live_object_payload_with_bits(
+        &live,
+        vec![
+            true, false, // item position residual bits.
+            true,  // vector orientation selector.
+            false, // D/6 delete BOOL if the vector boundary were proven.
+        ],
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "scalar/vector item boundary ambiguity must not exact-claim through an internal W row"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "rewrite must not split a vector-selected item update at scalar-looking W bytes"
+    );
+    assert_eq!(
+        payload, original,
+        "failed ambiguous item boundary proof must leave source bytes and bits untouched"
+    );
+}
+
+#[test]
 fn item_update_name_cursor_owns_selector_before_hidden_bool() {
     // Diamond `sub_451AF0` proves item-name mask 0x80000 as one selector BOOL
     // followed by either locstring-helper data or direct `ReadCExoString(32)`.

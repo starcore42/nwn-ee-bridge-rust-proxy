@@ -1239,6 +1239,17 @@ Current status:
   -p hgbridge-proxy2 item_update_position -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 item_update -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update -- --test-threads=1`.
+- ~~2026-06-04 `P/05/01` item `U/6` scalar/vector transport-boundary ambiguity
+  audit: tightened the byte-only item update scanner so distinct scalar and
+  vector orientation endpoints that both land on plausible live-object
+  boundaries keep the whole scan window ambiguous instead of falling back to an
+  internal opcode split. Diamond `sub_467AE0` and EE `sub_14079C050` choose
+  scalar vs vector from the orientation BOOL before reading orientation bytes,
+  so a scalar cursor that lands on `W current total` inside vector bytes is not
+  boundary proof. Verified with `cargo test -q -p hgbridge-proxy2
+  scalar_vector_boundary_ambiguity -- --nocapture`, `cargo test -q -p
+  hgbridge-proxy2 item_update -- --nocapture`, and `cargo test -q -p
+  hgbridge-proxy2 live_object_update::boundary::tests:: -- --nocapture`.~~
 - 2026-05-31 `P/05/01` item `U/6` locstring-token name audit: no packet
   behavior changed, but public fixture-free coverage now pins the token branch
   of the same decompile-backed item-name bit order. Diamond `sub_451AF0` and EE

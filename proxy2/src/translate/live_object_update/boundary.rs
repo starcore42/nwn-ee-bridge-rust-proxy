@@ -1014,7 +1014,7 @@ fn try_get_item_update_record_end_for_transport(
             continue;
         }
         proven_end = match proven_end {
-            Some(existing) if existing != candidate => return None,
+            Some(existing) if existing != candidate => return Some(scan_end),
             Some(existing) => Some(existing),
             None => Some(candidate),
         };
@@ -2048,6 +2048,43 @@ mod tests {
             find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
             3,
             "W reads exactly two counter BYTEs before the next live-object row"
+        );
+    }
+
+    #[test]
+    fn item_update_boundary_keeps_scalar_vector_ambiguity_unclaimed() {
+        let mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK;
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        live.extend_from_slice(&[0x70, b'W', 0x0C, 0x0E, 0x88, 0x99]);
+        let scalar_end = LEGACY_UPDATE_HEADER_BYTES
+            + LEGACY_UPDATE_POSITION_READ_BYTES
+            + EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES;
+        let vector_end = LEGACY_UPDATE_HEADER_BYTES
+            + LEGACY_UPDATE_POSITION_READ_BYTES
+            + EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES;
+        live.extend_from_slice(&[b'D', ITEM_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, scalar_end),
+            "the scalar byte endpoint intentionally looks like a W row inside the vector bytes"
+        );
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, vector_end),
+            "the vector byte endpoint is also followed by a real live-object boundary"
+        );
+        assert_eq!(
+            try_get_item_update_record_end_for_transport(&live, 0, live.len()),
+            Some(live.len()),
+            "without the orientation BOOL, two byte-valid item endpoints are ambiguity evidence"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            live.len(),
+            "generic fallback scanning must not split at the W-looking byte inside the item body"
         );
     }
 
