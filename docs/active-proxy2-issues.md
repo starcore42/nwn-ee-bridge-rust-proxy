@@ -2360,7 +2360,7 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 transition_door_close_ -- --nocapture`
   and `cargo test -q -p hgbridge-proxy2 semantic::state::tests --
   --nocapture`.~~
-- 2026-05-28 `P/04/01` static-row staged-repair audit: hardened the remaining
+- ~~2026-05-28 `P/04/01` static-row staged-repair audit: hardened the remaining
   static-placeable row mutators so direction normalization, module GIT-backed
   appearance/position/bearing repair, and zero-count tail dropping commit only
   after a candidate buffer preserves the exact decompile-owned post-tile source
@@ -2371,7 +2371,12 @@ Current status:
   static_direction_normalization_rejects_later_zero_vector_without_partial_write
   -- --nocapture` and `cargo test -q -p hgbridge-proxy2
   module_static_row_repair_rejects_nonfinite_bearing_without_partial_write --
-  --nocapture`.
+  --nocapture`. 2026-06-03 re-audit added an original tile-layout identity
+  guard before zero-count tail-drop commit and public coverage proving a bad
+  later row-shaped tail rejects without shortening the packet:
+  `cargo test -q -p hgbridge-proxy2
+  zero_count_static_tail_drop_rejects_later_bad_row_without_partial_shorten --
+  --nocapture`.~~
 - ~~2026-05-27 `P/05/01` work-remaining `W` cursor audit follow-up~~:
   resolved 2026-05-27. Diamond `sub_44F160` and EE `sub_1407B85A0` both read
   exactly `W current total` and consume no CNW fragment BOOLs, so the identity

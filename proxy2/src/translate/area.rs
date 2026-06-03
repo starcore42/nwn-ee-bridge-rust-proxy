@@ -4377,6 +4377,15 @@ fn drop_legacy_zero_static_placeable_trailing_rows(
 
     let new_fragment_offset = HIGH_LEVEL_HEADER_BYTES.checked_add(proof.static_rows_read_offset)?;
     let trimmed_scan = scan_area_tile_stream(&candidate, new_fragment_offset);
+    if !trimmed_scan.valid
+        || trimmed_scan.tile_end_read_offset != scan.tile_end_read_offset
+        || trimmed_scan.width != scan.width
+        || trimmed_scan.packet_height != scan.packet_height
+        || trimmed_scan.inferred_height != scan.inferred_height
+        || trimmed_scan.tile_count != scan.tile_count
+    {
+        return None;
+    }
     let trimmed_proof =
         legacy_area_source_tail_exact_read_proof(&candidate, new_fragment_offset, &trimmed_scan)?;
     if trimmed_proof.zero_static_placeable_rows != 0 || trimmed_proof.static_rows_count != 0 {
@@ -8646,6 +8655,39 @@ mod public_static_direction_tests {
                 .expect("trimmed zero-count source should keep exact cursor proof");
         assert_eq!(trimmed_proof.static_rows_count, 0);
         assert_eq!(trimmed_proof.zero_static_placeable_rows, 0);
+    }
+
+    #[test]
+    fn zero_count_static_tail_drop_rejects_later_bad_row_without_partial_shorten() {
+        let (mut payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                0,
+                &[
+                    (82, 10.0, 20.0, 0.0, 0.0, 1.0, 0.0),
+                    (83, 30.0, 40.0, 0.0, 1.0, 0.0, 0.0),
+                ],
+            );
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("two zero-count tail rows should be a bounded legacy tail before corruption");
+        assert_eq!(proof.zero_static_placeable_rows, 2);
+        let second_tail_row = proof.static_rows_read_offset + AREA_STATIC_PLACEABLE_ROW_BYTES;
+        write_area_u32(&mut payload, fragment_offset, second_tail_row, 0)
+            .expect("test should be able to corrupt the second tail object id");
+        assert!(
+            legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan).is_none(),
+            "a bad later row means the zero-count tail is not a bounded row sequence"
+        );
+        let original = payload.clone();
+
+        assert_eq!(
+            drop_legacy_zero_static_placeable_trailing_rows(&mut payload, fragment_offset, &scan),
+            None,
+            "the drop path must not trim a valid prefix of an unproven zero-count tail"
+        );
+        assert_eq!(
+            payload, original,
+            "rejected zero-count tail drop must leave the read buffer and fragment offset unchanged"
+        );
     }
 
     #[test]
