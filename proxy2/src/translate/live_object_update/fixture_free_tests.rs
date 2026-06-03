@@ -103,6 +103,14 @@ fn legacy_zero_count_creature_4408_payload_with_bits(
     extra_before_scalar: &[u8],
     owned_bits: Vec<bool>,
 ) -> Vec<u8> {
+    let live = legacy_zero_count_creature_4408_live_bytes(rows, extra_before_scalar);
+    live_object_payload_with_bits(&live, owned_bits)
+}
+
+fn legacy_zero_count_creature_4408_live_bytes(
+    rows: &[(u8, u16)],
+    extra_before_scalar: &[u8],
+) -> Vec<u8> {
     let mut live = Vec::new();
     live.extend_from_slice(&[b'U', 0x05, 0x55, 0x00, 0x00, 0x80]);
     live.extend_from_slice(&0x0000_4408u32.to_le_bytes());
@@ -113,7 +121,7 @@ fn legacy_zero_count_creature_4408_payload_with_bits(
     }
     live.extend_from_slice(extra_before_scalar);
     live.extend_from_slice(&[0; 8]);
-    live_object_payload_with_bits(&live, owned_bits)
+    live
 }
 
 fn trigger_update_live_bytes(raw_mask: u32, tail: &[u8]) -> Vec<u8> {
@@ -3223,6 +3231,62 @@ fn inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit() {
     assert_eq!(
         shifted_payload, original,
         "the update pass must not trim or rewrite unowned terminal evidence"
+    );
+}
+
+#[test]
+fn creature_4408_inventory_2a00_gq_terminal_bit_rolls_back_prior_rewrite() {
+    // Generalizes the XP1/To Heir terminal-tail captures without fixture bytes.
+    // The first record is a compact Diamond `U/5 0x4408` status update that
+    // the typed creature repair can rewrite exactly. The following
+    // `I/0x2A00` and `GQ` records then own their own decompile-backed cursors.
+    // A final extra bit after `GQ` is still unowned by those families, so the
+    // earlier creature rewrite must be rolled back with the original payload
+    // left visible for quarantine.
+    let mut live =
+        legacy_zero_count_creature_4408_live_bytes(&[(b'A', 0x00F3), (b'D', 0x00B6)], &[]);
+    live.extend_from_slice(&inventory_2a00_word_list_live_bytes(
+        &[0x0303],
+        &[0xFFFF_FFFE],
+        Some([
+            0x0E, 0x0D, 0x0D, 0x0A, 0x13, 0x0A, 0x0C, 0x0D, 0x0F, 0x0A, 0x13, 0x0A,
+        ]),
+    ));
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let mut owned_bits = vec![false; 7]; // Repaired `U/5 0x4408` status/scalar bits.
+    owned_bits.extend([
+        false, // 0x0200 semantic BOOL.
+        false, // 0x0200 layout selector: DWORD count + WORD rows.
+        true, false, true, // one Feature-25 second-list object.
+        true, // 0x0800 present branch owns the twelve-byte tail.
+    ]);
+
+    let mut exact_payload = live_object_payload_with_bits(&live, owned_bits.clone());
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("creature 0x4408 plus exact inventory/GQ stream should rewrite");
+    assert_eq!(
+        rewrite.bytes_inserted, 16,
+        "the leading compact creature update should receive two EE identity maps: {rewrite:?}"
+    );
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("rewritten creature/inventory/GQ stream should exact-claim");
+    assert_eq!(exact_claim.creature_update_records, 1);
+    assert_eq!(exact_claim.inventory_records, 1);
+    assert_eq!(exact_claim.live_gui_read_buffer_records, 1);
+
+    let mut shifted_bits = owned_bits;
+    shifted_bits.push(false);
+    let mut shifted_payload = live_object_payload_with_bits(&live, shifted_bits);
+    let original = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "a prior U/5 repair must not authorize trimming the terminal bit after I/0x2A00 + GQ"
+    );
+    assert_eq!(
+        shifted_payload, original,
+        "failed terminal-tail proof must roll back the earlier creature rewrite"
     );
 }
 

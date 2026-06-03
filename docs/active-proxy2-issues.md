@@ -1052,6 +1052,20 @@ Current status:
   handoff is proven. Verified with `cargo test -q -p hgbridge-proxy2
   inventory_2a00_word_list_before_gq_rejects_terminal_extra_fragment_bit --
   --nocapture`.
+- 2026-06-03 `P/05/01` `U/5 0x4408 + I/0x2A00 + GQ` terminal-tail rollback
+  audit: no packet behavior changed. Re-ran the active To Heir and XP1 local
+  capture regressions with live-claim tracing. The To Heir stream validated the
+  repaired creature update, `I/0x2A00`, `GQ`, and delete rows, then stopped at
+  `bit_cursor=22` of `fragment_bits=124`; the XP1 stream stopped at
+  `bit_cursor=16` of `fragment_bits=17`. In both cases the terminal trim gate
+  found no family-owned terminal cursor. Added fixture-free coverage proving a
+  prior compact Diamond `U/5 0x4408` status-effect repair exact-claims before
+  exact `I/0x2A00 + GQ`, but an extra terminal bit after `GQ` rolls back the
+  earlier repair and leaves the source payload visible for quarantine. This
+  keeps the active captures pending a decompile-backed stream-boundary or
+  continuation owner. Verified with `cargo test -q -p hgbridge-proxy2
+  creature_4408_inventory_2a00_gq_terminal_bit_rolls_back_prior_rewrite
+  -- --nocapture`.
 - 2026-05-29 `P/05/01` item `U/6` 0x40 transactional cursor audit: hardened
   the item update rewrite so legacy mask/tail edits are staged and committed
   only after the exact EE item validator owns the read cursor and fragment
