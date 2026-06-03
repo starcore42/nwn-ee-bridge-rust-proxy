@@ -1036,6 +1036,17 @@ Current status:
   three-byte tails unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
   low_tail -- --nocapture` and `cargo test -q -p hgbridge-proxy2
   door_placeable -- --nocapture`.
+- ~~2026-06-04 `P/05/01` door/placeable missing-opcode low-tail boundary audit:
+  tightened the missing-opcode and missing-type low-tail transport scanners to
+  use the same unique 2/4/6-byte suffix-end rule as top-level `U/9`/`U/10`
+  low-tail boundary detection. Diamond `sub_467AE0` plus
+  `sub_44E2C0`/`sub_44EB40` own the generic update prefix and state bits, while
+  EE `sub_14079C050` plus `sub_140797780` has no low `0x40/0x80` reader; a
+  suffix can be dropped only when exactly one bounded suffix width lands on the
+  next live-object boundary. Public coverage now proves an internal
+  boundary-looking low-tail suffix stays unclaimed for both missing-opcode and
+  missing-type handoffs. Verified with `cargo test -q -p hgbridge-proxy2
+  missing_opcode_low_tail_record_end_must_be_unique -- --nocapture`.~~
 - 2026-05-29 `P/05/01` terminal trigger/low-tail residual-bit audit: hardened
   the legacy `U/7 0xFFFF_FFF3` trigger repair and shared `U/9`/`U/10`
   no-name low-tail repairs so a terminal record may not use the outer

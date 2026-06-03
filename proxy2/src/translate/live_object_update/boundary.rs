@@ -587,26 +587,12 @@ pub(super) fn try_get_legacy_missing_opcode_door_placeable_update_body_end_after
     ) && (raw_mask & !translated_mask & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) == 0
         && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
     {
-        for vector_orientation in [false, true] {
-            let Some(prefix_end) = missing_opcode_update_body_read_end(
-                bytes,
-                body_offset,
-                scan_end,
-                translated_mask,
-                vector_orientation,
-            ) else {
-                continue;
-            };
-            for suffix_len in [2usize, 4usize, 6usize] {
-                let record_end = prefix_end.checked_add(suffix_len)?;
-                if record_end <= scan_end
-                    && reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
-                    && record_end_lands_on_boundary(bytes, record_end, scan_end)
-                {
-                    return Some(record_end);
-                }
-            }
-        }
+        return unique_legacy_door_placeable_low_tail_update_record_end(
+            bytes,
+            body_offset,
+            scan_end,
+            translated_mask,
+        );
     }
 
     None
@@ -751,26 +737,12 @@ pub(super) fn try_get_legacy_missing_type_door_placeable_update_end_after_add(
     ) && (raw_mask & !translated_mask & !LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) == 0
         && (raw_mask & !translated_mask & LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK) != 0
     {
-        for vector_orientation in [false, true] {
-            let Some(prefix_end) = missing_opcode_update_body_read_end(
-                bytes,
-                body_offset,
-                scan_end,
-                translated_mask,
-                vector_orientation,
-            ) else {
-                continue;
-            };
-            for suffix_len in [2usize, 4usize, 6usize] {
-                let record_end = prefix_end.checked_add(suffix_len)?;
-                if record_end <= scan_end
-                    && reader::legacy_low_bit_control_tail_ready(bytes, prefix_end, record_end)
-                    && record_end_lands_on_boundary(bytes, record_end, scan_end)
-                {
-                    return Some(record_end);
-                }
-            }
-        }
+        return unique_legacy_door_placeable_low_tail_update_record_end(
+            bytes,
+            body_offset,
+            scan_end,
+            translated_mask,
+        );
     }
 
     None
@@ -1325,11 +1297,25 @@ fn try_get_legacy_door_placeable_low_tail_update_record_end_for_transport(
         return None;
     }
 
+    unique_legacy_door_placeable_low_tail_update_record_end(
+        bytes,
+        offset.checked_add(1)?,
+        scan_end,
+        translated_mask,
+    )
+}
+
+fn unique_legacy_door_placeable_low_tail_update_record_end(
+    bytes: &[u8],
+    body_offset: usize,
+    scan_end: usize,
+    translated_mask: u32,
+) -> Option<usize> {
     let mut proven_end = None;
     for vector_orientation in [false, true] {
         let Some(prefix_end) = missing_opcode_update_body_read_end(
             bytes,
-            offset.checked_add(1)?,
+            body_offset,
             scan_end,
             translated_mask,
             vector_orientation,
@@ -2166,6 +2152,59 @@ mod tests {
                 low_tail_bits: 2,
             }),
             "low-tail missing-opcode span must accept the same external/compact object id alias"
+        );
+    }
+
+    #[test]
+    fn missing_opcode_low_tail_record_end_must_be_unique() {
+        fn ambiguous_suffix() -> Vec<u8> {
+            let mut tail = vec![
+                0x00,
+                0x00,
+                b'U',
+                PLACEABLE_OBJECT_TYPE,
+                0x01,
+                0x00,
+                b'U',
+                0x05,
+            ];
+            tail.extend_from_slice(&0x8000_0002u32.to_le_bytes());
+            tail
+        }
+
+        let object_id = 0x8000_007Eu32;
+        let raw_mask = LEGACY_UPDATE_STATE_MASK | LEGACY_DOOR_PLACEABLE_LOW_TAIL_MASK;
+
+        let mut missing_opcode = vec![PLACEABLE_OBJECT_TYPE];
+        missing_opcode.extend_from_slice(&object_id.to_le_bytes());
+        missing_opcode.extend_from_slice(&raw_mask.to_le_bytes());
+        missing_opcode.extend_from_slice(&ambiguous_suffix());
+        assert!(
+            try_get_legacy_missing_opcode_door_placeable_update_body_end_after_add(
+                &missing_opcode,
+                0,
+                missing_opcode.len(),
+                PLACEABLE_OBJECT_TYPE,
+                object_id,
+            )
+            .is_none(),
+            "missing-opcode low-tail proof must reject two plausible suffix boundaries"
+        );
+
+        let mut missing_type = vec![b'U', 0x00];
+        missing_type.extend_from_slice(&object_id.to_le_bytes());
+        missing_type.extend_from_slice(&raw_mask.to_le_bytes());
+        missing_type.extend_from_slice(&ambiguous_suffix());
+        assert!(
+            try_get_legacy_missing_type_door_placeable_update_end_after_add(
+                &missing_type,
+                0,
+                missing_type.len(),
+                PLACEABLE_OBJECT_TYPE,
+                object_id,
+            )
+            .is_none(),
+            "missing-type low-tail proof must share the same unique-boundary rule"
         );
     }
 
