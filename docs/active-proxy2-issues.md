@@ -1589,18 +1589,20 @@ Current status:
   from the live-object sweep now stay unclaimed under the bit-order standard.
   The Chapter1 seq20 stream reaches a compact `A/09` whose byte shape is
   plausible but whose decompile-owned add cursor has no valid source bits at
-  the current fragment position. The XP2 seq19 stream rewrites many
-  door/placeable rows but ultimately reaches terminal `GI` live-GUI rows that
-  the focused GUI reader still cannot prove. Both fixtures now assert that the
-  exact adapter rolls back without emitting partial rewrites. Public
+  the current fragment position. The pre-clean-fragment rebuilt XP2 seq19
+  fixture rewrites many door/placeable rows but ultimately reaches terminal
+  `GI` live-GUI rows that the focused GUI reader still cannot prove. Both
+  fixtures now assert that the exact adapter rolls back without emitting
+  partial rewrites. Public
   fixture-free coverage now pins the live-GUI side of the rule: a missing
   inner item-create opcode row may expose plausible no-name or token-name byte
   endpoints, but the nested item body still owns at least four source BOOLs
   (seven for the token-name branch) before EE's inserted active-property BOOL.
   If the inherited cursor cannot prove those bits, the bridge must not promote
   nearby bytes or choose a neighboring cursor. Keep these as generalized
-  compact-add and live-GUI cursor-handoff evidence until the real bit owner or
-  stream-boundary artifact is proven. Verified with focused
+  compact-add and live-GUI cursor-handoff regressions; the fresh 2026-06-03 XP2
+  replay after clean-fragment assembly no longer reproduces the old terminal
+  `GI` owner search. Verified with focused
   `cargo test -q -p hgbridge-proxy2
   local_chapter1_seq20_transition_placeable_stream_stays_unclaimed_after_add_cursor_audit
   -- --nocapture`,
@@ -1632,8 +1634,9 @@ Current status:
   Diamond-to-EE item-extra rewrite path when no exact EE endpoint exists.
   Public coverage now proves a terminal, already EE-shaped GUI inventory item
   promotes only the two storage bytes / six owned bits and exact-claims after
-  rewrite. The XP2 seq19 terminal `GI` evidence remains active because the
-  private stream still rolls back unclaimed under the stricter path. Verified
+  rewrite. The old rebuilt XP2 seq19 fixture still rolls back unclaimed under
+  the stricter path, but the fresh 2026-06-03 XP2 replay after clean-fragment
+  assembly no longer emits the terminal `GI` owner search. Verified
   with `cargo test -q -p hgbridge-proxy2 live_gui_ -- --nocapture`,
   `cargo test -q -p hgbridge-proxy2 compact_placeable_token -- --nocapture`,
   `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p
@@ -1648,11 +1651,9 @@ Current status:
   shared item body and active-property bits at that exact row. The filtered XP2
   seq19 debug replay reached the terminal `G I 00` row with `bit_cursor=932`
   and no remaining source bits; its apparent suffix would decode as 85 promoted
-  bits, so the row remains evidence that an upstream row consumed/translated the
-  real bit owner or that the stream boundary is still mis-modeled. Do not add a
-  GUI cursor search/skip for this case. Next verification should compare the
-  final pre-GUI placeable/update bit cursor against Diamond/EE reader widths to
-  find where the terminal item bits disappeared. Verified with
+  bits, so the row remains negative regression evidence. The fresh 2026-06-03
+  XP2 replay after clean-fragment assembly no longer reproduces that terminal
+  owner search, so do not add a GUI cursor search/skip for this case. Verified
   `CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge cargo test -p
   hgbridge-proxy2
   live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof --
