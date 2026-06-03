@@ -2138,6 +2138,36 @@ fn live_gui_quickbar_link_row_requires_object_id_at_row_offset_two() {
 }
 
 #[test]
+fn live_gui_quickbar_link_auxiliary_row_bytes_are_length_only() {
+    // Diamond `sub_458850` and EE `sub_1407B4390` both read each `GQ` row as
+    // two discarded BYTEs, raw object id, BYTE quickbar button, WORD use count.
+    // The client-side rejection path is overflow/object-lookup based; these
+    // auxiliary bytes are not range gates for the live-object boundary claim.
+    let mut live = vec![b'G', b'Q', 2];
+    live.extend_from_slice(&[0x00, 0xFF]);
+    live.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    live.push(0xFF);
+    live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    live.extend_from_slice(&[0xFF, 0x00]);
+    live.extend_from_slice(&0x8001_2346u32.to_le_bytes());
+    live.push(0x00);
+    live.extend_from_slice(&0x0000u16.to_le_bytes());
+
+    let payload = live_gui_read_buffer_payload(&live);
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("GQ auxiliary row bytes should not reject the fixed row boundary");
+
+    assert_eq!(claim.live_gui_read_buffer_records, 1);
+    assert_eq!(claim.live_gui_fragment_bits, 0);
+    assert_eq!(claim.live_bytes_length, 21);
+    assert_eq!(
+        super::gui::verified_item_materialization_object_ids(&live, 0, live.len()),
+        vec![0x8001_2345, 0x8001_2346],
+        "materialization must still extract only the row-offset +2 object ids"
+    );
+}
+
+#[test]
 fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
     // This is the generalized terminal-GI hazard from local XP2 evidence: the
     // row bytes can expose plausible no-name and token-name item endpoints, but

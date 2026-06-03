@@ -1695,12 +1695,19 @@ Current status:
   quickbar-link boundary. Verified with `cargo test -q -p hgbridge-proxy2
   live_gui_quickbar_link_row_requires_object_id_at_row_offset_two --
   --nocapture`.~~
-- 2026-06-04 `P/05/01` live-GUI `GQ` row-field follow-up: keep the row-offset
-  proof distinct from full row semantics. The current scanner treats the two
-  pre-OBJECTID bytes and three suffix bytes in each nine-byte `GQ` row as
-  opaque read-buffer fields; do not use those bytes to repair or disambiguate a
-  shifted boundary until Diamond and EE decompiles prove their exact field
-  meanings, ranges, and any client-side rejection behavior.
+- ~~2026-06-04 `P/05/01` live-GUI `GQ` row-field follow-up: closed the
+  formerly opaque row-field proof without changing packet behavior. Diamond
+  `sub_458850` reads count, then per row `ReadBYTE`, `ReadBYTE`, raw DWORD
+  object id via `sub_53E690`, `ReadBYTE`, and `ReadWORD`; EE `sub_1407B4390`
+  reads the same count and row order via `ReadBYTE`, `ReadBYTE`,
+  `sub_1409737C0`, `ReadBYTE`, and `ReadWORD`. Both clients discard the first
+  two row bytes before object lookup; the post-object byte/word are passed as
+  the quickbar button/use-count fields, with no extra byte-range rejection
+  before the object/button lookup path. The Rust scanner now documents and
+  length-proofs that cursor shape, and public coverage proves extreme
+  auxiliary bytes do not gate the boundary or move the object-id offset.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  live_gui_quickbar_link_ -- --nocapture`.~~
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

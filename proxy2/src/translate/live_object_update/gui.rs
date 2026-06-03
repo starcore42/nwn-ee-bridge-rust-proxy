@@ -11,9 +11,12 @@
 //! G Q <count:u8> <count * 9 byte rows>
 //! ```
 //!
-//! Each row carries small mode bytes plus an object id at row offset `+2`.
-//! There are no object-update fragment BOOLs to consume here, so a verified
-//! record is safe to preserve unchanged.
+//! Diamond `sub_458850` and EE `sub_1407B4390` then read each row as:
+//! `BYTE`, `BYTE`, raw object id, `BYTE quickbar_button`, `WORD use_count`.
+//! Both client readers discard the first two bytes before object lookup; the
+//! boundary proof therefore only uses the fixed row width plus the object-id
+//! cursor at row offset `+2`.  There are no object-update fragment BOOLs to
+//! consume here, so a verified record is safe to preserve unchanged.
 //!
 //! GUI inventory/repository item-add rows (`G I/i A` and `G R/r A`) are not
 //! read-buffer-only. EE's GUI handler reads the GUI prefix and then calls the
@@ -52,6 +55,8 @@ const QUICKBAR_ITEM_LINK_SUBOPCODE: u8 = b'Q';
 const QUICKBAR_ITEM_LINK_HEADER_BYTES: usize = 3;
 const QUICKBAR_ITEM_LINK_ROW_BYTES: usize = 9;
 const QUICKBAR_ITEM_LINK_OBJECT_ID_OFFSET_IN_ROW: usize = 2;
+const QUICKBAR_ITEM_LINK_BUTTON_OFFSET_IN_ROW: usize = 6;
+const QUICKBAR_ITEM_LINK_USE_COUNT_OFFSET_IN_ROW: usize = 7;
 const GUI_INVENTORY_UPDATE_ROW_BYTES: usize = 10;
 const GUI_REPOSITORY_UPDATE_ROW_BYTES: usize = 15;
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
@@ -1226,6 +1231,12 @@ fn try_get_legacy_live_gui_read_buffer_record_end(
                 ) {
                     return None;
                 }
+                let _quickbar_button =
+                    bytes.get(row_offset + QUICKBAR_ITEM_LINK_BUTTON_OFFSET_IN_ROW)?;
+                let _use_count = read_u16_le(
+                    bytes,
+                    row_offset + QUICKBAR_ITEM_LINK_USE_COUNT_OFFSET_IN_ROW,
+                )?;
             }
 
             Some(record_end)
