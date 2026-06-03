@@ -1686,6 +1686,21 @@ Current status:
   local_diamond_auto_inventory_u5_4408_gui_rows_stream_stays_unclaimed_after_gui_cursor_audit
   -- --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --test-threads=1`.
+- ~~2026-06-04 `P/05/01` live-GUI `GQ` quickbar-link row-offset audit: no
+  packet behavior changed, but public fixture-free coverage now pins the
+  byte-exact read-buffer-only row shape. Diamond `sub_4589A0` and EE
+  `sub_1407B3F30` read `G Q`, a count byte, then nine-byte rows with the
+  OBJECTID at row offset `+2`; a row whose only plausible object id starts one
+  byte earlier remains shifted-cursor evidence and is not accepted as a
+  quickbar-link boundary. Verified with `cargo test -q -p hgbridge-proxy2
+  live_gui_quickbar_link_row_requires_object_id_at_row_offset_two --
+  --nocapture`.~~
+- 2026-06-04 `P/05/01` live-GUI `GQ` row-field follow-up: keep the row-offset
+  proof distinct from full row semantics. The current scanner treats the two
+  pre-OBJECTID bytes and three suffix bytes in each nine-byte `GQ` row as
+  opaque read-buffer fields; do not use those bytes to repair or disambiguate a
+  shifted boundary until Diamond and EE decompiles prove their exact field
+  meanings, ranges, and any client-side rejection behavior.
 - 2026-05-29 `P/05/01` U/9-W handoff audit: no packet behavior changed, but
   public fixture-free coverage now pins the negative `W` proof behind the
   remaining CEP v2.3 starter evidence. Diamond `sub_44F160` and EE

@@ -2111,6 +2111,33 @@ fn live_gui_inventory_delete_row_is_read_buffer_only() {
 }
 
 #[test]
+fn live_gui_quickbar_link_row_requires_object_id_at_row_offset_two() {
+    // `G Q` is read-buffer-only, but its row boundary is still byte-exact:
+    // Diamond `sub_4589A0` / EE `sub_1407B3F30` read count, then nine-byte rows
+    // whose OBJECTID begins at row offset +2. A row whose only plausible id is
+    // one byte earlier is shifted cursor evidence, not proof of a quickbar-link
+    // row.
+    let mut exact = vec![b'G', b'Q', 1, 0xAA, 0xBB];
+    exact.extend_from_slice(&0x8001_2345u32.to_le_bytes());
+    exact.extend_from_slice(&[0x10, 0x20, 0x30]);
+    let exact_payload = live_gui_read_buffer_payload(&exact);
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("GQ row should claim when object id starts at row offset +2");
+    assert_eq!(exact_claim.live_gui_read_buffer_records, 1);
+    assert_eq!(exact_claim.live_gui_fragment_bits, 0);
+    assert_eq!(exact_claim.live_bytes_length, 12);
+
+    let mut shifted = vec![b'G', b'Q', 1, 0xAA];
+    shifted.extend_from_slice(&0x0100_0000u32.to_le_bytes());
+    shifted.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+    let shifted_payload = live_gui_read_buffer_payload(&shifted);
+    assert!(
+        super::claim_payload_if_verified(&shifted_payload).is_none(),
+        "GQ must not accept a row whose only plausible object id begins at row offset +1"
+    );
+}
+
+#[test]
 fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
     // This is the generalized terminal-GI hazard from local XP2 evidence: the
     // row bytes can expose plausible no-name and token-name item endpoints, but
