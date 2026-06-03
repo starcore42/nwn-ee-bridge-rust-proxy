@@ -1575,6 +1575,15 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 creature_update_mask_0047 -- --nocapture`,
   and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --test-threads=1`.~~
+- ~~2026-06-04 `P/05/01` creature `U/5 0x47` target/vector branch audit: no
+  packet behavior changed, but public fixture-free coverage now pins two
+  missing branch variants in the shared exact validator. Diamond can omit the
+  orientation-target guard entirely before the action extra-float BOOL, and the
+  same mask can carry vector orientation, an explicit target OBJECTID, the
+  action-4 zero-count implicit point, and a mode-2 `0x0040` OBJECTID tail in one
+  cursor. Removed the unused duplicate `0x47` parser so future bit-order work
+  cannot diverge from the shared decompile-backed simulator. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-creature-0047-branches cargo test -q -p hgbridge-proxy2 creature_update_0047_action4 -- --nocapture`.~~
 - 2026-06-01 `P/05/01` active-property tail and short-strref state audit:
   no packet behavior changed, but the generalized handoff proof now covers the
   exact leading `A/10` short-strref fragment values seen in the CEP v2.3

@@ -4053,6 +4053,55 @@ mod tests {
         bits
     }
 
+    fn creature_update_0047_action4_omitted_target_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            false, false, // position Z high bits.
+            false, // scalar orientation branch.
+            false, false, false, false, // scalar orientation residual bits.
+            false, // no post-state extra float; no orientation-target guard bit was emitted.
+            false, // 0x0040 state BOOL.
+        ]);
+        bits
+    }
+
+    fn creature_update_0047_action4_vector_target_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_0047u32.to_le_bytes());
+        bytes.extend_from_slice(&0x0DA1u16.to_le_bytes()); // position X low 16 bits.
+        bytes.extend_from_slice(&0x0F8Bu16.to_le_bytes()); // position Y low 16 bits.
+        bytes.extend_from_slice(&0x0FD1u16.to_le_bytes()); // position Z low 16 bits.
+        bytes.extend_from_slice(&0x0101u16.to_le_bytes()); // vector orientation X.
+        bytes.extend_from_slice(&0x0202u16.to_le_bytes()); // vector orientation Y.
+        bytes.extend_from_slice(&0x0303u16.to_le_bytes()); // vector orientation Z.
+        bytes.extend_from_slice(&0x8000_000Bu32.to_le_bytes()); // orientation target object.
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // action scalar.
+        bytes.extend_from_slice(&4u16.to_le_bytes()); // movement action code.
+        bytes.push(1); // action state byte.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // zero follow-up count.
+        bytes.extend_from_slice(&0x0D9Au16.to_le_bytes()); // implicit 2D point X.
+        bytes.extend_from_slice(&0x0E0Eu16.to_le_bytes()); // implicit 2D point Y.
+        bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // 0x0040 branch first field.
+        bytes.push(2); // 0x0040 branch mode with optional object id.
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(&0x8000_000Cu32.to_le_bytes()); // 0x0040 optional object id.
+        bytes
+    }
+
+    fn creature_update_0047_action4_vector_target_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            false, false, // position Z high bits.
+            true,  // vector orientation branch.
+            true,  // orientation target object guard.
+            false, // no post-state extra float.
+            false, // 0x0040 state BOOL.
+        ]);
+        bits
+    }
+
     #[test]
     fn loaded_visualeffects_rows_drive_creature_status_target_payload_width() {
         let mut rows = vec![None; 0x1235];
@@ -4254,6 +4303,48 @@ mod tests {
                 &mut bit_cursor,
             ),
             "zero follow-up count remains valid without the optional implicit point when the 0x0040 tail begins immediately"
+        );
+        assert_eq!(bit_cursor, bits.len());
+    }
+
+    #[test]
+    fn creature_update_0047_action4_zero_followup_accepts_omitted_target_guard() {
+        let bytes = creature_update_0047_action4_zero_followup_live_bytes(false);
+        let bits = creature_update_0047_action4_omitted_target_fragment_bits();
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ),
+            "Diamond may omit the orientation target guard entirely before the action/state tail"
+        );
+        assert_eq!(
+            bit_cursor,
+            bits.len(),
+            "the action extra-float bit must not be misread as a target guard"
+        );
+    }
+
+    #[test]
+    fn creature_update_0047_action4_zero_followup_accepts_vector_target_branch() {
+        let bytes = creature_update_0047_action4_vector_target_live_bytes();
+        let bits = creature_update_0047_action4_vector_target_fragment_bits();
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ),
+            "vector orientation, target object, implicit point, and mode-2 0x0040 object must share one exact 0x47 cursor"
         );
         assert_eq!(bit_cursor, bits.len());
     }
@@ -4564,83 +4655,6 @@ fn simulate_creature_update_suffix_after_identity(
         }
     }
 
-    true
-}
-
-fn simulate_legacy_creature_update_mask_0x47(
-    bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: &mut usize,
-) -> bool {
-    let mut cursor = LegacyCreatureUpdateCursor {
-        bytes,
-        record_end,
-        read_cursor: offset + 10,
-        bit_cursor: *bit_cursor,
-        fragment_bits,
-    };
-
-    if cursor.read_unsigned_bits(16).is_none()
-        || cursor.read_unsigned_bits(16).is_none()
-        || cursor.read_unsigned_bits(18).is_none()
-    {
-        return false;
-    }
-
-    let Some(vector_branch) = cursor.read_bool() else {
-        return false;
-    };
-    if vector_branch {
-        if cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-            || cursor.read_unsigned_bits(16).is_none()
-        {
-            return false;
-        }
-    } else if cursor.read_unsigned_bits(12).is_none() {
-        return false;
-    }
-
-    let Some(has_target) = cursor.read_bool() else {
-        return false;
-    };
-    if has_target && cursor.read_u32().is_none() {
-        return false;
-    }
-
-    let Some(action_code) = simulate_legacy_creature_update_action_branch(&mut cursor) else {
-        return false;
-    };
-    if cursor.read_u8().is_none() {
-        return false;
-    }
-    if !simulate_legacy_creature_update_action_post_state_followup(
-        &mut cursor,
-        0x0000_0047,
-        action_code,
-    ) {
-        return false;
-    }
-
-    let Some(_first) = cursor.read_u16() else {
-        return false;
-    };
-    let Some(branch_mode) = cursor.read_u8() else {
-        return false;
-    };
-    if cursor.read_u16().is_none() || cursor.read_u8().is_none() || cursor.read_bool().is_none() {
-        return false;
-    }
-    if branch_mode == 2 && cursor.read_u32().is_none() {
-        return false;
-    }
-
-    if cursor.read_cursor != record_end {
-        return false;
-    }
-    *bit_cursor = cursor.bit_cursor;
     true
 }
 
