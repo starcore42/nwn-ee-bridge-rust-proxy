@@ -2132,6 +2132,38 @@ mod tests {
     }
 
     #[test]
+    fn item_update_boundary_keeps_name_branch_ambiguity_unclaimed() {
+        let mask = LEGACY_UPDATE_NAME_MASK;
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, b'W']);
+        let direct_name_end = LEGACY_UPDATE_HEADER_BYTES + 4;
+        let token_name_end = LEGACY_UPDATE_HEADER_BYTES + 5;
+        live.extend_from_slice(&[b'D', ITEM_OBJECT_TYPE]);
+        live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, direct_name_end),
+            "the direct empty-name endpoint intentionally exposes a W-looking row"
+        );
+        assert!(
+            looks_like_legacy_live_object_sub_message_boundary(&live, token_name_end),
+            "the locstring token endpoint is also followed by a real live-object boundary"
+        );
+        assert_eq!(
+            try_get_item_update_record_end_for_transport(&live, 0, live.len()),
+            Some(live.len()),
+            "without the item-name selector bits, direct and token byte endpoints are ambiguous"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            live.len(),
+            "generic fallback scanning must not choose a name branch from byte shape alone"
+        );
+    }
+
+    #[test]
     fn compact_placeable_add_short_name_boundary_precedes_missing_opcode_same_object_update() {
         let mut live = Vec::new();
         live.extend_from_slice(&[

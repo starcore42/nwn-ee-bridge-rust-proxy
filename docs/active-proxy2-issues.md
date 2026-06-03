@@ -1259,6 +1259,14 @@ Current status:
   scalar_vector_boundary_ambiguity -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 item_update -- --nocapture`, and `cargo test -q -p
   hgbridge-proxy2 live_object_update::boundary::tests:: -- --nocapture`.~~
+- ~~2026-06-04 `P/05/01` item `U/6` name-branch transport-boundary ambiguity
+  audit: no packet behavior changed, but public boundary coverage now pins the
+  same bit-cursor rule for item names. Diamond `sub_451AF0` and EE
+  `sub_14076BD30` read the item-name selector BOOL before choosing direct
+  `CExoString` or locstring-token bytes; without that selector, a direct
+  empty-name endpoint that exposes a `W` row and a locstring-token endpoint that
+  exposes a `D/6` row are byte-shape ambiguity, not boundary proof. Verified
+  with `cargo test -q -p hgbridge-proxy2 item_update_boundary_keeps_name_branch_ambiguity_unclaimed -- --nocapture`.~~
 - 2026-05-31 `P/05/01` item `U/6` locstring-token name audit: no packet
   behavior changed, but public fixture-free coverage now pins the token branch
   of the same decompile-backed item-name bit order. Diamond `sub_451AF0` and EE
