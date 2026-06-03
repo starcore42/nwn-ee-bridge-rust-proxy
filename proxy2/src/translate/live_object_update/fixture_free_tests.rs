@@ -388,6 +388,18 @@ fn direct_name_trigger_add_live_bytes(name: &[u8], vertex_count: u8) -> Vec<u8> 
     live
 }
 
+fn ambiguous_direct_name_trigger_add_live_bytes() -> Vec<u8> {
+    let mut live = vec![b'A', super::TRIGGER_OBJECT_TYPE];
+    live.extend_from_slice(&0x8000_2200u32.to_le_bytes());
+    live.extend_from_slice(&1u32.to_le_bytes());
+    live.push(0); // one-byte direct name; also byte-plausible as the short cursor.
+    live.push(0); // direct cursor byte.
+    live.extend_from_slice(&[0, 0, 0, 1]); // finite direct height; short vertex count = 1.
+    live.push(1); // direct vertex count.
+    live.extend_from_slice(&[0; 12]); // one direct XYZ vertex; also finite as short geometry.
+    live
+}
+
 fn top_level_model_type2_token_name_item_add_live_bytes() -> Vec<u8> {
     let mut live = vec![b'A'];
     live.extend_from_slice(&0x8001_69DCu32.to_le_bytes());
@@ -3426,6 +3438,28 @@ fn trigger_add_owns_name_state_bits_before_geometry() {
     assert!(
         super::claim_payload_if_verified(&shifted).is_none(),
         "trigger add must not hide a terminal fragment bit after its state span"
+    );
+}
+
+#[test]
+fn trigger_add_name_bits_must_match_byte_cursor_branch() {
+    // The four-byte trigger token branch and direct CExoString branch can be
+    // byte-plausible at different cursors. Diamond `sub_4552E0` and EE
+    // `sub_1407B1670` choose that cursor from the name selector bit first, so
+    // exact validation must reject a locstring selector that borrows the longer
+    // direct-name geometry boundary.
+    let live = ambiguous_direct_name_trigger_add_live_bytes();
+
+    let direct_payload = live_object_payload_with_bits(&live, vec![false, false, true]);
+    let direct_claim = super::claim_payload_if_verified(&direct_payload)
+        .expect("direct-name trigger add should exact-claim on its CExoString cursor");
+    assert_eq!(direct_claim.add_records, 1);
+    assert_eq!(direct_claim.live_bytes_length, live.len());
+
+    let mismatched_locstring = live_object_payload_with_bits(&live, vec![true, false, false, true]);
+    assert!(
+        super::claim_payload_if_verified(&mismatched_locstring).is_none(),
+        "locstring/token trigger bits must not claim a direct-name byte boundary"
     );
 }
 

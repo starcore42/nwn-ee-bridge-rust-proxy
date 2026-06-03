@@ -998,7 +998,7 @@ Current status:
   2026-05-31 full-trigger-add cursor correction below. The geometry-only note
   was incomplete because it ignored the decompile-owned name/state BOOL span
   before the cursor/height/vertex fields.~~
-- 2026-05-31 `P/05/01` trigger add name/state cursor correction: fixed the Rust
+- ~~2026-05-31 `P/05/01` trigger add name/state cursor correction: fixed the Rust
   proxy2 `A/7` model to match Diamond `sub_4552E0` and EE `sub_1407B1670`
   rather than only `AddTriggerGeometryToMessage`. Both readers consume the
   name selector first; the locstring/token branch owns the client-TLK selector
@@ -1009,7 +1009,14 @@ Current status:
   The proxy now preserves the trigger-add bytes while advancing exactly that
   fragment span, supports dynamic geometry offsets for direct names, and keeps
   terminal residual bits unclaimed. Verified with `cargo test -q -p
-  hgbridge-proxy2 trigger_add -- --nocapture`.
+  hgbridge-proxy2 trigger_add -- --nocapture`. 2026-06-03 re-audit tightened
+  exact validation so the fragment name selector must match the byte cursor
+  branch: locstring/token bits use the four-byte token cursor, while direct
+  bits use the CExoString cursor. A byte-plausible direct-name geometry boundary
+  can no longer be claimed with locstring selector bits. Verified with
+  `cargo test -q -p hgbridge-proxy2
+  trigger_add_name_bits_must_match_byte_cursor_branch -- --nocapture` and
+  `cargo test -q -p hgbridge-proxy2 trigger_add -- --nocapture`.~~
 - 2026-05-27 `P/05/01` door state update cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompile-backed
   `U/10` mask `0x10` state-BOOL handoff. Diamond `sub_44E2C0` owns five door

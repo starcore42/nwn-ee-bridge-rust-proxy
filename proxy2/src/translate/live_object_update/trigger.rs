@@ -153,10 +153,6 @@ pub(super) fn advance_trigger_add_bit_cursor(
     bits: &[bool],
     bit_cursor: &mut usize,
 ) -> bool {
-    if !verified_ee_trigger_add_record(bytes, record_offset, record_end) {
-        return false;
-    }
-
     // Diamond and EE both read the name selector before the trigger state
     // BOOLs. The locstring branch owns the client-TLK selector bit plus a
     // DWORD strref in the read buffer; the direct branch owns only the outer
@@ -164,11 +160,12 @@ pub(super) fn advance_trigger_add_bit_cursor(
     let Some(name_is_locstring) = bits.get(*bit_cursor).copied() else {
         return false;
     };
-    let minimum_bits = if name_is_locstring { 4 } else { 3 };
-    if bits.len().saturating_sub(*bit_cursor) < minimum_bits {
+    if !trigger_add_shape_matches_name_mode(bytes, record_offset, record_end, name_is_locstring) {
         return false;
     }
-    if !name_is_locstring && locstring::inline_cexo_string_end(bytes, record_offset + 6).is_none() {
+
+    let minimum_bits = if name_is_locstring { 4 } else { 3 };
+    if bits.len().saturating_sub(*bit_cursor) < minimum_bits {
         return false;
     }
 
@@ -181,6 +178,37 @@ pub(super) fn advance_trigger_add_bit_cursor(
 
     *bit_cursor = (*bit_cursor).saturating_add(source_bits);
     true
+}
+
+fn trigger_add_shape_matches_name_mode(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    name_is_locstring: bool,
+) -> bool {
+    if bytes.get(record_offset).copied() != Some(b'A')
+        || bytes.get(record_offset + 1).copied() != Some(TRIGGER_OBJECT_TYPE)
+        || !boundary::looks_like_legacy_live_object_id_at(bytes, record_offset + 2)
+    {
+        return false;
+    }
+
+    let Some(name_cursor) = record_offset.checked_add(6) else {
+        return false;
+    };
+    let Some(cursor_offset) = (if name_is_locstring {
+        // The locstring/token branch is a compact DWORD token in the read
+        // buffer. It does not own direct CExoString bytes, even if the token
+        // DWORD is also byte-plausible as a length field.
+        name_cursor.checked_add(TRIGGER_SHORT_NAME_BYTES)
+    } else {
+        locstring::inline_cexo_string_end(bytes, name_cursor)
+    }) else {
+        return false;
+    };
+
+    read_trigger_add_shape_at_cursor(bytes, cursor_offset, record_end)
+        .is_some_and(|shape| shape.record_end == record_end)
 }
 
 pub(super) fn parse_legacy_trigger_update_for_ee(
