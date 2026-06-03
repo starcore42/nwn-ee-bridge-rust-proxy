@@ -2146,6 +2146,27 @@ Current status:
   seq19 stream next to determine whether the remaining shifted handoff is
   resolved by this generalized trim fix or still needs a separate
   stream-boundary owner.~~
+- 2026-06-03 `P/05/01` clean-fragment stream assembly audit: fixed the pending
+  legacy high-level fragment append path so it uses the same normalized
+  read-buffer / CNW tail split that the clean-fragment detector already proves.
+  The XP2 seq19 `pending-live-object-unclaimed-seq19-chunks1..6` diagnostics show
+  repeated cumulative windows ending with a `W current total` read-buffer row
+  plus trailing CNW storage bytes before the next window starts at a fresh
+  `A/09` boundary. Appending raw bytes stranded each per-chunk tail in the
+  pending live-object read stream, which can shift later add/update cursors even
+  though the final rebuilt fixture looks byte-plausible. Added fixture-free
+  coverage for a normalized clean fragment ending in `W` plus one tail byte.
+  Private replay of the existing rebuilt XP2 seq19 fixture still stays unclaimed
+  and unchanged, as expected for a fixture assembled before this correction; run
+  a fresh local XP2 replay next to confirm whether the stream-boundary owner is
+  now resolved. 2026-06-03
+  follow-up: added public fixture-free chunk-level coverage for two
+  zero-declared clean fragments, proving each chunk is normalized before append
+  and that per-chunk CNW tails (`0xA0`, `0x80`) stay out of rebuilt read bytes.
+  Verified with `cargo test -q -p hgbridge-proxy2
+  zero_declared_clean_fragment_chunks_keep_each_tail_out_of_read_bytes --
+  --nocapture`. A fresh local XP2 replay is still needed before closing the
+  stream-boundary owner search.
 - ~~2026-06-02 `P/05/01` `W current total` trailing-span/compact-boundary
   audit: fixed over-promotion in the terminal `W` fragment-span path. Diamond
   `sub_44F160` and EE `sub_1407B85A0` read exactly `W current total` and no CNW

@@ -674,6 +674,16 @@ fn claim_server_zlib_stream_owner(state: &mut SessionState, owner: ContinuationO
 mod fixture_free_tests {
     use super::*;
 
+    fn zero_declared_clean_fragment(live: &[u8], fragment: &[u8]) -> Vec<u8> {
+        let mut payload = vec![
+            b'P', 0x05, 0x01, // GameObjUpdate_LiveObject
+            0x00, 0x00, 0x00, 0x00, // Diamond/HG zero-declared fragment prefix
+        ];
+        payload.extend_from_slice(live);
+        payload.extend_from_slice(fragment);
+        payload
+    }
+
     #[test]
     fn normalized_clean_fragment_append_keeps_fragment_tail_out_of_read_bytes() {
         // Generalized from multi-window XP2 live-object evidence: a legacy
@@ -717,6 +727,48 @@ mod fixture_free_tests {
             vec![0xA0],
             "the per-chunk trailing CNW tail must not be stranded in read bytes"
         );
+    }
+
+    #[test]
+    fn zero_declared_clean_fragment_chunks_keep_each_tail_out_of_read_bytes() {
+        // Chunk-level variant of the XP2 stream-boundary evidence: each
+        // high-level fragment starts with Diamond/HG's zero declared slot, then
+        // a decompile-owned read-buffer row and a compact CNW tail. The pending
+        // stream must normalize every chunk before appending it; otherwise a
+        // prior chunk's tail becomes opcode-looking read bytes in the rebuilt
+        // `P/05/01` stream.
+        let first_live = [b'W', 0x01, 0x0E];
+        let second_live = [b'W', 0x02, 0x0E];
+        let first_chunk = zero_declared_clean_fragment(&first_live, &[0xA0]);
+        let second_chunk = zero_declared_clean_fragment(&second_live, &[0x80]);
+
+        let mut state = SessionState::default();
+        append_pending_live_object_clean_fragment(&mut state, 19, &first_chunk);
+        append_pending_live_object_clean_fragment(&mut state, 20, &second_chunk);
+
+        let pending = state
+            .live_object
+            .pending_stream
+            .as_ref()
+            .expect("clean chunks should leave a pending live-object stream");
+        assert_eq!(pending.chunks, 2);
+        assert_eq!(
+            pending.read_bytes,
+            vec![b'W', 0x01, 0x0E, b'W', 0x02, 0x0E],
+            "normalized read bytes must contain only decompile-owned W rows"
+        );
+        assert_eq!(
+            pending.fragment_bytes,
+            vec![0xA0, 0x80],
+            "each chunk's compact CNW tail stays in fragment storage"
+        );
+
+        let rebuilt = build_pending_live_object_stream_payload(&state)
+            .expect("read bytes and fragment bytes should rebuild a P/05/01 payload");
+        let declared = read_live_object_declared(&rebuilt).expect("rebuilt payload has declared");
+        assert_eq!(declared, 7 + first_live.len() + second_live.len());
+        assert_eq!(&rebuilt[7..declared], &[b'W', 0x01, 0x0E, b'W', 0x02, 0x0E]);
+        assert_eq!(&rebuilt[declared..], &[0xA0, 0x80]);
     }
 }
 
