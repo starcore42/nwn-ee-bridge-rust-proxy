@@ -1361,6 +1361,16 @@ Current status:
   stay focused on the actual source cursor/handoff bits rather than adding a
   special U/6 name-branch rescue. Verified with `cargo test -q -p
   hgbridge-proxy2 locstring_inline -- --nocapture`.
+- 2026-06-04 `P/05/01` full item `U/6` locstring-token audit: no packet
+  behavior changed, but public fixture-free coverage now pins the token sibling
+  of the same all-bits item-update rule. Diamond `sub_451AF0` and EE
+  `sub_14076BD30` read the outer item-name selector, the token/client-TLK
+  selector bit, the read-buffer selector BYTE plus DWORD token, and only then
+  EE's hidden-state BOOL. Typed `A/6` active-property insertion also preserves
+  the following full `U/6` token-name cursor exactly, so the remaining CEP v2.3
+  two-bit handoff evidence is not a missing token-name branch. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-item-token cargo test -q -p hgbridge-proxy2 item_full_update -- --nocapture`
+  and `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-item-token cargo test -q -p hgbridge-proxy2 typed_item_create -- --nocapture`.
 - 2026-06-01 `P/05/01` typed item-create / full item-update handoff negative
   proof: no packet behavior changed, but public fixture-free coverage now
   captures the remaining CEP v2.3 source-bit shape directly. A preceding typed
