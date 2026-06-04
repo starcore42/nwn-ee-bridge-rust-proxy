@@ -1624,7 +1624,7 @@ Current status:
 - 2026-06-01 `P/05/01` CEP raw handoff bit replay: no packet behavior changed,
   but public fixture-free coverage now replays the unresolved private-stream
   source bits without relying on semantic-looking helper defaults. The replay
-  uses raw `A/10` bits `11010`, CEP `U/10` tail9 bits `01100011`, no-map
+  uses raw `A/10` bits `11011`, CEP `U/10` tail9 bits `01100011`, no-map
   `A/6` bits `00100`, and following `U/6` bits beginning
   `01110101100000`. After the decompile-owned `A/10`, `U/10`, and `A/6`
   rewrites, the real `U/6` cursor still selects vector orientation while the
@@ -1635,6 +1635,17 @@ Current status:
   `cargo test -q -p hgbridge-proxy2
   cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair --
   --nocapture`.
+- 2026-06-04 `P/05/01` CEP raw handoff bit replay correction: no packet
+  behavior changed. Re-dumped the private CEP v2.3 starter fixture and confirmed
+  the first post-header A/10 bits are `11011` (short-name branch plus state
+  bits `1011`). Updated the raw
+  no-map replay to use that actual A/10 state and added a sibling for the
+  normalized EE-shaped A/10 prefix reached after the first rewrite pass. Both
+  still reject unchanged unless a separate decompile-backed owner consumes the
+  two bits before the following `U/6`, while the item reader still validates at
+  cursor `+2`. Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-cep-handoff cargo test
+  -q -p hgbridge-proxy2 raw_neighbor_u6 -- --nocapture`.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
