@@ -1584,6 +1584,16 @@ Current status:
   cursor. Removed the unused duplicate `0x47` parser so future bit-order work
   cannot diverge from the shared decompile-backed simulator. Verified with
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-creature-0047-branches cargo test -q -p hgbridge-proxy2 creature_update_0047_action4 -- --nocapture`.~~
+- ~~2026-06-04 `P/05/01` creature `U/5 0x4000` master-detail locstring audit:
+  the exact cursor now accepts the optional dominated/master detail branch only
+  in the decompiled order: five status BOOLs, guarded OBJECTID, two
+  `WriteCExoLocStringServer` values, then the final two status BOOLs. The
+  server locstring cursor follows the Diamond/EE bit-fronted shape proven in
+  `sub_53E700` / `WriteCExoLocStringServer`: selector BOOL, optional
+  language-selector BOOL plus DWORD strref, or inline length-prefixed
+  CExoString. Fixture-free coverage proves no-master, direct/direct, TLK/direct,
+  and shifted/missing-bit rejection. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-creature-4000-master cargo test -q -p hgbridge-proxy2 creature_update_4000_master_detail -- --nocapture`.~~
 - 2026-06-01 `P/05/01` active-property tail and short-strref state audit:
   no packet behavior changed, but the generalized handoff proof now covers the
   exact leading `A/10` short-strref fragment values seen in the CEP v2.3

@@ -4102,6 +4102,40 @@ mod tests {
         bits
     }
 
+    fn creature_update_4000_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_4000u32.to_le_bytes());
+        bytes
+    }
+
+    fn append_cexo_string(bytes: &mut Vec<u8>, text: &[u8]) {
+        bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(text);
+    }
+
+    fn creature_update_4000_master_detail_direct_live_bytes() -> Vec<u8> {
+        let mut bytes = creature_update_4000_live_bytes();
+        bytes.extend_from_slice(&0x8000_000Bu32.to_le_bytes());
+        append_cexo_string(&mut bytes, b"Dominated");
+        append_cexo_string(&mut bytes, b"Master");
+        bytes
+    }
+
+    fn creature_update_4000_master_detail_tlk_live_bytes() -> Vec<u8> {
+        let mut bytes = creature_update_4000_live_bytes();
+        bytes.extend_from_slice(&0x8000_000Bu32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_1234u32.to_le_bytes());
+        append_cexo_string(&mut bytes, b"Master");
+        bytes
+    }
+
+    fn creature_update_4000_fragment_bits(body_bits: &[bool]) -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(body_bits);
+        bits
+    }
+
     #[test]
     fn loaded_visualeffects_rows_drive_creature_status_target_payload_width() {
         let mut rows = vec![None; 0x1235];
@@ -4347,6 +4381,84 @@ mod tests {
             "vector orientation, target object, implicit point, and mode-2 0x0040 object must share one exact 0x47 cursor"
         );
         assert_eq!(bit_cursor, bits.len());
+    }
+
+    #[test]
+    fn creature_update_4000_master_detail_locstrings_follow_guarded_branch() {
+        let no_master_bytes = creature_update_4000_live_bytes();
+        let no_master_bits =
+            creature_update_4000_fragment_bits(&[false, false, false, false, false, false, false]);
+        let mut no_master_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &no_master_bytes,
+                0,
+                no_master_bytes.len(),
+                &no_master_bits,
+                &mut no_master_cursor,
+            ),
+            "the 0x4000 status suffix without master detail strings owns only seven BOOLs"
+        );
+        assert_eq!(no_master_cursor, no_master_bits.len());
+
+        let direct_bytes = creature_update_4000_master_detail_direct_live_bytes();
+        let direct_bits = creature_update_4000_fragment_bits(&[
+            false, false, false, false, true, false, false, false, false,
+        ]);
+        let mut direct_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &direct_bytes,
+                0,
+                direct_bytes.len(),
+                &direct_bits,
+                &mut direct_cursor,
+            ),
+            "direct-string server locstrings are read between the guarded object id and final 0x4000 BOOLs"
+        );
+        assert_eq!(direct_cursor, direct_bits.len());
+
+        let tlk_bytes = creature_update_4000_master_detail_tlk_live_bytes();
+        let tlk_bits = creature_update_4000_fragment_bits(&[
+            false, false, false, false, true, true, false, false, false, false,
+        ]);
+        let mut tlk_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &tlk_bytes,
+                0,
+                tlk_bytes.len(),
+                &tlk_bits,
+                &mut tlk_cursor,
+            ),
+            "TLK-ref server locstrings consume selector BOOL, language BOOL, then DWORD ref before the next locstring"
+        );
+        assert_eq!(tlk_cursor, tlk_bits.len());
+    }
+
+    #[test]
+    fn creature_update_4000_master_detail_rejects_shifted_locstring_bits() {
+        let bytes = creature_update_4000_master_detail_direct_live_bytes();
+        let bits = creature_update_4000_fragment_bits(&[
+            false, false, false, false, true, false, false, false,
+        ]);
+        let mut bit_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut bit_cursor,
+            ),
+            "the final two status BOOLs must not be borrowed to satisfy missing locstring selector bits"
+        );
+        assert_eq!(
+            bit_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+            "failed 0x4000 cursor proof must restore the caller's fragment cursor"
+        );
     }
 
     #[test]
@@ -4635,12 +4747,20 @@ fn simulate_creature_update_suffix_after_identity(
             return false;
         };
         if has_master_detail_strings {
-            // The optional branch writes OBJECTID plus two
-            // `WriteCExoLocStringServer` values. We have not yet captured that
-            // legacy shape in HG traffic, so keep strict mode honest: packets
-            // taking this branch remain unclaimed until a decompile-backed
-            // locstring-server cursor parser is added.
-            return false;
+            // EE `loc_1404ED5B5` writes the guarded dominated/master detail
+            // block as OBJECTID, then two `WriteCExoLocStringServer` values.
+            // Diamond's matching locstring helper and EE's shared
+            // `WriteCExoLocStringServer` shape are bit-fronted: one selector
+            // BOOL, then either a second selector BOOL plus DWORD string-ref or
+            // an inline length-prefixed CExoString. Keep the final two status
+            // BOOLs after both locstrings so this branch cannot borrow their
+            // bits as string selectors.
+            if cursor.read_u32().is_none()
+                || cursor.read_server_locstring().is_none()
+                || cursor.read_server_locstring().is_none()
+            {
+                return false;
+            }
         }
         if cursor.read_bool().is_none() || cursor.read_bool().is_none() {
             return false;
@@ -4876,6 +4996,16 @@ impl LegacyCreatureUpdateCursor<'_> {
             // before the DWORD token reference. Do not collapse this to the
             // inline CExoString shape; the read bytes can be identical while
             // the fragment cursor is two bits wider.
+            self.read_bool()?;
+            self.read_u32()?;
+        } else {
+            self.read_cexo_string()?;
+        }
+        Some(())
+    }
+
+    fn read_server_locstring(&mut self) -> Option<()> {
+        if self.read_bool()? {
             self.read_bool()?;
             self.read_u32()?;
         } else {
