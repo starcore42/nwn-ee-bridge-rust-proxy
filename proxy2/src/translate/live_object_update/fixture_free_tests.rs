@@ -444,6 +444,14 @@ fn ee_shaped_gui_inventory_model_type2_item_create_live_bytes() -> Vec<u8> {
     live
 }
 
+fn legacy_width_gui_inventory_model_type2_item_create_live_bytes() -> Vec<u8> {
+    let typed = legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes();
+    let mut live = vec![b'G', b'I', b'A'];
+    live.extend_from_slice(&0u32.to_le_bytes()); // inventory slot/container payload.
+    live.extend_from_slice(&typed[2..]); // GUI rows start at the item OBJECTID.
+    live
+}
+
 fn inject_live_boundary_lookalike_into_item_property_values(live: &mut [u8]) {
     let name_start = live
         .windows(b"Lance".len())
@@ -2197,6 +2205,42 @@ fn live_gui_missing_inventory_add_opcode_rejects_unproven_item_name_bits() {
     assert_eq!(
         payload, original,
         "failed GUI item-create proof must leave bytes and fragment bits untouched"
+    );
+}
+
+#[test]
+fn live_gui_missing_inventory_add_opcode_is_not_byte_only_boundary() {
+    // `G I/i 00` is a repairable Diamond capture quirk only after the focused
+    // item-create parser proves the row's fragment bits. A byte-only boundary
+    // scan must not treat the zero inner opcode as equivalent to the explicit
+    // `G I/i A` row, or shifted terminal evidence can become false alignment
+    // proof for following live-object records.
+    let explicit = legacy_width_gui_inventory_model_type2_item_create_live_bytes();
+    assert_eq!(
+        super::gui::try_get_legacy_live_gui_record_end(&explicit, 0, explicit.len()),
+        Some(explicit.len()),
+        "explicit G I A item-create rows remain valid byte-only GUI boundaries"
+    );
+
+    let mut missing = explicit;
+    missing[2] = 0x00;
+    assert!(
+        super::gui::looks_like_legacy_live_gui_rewrite_boundary(&missing, 0),
+        "the focused rewrite path still recognizes the missing-opcode candidate"
+    );
+    assert_eq!(
+        super::gui::try_get_legacy_live_gui_record_end(&missing, 0, missing.len()),
+        None,
+        "unproven G I 00 rows must not be claimed by byte-only GUI boundary scans"
+    );
+    assert_eq!(
+        super::gui::try_get_legacy_live_gui_item_create_read_end(&missing, 0, missing.len()),
+        None,
+        "the GUI item read-end fallback also needs an explicit inner A without fragment proof"
+    );
+    assert!(
+        !super::boundary::looks_like_legacy_live_object_sub_message_boundary(&missing, 0),
+        "generic live-object boundary scans must leave G I 00 to the focused proof path"
     );
 }
 

@@ -683,7 +683,7 @@ pub(super) fn is_zero_fragment_storage_span_before_legacy_live_gui_prefix(
     if span_start >= span_end
         || span_end > bytes.len()
         || span_end.saturating_sub(span_start) > MAX_GUI_ZERO_FRAGMENT_STORAGE_BYTES
-        || legacy_live_gui_item_create_prefix(bytes, span_end, bytes.len()).is_none()
+        || explicit_legacy_live_gui_item_create_prefix(bytes, span_end, bytes.len()).is_none()
     {
         return false;
     }
@@ -709,7 +709,7 @@ pub(super) fn try_get_legacy_live_gui_item_create_read_end(
 ) -> Option<usize> {
     let scan_end = search_end.min(bytes.len());
     let item_object_offset =
-        legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
+        explicit_legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
     appearance::try_get_legacy_item_create_record_end(bytes, item_object_offset, scan_end)
 }
 
@@ -1258,8 +1258,13 @@ fn try_get_legacy_live_gui_item_create_record_end(
 ) -> Option<usize> {
     let scan_end = search_end.min(bytes.len());
     let item_object_offset =
-        legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
-    appearance::try_get_legacy_gui_item_create_record_end(bytes, item_object_offset, scan_end, true)
+        explicit_legacy_live_gui_item_create_prefix(bytes, offset, scan_end)?.item_object_offset;
+    appearance::try_get_legacy_gui_item_create_record_end(
+        bytes,
+        item_object_offset,
+        scan_end,
+        false,
+    )
 }
 
 fn find_legacy_live_gui_item_fragment_span_end(bytes: &[u8], span_start: usize) -> Option<usize> {
@@ -1306,6 +1311,23 @@ fn legacy_live_gui_item_create_prefix(
     offset: usize,
     record_end: usize,
 ) -> Option<LiveGuiItemCreatePrefix> {
+    legacy_live_gui_item_create_prefix_with_missing_policy(bytes, offset, record_end, true)
+}
+
+fn explicit_legacy_live_gui_item_create_prefix(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<LiveGuiItemCreatePrefix> {
+    legacy_live_gui_item_create_prefix_with_missing_policy(bytes, offset, record_end, false)
+}
+
+fn legacy_live_gui_item_create_prefix_with_missing_policy(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    allow_missing_inventory_add_opcode: bool,
+) -> Option<LiveGuiItemCreatePrefix> {
     if record_end > bytes.len()
         || offset.checked_add(3)? > record_end
         || bytes.get(offset).copied() != Some(LIVE_GUI_OPCODE)
@@ -1326,7 +1348,7 @@ fn legacy_live_gui_item_create_prefix(
         (
             GUI_INVENTORY_SUBOPCODE | GUI_INVENTORY_LOWER_SUBOPCODE,
             GUI_LEGACY_MISSING_ADD_INNER_OPCODE,
-        ) => {
+        ) if allow_missing_inventory_add_opcode => {
             let item_object_offset = offset.checked_add(7)?;
             (item_object_offset < record_end
                 && looks_like_legacy_live_gui_object_id_at(bytes, item_object_offset))

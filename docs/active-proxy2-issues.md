@@ -1719,6 +1719,21 @@ Current status:
   local_diamond_auto_inventory_u5_4408_gui_rows_stream_stays_unclaimed_after_gui_cursor_audit
   -- --nocapture`, and `cargo test -q -p hgbridge-proxy2 live_object_update --
   --test-threads=1`.
+- ~~2026-06-04 `P/05/01` live-GUI missing-add-opcode byte-boundary audit:
+  tightened the GUI boundary classifier so `G I/i 00` remains visible to the
+  focused missing-inner-opcode rewrite path but no longer counts as a byte-only
+  live-object submessage boundary or item-create read-end fallback. Diamond
+  `sub_4589A0` and EE `sub_1407B3F30` dispatch explicit `A`/`D`/`U` inner rows;
+  the captured zero inner opcode is therefore repairable only when the shared
+  item-create parser proves the row's name/active-property fragment bits at the
+  inherited cursor. Public coverage now proves explicit `G I A` rows still
+  byte-claim, `G I 00` rows stay rewrite-only before proof, and the positive
+  missing-opcode repair still succeeds with item-bit evidence. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-gui-boundary cargo test -q -p hgbridge-proxy2 live_gui_missing_inventory_add_opcode -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 live_gui_ -- --nocapture`, `cargo test -q
+  -p hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo fmt
+  --all --check`, `cargo check -q -p hgbridge-proxy2`, and `git diff
+  --check`.~~
 - ~~2026-06-04 `P/05/01` live-GUI `GQ` quickbar-link row-offset audit: no
   packet behavior changed, but public fixture-free coverage now pins the
   byte-exact read-buffer-only row shape. Diamond `sub_4589A0` and EE
