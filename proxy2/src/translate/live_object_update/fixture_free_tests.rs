@@ -5464,6 +5464,81 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
 }
 
 #[test]
+fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
+    // The checked-in CEP v2.3 starter stream's raw tail starts
+    // `7A 63 23 AC ...`. Its first three MSB bits are the CNW final-valid-bit
+    // count, so the decompile-owned live-object source bits start only after
+    // `CNW_FRAGMENT_HEADER_BITS`. The following U/6's first two bits are part
+    // of that item row, not reusable header/storage residue.
+    let raw_a10_bits = [true, true, false, true, false];
+    let raw_tail9_u10_bits = [false, true, true, false, false, false, true, true];
+    let raw_no_map_a6_bits = [false, false, true, false, false];
+    let raw_shifted_u6_prefix_bits = [
+        false, true, // unowned pre-cursor residue in the private trace.
+        true, true, // item position residuals only if a prior owner consumes the residue.
+        false, true, false, true, true, // scalar-orientation selector plus residual bits.
+        false, false, false, false, false, // item state bits observed before the name branch.
+    ];
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    let a10_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_a10_bits);
+    let tail9_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_tail9_u10_bits);
+    let no_map_a6_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_no_map_a6_bits);
+    let shifted_u6_start = fragment_bits.len();
+    fragment_bits.extend_from_slice(&raw_shifted_u6_prefix_bits);
+
+    let packed =
+        super::bits::pack_msb_valid_bits(fragment_bits.clone(), super::CNW_FRAGMENT_HEADER_BITS);
+    assert_eq!(&packed[..4], &[0x7A, 0x63, 0x23, 0xAC]);
+    let decoded = super::bits::decode_msb_valid_bits(&packed, super::CNW_FRAGMENT_HEADER_BITS)
+        .expect("fragment bits should decode");
+
+    assert_eq!(
+        &decoded[..super::CNW_FRAGMENT_HEADER_BITS],
+        &[false, true, true],
+        "CNW fragment header encodes the final-byte valid-bit count"
+    );
+    assert_eq!(a10_start, super::CNW_FRAGMENT_HEADER_BITS);
+    assert_eq!(tail9_start, 8);
+    assert_eq!(no_map_a6_start, 16);
+    assert_eq!(shifted_u6_start, 21);
+    assert_eq!(
+        &decoded[a10_start..tail9_start],
+        &raw_a10_bits,
+        "raw A/10 source bits must begin after the CNW header"
+    );
+    assert_eq!(
+        &decoded[tail9_start..no_map_a6_start],
+        &raw_tail9_u10_bits,
+        "tail9 U/10 source bits own exactly their decompiled width"
+    );
+    assert_eq!(
+        &decoded[no_map_a6_start..shifted_u6_start],
+        &raw_no_map_a6_bits,
+        "typed A/6 no-map source bits do not own following item bits"
+    );
+    assert_eq!(
+        &decoded[shifted_u6_start..],
+        &raw_shifted_u6_prefix_bits,
+        "the apparent cursor +2 fit starts inside the following U/6 source bits"
+    );
+
+    let mut repaired_prefix_bits =
+        legacy_short_strref_door_add_expected_ee_bits_with_state([true, false, true, false]);
+    repaired_prefix_bits
+        .extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    repaired_prefix_bits.extend_from_slice(&[false, false, false, true, false, false]);
+    assert_eq!(
+        super::CNW_FRAGMENT_HEADER_BITS + repaired_prefix_bits.len(),
+        28,
+        "after proven prior rewrites the item row still starts at the true CEP cursor"
+    );
+}
+
+#[test]
 fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
     // The private CEP v2.3 trace reaches the Lance U/6 after the normalized
     // A/10, tail9 U/10, and no-map A/6 rewrites at bit cursor 28. Several

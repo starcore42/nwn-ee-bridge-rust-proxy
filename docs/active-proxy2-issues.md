@@ -1860,6 +1860,22 @@ Current status:
   separate decompile-backed owner consumes the two bits before the following
   `U/6`, while the item reader still validates at cursor `+2`. Verified with
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260606-auto-current cargo test -q -p hgbridge-proxy2 raw_neighbor_u6 -- --nocapture`.
+- 2026-06-07 `P/05/01` CEP raw fragment-tail cursor audit: no packet behavior
+  changed. Replayed the checked-in CEP v2.3 starter fragment tail at the CNW
+  storage layer and pinned the first bytes/bits as `7A 63 23 AC...`: the first
+  three MSB bits are only the CNW final-valid-bit header `011`; semantic bits
+  begin at bit 3 with raw A/10 `11010`, U/10 tail9 `01100011`, no-map A/6
+  `00100`, then the following full U/6 starts `01110101100000`. The two bits
+  that make the item reader validate at cursor `+2` are therefore part of the
+  raw U/6 source row, not header bits, continuation prefix storage,
+  inventory/delete short-boundary storage, or terminal tail. Client decompile
+  cross-check remains Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
+  `sub_1407B8380 -> sub_14079C050 -> sub_14076BD30`; server-side symbolic
+  writer search was too noisy to identify the exact source writer. Next useful
+  trace is still the Diamond server `WriteGameObjUpdate_UpdateObject` item
+  mask `0xFFFF_FFF3` path or a local harness capture around the chunk boundary
+  before the `U/10`/`A/6`/`U/6` sequence. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex-verify/run-20260607-cep-proof cargo test -q -p hgbridge-proxy2 cep_ -- --nocapture`.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
