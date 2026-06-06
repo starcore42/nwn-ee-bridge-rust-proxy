@@ -2271,10 +2271,15 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
     //
     // Keep the transformation here so the GUI module only owns row framing,
     // while the decompile-owned item appearance/active-property deltas stay
-    // with the other item-create translators.
+    // with the other item-create translators. Stage both fragment and byte
+    // edits together so a failed byte proof cannot strand EE-only BOOLs before
+    // the following live-object record cursor.
+    let mut staged_bytes = bytes.clone();
+    let mut staged_record_end = *record_end;
+    let mut staged_fragment_bits = fragment_bits.clone();
     for (inserted, relative_offset) in record.ee_extra_insert_offsets.iter().copied().enumerate() {
         bits::insert_msb_bit(
-            fragment_bits,
+            &mut staged_fragment_bits,
             bit_cursor
                 .checked_add(relative_offset)?
                 .checked_add(inserted)?,
@@ -2283,11 +2288,14 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
     }
 
     let byte_apply = apply_creature_appearance_byte_inserts(
-        bytes,
+        &mut staged_bytes,
         item_object_offset,
-        record_end,
+        &mut staged_record_end,
         &record.ee_extra_byte_inserts,
     )?;
+    *bytes = staged_bytes;
+    *record_end = staged_record_end;
+    *fragment_bits = staged_fragment_bits;
 
     Some(CreatureAppearanceExtraRewrite {
         bits_inserted: record.ee_extra_insert_offsets.len(),
@@ -4722,13 +4730,19 @@ fn apply_creature_appearance_byte_inserts(
     record_end: &mut usize,
     inserts: &[CreatureAppearanceByteInsert],
 ) -> Option<CreatureAppearanceByteApplySummary> {
+    if inserts.is_empty() {
+        return Some(CreatureAppearanceByteApplySummary::default());
+    }
+
+    let mut staged_bytes = bytes.clone();
+    let mut staged_record_end = *record_end;
     let mut byte_inserts = inserts.to_vec();
     byte_inserts.sort_by_key(|insert| (insert.offset(), insert.order()));
     let mut byte_delta = 0isize;
     let mut summary = CreatureAppearanceByteApplySummary::default();
     for insert in byte_inserts.iter() {
         let insert_offset = insert.offset();
-        if insert_offset < offset || insert_offset > *record_end {
+        if insert_offset < offset || insert_offset > staged_record_end {
             return None;
         }
         let actual_insert_offset = if byte_delta.is_negative() {
@@ -4738,33 +4752,37 @@ fn apply_creature_appearance_byte_inserts(
         };
         let bytes_removed = insert.bytes_removed();
         let removal_end = actual_insert_offset.checked_add(bytes_removed)?;
-        if removal_end > bytes.len() {
+        if removal_end > staged_bytes.len() {
             return None;
         }
         if matches!(
             insert,
             CreatureAppearanceByteInsert::LegacyScalarVisualTransformIdentityReplacement { .. }
-        ) && bytes.get(actual_insert_offset..removal_end)
+        ) && staged_bytes.get(actual_insert_offset..removal_end)
             != Some(&LEGACY_SCALAR_VISUAL_TRANSFORM_IDENTITY_BYTES[..])
         {
             return None;
         }
         let insert_bytes = insert.bytes();
-        bytes.splice(
+        staged_bytes.splice(
             actual_insert_offset..removal_end,
             insert_bytes.iter().copied(),
         );
         summary.bytes_inserted = summary.bytes_inserted.checked_add(insert_bytes.len())?;
         summary.bytes_removed = summary.bytes_removed.checked_add(bytes_removed)?;
         if insert_bytes.len() >= bytes_removed {
-            *record_end = (*record_end).checked_add(insert_bytes.len() - bytes_removed)?;
+            staged_record_end =
+                staged_record_end.checked_add(insert_bytes.len() - bytes_removed)?;
         } else {
-            *record_end = (*record_end).checked_sub(bytes_removed - insert_bytes.len())?;
+            staged_record_end =
+                staged_record_end.checked_sub(bytes_removed - insert_bytes.len())?;
         }
         byte_delta = byte_delta
             .checked_add(isize::try_from(insert_bytes.len()).ok()?)?
             .checked_sub(isize::try_from(bytes_removed).ok()?)?;
     }
+    *bytes = staged_bytes;
+    *record_end = staged_record_end;
     Some(summary)
 }
 
@@ -10913,6 +10931,27 @@ mod public_tests {
             &mut ee_cursor,
         ));
         assert_eq!(ee_cursor, stale_bits.len());
+    }
+
+    #[test]
+    fn byte_insert_application_rolls_back_after_later_failed_insert() {
+        let mut bytes = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let original_bytes = bytes.clone();
+        let mut record_end = bytes.len();
+        let original_record_end = record_end;
+        let inserts = vec![
+            CreatureAppearanceByteInsert::EeFeature23ItemAppearanceHighByte { offset: 1 },
+            CreatureAppearanceByteInsert::LegacyScalarVisualTransformIdentityReplacement {
+                offset: 2,
+            },
+        ];
+
+        assert!(
+            apply_creature_appearance_byte_inserts(&mut bytes, 0, &mut record_end, &inserts)
+                .is_none()
+        );
+        assert_eq!(bytes, original_bytes);
+        assert_eq!(record_end, original_record_end);
     }
 }
 
