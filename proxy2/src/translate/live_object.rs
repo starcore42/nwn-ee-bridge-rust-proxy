@@ -5347,6 +5347,16 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn item_full_scalar_direct_name_update_bits() -> Vec<bool> {
+        vec![
+            false, true, // position residual bits.
+            false, true, false, true, false, // scalar orientation selector and residual bits.
+            true, false, true, false, true,  // item state bits.
+            false, // direct CExoString item name.
+            true,  // EE hidden-state BOOL after item name.
+        ]
+    }
+
     fn creature_zero_update_live_bytes() -> Vec<u8> {
         let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -6267,6 +6277,46 @@ mod declared_length_repair_tests {
                 &enough_bits,
             ),
             "A/6 item-create capacity must accept the exact Diamond source cursor"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_rejects_item_create_borrowing_following_update_bits() {
+        // CEP-style `A/6 -> U/6` handoff risk: the typed item-create row owns
+        // five Diamond source bits before the following item update starts.
+        // Even when the following full U/6 has enough bits to look plausible,
+        // the transport preflight must reject a stream that can only make the
+        // A/6 proof work by consuming the first U/6 bit.
+        let mut live = typed_item_create_live_bytes();
+        live.extend_from_slice(&item_full_scalar_direct_name_update_live_bytes(b"Lance"));
+
+        let item_create_bits = [false, false, true, false, false];
+        let item_update_bits = item_full_scalar_direct_name_update_bits();
+
+        let mut shifted_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        shifted_bits.extend_from_slice(&item_create_bits[..4]);
+        shifted_bits.extend_from_slice(&item_update_bits);
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &shifted_bits,
+            ),
+            "A/6 capacity must not borrow the following U/6 bit and shift the item update cursor"
+        );
+
+        let mut exact_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        exact_bits.extend_from_slice(&item_create_bits);
+        exact_bits.extend_from_slice(&item_update_bits);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &exact_bits,
+            ),
+            "A/6 plus full U/6 capacity should pass when both records own their exact source bits"
         );
     }
 

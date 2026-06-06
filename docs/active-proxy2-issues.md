@@ -1577,6 +1577,19 @@ Current status:
   a two-bit neighboring-cursor skip. Later live-object rows therefore are not the
   missing owner for the CEP `U/6`; continue with the original server writer or
   CNW fragment storage/continuation handoff before `U/10`/`A/6`/`U/6`.
+- 2026-06-06 `P/05/01` typed item-create/update declared-capacity handoff
+  audit: no packet behavior changed. Added public fixture-free coverage proving
+  source-side declared-length capacity rejects an `A/6 -> U/6` read prefix when
+  the typed item-create row is one Diamond source BOOL short, even if the
+  following full item `U/6` has enough bits to look plausible. The positive
+  sibling still accepts when `A/6` owns its five source bits and the following
+  full item update owns its own decompile-correct scalar/direct-name bits. This
+  rules out stale-declared capacity as the two-bit owner in the CEP v2.3 handoff;
+  continue with original server writer / CNW fragment storage / continuation
+  evidence before the `U/10`/`A/6`/`U/6` sequence. Verified with `cargo test -q
+  -p hgbridge-proxy2
+  declared_length_capacity_rejects_item_create_borrowing_following_update_bits
+  -- --nocapture`.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
