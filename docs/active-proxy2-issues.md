@@ -1890,6 +1890,21 @@ Current status:
   and private
   `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p hgbridge-proxy2
   local_cepv23_starter_tail_starts_at_declared_offset -- --nocapture`.
+- 2026-06-07 `P/05/01` CEP single-frame stream audit: no packet behavior
+  changed. Rechecked local Diamond harness run
+  `C:\nwnbridge\local-diamond-bridge-20260523-190505`; server seq17 logged as
+  `inflated_length=411 expected_frames=1 packetized_sequence=1 zlib_stream=true`
+  and duplicate replay `frames=1 ... compressed=210 replay="verified-packets"`.
+  Added private stream-layer regression
+  `local_cepv23_starter_single_frame_is_left_for_dispatcher` to prove that the
+  complete high-level `P/05/01` fixture bypasses stream buffering unchanged and
+  leaves no pending stream/proxy-owned zlib state. This rules out proxy
+  chunk/continuation boundary ownership for the two disputed bits in this
+  fixture; the next useful evidence target remains the Diamond server writer
+  for item update mask `0xFFFF_FFF3` before `U/10`/`A/6`/`U/6`. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex-verify/run-20260607-single-frame
+  RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p hgbridge-proxy2
+  local_cepv23_starter_single_frame_is_left_for_dispatcher -- --nocapture`.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

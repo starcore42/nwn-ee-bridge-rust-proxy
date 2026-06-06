@@ -1065,4 +1065,44 @@ mod tests {
             "adding the envelope width skips into the middle of the real fragment tail"
         );
     }
+
+    #[test]
+    fn local_cepv23_starter_single_frame_is_left_for_dispatcher() {
+        // The local Diamond harness run
+        // `C:\nwnbridge\local-diamond-bridge-20260523-190505` logged seq17 as
+        // one zlib M window: inflated=411, frames=1, compressed=210. The
+        // disputed tail therefore is not a proxy chunk/continuation boundary.
+        let mut state = SessionState::default();
+        let reassembly = ServerDeflatedReassembly {
+            inflated_length: 411,
+            expected_frames: 1,
+            first_sequence: 17,
+            packetized_sequence: 1,
+            zlib_stream: true,
+            frames: Vec::new(),
+            interleaved_packets: Vec::new(),
+        };
+        let mut payload = include_bytes!(
+            "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"
+        )
+        .to_vec();
+        let original = payload.clone();
+
+        let emit = maybe_buffer_or_flush_server_live_object_stream(
+            &mut state,
+            &reassembly,
+            210,
+            true,
+            &mut payload,
+        )
+        .expect("stream inspection should not fail for complete high-level payload");
+
+        assert!(
+            emit.is_none(),
+            "complete P/05/01 payloads should continue to server_dispatch"
+        );
+        assert_eq!(payload, original);
+        assert!(state.live_object.pending_stream.is_none());
+        assert!(!state.deflate.server_zlib_stream_proxy_owned);
+    }
 }
