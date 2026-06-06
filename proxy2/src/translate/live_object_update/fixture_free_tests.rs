@@ -5079,10 +5079,10 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_pres
 #[test]
 fn cep_tail9_name_suffix_with_actual_short_strref_state_preserves_no_map_u6_bits() {
     // The private CEP v2.3 starter stream's leading short-strref A/10 carries
-    // post-name state bits 1011. Normalizing the legacy short-name row to EE's
+    // post-name state bits 1010. Normalizing the legacy short-name row to EE's
     // direct empty-name shape preserves those state values; it still does not
     // move the later no-map A/6 to full U/6 cursor handoff.
-    let actual_short_strref_state_bits = [true, false, true, true];
+    let actual_short_strref_state_bits = [true, false, true, false];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -5177,7 +5177,7 @@ fn cep_tail9_name_suffix_with_actual_short_strref_state_does_not_supply_residue_
     // Negative sibling for the actual CEP v2.3 leading A/10 state values. The
     // short-name normalization preserves those four bits but cannot donate two
     // extra source bits before the later no-map A/6 to U/6 handoff.
-    let actual_short_strref_state_bits = [true, false, true, true];
+    let actual_short_strref_state_bits = [true, false, true, false];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -5275,11 +5275,11 @@ fn cep_tail9_name_suffix_before_legacy_width_item_create_without_visual_map_does
 #[test]
 fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     // Replay the public shape of the raw CEP v2.3 no-map handoff observed in
-    // the private stream: A/10 `11011`, U/10 `01100011`, A/6 `00100`, then a
+    // the private stream: A/10 `11010`, U/10 `01100011`, A/6 `00100`, then a
     // following U/6 whose first bits are `01110101100000`. The U/6 reader fits
     // only at cursor +2; without a decompile-backed owner for those two leading
     // bits, the packet-level rewrite must leave the stream unclaimed.
-    let actual_short_strref_state_bits = [true, false, true, true];
+    let actual_short_strref_state_bits = [true, false, true, false];
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(
@@ -5415,7 +5415,7 @@ fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
     // Diamond `sub_467AE0` / EE `sub_14079C050` still branch on the current
     // orientation bit before reading those bytes. A neighboring fit is only
     // evidence that some prior reader would need to own the skipped bits.
-    let actual_short_strref_state_bits = [true, false, true, true];
+    let actual_short_strref_state_bits = [true, false, true, false];
     let mut prefix_bits =
         legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
     prefix_bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
