@@ -56,6 +56,10 @@ pub(crate) fn looks_like_work_remaining_record_at(bytes: &[u8], offset: usize) -
     world_status::is_work_remaining_record_at(bytes, offset)
 }
 
+pub(crate) fn looks_like_live_object_sub_message_boundary(bytes: &[u8], offset: usize) -> bool {
+    boundary::looks_like_legacy_live_object_sub_message_boundary(bytes, offset)
+}
+
 pub(crate) fn try_get_verified_trigger_update_record_end_for_transport(
     bytes: &[u8],
     offset: usize,

@@ -617,7 +617,7 @@ fn prefixed_live_object_stream_continuation_prefix_len(bytes: &[u8]) -> Option<u
     // live-object read-buffer submessage is not a proved fragment prefix. Moving
     // that opcode into the CNW tail would shift every following record cursor;
     // leave such chunks unclaimed unless another path proves a prefix owner.
-    if starts_with_typed_live_object_sub_message_boundary(bytes) {
+    if starts_with_live_object_sub_message_boundary(bytes) {
         return None;
     }
     if first == 0 || bytes.len() <= 1 {
@@ -633,21 +633,8 @@ fn prefixed_live_object_stream_continuation_prefix_len(bytes: &[u8]) -> Option<u
     Some(1)
 }
 
-fn starts_with_typed_live_object_sub_message_boundary(bytes: &[u8]) -> bool {
-    if bytes.len() < 6 || !matches!(bytes[0], b'A' | b'D' | b'U' | b'P') {
-        return false;
-    }
-    if !matches!(bytes[1], 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) {
-        return false;
-    }
-
-    let Some(raw_id) = bytes.get(2..6) else {
-        return false;
-    };
-    let object_id = u32::from_le_bytes([raw_id[0], raw_id[1], raw_id[2], raw_id[3]]);
-    crate::translate::live_object_update::object_ids::looks_like_legacy_live_object_id_value(
-        object_id,
-    )
+fn starts_with_live_object_sub_message_boundary(bytes: &[u8]) -> bool {
+    crate::translate::live_object_update::looks_like_live_object_sub_message_boundary(bytes, 0)
 }
 
 fn dump_pending_live_object_candidate(
@@ -811,6 +798,40 @@ mod fixture_free_tests {
             prefixed_live_object_stream_continuation_prefix_len(&continuation),
             None,
             "a decompile-recognized U/6 boundary must not be moved into fragment storage"
+        );
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_does_not_strip_work_remaining_boundary() {
+        // `W current total` is a decompile-owned, read-buffer-only live-object
+        // record. A raw continuation that starts with W must not donate the
+        // opcode byte to CNW fragment storage.
+        let continuation = [
+            b'W', 0x0C, 0x0E, // work remaining
+            b'U', 0x06, 0xB8, 0x00, 0x00, 0x80,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized W boundary must remain read-buffer data"
+        );
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_does_not_strip_gui_quickbar_boundary() {
+        // `G Q count` rows are read-buffer-only GUI records in both Diamond and
+        // EE. Treating the leading `G` as a one-byte raw prefix would shift the
+        // GUI row and every later fragment cursor.
+        let continuation = [
+            b'G', b'Q', 0x00, // empty quickbar-link row block
+            b'W', 0x0C, 0x0E,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized GQ boundary must remain read-buffer data"
         );
     }
 
