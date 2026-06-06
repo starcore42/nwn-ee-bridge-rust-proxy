@@ -1934,6 +1934,17 @@ Current status:
   unresolved; next work should capture the local Diamond server around the
   exact `U/10`/`A/6`/`U/6` handoff or continue tracing the upstream writer
   handoff before `U/6` to prove which earlier branch owns the disputed bits.
+- 2026-06-07 `P/05/01` Diamond server full item `U/6` call-site audit: no
+  packet behavior changed. Rechecked the Diamond server writer handoff around
+  the unresolved CEP-style cursor. `sub_44AC70` only populates the update
+  snapshot from the selected mask; it is not the fragment-bit writer. The three
+  update-list walkers call the actual `U` serializer `sub_445160` at
+  `0x43F7EC`, `0x444F23`, and `0x4450AC`, and that serializer writes
+  `U`/type/object-id/mask before the conditional generic/item bodies. This
+  narrows the two-bit owner search away from record-local item continuation or
+  `sub_44AC70` side effects. The remaining useful evidence target is still a
+  local Diamond harness capture or deeper server trace of the stream/chunk
+  handoff before the top-level `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
