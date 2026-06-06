@@ -1711,12 +1711,22 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
 ) -> Option<CreatureAppearanceExtraRewrite> {
+    let debug = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
     let record = parse_legacy_item_add_record(bytes, offset, *record_end)?;
     if record.fragment_bits_consumed > fragment_bits.len().saturating_sub(bit_cursor)
         || !record
             .name_fragment_proof
             .matches(fragment_bits, bit_cursor)
     {
+        if debug {
+            eprintln!(
+                "live-object item-add extras rejected: reason=bit-proof offset={offset} record_end={} bit_cursor={bit_cursor} record_bits={} ee_extra_bits={} proof={:?}",
+                *record_end,
+                record.fragment_bits_consumed,
+                record.ee_extra_fragment_bits,
+                record.name_fragment_proof
+            );
+        }
         return None;
     }
 
@@ -1727,9 +1737,12 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
     // identical to the nested visible-equipment item-add case: insert the
     // EE object identity visual map in the read buffer and insert the
     // EE-only active-property BOOL in the CNW fragment stream.
+    let mut staged_bytes = bytes.clone();
+    let mut staged_record_end = *record_end;
+    let mut staged_fragment_bits = fragment_bits.clone();
     for (inserted, relative_offset) in record.ee_extra_insert_offsets.iter().copied().enumerate() {
         bits::insert_msb_bit(
-            fragment_bits,
+            &mut staged_fragment_bits,
             bit_cursor
                 .checked_add(relative_offset)?
                 .checked_add(inserted)?,
@@ -1737,12 +1750,36 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
         )?;
     }
 
-    let byte_apply = apply_creature_appearance_byte_inserts(
-        bytes,
+    let Some(byte_apply) = apply_creature_appearance_byte_inserts(
+        &mut staged_bytes,
         offset,
-        record_end,
+        &mut staged_record_end,
         &record.ee_extra_byte_inserts,
-    )?;
+    ) else {
+        if debug {
+            eprintln!(
+                "live-object item-add extras rejected: reason=byte-proof offset={offset} record_end={} bit_cursor={bit_cursor} bit_inserts={:?} byte_inserts={:?}",
+                *record_end, record.ee_extra_insert_offsets, record.ee_extra_byte_inserts
+            );
+        }
+        return None;
+    };
+    *bytes = staged_bytes;
+    *record_end = staged_record_end;
+    *fragment_bits = staged_fragment_bits;
+    if debug {
+        eprintln!(
+            "live-object item-add extras inserted: offset={offset} record_end={} bit_cursor={bit_cursor} record_bits={} ee_extra_bits={} proof={:?} bit_inserts={:?} byte_inserts={} bytes_inserted={} bytes_removed={}",
+            *record_end,
+            record.fragment_bits_consumed,
+            record.ee_extra_fragment_bits,
+            record.name_fragment_proof,
+            record.ee_extra_insert_offsets,
+            record.ee_extra_byte_inserts.len(),
+            byte_apply.bytes_inserted,
+            byte_apply.bytes_removed
+        );
+    }
 
     Some(CreatureAppearanceExtraRewrite {
         bits_inserted: record.ee_extra_insert_offsets.len(),
@@ -9615,6 +9652,43 @@ mod public_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn item_add_extra_insert_stages_legacy_width_bits_and_bytes() {
+        let mut bytes = Vec::new();
+        push_visible_equipment_no_name_item(&mut bytes);
+        let mut record_end = bytes.len();
+        let mut fragment_bits = vec![true, false, true, false];
+
+        let rewrite =
+            insert_ee_item_add_extras_for_ee(&mut bytes, 0, &mut record_end, &mut fragment_bits, 0)
+                .expect("legacy-width top-level item add should widen transactionally");
+
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(
+            rewrite.bytes_inserted,
+            3 + EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES.len(),
+            "model-type-2 high bytes plus the EE item visual map are inserted"
+        );
+        assert_eq!(rewrite.bytes_removed, 0);
+        assert_eq!(record_end, bytes.len());
+        assert_eq!(
+            fragment_bits,
+            [true, false, false, true, false],
+            "EE's active-property BOOL is inserted after the first shared Diamond BOOL"
+        );
+
+        let mut bit_cursor = 0usize;
+        assert!(advance_verified_ee_item_add_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut bit_cursor,
+        ));
+        assert_eq!(bit_cursor, fragment_bits.len());
     }
 
     #[test]

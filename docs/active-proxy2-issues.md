@@ -1464,6 +1464,28 @@ Current status:
   storage/continuation boundary or the original server-side writer/handoff that
   serialized the fragment tail before the `U/10`/`A/6`/`U/6` sequence; do not
   add scalar-byte rescue or neighboring-cursor retry behavior to `U/6`.
+- 2026-06-06 `P/05/01` item-add extra transaction audit: packet shape behavior
+  changed only for failed-repair transactionality in top-level item `A` extras.
+  `insert_ee_item_add_extras_for_ee` now stages the EE-only active-property BOOL
+  with item appearance byte inserts before committing, matching the GUI
+  item-create transaction model and preventing partial fragment mutation if a
+  later byte proof fails. Public unit coverage proves a legacy-width
+  model-type-2 top-level item add inserts exactly the three EE item high bytes,
+  the EE visual-transform map, and one active-property BOOL before exact EE item
+  validation. The private CEP v2.3 trace is intentionally unchanged: after
+  exact `A/10`, `U/10 tail9`, and typed `A/6`, the following full `U/6
+  mask=0xFFFF_FFF3` still rejects at `offset=104`, `record_end=148`,
+  `bit_cursor=28`, while neighboring cursors remain ambiguity only. Verified
+  with `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260606-itemadd
+  cargo test -q -p hgbridge-proxy2 item_add_extra_insert_stages_legacy_width_bits_and_bytes
+  -- --nocapture`, `typed_item_create`, `raw_neighbor_u6`, `cargo check -q -p
+  hgbridge-proxy2`, and private
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures'
+  HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1 cargo test -q -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`. Next step remains the CNW fragment storage/continuation
+  boundary or original server writer/handoff before the `U/6`; do not add
+  scalar-byte rescue or neighboring-cursor retry behavior.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
