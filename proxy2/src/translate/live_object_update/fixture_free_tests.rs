@@ -39,6 +39,15 @@ fn live_object_payload_with_bits(live: &[u8], owned_bits: Vec<bool>) -> Vec<u8> 
     payload
 }
 
+fn live_object_payload_with_fragment_bytes(live: &[u8], fragment_bytes: &[u8]) -> Vec<u8> {
+    let mut payload = vec![b'P', 0x05, 0x01];
+    let declared = (super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES + live.len()) as u32;
+    payload.extend_from_slice(&declared.to_le_bytes());
+    payload.extend_from_slice(live);
+    payload.extend_from_slice(fragment_bytes);
+    payload
+}
+
 fn push_msb_bits(bits: &mut Vec<bool>, value: u32, width: usize) {
     for shift in (0..width).rev() {
         bits.push(((value >> shift) & 1) != 0);
@@ -87,6 +96,17 @@ fn ee_creature_visual_transform_update_live_bytes(object_id: u32, selector: u8) 
     let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
     live.extend_from_slice(&object_id.to_le_bytes());
     live.push(selector);
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live
+}
+
+fn ee_creature_add_live_bytes(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'A', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    for value in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0] {
+        live.extend_from_slice(&value.to_le_bytes());
+    }
+    live.extend_from_slice(&0u16.to_le_bytes());
     live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
     live
 }
@@ -3346,6 +3366,73 @@ fn item_full_update_vector_direct_name_rewrites_mask_without_moving_cursor() {
         .expect("translated vector full item update should exact-claim");
     assert_eq!(claim.update_records, 1);
     assert_eq!(claim.live_bytes_length, live.len());
+}
+
+#[test]
+fn creature_add_fragment_prefix_before_item_update_feeds_exact_u6_cursor() {
+    // Short-declared live-object windows can leave the first byte of one CNW
+    // fragment stream in the read buffer after a verified record, while the
+    // remaining bytes are already in the packet tail. If the next byte after
+    // that prefix is a real top-level `U/6`, the prefix is a transport owner for
+    // the following item's exact cursor, not permission to search neighboring
+    // cursors inside the item update.
+    let item_live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    let item_bits = item_update_full_mask_scalar_direct_name_bits();
+    let mut combined_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    combined_bits.extend_from_slice(&item_bits);
+    let combined_fragment =
+        super::bits::pack_msb_valid_bits(combined_bits, super::CNW_FRAGMENT_HEADER_BITS);
+    assert!(
+        combined_fragment.len() > 1,
+        "test requires a split CNW fragment stream"
+    );
+
+    let mut live = ee_creature_add_live_bytes(0x8000_3344);
+    let creature_add_len = live.len();
+    live.push(combined_fragment[0]);
+    live.extend_from_slice(&item_live);
+    let mut payload = live_object_payload_with_fragment_bytes(&live, &combined_fragment[1..]);
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "the raw read-buffer prefix is not owned until it is restored to CNW storage"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("verified creature add should promote the prefix before the following U/6");
+
+    assert_eq!(rewrite.interleaved_fragment_bytes_promoted, 1);
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert_eq!(rewrite.masks_translated, 1);
+    assert_ne!(
+        payload, original,
+        "the storage prefix and item mask should change"
+    );
+
+    let declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("declared length") as usize;
+    let rewritten_live =
+        &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
+    assert_eq!(
+        rewritten_live.get(creature_add_len),
+        Some(&b'U'),
+        "the following item update must remain a read-buffer row after prefix promotion"
+    );
+    assert_eq!(
+        super::read_u32_le(rewritten_live, creature_add_len + 6),
+        Some(0x0008_0073),
+        "the U/6 row still rewrites only through the exact item validator"
+    );
+    assert_eq!(
+        &payload[declared..],
+        combined_fragment.as_slice(),
+        "the promoted byte should reconstitute the original CNW fragment stream"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("prefix-promoted creature-add plus item update should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
 }
 
 #[test]

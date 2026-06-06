@@ -3831,14 +3831,23 @@ pub fn rewrite_update_records_payload_if_possible(
                     &mut bit_cursor,
                 ) {
                     last_verified_record_end = record_end;
-                    last_verified_record_allows_trailing_fragment_promotion = false;
-                    last_verified_creature_add_record =
-                        if bit_cursor_reliable && object_type == CREATURE_OBJECT_TYPE {
-                            read_u32_le(&live_bytes, offset + 2)
-                                .map(|object_id| (record_end, object_id))
-                        } else {
-                            None
-                        };
+                    let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
+                        && creature::looks_like_ee_creature_add_record(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                        );
+                    last_verified_record_allows_trailing_fragment_promotion =
+                        ee_creature_add_record;
+                    last_verified_creature_add_record = if bit_cursor_reliable
+                        && object_type == CREATURE_OBJECT_TYPE
+                        && ee_creature_add_record
+                    {
+                        read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_id))
+                    } else {
+                        None
+                    };
                     last_verified_add_record =
                         if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
                             read_u32_le(&live_bytes, offset + 2)
@@ -3853,6 +3862,20 @@ pub fn rewrite_update_records_payload_if_possible(
                     } else {
                         None
                     };
+                    if ee_creature_add_record && record_end < live_bytes.len() {
+                        if let Some(promotion) = fragment_spans::
+                            promote_trailing_fragment_prefix_after_verified_record_for_ee(
+                                &mut live_bytes,
+                                &mut fragment_bytes,
+                                &mut fragment_bits,
+                                record_end,
+                            )
+                        {
+                            changed = true;
+                            record_trailing_fragment_prefix_promotion(&mut summary, promotion);
+                            last_verified_record_allows_trailing_fragment_promotion = false;
+                        }
+                    }
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -3971,14 +3994,23 @@ pub fn rewrite_update_records_payload_if_possible(
                     &mut bit_cursor,
                 ) {
                     last_verified_record_end = record_end;
-                    last_verified_record_allows_trailing_fragment_promotion = false;
-                    last_verified_creature_add_record =
-                        if bit_cursor_reliable && object_type == CREATURE_OBJECT_TYPE {
-                            read_u32_le(&live_bytes, offset + 2)
-                                .map(|object_id| (record_end, object_id))
-                        } else {
-                            None
-                        };
+                    let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
+                        && creature::looks_like_ee_creature_add_record(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                        );
+                    last_verified_record_allows_trailing_fragment_promotion =
+                        ee_creature_add_record;
+                    last_verified_creature_add_record = if bit_cursor_reliable
+                        && object_type == CREATURE_OBJECT_TYPE
+                        && ee_creature_add_record
+                    {
+                        read_u32_le(&live_bytes, offset + 2)
+                            .map(|object_id| (record_end, object_id))
+                    } else {
+                        None
+                    };
                     last_verified_add_record =
                         if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE) {
                             read_u32_le(&live_bytes, offset + 2)
@@ -3993,6 +4025,20 @@ pub fn rewrite_update_records_payload_if_possible(
                     } else {
                         None
                     };
+                    if ee_creature_add_record && record_end < live_bytes.len() {
+                        if let Some(promotion) = fragment_spans::
+                            promote_trailing_fragment_prefix_after_verified_record_for_ee(
+                                &mut live_bytes,
+                                &mut fragment_bytes,
+                                &mut fragment_bits,
+                                record_end,
+                            )
+                        {
+                            changed = true;
+                            record_trailing_fragment_prefix_promotion(&mut summary, promotion);
+                            last_verified_record_allows_trailing_fragment_promotion = false;
+                        }
+                    }
                     offset = record_end.max(offset + 1);
                     continue;
                 }
@@ -4142,20 +4188,7 @@ pub fn rewrite_update_records_payload_if_possible(
                             )
                         {
                             changed = true;
-                            summary.interleaved_fragment_spans_promoted = summary
-                                .interleaved_fragment_spans_promoted
-                                .saturating_add(1);
-                            summary.interleaved_fragment_bytes_promoted =
-                                summary.interleaved_fragment_bytes_promoted.saturating_add(
-                                    u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
-                                );
-                            summary.interleaved_fragment_bits_promoted =
-                                summary.interleaved_fragment_bits_promoted.saturating_add(
-                                    u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX),
-                                );
-                            summary.bytes_removed = summary.bytes_removed.saturating_add(
-                                u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
-                            );
+                            record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                             last_verified_record_allows_trailing_fragment_promotion = false;
                             continue;
                         }
@@ -4206,19 +4239,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
-                    summary.interleaved_fragment_spans_promoted = summary
-                        .interleaved_fragment_spans_promoted
-                        .saturating_add(1);
-                    summary.interleaved_fragment_bytes_promoted =
-                        summary.interleaved_fragment_bytes_promoted.saturating_add(
-                            u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
-                        );
-                    summary.interleaved_fragment_bits_promoted = summary
-                        .interleaved_fragment_bits_promoted
-                        .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
-                    summary.bytes_removed = summary.bytes_removed.saturating_add(
-                        u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX),
-                    );
+                    record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                     last_verified_record_allows_trailing_fragment_promotion = false;
                 }
             }
@@ -5538,6 +5559,24 @@ pub fn rewrite_update_records_payload_if_possible(
     summary.new_fragment_bytes = fragment_bytes.len();
     *payload = rewritten;
     Some(summary)
+}
+
+fn record_trailing_fragment_prefix_promotion(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    promotion: fragment_spans::PromotedTrailingFragmentPrefix,
+) {
+    summary.interleaved_fragment_spans_promoted = summary
+        .interleaved_fragment_spans_promoted
+        .saturating_add(1);
+    summary.interleaved_fragment_bytes_promoted = summary
+        .interleaved_fragment_bytes_promoted
+        .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
+    summary.interleaved_fragment_bits_promoted = summary
+        .interleaved_fragment_bits_promoted
+        .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
+    summary.bytes_removed = summary
+        .bytes_removed
+        .saturating_add(u32::try_from(promotion.bytes_promoted).unwrap_or(u32::MAX));
 }
 
 fn verified_work_remaining_record_legal_end(live_bytes: &[u8], offset: usize) -> Option<usize> {

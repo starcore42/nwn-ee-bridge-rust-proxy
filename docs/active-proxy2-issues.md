@@ -1350,6 +1350,20 @@ Current status:
   update_rewrite_typed_item_create_preserves_following_full_item_update_bits
   -- --nocapture`, and private
   `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.
+- ~~2026-06-06 `P/05/01` creature-add to full item `U/6` fragment-prefix
+  handoff audit: fixed a generalized transport split where a verified EE-shaped
+  `A/5` creature add could be followed by the first byte of the same CNW MSB
+  fragment stream before the next real top-level `U/6` boundary, while the
+  remaining fragment bytes were already in the packet tail. The promoter now
+  moves only the bounded prefix before a following live-object boundary, then
+  the item update must exact-prove its own decompile-backed cursor before the
+  Diamond `0xFFFF_FFF3` mask can translate to EE `0x00080073`; no neighboring
+  item cursor search is allowed. The private CEP v2.3 fixture still quarantines
+  at the unresolved `offset=104`, `bit_cursor=28` `U/6`, so the two-bit owner
+  question remains active. Verified with `cargo test -q -p hgbridge-proxy2
+  creature_add_fragment_prefix_before_item_update_feeds_exact_u6_cursor --
+  --nocapture`, the neighboring-cursor rejection regressions, and private
+  `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`.~~
 - 2026-06-01 `P/05/01` full item `U/6` locstring-inline audit: no packet
   behavior changed, but public fixture-free coverage now pins the locstring
   inline sibling of the same all-bits item-update rule. Diamond `sub_451AF0`

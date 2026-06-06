@@ -718,7 +718,9 @@ pub(super) fn promote_trailing_fragment_prefix_after_verified_record_for_ee(
         return None;
     }
 
-    let prefix = live_bytes.get(span_start..)?.to_vec();
+    let span_end = find_interleaved_fragment_span_end(live_bytes, span_start, live_bytes.len(), 1)
+        .unwrap_or(live_bytes.len());
+    let prefix = live_bytes.get(span_start..span_end)?.to_vec();
     if prefix.is_empty() || prefix.len() > MAX_TRAILING_FRAGMENT_PREFIX_BYTES {
         return None;
     }
@@ -726,18 +728,20 @@ pub(super) fn promote_trailing_fragment_prefix_after_verified_record_for_ee(
     // Diamond/EE live-object packets keep the CNW fragment-storage stream after
     // the declared read-buffer cursor. Short-declared HG windows can leave the
     // first one or two storage bytes behind the last decompile-proven record,
-    // while the remaining storage bytes already sit in the packet tail. Accept
-    // only a tiny suffix that, when prepended to the existing tail, decodes as
-    // one valid CNW MSB fragment bitstream; the final strict live-object claim
-    // still has to consume the resulting bit cursor exactly before anything is
-    // emitted.
+    // while the remaining storage bytes already sit in the packet tail. When a
+    // following live-object boundary is present, promote only the prefix before
+    // that boundary and let the next family reader prove the resulting bit
+    // cursor. Accept only a tiny prefix that, when prepended to the existing
+    // tail, decodes as one valid CNW MSB fragment bitstream; the final strict
+    // live-object claim still has to consume the resulting bit cursor exactly
+    // before anything is emitted.
     let mut combined = Vec::with_capacity(prefix.len().saturating_add(fragment_bytes.len()));
     combined.extend_from_slice(&prefix);
     combined.extend_from_slice(fragment_bytes);
     let combined_bits = bits::decode_msb_valid_bits(&combined, 3)?;
     let bits_promoted = combined_bits.len().saturating_sub(fragment_bits.len());
 
-    live_bytes.drain(span_start..);
+    live_bytes.drain(span_start..span_end);
     *fragment_bytes = combined;
     *fragment_bits = combined_bits;
 
