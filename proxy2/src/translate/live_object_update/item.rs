@@ -517,6 +517,19 @@ mod tests {
         live
     }
 
+    fn legacy_full_scalar_direct_name_item_update_live_bytes(name: &[u8]) -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+        live.extend_from_slice(&DIAMOND_ITEM_FULL_UPDATE_MASK.to_le_bytes());
+        live.extend_from_slice(&[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F]);
+        live.push(0);
+        live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        live.extend_from_slice(&[0; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]);
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        live
+    }
+
     #[test]
     fn item_update_40_exact_ee_hidden_claims_without_tail() {
         let live = legacy_hidden_item_update_live_bytes();
@@ -617,6 +630,62 @@ mod tests {
         assert_eq!(rewrite.next_bit_cursor, 1);
         assert_eq!(read_u32_le(&live, 6), Some(EE_ITEM_UPDATE_HIDDEN_MASK));
         assert_eq!(record_end, LEGACY_UPDATE_HEADER_BYTES);
+    }
+
+    #[test]
+    fn full_item_update_rewrite_does_not_retry_neighboring_cursor() {
+        // CEP-style cursor ambiguity reduced to the item family: the inherited
+        // cursor selects vector orientation, while the bounded bytes are the
+        // scalar/direct-name full update shape. A neighboring cursor can fit
+        // only if some prior decompiled reader has already owned those bits.
+        let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
+        let original = live.clone();
+        let shifted_bits = vec![
+            false, true, // unowned pre-cursor residue.
+            true, true, // position residuals if a prior owner consumed it.
+            false, true, false, true, true, // scalar branch bits at cursor +2.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+            false, // EE hidden-state BOOL after item name.
+        ];
+
+        let mut translated = live.clone();
+        write_u32_le(
+            &mut translated,
+            6,
+            translate_update_mask(DIAMOND_ITEM_FULL_UPDATE_MASK),
+        )
+        .expect("mask write");
+        assert!(
+            advance_verified_ee_item_update_record(
+                &translated,
+                0,
+                translated.len(),
+                &shifted_bits,
+                0
+            )
+            .is_none(),
+            "the inherited cursor selects vector orientation for scalar-shaped item bytes"
+        );
+        assert!(
+            advance_verified_ee_item_update_record(
+                &translated,
+                0,
+                translated.len(),
+                &shifted_bits,
+                2
+            )
+            .is_some(),
+            "cursor +2 would fit only after a separate owner consumes the residue"
+        );
+
+        let mut record_end = live.len();
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &shifted_bits, 0).is_none(),
+            "item update rewriting must not search neighboring cursors"
+        );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
     }
 }
 

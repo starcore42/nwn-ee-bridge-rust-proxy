@@ -1405,6 +1405,21 @@ Current status:
   --nocapture`. Next step remains tracing the preceding source writer,
   chunk-local fragment storage, continuation boundary, or later terminal-tail
   owner; do not add a scalar-byte rescue to `U/6`.
+- 2026-06-06 `P/05/01` item full `U/6` record-local neighboring-cursor audit:
+  no packet behavior changed. Added item-family unit coverage for the same
+  generalized CEP-style ambiguity: the translated scalar/direct-name full item
+  row rejects at the inherited cursor because Diamond `sub_467AE0` and EE
+  `sub_14079C050` read the current orientation BOOL before orientation bytes,
+  while `cursor + 2` can validate only if a separate prior owner consumes the
+  residue. `rewrite_update_record_for_ee` now has direct public coverage
+  proving it leaves the raw Diamond row and record end unchanged instead of
+  trying neighboring cursors. Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260606-item-proof
+  cargo test -q -p hgbridge-proxy2 item_update -- --nocapture`,
+  `raw_neighbor_u6`, `typed_item_create`, serial `live_object_update`, and
+  `cargo check -q -p hgbridge-proxy2`. The true two-bit owner remains
+  unresolved; continue with source writer / chunk-local fragment storage /
+  continuation-boundary tracing rather than scalar-byte rescue.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
