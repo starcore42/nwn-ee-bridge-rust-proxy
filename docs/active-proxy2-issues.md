@@ -1434,6 +1434,36 @@ Current status:
   `cargo check -q -p hgbridge-proxy2`. The true two-bit owner remains
   unresolved; continue with source writer / chunk-local fragment storage /
   continuation-boundary tracing rather than scalar-byte rescue.
+- 2026-06-06 `P/05/01` typed item-create repair transaction audit: packet
+  shape behavior changed only for failed-repair rollback. The GUI/top-level
+  item-create extra inserter now stages the active-item fragment BOOL inserts
+  together with item appearance byte edits, and the shared byte insert helper
+  commits `bytes`/`record_end` only after every insert proof succeeds. This
+  prevents a failed `A/6` byte proof from stranding EE-only bits before the
+  following `U/6` cursor; it is not evidence for the unresolved full-item
+  cursor owner. Verified with `cargo test -q -p hgbridge-proxy2
+  byte_insert_application_rolls_back_after_later_failed_insert -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 typed_item_create -- --nocapture`,
+  private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`
+  with live-claim tracing still rejecting `offset=104`, `bit_cursor=28`, and
+  `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-06 `P/05/01` full item `U/6` decompile-owner audit: no packet
+  behavior changed. Re-ran the private CEP v2.3 starter live-claim trace and
+  the stream still reaches `U/6 mask=0xFFFF_FFF3` at staged `offset=104`,
+  `record_end=148`, `bit_cursor=28` after exact `A/10`, `U/10 tail9`, and
+  transactional no-map `A/6` repairs. Diamond `sub_467AE0` and EE
+  `sub_14079C050` both read the orientation selector BOOL at the inherited
+  cursor before choosing scalar versus vector bytes; Diamond `sub_451AF0` and
+  EE `sub_1407A08F0` both read only the item-name selector before locstring or
+  direct-string bytes. Diamond `sub_451020` and EE `sub_14076BD30` also confirm
+  the typed item-create active-property owner is only Diamond's four BOOLs plus
+  EE's inserted post-DWORD BOOL. The raw private fixture still has the
+  top-level `A/10`, `U/10`, `A/6`, `U/6` byte sequence before staged rewrites,
+  so the two leading bits before the full item update remain unowned by the
+  item-create/update readers. Next trace should move to the CNW fragment
+  storage/continuation boundary or the original server-side writer/handoff that
+  serialized the fragment tail before the `U/10`/`A/6`/`U/6` sequence; do not
+  add scalar-byte rescue or neighboring-cursor retry behavior to `U/6`.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE

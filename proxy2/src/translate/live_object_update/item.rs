@@ -380,6 +380,12 @@ fn parse_item_update_common_prefix(
     }
 
     if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        // Diamond `sub_467AE0` and EE `sub_14079C050`
+        // (0x14079C2CC..0x14079C380) both read this BOOL at the inherited
+        // fragment cursor before deciding whether the following read-buffer
+        // fields are scalar facing or XYZ orientation. A scalar-shaped byte
+        // tail that verifies at a neighboring cursor is therefore ambiguity,
+        // not permission to search or skip bits here.
         let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
         if vector_branch {
             read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
@@ -474,8 +480,9 @@ fn advance_verified_ee_item_tail(
     if (mask & LEGACY_UPDATE_NAME_MASK) != 0 {
         // Diamond item update `sub_451AF0` tests mask 0x80000, reads one BOOL,
         // then either a locstring helper (`sub_53E700`) or `ReadCExoString(32)`.
-        // The following `sub_4FBB40` call is an overflow check, not another
-        // fragment bit owner.
+        // EE `sub_1407A08F0` matches that shape at
+        // 0x1407A0A07..0x1407A0A7A. The following overflow checks are not
+        // another fragment bit owner.
         let uses_locstring = fragment_bits.get(fragment_cursor).copied()?;
         fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
         if uses_locstring {
