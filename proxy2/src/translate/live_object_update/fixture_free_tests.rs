@@ -5321,6 +5321,101 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
 }
 
 #[test]
+fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
+    // The private CEP v2.3 trace reaches the Lance U/6 after the normalized
+    // A/10, tail9 U/10, and no-map A/6 rewrites at bit cursor 28. Several
+    // neighboring cursors can validate the scalar-shaped item bytes, but
+    // Diamond `sub_467AE0` / EE `sub_14079C050` still branch on the current
+    // orientation bit before reading those bytes. A neighboring fit is only
+    // evidence that some prior reader would need to own the skipped bits.
+    let actual_short_strref_state_bits = [true, false, true, true];
+    let mut prefix_bits =
+        legacy_short_strref_door_add_expected_ee_bits_with_state(actual_short_strref_state_bits);
+    prefix_bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_expected_ee_bits());
+    prefix_bits.extend_from_slice(&[false, false, false, true, false, false]); // no-map A/6 after EE repair.
+
+    let shifted_item_bits = vec![
+        false, true, // unowned pre-cursor residue.
+        true, true, // position residuals if a prior owner consumed the residue.
+        false, true, false, true, true, // scalar orientation selector plus residual bits.
+        false, false, false, false, false, // item state bits.
+        false, // direct CExoString item name.
+        false, // EE hidden-state BOOL after item name.
+        false, false, // following-stream bits available in the private trace.
+    ];
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    fragment_bits.extend_from_slice(&prefix_bits);
+    let item_cursor = fragment_bits.len();
+    assert_eq!(
+        item_cursor, 28,
+        "public CEP-style prefix should match the private trace cursor"
+    );
+    fragment_bits.extend_from_slice(&shifted_item_bits);
+
+    let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    translated_item_update[6..10]
+        .copy_from_slice(&super::item::translate_update_mask(0xFFFF_FFF3).to_le_bytes());
+
+    let nearby_verified: Vec<isize> = (-4..=4)
+        .filter(|delta| *delta != 0)
+        .filter(|delta| {
+            let cursor = item_cursor.saturating_add_signed(*delta);
+            super::item::advance_verified_ee_item_update_record(
+                &translated_item_update,
+                0,
+                translated_item_update.len(),
+                &fragment_bits,
+                cursor,
+            )
+            .is_some()
+        })
+        .collect();
+    assert_eq!(
+        nearby_verified,
+        vec![-4, -3, -2, 2, 4],
+        "neighboring scalar-shaped fits must be treated as ambiguity until a prior owner is proven"
+    );
+    assert!(
+        super::item::advance_verified_ee_item_update_record(
+            &translated_item_update,
+            0,
+            translated_item_update.len(),
+            &fragment_bits,
+            item_cursor,
+        )
+        .is_none(),
+        "the true cursor still selects vector orientation for scalar-shaped bytes"
+    );
+
+    let mut live = legacy_short_strref_door_add_live_bytes();
+    live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
+    live.extend_from_slice(
+        &legacy_width_model_type2_typed_item_create_without_visual_map_live_bytes(),
+    );
+    live.extend_from_slice(&item_update_full_mask_scalar_direct_name_live_bytes(
+        b"Lance",
+    ));
+
+    let mut source_bits =
+        legacy_short_strref_door_add_source_bits_with_state(actual_short_strref_state_bits);
+    source_bits.extend_from_slice(&legacy_tail9_door_update_cep_name_suffix_source_bits());
+    source_bits.extend_from_slice(&[false, false, true, false, false]); // typed A/6 source bits.
+    source_bits.extend_from_slice(&shifted_item_bits);
+    let mut payload = live_object_payload_with_bits(&live, source_bits);
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "multiple neighboring U/6 fits must not make the shifted source cursor claimable"
+    );
+    assert_eq!(
+        payload, original,
+        "ambiguous neighboring cursor proof must leave bytes and bits untouched"
+    );
+}
+
+#[test]
 fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update() {
     // The CEP v2.3 cursor-neighbor evidence is not limited to an isolated U/6.
     // Even after the preceding U/10 tail9 row and typed A/6 item-create row are

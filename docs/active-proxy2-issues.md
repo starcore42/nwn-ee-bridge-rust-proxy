@@ -1385,6 +1385,26 @@ Current status:
   -q -p hgbridge-proxy2
   typed_item_create_handoff_rejects_vector_selected_full_item_update --
   --nocapture`.
+- 2026-06-06 `P/05/01` CEP v2.3 full item `U/6` neighboring-cursor ambiguity
+  audit: no packet behavior changed. Re-ran the private Lance/Lute/Patron
+  fixture with live-claim tracing after the normalized `A/10`, tail9 `U/10`,
+  and no-map `A/6` repairs. The stream still reaches `U/6 mask=0xFFFF_FFF3`
+  at `offset=104`, `record_end=148`, `bit_cursor=28`; the exact item reader
+  rejects that true cursor because the bits select vector orientation while
+  the bytes are scalar/direct-name shaped, but nearby cursors `-4`, `-3`,
+  `-2`, `+2`, and `+4` can validate the translated EE item row. This is
+  ambiguity, not ownership: Diamond `sub_467AE0` and EE `sub_14079C050`
+  choose scalar/vector from the current BOOL before reading orientation bytes.
+  Added public fixture-free coverage that reconstructs the post-rewrite
+  CEP-style prefix cursor at bit 28, proves the neighboring fits, and still
+  requires packet-level rollback until a prior decompiled reader owns the
+  skipped bits. Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260606-neighbor cargo
+  test -q -p hgbridge-proxy2
+  cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof --
+  --nocapture`. Next step remains tracing the preceding source writer,
+  chunk-local fragment storage, continuation boundary, or later terminal-tail
+  owner; do not add a scalar-byte rescue to `U/6`.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
