@@ -393,6 +393,9 @@ fn append_normalized_live_object_fragment(
 }
 
 fn read_live_object_declared(payload: &[u8]) -> Option<usize> {
+    // The CNW declared value is an absolute offset in the high-level payload:
+    // `P/05/01` + four declared bytes + read-buffer bytes. It is not a length
+    // to add after the header.
     let declared = u32::from_le_bytes(payload.get(3..7)?.try_into().ok()?);
     usize::try_from(declared).ok()
 }
@@ -784,6 +787,42 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn live_object_declared_offset_is_absolute_payload_offset() {
+        // CNW `SetReadMessage` receives the declared value as the split point
+        // between high-level read bytes and trailing fragment storage. Adding
+        // the seven-byte `P/05/01` envelope a second time strands real fragment
+        // bytes in the read buffer and shifts every later BOOL cursor.
+        let read = [b'W', 0x0C, 0x0E];
+        let fragment = [0xA0];
+        let declared = 7 + read.len();
+        let mut payload = vec![b'P', 0x05, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&read);
+        payload.extend_from_slice(&fragment);
+
+        assert_eq!(read_live_object_declared(&payload), Some(declared));
+
+        let mut pending = PendingLiveObjectStream {
+            kind: PendingLiveObjectStreamKind::LegacyHighLevelFragmentPrefix,
+            read_bytes: Vec::new(),
+            fragment_bytes: Vec::new(),
+            first_sequence: 17,
+            chunks: 0,
+        };
+        assert!(append_normalized_live_object_fragment(
+            &mut pending,
+            &payload
+        ));
+
+        assert_eq!(pending.read_bytes, read);
+        assert_eq!(pending.fragment_bytes, fragment);
+        assert!(
+            declared + 7 > payload.len(),
+            "the old add-header interpretation would point past the real fragment split"
+        );
+    }
+
+    #[test]
     fn raw_prefixed_continuation_does_not_strip_live_object_opcode_boundary() {
         // Raw-prefixed continuation repair is a stream-boundary rule, not a
         // cursor search. If the current chunk begins with a real live-object
@@ -1004,5 +1043,26 @@ mod tests {
         assert!(emit.is_none());
         assert_eq!(payload, original);
         assert!(state.live_object.pending_stream.is_none());
+    }
+
+    #[test]
+    fn local_cepv23_starter_tail_starts_at_declared_offset() {
+        // Private CEP v2.3 starter evidence for the generalized declared-offset
+        // rule above. The fragment tail starts at the absolute CNW declared
+        // offset with `7A 63 23 AC...`; interpreting the declared value as
+        // post-header length would skip into the middle of the real tail.
+        let payload = include_bytes!(
+            "../../../fixtures/live_object/local_cepv23_starter_seq17_lance_lute_patron_liveobject_20260523_unclaimed.bin"
+        );
+        let declared = read_live_object_declared(payload).expect("fixture has CNW declared offset");
+
+        assert_eq!(declared, 393);
+        assert_eq!(payload.len(), 411);
+        assert_eq!(&payload[declared..declared + 4], &[0x7A, 0x63, 0x23, 0xAC]);
+        assert_eq!(
+            &payload[declared + 7..declared + 11],
+            &[0x93, 0xA9, 0xC8, 0x39],
+            "adding the envelope width skips into the middle of the real fragment tail"
+        );
     }
 }

@@ -1876,6 +1876,20 @@ Current status:
   mask `0xFFFF_FFF3` path or a local harness capture around the chunk boundary
   before the `U/10`/`A/6`/`U/6` sequence. Verified with
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex-verify/run-20260607-cep-proof cargo test -q -p hgbridge-proxy2 cep_ -- --nocapture`.
+- 2026-06-07 `P/05/01` CEP declared-offset split audit: no packet behavior
+  changed. Pinned the stream-layer rule that the CNW declared value in
+  `P/05/01` is an absolute high-level payload offset, not a post-envelope
+  length. The private CEP v2.3 starter fixture has `declared=393`, fragment
+  tail length 18, and starts the tail at offset 393 with `7A 63 23 AC`; adding
+  the seven-byte envelope width would skip into the middle of the real tail at
+  `93 A9 C8 39`. This rules out a local declared-offset interpretation bug as
+  the source of the two disputed pre-`U/6` bits. Next evidence target remains
+  the Diamond server writer for item update mask `0xFFFF_FFF3` or a local
+  Diamond harness capture around the chunk boundary before `U/10`/`A/6`/`U/6`.
+  Verified with `cargo test -q -p hgbridge-proxy2 live_stream -- --nocapture`
+  and private
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p hgbridge-proxy2
+  local_cepv23_starter_tail_starts_at_declared_offset -- --nocapture`.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
