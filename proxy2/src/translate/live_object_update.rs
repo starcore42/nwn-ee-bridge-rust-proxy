@@ -1491,6 +1491,38 @@ pub(crate) fn try_get_legacy_item_add_record_end_for_transport(
     appearance::try_get_legacy_item_add_record_end_for_transport(live_bytes, offset, scan_end)
 }
 
+pub(crate) fn advance_legacy_item_create_fragment_cursor_for_transport(
+    live_bytes: &[u8],
+    item_object_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    appearance::advance_legacy_item_create_record_for_transport(
+        live_bytes,
+        item_object_offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+}
+
+pub(crate) fn advance_legacy_item_update_fragment_cursor_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    item::advance_legacy_item_update_fragment_cursor_for_transport(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+}
+
 pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,

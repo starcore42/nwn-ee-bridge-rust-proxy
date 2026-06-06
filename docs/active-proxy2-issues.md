@@ -1486,6 +1486,27 @@ Current status:
   -- --nocapture`. Next step remains the CNW fragment storage/continuation
   boundary or original server writer/handoff before the `U/6`; do not add
   scalar-byte rescue or neighboring-cursor retry behavior.
+- 2026-06-06 `P/05/01` stale-declared item cursor capacity audit: packet
+  behavior changed only for declared-window candidate rejection. The
+  source-side declared-length preflight now counts typed `A/6` item-create
+  Diamond-owned item-name/active-property BOOLs and item `U/6` update BOOLs
+  before accepting a read-window split. This prevents stale-declared repair from
+  treating item-family source bits as free CNW tail storage; top-level item-add
+  rows were left on the existing byte-boundary parser because their compact
+  source shape is not the CEP typed `A/6` risk. The private CEP v2.3 trace is
+  intentionally unchanged: after exact `A/10`, `U/10 tail9`, and transactional
+  no-map `A/6`, the following full `U/6 mask=0xFFFF_FFF3` still rejects at
+  `offset=104`, `record_end=148`, `bit_cursor=28`; the trace showed no
+  adjacent read-buffer fragment span after the repaired `A/6`. Next owner
+  search remains the source writer or continuation boundary before the
+  `U/10`/`A/6`/`U/6` sequence. Verified with `cargo test -q -p
+  hgbridge-proxy2 declared_length_ -- --nocapture`, serial `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`, `cargo check -q -p
+  hgbridge-proxy2`, and private
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures'
+  HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1 cargo test -q -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE

@@ -480,6 +480,22 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
         }
 
         match (bytes[offset], bytes[offset + 1]) {
+            (b'A', ITEM_OBJECT_TYPE) => {
+                if !crate::translate::live_object_update::advance_legacy_item_create_fragment_cursor_for_transport(
+                    bytes,
+                    offset.saturating_add(2),
+                    record_end,
+                    bits,
+                    &mut bit_cursor,
+                ) {
+                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                        eprintln!(
+                            "live-object declared capacity rejected: reason=item-create offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+                        );
+                    }
+                    return false;
+                }
+            }
             (b'A', TRIGGER_OBJECT_TYPE | DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) => {
                 if !advance_live_add_record_bit_cursor(
                     bytes,
@@ -499,6 +515,22 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     record_end,
                     &mut bit_cursor,
                 ) {
+                    return false;
+                }
+            }
+            (b'U', ITEM_OBJECT_TYPE) => {
+                if !crate::translate::live_object_update::advance_legacy_item_update_fragment_cursor_for_transport(
+                    bytes,
+                    offset,
+                    record_end,
+                    bits,
+                    &mut bit_cursor,
+                ) {
+                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                        eprintln!(
+                            "live-object declared capacity rejected: reason=item-update offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+                        );
+                    }
                     return false;
                 }
             }
@@ -5621,6 +5653,24 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn typed_item_create_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'A', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+        live.extend_from_slice(&0x01u32.to_le_bytes());
+        for part in [0x0Cu16, 0x0Bu16, 0x0Bu16] {
+            live.extend_from_slice(&part.to_le_bytes());
+        }
+        live.push(0);
+        live.extend_from_slice(&EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES);
+        live.extend_from_slice(&5u32.to_le_bytes());
+        live.extend_from_slice(b"Lance");
+        live.extend_from_slice(&2u32.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&[0, 0, 0xFF]);
+        live.extend_from_slice(&[0; 8]);
+        live
+    }
+
     #[test]
     fn declared_length_window_rejects_w_current_total_as_fragment_tail() {
         let mut live = Vec::new();
@@ -6090,6 +6140,69 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short U/6 hidden-state update"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_item_update_fragment_bits() {
+        // Item `U/6` rows consume their own CNW BOOLs even during transport
+        // split preflight. A stale-declared repair candidate must not walk a
+        // hidden-state item update as read bytes while leaving its required
+        // fragment bit to be reinterpreted by a later row.
+        let live = item_hidden_update_live_bytes();
+        let header_only = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &header_only,
+            ),
+            "U/6 hidden-state update owns one item fragment bit"
+        );
+
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.push(true);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "the same U/6 read prefix is plausible once its hidden-state BOOL is present"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_typed_item_create_fragment_bits() {
+        // Typed `A/6` item-create rows use the shared item body reader. The
+        // transport preflight consumes only Diamond-owned item-name and
+        // active-property source bits; EE's inserted active-property BOOL is
+        // left for the exact live-object rewrite.
+        let live = typed_item_create_live_bytes();
+        let mut too_few_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        too_few_bits.extend_from_slice(&[false, false, true, false]);
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &too_few_bits,
+            ),
+            "A/6 item-create capacity must reject a missing Diamond source BOOL"
+        );
+
+        let mut enough_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        enough_bits.extend_from_slice(&[false, false, true, false, false]);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &enough_bits,
+            ),
+            "A/6 item-create capacity must accept the exact Diamond source cursor"
         );
     }
 

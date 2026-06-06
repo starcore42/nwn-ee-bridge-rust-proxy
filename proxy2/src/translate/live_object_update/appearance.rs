@@ -2056,6 +2056,22 @@ pub(super) fn advance_legacy_gui_item_create_record(
     true
 }
 
+pub(super) fn advance_legacy_item_create_record_for_transport(
+    bytes: &[u8],
+    item_object_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    advance_legacy_gui_item_create_record(
+        bytes,
+        item_object_offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+}
+
 pub(super) fn try_get_verified_ee_gui_item_create_record_end(
     bytes: &[u8],
     item_object_offset: usize,

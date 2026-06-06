@@ -267,6 +267,41 @@ pub(super) fn advance_verified_ee_item_update_record(
     (read_end == record_end).then_some(next_bit_cursor)
 }
 
+pub(super) fn advance_legacy_item_update_fragment_cursor_for_transport(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    let Some(raw_mask) = item_update_mask(bytes, offset, record_end) else {
+        return false;
+    };
+    if !legacy_item_update_mask_supported(raw_mask) {
+        return false;
+    }
+
+    let translated_mask = translate_update_mask(raw_mask);
+    let mut candidate = bytes.to_vec();
+    if translated_mask != raw_mask
+        && write_u32_le(&mut candidate, offset + 6, translated_mask).is_none()
+    {
+        return false;
+    }
+
+    let Some(next_cursor) = advance_verified_ee_item_update_record(
+        &candidate,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) else {
+        return false;
+    };
+    *bit_cursor = next_cursor;
+    true
+}
+
 pub(super) fn update_record_read_end_candidates_for_transport(
     bytes: &[u8],
     offset: usize,
