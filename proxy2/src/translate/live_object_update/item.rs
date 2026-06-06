@@ -18,16 +18,15 @@ use super::{
 const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
 const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
 const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
-// Diamond server `sub_4401F0` selects this raw full-item mask at
-// 0x440380/0x4403A8 and passes it to the live update state builder at
-// 0x4403D7. `sub_44AC70` only fills the update snapshot; the three Diamond
-// update-list walkers call the `U` bitstream writer `sub_445160` at 0x43F7EC,
-// 0x444F23, and 0x4450AC. That writer emits U/type/id/mask at
-// 0x4451DE..0x44520D, then owns the generic prefix and item name. Its post-name
-// continuation at 0x446247 is gated by object type byte 0x05 (nwserver.exe VA
-// 0x6338AC), while item type 0x06 is VA 0x6338AD. Extra bytes after the full
-// U/6 item name are therefore unowned tail bytes, not a later Diamond item
-// branch.
+// Full U/6 item ownership is proven from the client reader pair, not by a
+// neighboring-cursor retry: Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0`
+// and EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` read the generic
+// prefix, then item name, then EE's hidden-state BOOL. The local Diamond
+// decompile labels the 0x44515F/0x4451DE area as a client read block inside
+// `sub_444CC0`, not a server writer; its object-type table still confirms
+// 0x05 is creature and 0x06 is item. Extra bytes after the full U/6 item name
+// are therefore unowned tail bytes unless a separate server writer/handoff
+// proof assigns them.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
@@ -742,10 +741,10 @@ mod tests {
 
     #[test]
     fn full_item_update_extra_tail_is_not_subset_rewritten() {
-        // Diamond server `sub_445160`'s 0x446247 continuation is not an item
-        // tail: the gate compares against object type 0x05, while item is
-        // 0x06. A raw full item update may translate only when the generic
-        // prefix plus `sub_451AF0` name branch lands exactly on record_end.
+        // Diamond's later type-dispatched reader branches are not item tails:
+        // the local object-type table maps 0x05 to creature and 0x06 to item.
+        // A raw full item update may translate only when the generic prefix
+        // plus `sub_451AF0` name branch lands exactly on record_end.
         let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
         live.extend_from_slice(&[0x34, 0x12, 0x01]);
         let original = live.clone();

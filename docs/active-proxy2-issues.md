@@ -1917,34 +1917,38 @@ Current status:
   v2.3 two-bit owner; the next useful evidence target remains the Diamond
   server writer/handoff for item update mask `0xFFFF_FFF3` before
   `U/10`/`A/6`/`U/6`.
-- 2026-06-07 `P/05/01` Diamond server full item `U/6` writer audit: no packet
-  behavior changed. Found the Diamond server mask and serializer path in
-  `NWN Decompile\nwserver diamond decompile.txt`: `sub_4401F0` assigns
-  raw item full mask `0xFFFF_FFF3` at `0x440380`/`0x4403A8`, passes it to the
-  shared live-update state builder at `0x4403D7 -> sub_44AC70`, and the
-  `U` serializer `sub_445160` writes `U`/type/object-id/mask at
-  `0x4451DE..0x44520D` before the conditional field bodies. Follow-up PE byte
-  proof corrected the branch owner: `C:\NWN\NWN Diamond\nwserver.exe` has
-  VA `0x6338AC = 0x05` and VA `0x6338AD = 0x06`, so the `sub_445160`
-  continuation at `0x446247` is creature-gated, not item-gated. Full `U/6`
-  item rows therefore end after the generic position/orientation/appearance/
-  scale-state/state bits plus `sub_451AF0` item-name branch; extra post-name
-  bytes are unowned tail bytes and must remain unclaimed rather than being
-  modeled as a later item branch. The CEP v2.3 two-bit cursor remains
-  unresolved; next work should capture the local Diamond server around the
-  exact `U/10`/`A/6`/`U/6` handoff or continue tracing the upstream writer
-  handoff before `U/6` to prove which earlier branch owns the disputed bits.
-- 2026-06-07 `P/05/01` Diamond server full item `U/6` call-site audit: no
-  packet behavior changed. Rechecked the Diamond server writer handoff around
-  the unresolved CEP-style cursor. `sub_44AC70` only populates the update
-  snapshot from the selected mask; it is not the fragment-bit writer. The three
-  update-list walkers call the actual `U` serializer `sub_445160` at
-  `0x43F7EC`, `0x444F23`, and `0x4450AC`, and that serializer writes
-  `U`/type/object-id/mask before the conditional generic/item bodies. This
-  narrows the two-bit owner search away from record-local item continuation or
-  `sub_44AC70` side effects. The remaining useful evidence target is still a
-  local Diamond harness capture or deeper server trace of the stream/chunk
+- 2026-06-07 `P/05/01` Diamond server full item `U/6` writer audit
+  (historical; the later server/client proof correction below supersedes the
+  `sub_445160` server-writer attribution): no packet behavior changed. Do not
+  use this earlier note as server-writer proof. Its stable conclusion is only
+  the client-reader rule: full `U/6` item rows end after the generic prefix
+  plus `sub_451AF0` item-name branch, and extra post-name bytes remain
+  unowned until a separate server writer/handoff trace assigns them. The CEP
+  v2.3 two-bit cursor remains unresolved; next work should capture the local
+  Diamond server around the exact `U/10`/`A/6`/`U/6` handoff or continue
+  tracing the upstream writer handoff before `U/6` to prove which earlier
+  branch owns the disputed bits.
+- 2026-06-07 `P/05/01` Diamond full item `U/6` call-site audit
+  (historical; corrected below): no packet behavior changed. `sub_44AC70`
+  still only populates the update snapshot from the selected mask and is not
+  the fragment-bit writer, but the later local-decompile correction rejects the
+  claim that `0x43F7EC`, `0x444F23`, `0x4450AC`, or `sub_445160` prove a
+  Diamond server `U` serializer. The remaining useful evidence target is still
+  a local Diamond harness capture or deeper server trace of the stream/chunk
   handoff before the top-level `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 `P/05/01` item `U/6` server/client proof correction: no packet
+  behavior changed. The checked local decompile files are
+  `C:\NWN\NWN Decompile\fullNwnDecompilePart1.txt` and `Part2.txt`; there is
+  no separate checked `nwserver diamond decompile.txt` under that directory.
+  The local `0x44515F`/`0x4451DE` neighborhood is labeled inside Diamond
+  client read handler `sub_444CC0` and calls reader/state helpers such as
+  `sub_4FB840`, `sub_4FB4C0`, `sub_4FBB40`, and `sub_407340`; it is not
+  server-writer proof. Keep the client-side `U/6` bit-order proof as Diamond
+  `sub_459700 -> sub_467AE0 -> sub_451AF0` versus EE
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0`, and keep extra full-item
+  post-name bytes unowned. The active CEP v2.3 two-bit owner still requires a
+  true server writer/handoff trace or local Diamond harness capture before the
+  top-level `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
