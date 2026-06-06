@@ -802,6 +802,45 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn raw_prefixed_continuation_does_not_strip_typed_item_create_boundary() {
+        // The CEP v2.3 handoff under audit includes a typed item-create row
+        // immediately before the disputed full item update. A continuation that
+        // begins at `A/6 + OBJECTID` is already read-buffer data; moving the
+        // opcode into CNW storage would invent a predecessor for the following
+        // item's fragment cursor.
+        let continuation = [
+            b'A', 0x06, 0xB8, 0x00, 0x00, 0x80, // typed A/6 item create
+            0x01, 0x00, 0x00, 0x00, // first item body bytes
+            b'U', 0x06, 0xB8, 0x00, 0x00, 0x80,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized typed A/6 boundary must remain read-buffer data"
+        );
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_does_not_strip_creature_appearance_boundary() {
+        // `P/5 + OBJECTID + mask` is the decompiled creature appearance row
+        // header. Raw continuation repair must not treat the leading `P` as a
+        // fragment byte just because later exact validation might still reject
+        // this partial stream.
+        let continuation = [
+            b'P', 0x05, 0xB8, 0x00, 0x00, 0x80, // P/5 creature appearance
+            0x00, 0x00, // zero mask row
+            b'W', 0x0C, 0x0E,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized P/5 appearance boundary must remain read-buffer data"
+        );
+    }
+
+    #[test]
     fn raw_prefixed_continuation_does_not_strip_work_remaining_boundary() {
         // `W current total` is a decompile-owned, read-buffer-only live-object
         // record. A raw continuation that starts with W must not donate the

@@ -1521,6 +1521,38 @@ Current status:
   `U/6 mask=0xFFFF_FFF3`, `offset=104`, `record_end=148`, `bit_cursor=28`.
   Verified with `cargo test -q -p hgbridge-proxy2 raw_prefixed_continuation --
   --nocapture` and the private CEP quarantine audit.
+- 2026-06-06 `P/05/01` raw-prefixed read-buffer-boundary audit: extended the
+  same continuation guard from object-bearing `A/D/U/P` starts to the shared
+  live-object boundary predicate, covering read-buffer-only `W current total`,
+  `GQ`, inventory, and other decompile-recognized submessage starts. A leading
+  `W` or `G` byte in a continuation is no longer treated as a one-byte CNW
+  fragment prefix unless another owner proves it, preventing a stream-layer
+  cursor shift before the exact packet-family validator runs. Public tests now
+  pin `W` and `GQ` starts while preserving the observed Docks one-byte
+  non-boundary prefix. Verified with `cargo test -q -p hgbridge-proxy2
+  raw_prefixed_continuation -- --nocapture`, serial `cargo test -q -p
+  hgbridge-proxy2 live_object_update -- --test-threads=1`,
+  `cargo fmt --all --check`, and private
+  `RUSTFLAGS='--cfg hgbridge_private_fixtures'
+  HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1 cargo test -q -p hgbridge-proxy2
+  dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
+  -- --nocapture`. The private CEP fixture is intentionally unchanged and still
+  needs the original source writer, continuation, or terminal-tail owner before
+  the full item `U/6`.
+- 2026-06-06 `P/05/01` raw-prefixed typed-boundary coverage audit: no packet
+  behavior changed. Added public fixture-free coverage proving the stream-layer
+  continuation guard also leaves typed `A/6 + OBJECTID` item-create starts and
+  `P/5 + OBJECTID + mask` creature-appearance starts in the read buffer instead
+  of treating their opcode byte as CNW fragment storage. This pins the same
+  decompile-owned boundary predicate around the active CEP typed item-create /
+  full item-update handoff, but it is not a two-bit owner for the remaining
+  `U/6 mask=0xFFFF_FFF3` cursor at `offset=104`, `record_end=148`,
+  `bit_cursor=28`; the private CEP audit still quarantines at that same cursor.
+  Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260606-raw-cont cargo
+  test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture` and
+  private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`
+  with live-claim tracing.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
