@@ -1553,6 +1553,17 @@ Current status:
   test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture` and
   private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`
   with live-claim tracing.
+- 2026-06-07 `P/05/01` raw-prefixed short-boundary coverage audit: no packet
+  behavior changed. Added public stream-layer regressions proving raw-prefixed
+  continuations do not strip leading `I + OBJECTID + WORD mask` inventory rows
+  or `D/type/OBJECTID` delete rows into CNW fragment storage. Diamond
+  `sub_455940` / EE `sub_1407B4F70` own the inventory read-buffer prefix before
+  any mask BOOLs, and Diamond `sub_455720` / EE `sub_1407B35B0` own the delete
+  read-buffer row before optional delete BOOLs. This closes another false
+  prefix class around the active CEP item handoff without claiming the
+  unresolved two-bit `U/6` cursor. Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260607-raw-cont-short
+  cargo test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture`.
 - 2026-06-06 `P/05/01` full item `U/6` declared-window tail audit: no packet
   shape changed. Split the short update-tail ambiguity detector so item rows
   call the item-specific EE update verifier instead of the door/placeable-named

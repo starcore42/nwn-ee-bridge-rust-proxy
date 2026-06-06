@@ -875,6 +875,43 @@ mod fixture_free_tests {
     }
 
     #[test]
+    fn raw_prefixed_continuation_does_not_strip_inventory_boundary() {
+        // Diamond `sub_455940` and EE `sub_1407B4F70` enter inventory rows from
+        // the live-object read buffer at `I + OBJECTID + WORD mask`, then spend
+        // mask-owned CNW BOOLs later. A continuation that begins at `I` is
+        // therefore not a one-byte fragment prefix.
+        let continuation = [
+            b'I', 0xB8, 0x00, 0x00, 0x80, // inventory owner object id
+            0x00, 0x00, // empty inventory mask
+            b'W', 0x0C, 0x0E,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized inventory boundary must remain read-buffer data"
+        );
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_does_not_strip_delete_boundary() {
+        // Diamond `sub_455720` and EE `sub_1407B35B0` read delete rows as
+        // `D/type/OBJECTID`; creature, item, and placeable deletes own one
+        // following BOOL while trigger and door deletes own none. The leading
+        // `D` still belongs to the read buffer, not raw fragment storage.
+        let continuation = [
+            b'D', 0x05, 0xB8, 0x00, 0x00, 0x80, // creature delete
+            b'W', 0x0C, 0x0E,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized delete boundary must remain read-buffer data"
+        );
+    }
+
+    #[test]
     fn raw_prefixed_continuation_keeps_observed_one_byte_prefix_shape() {
         // The Docks raw-prefixed path remains accepted when a non-boundary
         // fragment byte precedes the continuation read bytes. Exact
