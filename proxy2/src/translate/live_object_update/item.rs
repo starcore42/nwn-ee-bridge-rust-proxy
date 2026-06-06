@@ -21,10 +21,11 @@ const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
 // Diamond server `sub_4401F0` selects this raw full-item mask at
 // 0x440380/0x4403A8 and passes it to the live update state builder at
 // 0x4403D7. The bitstream writer `sub_445160` writes U/type/id/mask at
-// 0x4451DE..0x44520D, then owns the generic prefix, item name, and later
-// item-specific branches. Keep translation exact: extra Diamond-owned tail
-// bytes after the EE-compatible subset must stay unclaimed until their writer
-// order is modeled.
+// 0x4451DE..0x44520D, then owns the generic prefix and item name. Its
+// post-name continuation at 0x446247 is gated by object type byte 0x05
+// (nwserver.exe VA 0x6338AC), while item type 0x06 is VA 0x6338AD. Extra bytes
+// after the full U/6 item name are therefore unowned tail bytes, not a later
+// Diamond item branch.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
@@ -739,11 +740,10 @@ mod tests {
 
     #[test]
     fn full_item_update_extra_tail_is_not_subset_rewritten() {
-        // Diamond server `sub_445160` continues beyond the EE-compatible
-        // position/orientation/appearance/state/name subset for raw mask
-        // 0xFFFF_FFF3. Until those later item branches are modeled from the
-        // writer, the bridge must not translate the mask and leave extra bytes
-        // silently attached to an EE-shaped record.
+        // Diamond server `sub_445160`'s 0x446247 continuation is not an item
+        // tail: the gate compares against object type 0x05, while item is
+        // 0x06. A raw full item update may translate only when the generic
+        // prefix plus `sub_451AF0` name branch lands exactly on record_end.
         let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
         live.extend_from_slice(&[0x34, 0x12, 0x01]);
         let original = live.clone();
@@ -758,7 +758,7 @@ mod tests {
 
         assert!(
             rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &bits, 0).is_none(),
-            "full-mask item updates with unmodeled Diamond tail bytes must stay unclaimed"
+            "full-mask item updates with unowned post-name bytes must stay unclaimed"
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
