@@ -1917,6 +1917,23 @@ Current status:
   v2.3 two-bit owner; the next useful evidence target remains the Diamond
   server writer/handoff for item update mask `0xFFFF_FFF3` before
   `U/10`/`A/6`/`U/6`.
+- 2026-06-07 `P/05/01` Diamond server full item `U/6` writer audit: no packet
+  behavior changed. Found the Diamond server mask and serializer path in
+  `NWN Decompile\nwserver diamond decompile.txt`: `sub_4401F0` assigns
+  raw item full mask `0xFFFF_FFF3` at `0x440380`/`0x4403A8`, passes it to the
+  shared live-update state builder at `0x4403D7 -> sub_44AC70`, and the
+  `U` serializer `sub_445160` writes `U`/type/object-id/mask at
+  `0x4451DE..0x44520D` before the conditional field bodies. That writer proves
+  the raw full item mask is not just the current EE-compatible subset:
+  after the generic position/orientation/appearance/state and name branch
+  around `0x4461F4..0x446242`, item-specific branches continue from
+  `0x446247` onward. Added a regression that refuses to translate a full item
+  update when extra post-name tail bytes are still present, so the existing
+  reduced-shape fixtures cannot turn into a broad byte-drop rule. The CEP
+  v2.3 two-bit cursor remains unresolved; next work should either model the
+  later Diamond full-item branches from `sub_445160` into typed source fields
+  or capture the local Diamond server around the exact `U/10`/`A/6`/`U/6`
+  handoff to prove which branch owns the disputed bits.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

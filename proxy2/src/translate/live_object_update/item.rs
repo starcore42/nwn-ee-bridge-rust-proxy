@@ -18,6 +18,13 @@ use super::{
 const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
 const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
 const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
+// Diamond server `sub_4401F0` selects this raw full-item mask at
+// 0x440380/0x4403A8 and passes it to the live update state builder at
+// 0x4403D7. The bitstream writer `sub_445160` writes U/type/id/mask at
+// 0x4451DE..0x44520D, then owns the generic prefix, item name, and later
+// item-specific branches. Keep translation exact: extra Diamond-owned tail
+// bytes after the EE-compatible subset must stay unclaimed until their writer
+// order is modeled.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
@@ -725,6 +732,33 @@ mod tests {
         assert!(
             rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &shifted_bits, 0).is_none(),
             "item update rewriting must not search neighboring cursors"
+        );
+        assert_eq!(live, original);
+        assert_eq!(record_end, original.len());
+    }
+
+    #[test]
+    fn full_item_update_extra_tail_is_not_subset_rewritten() {
+        // Diamond server `sub_445160` continues beyond the EE-compatible
+        // position/orientation/appearance/state/name subset for raw mask
+        // 0xFFFF_FFF3. Until those later item branches are modeled from the
+        // writer, the bridge must not translate the mask and leave extra bytes
+        // silently attached to an EE-shaped record.
+        let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
+        live.extend_from_slice(&[0x34, 0x12, 0x01]);
+        let original = live.clone();
+        let bits = vec![
+            true, true, // position residual bits.
+            false, true, false, true, true, // scalar orientation branch.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+            false, // EE hidden-state BOOL after item name.
+        ];
+        let mut record_end = live.len();
+
+        assert!(
+            rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &bits, 0).is_none(),
+            "full-mask item updates with unmodeled Diamond tail bytes must stay unclaimed"
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
