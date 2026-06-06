@@ -612,6 +612,14 @@ fn prefixed_live_object_stream_continuation_prefix_len(bytes: &[u8]) -> Option<u
     // prefix (`FF A3 01`) for the later mid-record continuations. This function
     // only decides how much prefix storage to move; the rebuilt `P 05 01` still
     // has to pass the exact live-object semantic validator before emission.
+    //
+    // Re-audit: a continuation byte that already starts a decompile-recognized
+    // live-object read-buffer submessage is not a proved fragment prefix. Moving
+    // that opcode into the CNW tail would shift every following record cursor;
+    // leave such chunks unclaimed unless another path proves a prefix owner.
+    if starts_with_typed_live_object_sub_message_boundary(bytes) {
+        return None;
+    }
     if first == 0 || bytes.len() <= 1 {
         return None;
     }
@@ -623,6 +631,23 @@ fn prefixed_live_object_stream_continuation_prefix_len(bytes: &[u8]) -> Option<u
         return None;
     }
     Some(1)
+}
+
+fn starts_with_typed_live_object_sub_message_boundary(bytes: &[u8]) -> bool {
+    if bytes.len() < 6 || !matches!(bytes[0], b'A' | b'D' | b'U' | b'P') {
+        return false;
+    }
+    if !matches!(bytes[1], 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) {
+        return false;
+    }
+
+    let Some(raw_id) = bytes.get(2..6) else {
+        return false;
+    };
+    let object_id = u32::from_le_bytes([raw_id[0], raw_id[1], raw_id[2], raw_id[3]]);
+    crate::translate::live_object_update::object_ids::looks_like_legacy_live_object_id_value(
+        object_id,
+    )
 }
 
 fn dump_pending_live_object_candidate(
@@ -769,6 +794,40 @@ mod fixture_free_tests {
         assert_eq!(declared, 7 + first_live.len() + second_live.len());
         assert_eq!(&rebuilt[7..declared], &[b'W', 0x01, 0x0E, b'W', 0x02, 0x0E]);
         assert_eq!(&rebuilt[declared..], &[0xA0, 0x80]);
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_does_not_strip_live_object_opcode_boundary() {
+        // Raw-prefixed continuation repair is a stream-boundary rule, not a
+        // cursor search. If the current chunk begins with a real live-object
+        // submessage, the first byte is read-buffer data even though arbitrary
+        // CNW fragment bytes can have the same value.
+        let continuation = [
+            b'U', 0x06, 0xB8, 0x00, 0x00, 0x80, // U/6 + legacy object id
+            0x40, 0x00, 0x00, 0x00, // hidden-state update mask
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            None,
+            "a decompile-recognized U/6 boundary must not be moved into fragment storage"
+        );
+    }
+
+    #[test]
+    fn raw_prefixed_continuation_keeps_observed_one_byte_prefix_shape() {
+        // The Docks raw-prefixed path remains accepted when a non-boundary
+        // fragment byte precedes the continuation read bytes. Exact
+        // GameObjUpdate validation still owns the rebuilt stream before emit.
+        let continuation = [
+            0xA7, b'U', 0x06, 0xB8, 0x00, 0x00, 0x80, // prefix, then U/6
+            0x40, 0x00, 0x00, 0x00,
+        ];
+
+        assert_eq!(
+            prefixed_live_object_stream_continuation_prefix_len(&continuation),
+            Some(1)
+        );
     }
 }
 

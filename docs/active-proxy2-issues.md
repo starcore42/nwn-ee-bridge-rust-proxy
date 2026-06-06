@@ -1507,6 +1507,20 @@ Current status:
   HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1 cargo test -q -p hgbridge-proxy2
   dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
   -- --nocapture`.
+- 2026-06-06 `P/05/01` raw-prefixed continuation boundary audit: tightened the
+  live-object zlib stream assembler so a raw-prefixed continuation no longer
+  treats the first byte as CNW fragment storage when that byte already starts a
+  decompile-recognized live-object submessage boundary. The older raw-prefixed
+  path accepted any nonzero one-byte prefix after a pending stream, which could
+  move an opcode such as `U/6` into the fragment tail and shift all following
+  record cursors before exact validation. The observed Docks-style one-byte
+  `0xA7` prefix remains accepted when it precedes read bytes; opcode-boundary
+  starts are left unclaimed unless another decompile-backed owner proves a
+  prefix. This does not claim the active CEP v2.3 item row: the private trace
+  still quarantines after exact `A/10`, `U/10 tail9`, and no-map `A/6` at full
+  `U/6 mask=0xFFFF_FFF3`, `offset=104`, `record_end=148`, `bit_cursor=28`.
+  Verified with `cargo test -q -p hgbridge-proxy2 raw_prefixed_continuation --
+  --nocapture` and the private CEP quarantine audit.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
