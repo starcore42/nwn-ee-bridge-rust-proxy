@@ -1105,6 +1105,62 @@ fn work_remaining_does_not_rescue_shifted_full_item_update_cursor() {
 }
 
 #[test]
+fn later_placeable_rows_do_not_rescue_shifted_full_item_update_cursor() {
+    // CEP v2.3 continues after the shifted Lance U/6 with ordinary placeable
+    // add/update rows. Those later rows can prove their own cursors, but
+    // Diamond `sub_467AE0` / EE `sub_14079C050` still make the item update
+    // orientation decision before any later row is read. A later live-object
+    // boundary is not an owner for two bits before the item record.
+    let object_id = 0x8000_18CAu32;
+    let mut exact_live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    exact_live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    exact_live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        object_id,
+    ));
+
+    let mut exact_bits = item_update_full_mask_scalar_direct_name_bits();
+    exact_bits.extend_from_slice(&[true, false, true, false]); // compact A/9 source bits.
+    exact_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut exact_payload = live_object_payload_with_bits(&exact_live, exact_bits);
+    let exact_rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("full item update followed by valid placeable rows should rewrite");
+    assert_eq!(exact_rewrite.update_records_rewritten, 1);
+    let exact_claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("translated item plus later placeable rows should exact-claim");
+    assert_eq!(exact_claim.add_records, 1);
+    assert_eq!(exact_claim.update_records, 2);
+
+    let mut shifted_live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
+    shifted_live.extend_from_slice(&compact_placeable_token_name_add_live_bytes());
+    shifted_live.extend_from_slice(&with_live_update_object_id(
+        ee_door_placeable_full_update_live_bytes(super::PLACEABLE_OBJECT_TYPE),
+        object_id,
+    ));
+    let mut shifted_bits = vec![
+        false, true, // unowned pre-cursor residue.
+        true, true, // position residuals if a prior owner consumed the residue.
+        false, true, false, true, true, // scalar branch bits at cursor +2.
+        false, false, false, false, false, // item state bits.
+        false, // direct CExoString item name.
+        false, // EE hidden-state BOOL after item name.
+    ];
+    shifted_bits.extend_from_slice(&[true, false, true, false]); // compact A/9 source bits.
+    shifted_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
+    let mut shifted_payload = live_object_payload_with_bits(&shifted_live, shifted_bits);
+    let original_shifted = shifted_payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "later placeable rows must not make a shifted full item U/6 cursor claimable"
+    );
+    assert_eq!(
+        shifted_payload, original_shifted,
+        "failed later-row proof must leave the item and following rows untouched"
+    );
+}
+
+#[test]
 fn exact_adapter_rolls_back_prior_rewrites_before_unproven_update_w_handoff() {
     // A bounded live-object adapter may stage earlier typed rewrites while it
     // searches for an exact final EE claim. If a later U/9-W handoff lacks the

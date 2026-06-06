@@ -1567,6 +1567,16 @@ Current status:
   with live-claim tracing. Next owner search remains the source writer,
   CNW fragment storage/continuation boundary, or terminal-tail owner before the
   `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-06 `P/05/01` full item `U/6` later-row terminal-tail audit: no packet
+  behavior changed. Re-ran the private CEP v2.3 live-claim trace and confirmed
+  the stream still rejects the scalar-shaped full item `U/6` at `offset=104`,
+  `record_end=148`, `bit_cursor=28` before later placeable rows are considered.
+  Added fixture-free coverage proving a full item `U/6` followed by otherwise
+  valid compact `A/9` plus exact `U/9` rows exact-claims when the item cursor is
+  decompile-correct, but remains unclaimed and rolls back when the item row needs
+  a two-bit neighboring-cursor skip. Later live-object rows therefore are not the
+  missing owner for the CEP `U/6`; continue with the original server writer or
+  CNW fragment storage/continuation handoff before `U/10`/`A/6`/`U/6`.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
