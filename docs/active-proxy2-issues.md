@@ -1223,7 +1223,7 @@ Current status:
   behavior changed, but public fixture-free coverage now pins the decompiled
   name branch bit order. Diamond `sub_451AF0` tests mask `0x80000`, reads one
   selector BOOL, then either `sub_53E700` locstring data or
-  `ReadCExoString(32)`; EE item body reader `sub_14076BD30` uses the same
+  `ReadCExoString(32)`; EE item update helper `sub_1407A08F0` uses the same
   selector before the next item-state BOOL. Tests now prove name-only updates
   own only the selector bits, combined name+hidden updates consume the hidden
   BOOL after the name branch, and terminal extra bits reject instead of being
@@ -1262,7 +1262,7 @@ Current status:
 - ~~2026-06-04 `P/05/01` item `U/6` name-branch transport-boundary ambiguity
   audit: no packet behavior changed, but public boundary coverage now pins the
   same bit-cursor rule for item names. Diamond `sub_451AF0` and EE
-  `sub_14076BD30` read the item-name selector BOOL before choosing direct
+  `sub_1407A08F0` read the item-name selector BOOL before choosing direct
   `CExoString` or locstring-token bytes; without that selector, a direct
   empty-name endpoint that exposes a `W` row and a locstring-token endpoint that
   exposes a `D/6` row are byte-shape ambiguity, not boundary proof. Verified
@@ -1270,7 +1270,7 @@ Current status:
 - 2026-05-31 `P/05/01` item `U/6` locstring-token name audit: no packet
   behavior changed, but public fixture-free coverage now pins the token branch
   of the same decompile-backed item-name bit order. Diamond `sub_451AF0` and EE
-  `sub_14076BD30` read the outer item-name selector, then the locstring
+  `sub_1407A08F0` read the outer item-name selector, then the locstring
   token/client-TLK selector bit and selector BYTE + DWORD token payload, before
   any following item hidden-state BOOL or next live-object record. Tests now
   prove token-name + hidden owns those bits in order, rejects a missing or extra
@@ -1281,7 +1281,7 @@ Current status:
 - 2026-05-31 `P/05/01` item `U/6` hidden-state before `W` audit: no packet
   behavior changed, but public fixture-free coverage now pins the terminal-tail
   negative proof for the item sibling of the CEP v2.3 evidence. Diamond
-  `sub_451AF0` has no low-`0x40` item read-buffer tail, EE `sub_14076BD30`
+  `sub_451AF0` has no low-`0x40` item read-buffer tail, EE `sub_1407A08F0`
   owns exactly one hidden-state BOOL for mask `0x40`, and `W current total`
   (`sub_44F160` / `sub_1407B85A0`) owns only its three read-buffer bytes and
   zero CNW BOOLs. An item hidden update before `W` therefore exact-claims with
@@ -1367,7 +1367,7 @@ Current status:
 - 2026-06-01 `P/05/01` full item `U/6` locstring-inline audit: no packet
   behavior changed, but public fixture-free coverage now pins the locstring
   inline sibling of the same all-bits item-update rule. Diamond `sub_451AF0`
-  and EE `sub_14076BD30` read the item-name outer selector, then the
+  and EE `sub_1407A08F0` read the item-name outer selector, then the
   locstring component selector before the inline `CExoString`, and only then
   the EE hidden-state BOOL. The typed `A/6` handoff coverage now proves the
   active-property insertion preserves those following U/6 locstring-inline bits
@@ -1378,7 +1378,7 @@ Current status:
 - 2026-06-04 `P/05/01` full item `U/6` locstring-token audit: no packet
   behavior changed, but public fixture-free coverage now pins the token sibling
   of the same all-bits item-update rule. Diamond `sub_451AF0` and EE
-  `sub_14076BD30` read the outer item-name selector, the token/client-TLK
+  `sub_1407A08F0` read the outer item-name selector, the token/client-TLK
   selector bit, the read-buffer selector BYTE plus DWORD token, and only then
   EE's hidden-state BOOL. Typed `A/6` active-property insertion also preserves
   the following full `U/6` token-name cursor exactly, so the remaining CEP v2.3
@@ -1870,7 +1870,7 @@ Current status:
   raw U/6 source row, not header bits, continuation prefix storage,
   inventory/delete short-boundary storage, or terminal tail. Client decompile
   cross-check remains Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
-  `sub_1407B8380 -> sub_14079C050 -> sub_14076BD30`; server-side symbolic
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0`; server-side symbolic
   writer search was too noisy to identify the exact source writer. Next useful
   trace is still the Diamond server `WriteGameObjUpdate_UpdateObject` item
   mask `0xFFFF_FFF3` path or a local harness capture around the chunk boundary
@@ -1905,6 +1905,18 @@ Current status:
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex-verify/run-20260607-single-frame
   RUSTFLAGS='--cfg hgbridge_private_fixtures' cargo test -q -p hgbridge-proxy2
   local_cepv23_starter_single_frame_is_left_for_dispatcher -- --nocapture`.
+- 2026-06-07 `P/05/01` item `U/6` helper cross-reference audit: no packet
+  behavior changed. Corrected the active proof target for item update
+  name/hidden bits from the shared EE item body reader to the EE `U/6` helper:
+  Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` read item name before
+  EE's hidden-state BOOL. `sub_14076BD30` remains the EE item body/add path for
+  active-property tails and is not the following full `U/6` reader. Added public
+  fixture-free coverage proving a hidden-first bit order is rejected instead of
+  being accepted as a swapped name/hidden cursor. This does not resolve the CEP
+  v2.3 two-bit owner; the next useful evidence target remains the Diamond
+  server writer/handoff for item update mask `0xFFFF_FFF3` before
+  `U/10`/`A/6`/`U/6`.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

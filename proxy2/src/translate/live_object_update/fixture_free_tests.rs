@@ -1016,7 +1016,7 @@ fn work_remaining_does_not_supply_missing_vector_update_fragment_bits() {
 #[test]
 fn work_remaining_does_not_supply_missing_item_hidden_bit() {
     // Diamond `sub_451AF0` has no low-0x40 read-buffer tail; EE
-    // `sub_14076BD30` owns one hidden-state BOOL for item mask 0x40. `W current
+    // `sub_1407A08F0` owns one hidden-state BOOL for item mask 0x40. `W current
     // total` (`sub_44F160` / `sub_1407B85A0`) owns only its three read-buffer
     // bytes, so it cannot donate the missing item BOOL or hide an extra one.
     let mut live = item_update_hidden_live_bytes();
@@ -3163,9 +3163,9 @@ fn item_update_scalar_vector_boundary_ambiguity_stays_unclaimed() {
 fn item_update_name_cursor_owns_selector_before_hidden_bool() {
     // Diamond `sub_451AF0` proves item-name mask 0x80000 as one selector BOOL
     // followed by either locstring-helper data or direct `ReadCExoString(32)`.
-    // EE item body reader `sub_14076BD30` uses the same selector before the next
-    // item-state BOOL, so combined name+hidden updates must advance in that
-    // order and reject any shifted terminal residue.
+    // EE item-update helper `sub_1407A08F0` uses the same selector before the
+    // next item-state BOOL, so combined name+hidden updates must advance in
+    // that order and reject any shifted terminal residue.
     let mask = super::LEGACY_UPDATE_NAME_MASK | 0x0000_0040;
     let live = item_update_name_live_bytes(mask, b"Lance");
 
@@ -3195,6 +3195,22 @@ fn item_update_name_cursor_owns_selector_before_hidden_bool() {
 }
 
 #[test]
+fn item_update_hidden_bool_before_name_selector_is_rejected() {
+    // Diamond `sub_451AF0` and EE `sub_1407A08F0` both read the item-name
+    // selector before the EE hidden-state BOOL. The hidden-first bit order would
+    // look plausible for a direct-name row if the two BOOLs were swapped, but it
+    // is a shifted cursor under the decompiled readers.
+    let mask = super::LEGACY_UPDATE_NAME_MASK | 0x0000_0040;
+    let live = item_update_name_live_bytes(mask, b"Lance");
+
+    let hidden_first_payload = live_object_payload_with_bits(&live, vec![true, false]);
+    assert!(
+        super::claim_payload_if_verified(&hidden_first_payload).is_none(),
+        "item updates must not accept hidden-state before the item-name selector"
+    );
+}
+
+#[test]
 fn item_update_name_without_hidden_owns_only_name_selector_bits() {
     let live = item_update_name_live_bytes(super::LEGACY_UPDATE_NAME_MASK, b"Lute");
 
@@ -3212,7 +3228,7 @@ fn item_update_name_without_hidden_owns_only_name_selector_bits() {
 
 #[test]
 fn item_update_locstring_token_name_owns_token_selector_before_hidden_bool() {
-    // Diamond `sub_451AF0` and EE `sub_14076BD30` both read the outer item-name
+    // Diamond `sub_451AF0` and EE `sub_1407A08F0` both read the outer item-name
     // selector first. When it selects the locstring helper, the next fragment
     // bit selects the client-TLK/token branch before the item hidden-state
     // BOOL. The read-buffer payload is the selector BYTE plus DWORD token.
@@ -3345,7 +3361,7 @@ fn item_full_update_scalar_locstring_inline_rewrites_mask_without_moving_cursor(
 
 #[test]
 fn item_full_update_scalar_locstring_token_rewrites_mask_without_moving_cursor() {
-    // Diamond `sub_451AF0` and EE `sub_14076BD30` read the full item name
+    // Diamond `sub_451AF0` and EE `sub_1407A08F0` read the full item name
     // branch as outer locstring selector, token/client-TLK selector bit, one
     // read-buffer selector BYTE, and a DWORD token before EE's hidden-state
     // BOOL. The token payload must not be mistaken for direct CExoString bytes
