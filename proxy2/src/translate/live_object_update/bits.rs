@@ -74,3 +74,28 @@ pub(super) fn erase_msb_bits(bits: &mut Vec<bool>, bit_index: usize, count: usiz
     bits.drain(bit_index..bit_index + count);
     Some(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragment_header_uses_three_msb_valid_count_bits_before_payload() {
+        // Diamond `CreateWriteMessage` reserves the first three MSB bits before
+        // live-object payload bits. Packetized fragments store the final-byte
+        // valid-bit count there; semantic record bits start at cursor 3.
+        let payload_bits = [
+            true, false, false, true, true, false, false, true, false, true, false,
+        ];
+        let mut bits = vec![false; 3];
+        bits.extend_from_slice(&payload_bits);
+
+        let packed = pack_msb_valid_bits(bits, 3);
+        assert_eq!(packed, [0xD3, 0x28]);
+
+        let decoded =
+            decode_msb_valid_bits(&packed, 3).expect("packed fragment should decode exactly");
+        assert_eq!(&decoded[..3], &[true, true, false]);
+        assert_eq!(&decoded[3..], payload_bits);
+    }
+}

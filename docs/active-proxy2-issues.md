@@ -1945,6 +1945,20 @@ Current status:
   `sub_44AC70` side effects. The remaining useful evidence target is still a
   local Diamond harness capture or deeper server trace of the stream/chunk
   handoff before the top-level `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
+  packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
+  write cursor at byte offset 7, clears the bit cursor, and immediately calls
+  the shared MSB bit writer `0x507340` for three zero bits; that same bit writer
+  uses bit position `7 - cursor` when setting bits. Packetized fragment storage
+  later overwrites those three MSB bits with the final-byte valid-bit count.
+  Added public fixture-free coverage proving `pack_msb_valid_bits` and
+  `decode_msb_valid_bits` reserve exactly those first three bits before
+  semantic payload bits. This confirms the checked-in CEP raw fragment-tail
+  audit's starting point but does not resolve the active two-bit owner: the
+  disputed bits after the `A/10`/`U/10`/`A/6` prefix are still live-object
+  payload bits, not CNW framing bits. Next useful target remains a local
+  Diamond harness capture or deeper writer trace before the top-level
+  `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
