@@ -1553,6 +1553,20 @@ Current status:
   test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture` and
   private `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`
   with live-claim tracing.
+- 2026-06-06 `P/05/01` full item `U/6` declared-window tail audit: no packet
+  shape changed. Split the short update-tail ambiguity detector so item rows
+  call the item-specific EE update verifier instead of the door/placeable-named
+  wrapper, and added public declared-length coverage proving a scalar/direct-name
+  full item `U/6 mask=0xFFFF_FFF3` can look like compact CNW fragment storage
+  but must remain a read-buffer row until its own fragment bits prove the cursor.
+  The private CEP v2.3 fixture still intentionally quarantines at `offset=104`,
+  `record_end=148`, `bit_cursor=28` with neighboring item cursors
+  `-4/-3/-2/+2/+4` as ambiguity only. Verified with
+  `declared_length_window_rejects_full_item_update_as_fragment_tail`,
+  `declared_length_`, `raw_neighbor_u6`, and the private CEP quarantine audit
+  with live-claim tracing. Next owner search remains the source writer,
+  CNW fragment storage/continuation boundary, or terminal-tail owner before the
+  `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` full item `U/6` vector-orientation audit: no packet
   behavior changed, but public fixture-free coverage now pins the positive
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE

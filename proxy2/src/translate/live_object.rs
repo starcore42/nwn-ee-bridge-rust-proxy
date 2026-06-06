@@ -1428,10 +1428,18 @@ fn fragment_tail_starts_with_aligned_short_update_read_boundary(
             ) {
                 return true;
             }
-        } else if matches!(
-            object_type,
-            Some(ITEM_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
-        ) {
+        } else if object_type == Some(ITEM_OBJECT_TYPE) {
+            let mut bit_cursor = 0usize;
+            if crate::translate::live_object_update::advance_verified_item_update_fragment_cursor_for_ee(
+                bytes,
+                tail_start,
+                record_end,
+                &placeholder_bits,
+                &mut bit_cursor,
+            ) {
+                return true;
+            }
+        } else if matches!(object_type, Some(PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)) {
             let mut bit_cursor = 0usize;
             if crate::translate::live_object_update::advance_verified_door_placeable_update_fragment_cursor_for_ee(
                 bytes,
@@ -5326,6 +5334,19 @@ mod declared_length_repair_tests {
         live
     }
 
+    fn item_full_scalar_direct_name_update_live_bytes(name: &[u8]) -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+        live.extend_from_slice(&[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F]);
+        live.push(0); // scalar-orientation read byte.
+        live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        live.extend_from_slice(&[0; 16]);
+        live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        live.extend_from_slice(name);
+        live
+    }
+
     fn creature_zero_update_live_bytes() -> Vec<u8> {
         let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
         live.extend_from_slice(&0x0000_00FEu32.to_le_bytes());
@@ -6140,6 +6161,49 @@ mod declared_length_repair_tests {
         assert!(
             !declared_length_window_transport_plausible(&payload),
             "a plausible CNW bit shape must not steal an aligned short U/6 hidden-state update"
+        );
+    }
+
+    #[test]
+    fn declared_length_window_rejects_full_item_update_as_fragment_tail() {
+        let mut live = Vec::new();
+        append_legacy_door_add(&mut live, 0x8000_34D1, 0x0000_000C);
+
+        let split = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + live.len();
+        let item_update = item_full_scalar_direct_name_update_live_bytes(b"Lance");
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+        ];
+        payload.extend_from_slice(&(split as u32).to_le_bytes());
+        payload.extend_from_slice(&live);
+        payload.extend_from_slice(&item_update);
+
+        assert!(
+            decode_cnw_msb_valid_bits(&payload[split..]).is_some(),
+            "full U/6 update bytes can masquerade as compact CNW fragment storage"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&payload, split, payload.len()),
+            payload.len(),
+            "the full item update byte window must stay together until fragment bits prove its cursor"
+        );
+
+        let repair = LiveObjectDeclaredLengthRepairCandidate {
+            old_declared: split as u32,
+            new_declared: split as u32,
+            old_payload_length: payload.len(),
+            read_bytes_length: live.len(),
+            fragment_bytes_length: payload.len() - split,
+        };
+        assert!(
+            declared_length_repair_tail_contains_live_object_read_boundary(&payload, &repair),
+            "aligned full U/6 remains a read-buffer row, not a CNW tail"
+        );
+        assert!(
+            !declared_length_window_transport_plausible(&payload),
+            "a plausible CNW bit shape must not steal an aligned full U/6 item update"
         );
     }
 

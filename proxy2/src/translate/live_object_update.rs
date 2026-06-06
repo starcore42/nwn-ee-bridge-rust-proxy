@@ -1527,6 +1527,26 @@ pub(crate) fn advance_legacy_item_update_fragment_cursor_for_transport(
     )
 }
 
+pub(crate) fn advance_verified_item_update_fragment_cursor_for_ee(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    if let Some(next_bit_cursor) = item::advance_verified_ee_item_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        *bit_cursor,
+    ) {
+        *bit_cursor = next_bit_cursor;
+        return true;
+    }
+    false
+}
+
 pub(crate) fn try_get_verified_creature_update_record_end_for_transport(
     live_bytes: &[u8],
     offset: usize,
