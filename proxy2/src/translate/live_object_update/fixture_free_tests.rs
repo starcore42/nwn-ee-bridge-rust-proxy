@@ -4980,6 +4980,40 @@ fn legacy_width_typed_item_create_without_visual_map_preserves_following_full_it
 }
 
 #[test]
+fn compact_tail9_bits_do_not_match_stock_u10_orientation_state_writer() {
+    // Diamond `nwserver.exe` stock `0x445160` writes the mask-0x0002
+    // orientation BOOL before scalar/vector orientation payload
+    // (`0x4452EF`/`0x445311`), then writes the mask-0x0010 state BOOLs at
+    // `0x446034..0x44605C`. The local/HG compact tail9 bits are therefore not
+    // a valid cursor for a normal stock `U/10` read-body layout; they are only
+    // accepted with the bounded nine-byte compact tail reader.
+    for (label, compact_bits) in [
+        ("plain", legacy_tail9_door_update_source_bits()),
+        (
+            "cep-name-suffix",
+            legacy_tail9_door_update_cep_name_suffix_source_bits(),
+        ),
+    ] {
+        let live = door_update_0x17_live_bytes_for_object(0x8000_0004);
+        let mut payload = live_object_payload_with_bits(&live, compact_bits);
+        let original = payload.clone();
+
+        assert!(
+            super::claim_payload_if_verified(&payload).is_none(),
+            "{label}: compact tail9 bits must not exact-claim a stock U/10 layout"
+        );
+        assert!(
+            super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+            "{label}: rewrite must not reinterpret compact tail9 bits as stock U/10 orientation/state"
+        );
+        assert_eq!(
+            payload, original,
+            "{label}: rejected stock-vs-compact cursor proof must leave the source payload untouched"
+        );
+    }
+}
+
+#[test]
 fn tail9_door_update_before_typed_item_create_preserves_following_full_item_update_bits() {
     // Pin the CEP v2.3 upstream cursor: a preceding all-bits door `U/10`
     // tail9 row owns eight legacy compact source bits and emits thirteen EE bits

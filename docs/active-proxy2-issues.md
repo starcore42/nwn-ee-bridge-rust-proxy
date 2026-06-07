@@ -2152,6 +2152,16 @@ Current status:
   This strengthens the boundary that the compact tail9 row remains local/HG
   capture evidence, not a proven normal Diamond writer shape; it still does not
   assign the two active pre-`U/6` bits.
+- 2026-06-08 `P/05/01` stock-vs-compact `U/10` cursor guard: no packet behavior
+  changed. Added public fixture-free coverage that pairs the normal stock
+  `U/10` position/orientation/scale-state/state read-body layout with both the
+  plain and CEP-name-suffix compact tail9 source-bit sequences. Both variants
+  must reject exact claim/rewrite and leave the payload unchanged. This pins the
+  `nwserver.exe` `0x445160` proof that the mask-`0x0002` orientation BOOL is
+  written before mask-`0x0010` state BOOLs, so compact tail9 capture bits cannot
+  be reused as a normal stock writer cursor. The two active pre-`U/6` bits
+  remain unowned; next useful work is still a compact-source capture or another
+  source-writer/handoff proof before the `U/10`/`A/6`/`U/6` boundary.
 - 2026-06-07 `P/05/01` CEP raw zlib-stream replay audit: no packet behavior
   changed. Replayed the archived raw Diamond server send stream from
   `C:\nwnbridge\local-diamond-bridge-20260523-190505\diamond-packets` with the
