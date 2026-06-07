@@ -330,12 +330,15 @@ pub(super) fn rewrite_update_record_for_ee(
             };
 
         if let Some((tail, following_payload_ready)) = legacy_tail {
-            // Diamond's generic door/placeable update writer can append a
-            // decompile-owned nine-byte tail at the post-position cursor:
-            // WORD facing, one legacy generic byte, FLOAT scale, WORD generic
-            // state. Those bytes can also accidentally form a bounded
-            // CExoString candidate, so this typed tail reader must win before
-            // the compact inline-name repair is considered.
+            // Legacy compact door/placeable update captures can carry a bounded
+            // nine-byte tail at the post-position cursor: WORD facing, one
+            // legacy generic byte, FLOAT scale, WORD generic state. Direct
+            // Diamond `nwserver.exe` disassembly of the normal 0x445160 writer
+            // uses an orientation BOOL for mask 0x0002, so do not cite this
+            // compact tail9 shape as that normal writer path without separate
+            // capture/writer proof. These bytes can also accidentally form a
+            // bounded CExoString candidate, so this typed tail reader must win
+            // before the compact inline-name repair is considered.
             tail_ready = true;
             tail_needs_empty_name = !following_payload_ready;
             // The tail9 cursor does not contain EE's mask-0x20 appearance
@@ -1155,7 +1158,7 @@ pub(super) fn rewrite_update_record_for_ee(
         None
     };
 
-    // The tail9 converter owns Diamond's name BOOL and EE's inserted scalar/
+    // The tail9 converter owns the legacy name BOOL and EE's inserted scalar/
     // state bits only; a terminal extra bit has no following record to claim it.
     if let Some((rewritten_bits, rewritten_bit_cursor, _)) = bit_rewrite_candidate.as_ref() {
         if *record_end == live_bytes.len()

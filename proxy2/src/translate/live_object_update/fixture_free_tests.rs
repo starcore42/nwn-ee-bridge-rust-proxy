@@ -270,17 +270,20 @@ fn legacy_tail9_door_update_without_name_payload_live_bytes() -> Vec<u8> {
 }
 
 fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
+    // This compact tail9 cursor is pinned from local legacy captures. It is not
+    // the normal Diamond server 0x445160 mask-0x0002 writer path, which writes
+    // an orientation selector BOOL before scalar/vector orientation payload.
     vec![
         false, true, // position residual bits.
-        true, false, true, false, true,  // Diamond door state bits.
-        false, // Diamond legacy name branch bit removed before EE emission.
+        true, false, true, false, true,  // legacy tail9 door state bits.
+        false, // legacy name branch bit removed before EE emission.
     ]
 }
 
 fn legacy_tail9_door_update_cep_name_suffix_source_bits() -> Vec<bool> {
     vec![
         false, true, // position residual bits.
-        true, false, false, false, true, // Diamond door state bits from the CEP v2.3 stream.
+        true, false, false, false, true, // legacy door state bits from the CEP v2.3 stream.
         true, // legacy name branch owning the following four-byte suffix.
     ]
 }
@@ -301,7 +304,7 @@ fn legacy_tail9_door_update_expected_ee_bits() -> Vec<bool> {
     bits.extend_from_slice(&ee_scalar_orientation_fragment_bits_from_legacy_facing(
         0x2EA8,
     ));
-    bits.extend_from_slice(&[true, false, true, false, true]); // Diamond door state bits.
+    bits.extend_from_slice(&[true, false, true, false, true]); // legacy tail9 door state bits.
     bits.push(false); // EE-only neutral door/placeable state BOOL.
     bits
 }
@@ -311,7 +314,7 @@ fn legacy_tail9_door_update_cep_name_suffix_expected_ee_bits() -> Vec<bool> {
     bits.extend_from_slice(&ee_scalar_orientation_fragment_bits_from_legacy_facing(
         0x2EA8,
     ));
-    bits.extend_from_slice(&[true, false, false, false, true]); // CEP v2.3 Diamond door state bits.
+    bits.extend_from_slice(&[true, false, false, false, true]); // CEP v2.3 legacy door state bits.
     bits.push(false); // EE-only neutral door/placeable state BOOL.
     bits
 }
@@ -4976,7 +4979,7 @@ fn legacy_width_typed_item_create_without_visual_map_preserves_following_full_it
 #[test]
 fn tail9_door_update_before_typed_item_create_preserves_following_full_item_update_bits() {
     // Pin the CEP v2.3 upstream cursor: a preceding all-bits door `U/10`
-    // tail9 row owns eight Diamond source bits and emits thirteen EE bits
+    // tail9 row owns eight legacy compact source bits and emits thirteen EE bits
     // before the typed `A/6` item create hands off to the following full `U/6`.
     let mut live = legacy_tail9_door_update_without_name_payload_live_bytes();
     live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());
@@ -5056,9 +5059,9 @@ fn tail9_door_update_before_typed_item_create_rejects_shifted_following_item_upd
 fn cep_tail9_name_suffix_before_typed_item_create_preserves_following_full_item_update_bits() {
     // The live CEP v2.3 stream differs from the older constructed tail9 sibling:
     // the U/10 source bits have the legacy name branch set and the read buffer
-    // carries a four-byte legacy suffix after the tail9 state WORD. Diamond owns
-    // only that one name BOOL before returning to the next A/6 row; it does not
-    // donate extra fragment bits to the following U/6.
+    // carries a four-byte legacy suffix after the tail9 state WORD. This legacy
+    // compact path owns only that one name BOOL before returning to the next
+    // A/6 row; it does not donate extra fragment bits to the following U/6.
     let mut live = legacy_short_strref_door_add_live_bytes();
     live.extend_from_slice(&legacy_tail9_door_update_without_name_payload_live_bytes());
     live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());

@@ -8,12 +8,14 @@ use super::{
 pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // EE `sub_14079C050` handles mask bit 0x0002 by first reading a BOOL:
     // false selects the compact scalar `ReadFLOAT(10.0, 12)` facing branch,
-    // true selects the three-component orientation-vector branch. Diamond/HG
-    // placeable updates carry the legacy facing WORD in the generic tail; the
-    // typed update writer converts that WORD to EE's scalar branch. Dropping
-    // this bit makes static signs/boards keep stale/default orientation.
+    // true selects the three-component orientation-vector branch. Legacy
+    // compact placeable updates observed in HG/local captures can carry the
+    // facing WORD in the generic tail instead of the normal Diamond server
+    // `0x445160` orientation-BOOL path; the typed update writer converts that
+    // WORD to EE's scalar branch. Dropping this bit makes static signs/boards
+    // keep stale/default orientation.
     // Diamond's generic update writer has a legacy 0x0008_0000 name/locstring
-    // branch (`wserver` around 0x446061), but EE's generic update reader/writer
+    // branch (`nwserver` around 0x446061), but EE's generic update reader/writer
     // pair (`sub_14079C050` / `WriteGameObjUpdate_UpdateObject`) has no bit-13
     // consumer in this packet family. Keep that legacy field as input-only until
     // a separate EE semantic packet is proven from the decompile.

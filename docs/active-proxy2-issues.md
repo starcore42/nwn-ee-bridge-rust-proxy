@@ -1088,7 +1088,7 @@ Current status:
   and `cargo test -q -p hgbridge-proxy2 trigger_update -- --nocapture`.
 - 2026-05-29 `P/05/01` all-bits door/placeable tail9 terminal-bit audit:
   extended the terminal residual-bit guard to the older `U/9`/`U/10`
-  `0xFFFFFFF7` tail9 converter. The proven Diamond-owned source cursor is
+  `0xFFFFFFF7` tail9 converter. The proven compact-tail source cursor is
   position residual bits, five state BOOLs, and the legacy name BOOL; the EE
   writer inserts scalar-orientation bits and one neutral door/placeable state
   BOOL, but any remaining terminal fragment bit is unowned until a decompile
@@ -1699,7 +1699,7 @@ Current status:
 - 2026-06-01 `P/05/01` tail9-before-item handoff audit: no packet behavior
   changed, but public fixture-free coverage now pins the upstream cursor that
   makes the current CEP v2.3 starter failure significant. The preceding
-  `U/10 mask=0xFFFF_FFF7` tail9 door row owns eight Diamond source bits
+  `U/10 mask=0xFFFF_FFF7` tail9 door row owns eight legacy compact source bits
   (position residual, five state BOOLs, legacy name branch) and emits thirteen
   EE bits (inserted scalar-orientation fragment, the same five state BOOLs,
   EE-neutral state BOOL, with the legacy name branch removed). That net +5
@@ -2074,6 +2074,19 @@ Current status:
   active bits before the CEP v2.3 full item `U/6`. Continue with exact
   preceding-record serializer proof or a fresh local Diamond capture around the
   `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-07 `P/05/01` compact tail9 source-writer audit: no packet behavior
+  changed. Direct `nwserver.exe` disassembly of the normal server `U`
+  serializer at `0x445160` shows mask `0x0002` writes an orientation BOOL at
+  `0x4452EF` or `0x445311` before scalar/vector orientation payload, mask
+  `0x0010` writes the five door/placeable state BOOLs at
+  `0x446034..0x44605C`, and mask `0x0008_0000` writes only the legacy name
+  branch BOOL before optional name bytes (`0x4460BE`/`0x4460E7` and sibling
+  type branches). Therefore the existing compact `0xFFFF_FFF7` tail9 fixture
+  remains valid local/HG legacy evidence, but it is not proven to be the normal
+  Diamond server writer path and must not be used to assign extra pre-`U/6`
+  cursor ownership. The active CEP v2.3 item handoff still needs the compact
+  writer/source capture or another decompile-backed owner before the
+  `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
