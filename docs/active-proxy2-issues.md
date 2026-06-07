@@ -65,6 +65,18 @@ Current status:
   `candidate_tail=56` and duplicated two earlier source bits. Do not restore a
   cursor window; prove the missing two-bit owner from Diamond/EE appearance
   decompiles or make the appearance rewrite report a decompile-backed bit delta.
+- 2026-06-08 follow-up `P/05/01` full creature appearance bit-delta audit: no
+  packet behavior changed. Debug proof for the Sooty Crow NPC span shows the
+  failing `P/5` at offset 325 is a byte-only EE build widening:
+  `source_bit_cursor=57`, direct CExoString name, `legacy_bits=1`,
+  `ee_bits=1`, no nested `ee_name_bit_rewrites`, no EE fragment inserts, and
+  no removed fragment bits before the following `U/5 0x3967` at offset 454.
+  Added fixture-free coverage for the generalized shape with nonzero
+  delete-only visible-equipment rows: Diamond and EE both consume only the
+  direct creature-name selector while the EE widening is read-buffer-only. The
+  old `candidate_tail=56` therefore duplicated pre-appearance/name-selector
+  bits and remains invalid; the unresolved two-bit owner is outside this
+  appearance bit-delta path.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

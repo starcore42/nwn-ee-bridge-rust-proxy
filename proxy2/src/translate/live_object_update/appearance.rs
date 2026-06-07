@@ -9217,6 +9217,12 @@ mod public_tests {
         push_no_name_active_property_tail(bytes);
     }
 
+    fn push_visible_equipment_delete_item(bytes: &mut Vec<u8>, slot: u32) {
+        bytes.push(b'D');
+        push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
+        push_u32(bytes, slot); // visible-equipment slot.
+    }
+
     fn push_visible_equipment_value_masked_item(bytes: &mut Vec<u8>) {
         bytes.push(b'A');
         push_u32(bytes, 0x8000_0042); // embedded item OBJECTID.
@@ -9255,6 +9261,21 @@ mod public_tests {
         push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
         bytes.push(1); // visible-equipment count.
         push_visible_equipment_no_name_item(&mut bytes);
+        bytes
+    }
+
+    fn full_legacy_creature_appearance_with_direct_name_and_delete_equipment(count: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', LEGACY_CREATURE_TYPE]);
+        push_u32(&mut bytes, 0x8000_0042);
+        push_u16(&mut bytes, LEGACY_APPEARANCE_ALL_FIELDS_MASK);
+        push_cexo_string(&mut bytes, b"Hero");
+        push_full_appearance_tail_fields(&mut bytes, CreatureAppearanceWireDialect::LegacyDiamond);
+        bytes.push(count);
+        let slots = [2, 1, 0x20, 0x10, 0x40];
+        for index in 0..usize::from(count) {
+            push_visible_equipment_delete_item(&mut bytes, slots[index % slots.len()]);
+        }
         bytes
     }
 
@@ -10560,6 +10581,56 @@ mod public_tests {
                 &mut short_cursor,
             ),
             "the nested active-property tail must not be accepted with a missing source BOOL"
+        );
+    }
+
+    #[test]
+    fn full_appearance_delete_equipment_rows_do_not_donate_tail_bits() {
+        let mut bytes = full_legacy_creature_appearance_with_direct_name_and_delete_equipment(5);
+        let mut record_end = bytes.len();
+        let mut fragment_bits = direct_name_bits();
+
+        let mut legacy_cursor = 0usize;
+        assert!(advance_verified_legacy_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut legacy_cursor,
+        ));
+        assert_eq!(
+            legacy_cursor, 1,
+            "delete-only visible-equipment rows own bytes only; the full P/5 fragment cursor stops after the direct creature-name selector"
+        );
+
+        let rewrite = insert_ee_creature_appearance_extras_for_ee(
+            &mut bytes,
+            0,
+            &mut record_end,
+            &mut fragment_bits,
+            0,
+        )
+        .expect("delete-only full appearance should widen to exact EE byte shape");
+
+        assert_eq!(
+            rewrite.bytes_inserted, 21,
+            "EE build-byte widening is read-buffer-only for delete equipment rows"
+        );
+        assert_eq!(rewrite.bytes_removed, 0);
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+
+        let mut ee_cursor = 0usize;
+        assert!(advance_verified_ee_creature_appearance_record(
+            &bytes,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut ee_cursor,
+        ));
+        assert_eq!(
+            ee_cursor, 1,
+            "the translated EE P/5 still consumes only the direct creature-name selector before the following record"
         );
     }
 
