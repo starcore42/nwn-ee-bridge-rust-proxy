@@ -1633,6 +1633,17 @@ Current status:
   before the CEP v2.3 `U/10`/`A/6`/`U/6` sequence; continue with local Diamond
   capture or higher-level write-message/list-handoff evidence before changing
   cursor ownership.
+- 2026-06-07 `P/05/01` server call-site neighborhood audit: no packet behavior
+  changed. Direct `nwserver.exe` disassembly of the three `0x445160` call
+  neighborhoods keeps the serializer proof above but does not assign the CEP
+  pre-`U/6` residue. The `0x43F7EC` path calls the U serializer after the
+  `0x440130` add/snapshot setup and then enters `0x44AC70`/`0x44B520` snapshot
+  and appearance helpers; the `0x444F23` and `0x4450AC` list walkers call the U
+  serializer and then `0x444C70`, which copies selected snapshot fields. In the
+  inspected neighborhoods these helpers do not write inter-record fragment
+  BOOLs between U records, so the two active bits remain an upstream
+  write-message/list-handoff or local Diamond capture target, not an item-local
+  continuation or nearby shifted-cursor license.
 - 2026-06-06 `P/05/01` typed item-create/update declared-capacity handoff
   audit: no packet behavior changed. Added public fixture-free coverage proving
   source-side declared-length capacity rejects an `A/6 -> U/6` read prefix when
