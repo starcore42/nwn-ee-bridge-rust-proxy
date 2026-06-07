@@ -281,6 +281,9 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
 }
 
 fn legacy_tail9_door_update_cep_name_suffix_source_bits() -> Vec<bool> {
+    // Same local/HG compact tail9 family as `legacy_tail9_door_update_source_bits`,
+    // with the CEP v2.3 state/name-bit values. This is capture-backed cursor
+    // evidence, not proof of the normal Diamond `0x445160` writer shape.
     vec![
         false, true, // position residual bits.
         true, false, false, false, true, // legacy door state bits from the CEP v2.3 stream.
@@ -5479,9 +5482,11 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
 fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
     // The checked-in CEP v2.3 starter stream's raw tail starts
     // `7A 63 23 AC ...`. Its first three MSB bits are the CNW final-valid-bit
-    // count, so the decompile-owned live-object source bits start only after
-    // `CNW_FRAGMENT_HEADER_BITS`. The following U/6's first two bits are part
-    // of that item row, not reusable header/storage residue.
+    // count, so live-object source bits start only after
+    // `CNW_FRAGMENT_HEADER_BITS`. The tail9 span below is local/HG compact
+    // evidence, not the normal Diamond `0x445160` orientation-BOOL writer path.
+    // The following U/6's first two bits are part of that item row, not reusable
+    // header/storage residue.
     let raw_a10_bits = [true, true, false, true, false];
     let raw_tail9_u10_bits = [false, true, true, false, false, false, true, true];
     let raw_no_map_a6_bits = [false, false, true, false, false];
@@ -5525,7 +5530,7 @@ fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
     assert_eq!(
         &decoded[tail9_start..no_map_a6_start],
         &raw_tail9_u10_bits,
-        "tail9 U/10 source bits own exactly their decompiled width"
+        "tail9 U/10 source bits match the local/HG compact evidence width"
     );
     assert_eq!(
         &decoded[no_map_a6_start..shifted_u6_start],
@@ -5648,8 +5653,9 @@ fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
 fn tail9_item_create_handoff_does_not_skip_two_unowned_bits_before_item_update() {
     // The CEP v2.3 cursor-neighbor evidence is not limited to an isolated U/6.
     // Even after the preceding U/10 tail9 row and typed A/6 item-create row are
-    // both decompile-owned, neither row owns two extra fragment bits before the
-    // following full item update. A neighboring item cursor may validate only if
+    // both bounded by their accepted readers, neither row owns two extra
+    // fragment bits before the following full item update. The tail9 width is
+    // local/HG compact evidence; a neighboring item cursor may validate only if
     // some separate reader has consumed those bits first.
     let mut live = legacy_tail9_door_update_without_name_payload_live_bytes();
     live.extend_from_slice(&ee_shaped_model_type2_typed_item_create_live_bytes());

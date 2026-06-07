@@ -1899,12 +1899,13 @@ Current status:
   source bits without relying on semantic-looking helper defaults. The replay
   uses raw `A/10` bits `11010`, CEP `U/10` tail9 bits `01100011`, no-map
   `A/6` bits `00100`, and following `U/6` bits beginning
-  `01110101100000`. After the decompile-owned `A/10`, `U/10`, and `A/6`
-  rewrites, the real `U/6` cursor still selects vector orientation while the
-  bytes are scalar-shaped; the translated item reader accepts only at
-  `cursor + 2`. Those two leading bits therefore remain unowned rather than a
-  license for cursor search/skip behavior. Continue tracing a real fragment
-  owner or stream-boundary artifact before offset 104. Verified with
+  `01110101100000`. After the bounded `A/10`, local/HG compact tail9 `U/10`,
+  and decompile-owned `A/6` rewrites, the real `U/6` cursor still selects
+  vector orientation while the bytes are scalar-shaped; the translated item
+  reader accepts only at `cursor + 2`. Those two leading bits therefore remain
+  unowned rather than a license for cursor search/skip behavior. Continue
+  tracing a real fragment owner or stream-boundary artifact before offset 104.
+  Verified with
   `cargo test -q -p hgbridge-proxy2
   cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair --
   --nocapture`.
@@ -2087,6 +2088,16 @@ Current status:
   cursor ownership. The active CEP v2.3 item handoff still needs the compact
   writer/source capture or another decompile-backed owner before the
   `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 `P/05/01` compact tail9 proof-boundary scrub: no packet behavior
+  changed. Rechecked the five `0xFFFFFFF7` literal neighborhoods in
+  `C:\NWN\HGX Source\hgx.server decompile\hgx.server decompile.txt`; the
+  inspected hits are mask/string helper cleanup paths rather than identifiable
+  `P/05/01` live-object packet writers. Updated public fixture comments so the
+  CEP `U/10` tail9 bit span is described as local/HG compact evidence, not as
+  normal Diamond `0x445160` writer or decompile-owned width proof. The two
+  pre-`U/6` bits remain unowned; next useful work is still a compact
+  writer/source capture or another server-binary/decompile-backed owner before
+  the `U/10`/`A/6`/`U/6` boundary.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
