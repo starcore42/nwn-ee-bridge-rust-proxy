@@ -1332,10 +1332,11 @@ Current status:
   `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` both read the generic
   update prefix as position bytes plus two bits, one orientation selector BOOL,
   either one scalar byte plus four bits or six vector bytes, appearance/resref,
-  five state bits, and item name selector/data. A 2026-06-07 server-writer audit
-  superseded the earlier hidden-state assumption: Diamond item type `0x06` full
-  updates end after the name branch, while EE hidden-state BOOLs belong only to
-  explicit EE-shaped mask `0x40` records. Tests now prove a raw Diamond
+  five state bits, and item name selector/data. A 2026-06-07 decompile
+  correction superseded the earlier hidden-state assumption and the stale
+  server-writer attribution: Diamond item type `0x06` full updates are still
+  modeled as ending after the name branch, while EE hidden-state BOOLs belong
+  only to explicit EE-shaped mask `0x40` records. Tests now prove a raw Diamond
   `0xFFFF_FFF3` item row with decompile-correct scalar bits and direct
   `CExoString` name translates to EE mask `0x00080033` without moving bytes or
   fragment bits, and that the same scalar-looking read-buffer bytes stay
@@ -1372,7 +1373,8 @@ Current status:
   inline sibling of the same all-bits item-update rule. Diamond `sub_451AF0`
   and EE `sub_1407A08F0` read the item-name outer selector, then the
   locstring component selector before the inline `CExoString`. The 2026-06-07
-  server-writer audit later proved the Diamond full item row ends after that
+  decompile correction later superseded the stale server-writer attribution, but
+  kept the same client-reader rule: the Diamond full item row ends after that
   name payload; EE hidden-state remains a separate explicit `0x40` update. The
   typed `A/6` handoff coverage now proves the
   active-property insertion preserves those following U/6 locstring-inline bits
@@ -1385,8 +1387,10 @@ Current status:
   of the same all-bits item-update rule. Diamond `sub_451AF0` and EE
   `sub_1407A08F0` read the outer item-name selector, the token/client-TLK
   selector bit, and the read-buffer selector BYTE plus DWORD token. The
-  2026-06-07 server-writer audit later proved the Diamond full item row ends
-  there; EE hidden-state remains a separate explicit `0x40` update. Typed `A/6`
+  2026-06-07 decompile correction later superseded the stale server-writer
+  attribution, but kept the same client-reader rule: the Diamond full item row
+  ends there; EE hidden-state remains a separate explicit `0x40` update. Typed
+  `A/6`
   active-property insertion also preserves the following full `U/6` token-name
   cursor exactly, so the remaining CEP v2.3
   two-bit handoff evidence is not a missing token-name branch. Verified with
@@ -1491,7 +1495,7 @@ Current status:
   HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1 cargo test -q -p hgbridge-proxy2
   dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit
   -- --nocapture`. Next step remains the CNW fragment storage/continuation
-  boundary or original server writer/handoff before the `U/6`; do not add
+  boundary or true source writer/handoff before the `U/6`; do not add
   scalar-byte rescue or neighboring-cursor retry behavior.
 - 2026-06-06 `P/05/01` stale-declared item cursor capacity audit: packet
   behavior changed only for declared-window candidate rejection. The
@@ -1607,23 +1611,24 @@ Current status:
   valid compact `A/9` plus exact `U/9` rows exact-claims when the item cursor is
   decompile-correct, but remains unclaimed and rolls back when the item row needs
   a two-bit neighboring-cursor skip. Later live-object rows therefore are not the
-  missing owner for the CEP `U/6`; continue with the original server writer or
+  missing owner for the CEP `U/6`; continue with the true source writer or
   CNW fragment storage/continuation handoff before `U/10`/`A/6`/`U/6`.
-- 2026-06-07 `P/05/01` Diamond full item `U/6` server-writer audit: fixed a
-  generalized mask translation error. Direct `nwserver.exe` binary tracing shows
-  the real update writer is `0x445160`: `0x4451DC..0x44520D` writes top-level
-  `U`, object type, object id, and raw mask; the generic state BOOLs are written
-  at `0x446034..0x44605C`; the item-name branch is gated by mask `0x80000` at
-  `0x446061`; and `0x446247` then gates later type-specific branches on
-  creature type `0x05`, so item type `0x06` returns after the name branch. The
-  previously suspected `0x4401F0` routine is an add/snapshot writer because it
-  emits ASCII `A` at `0x4403E1`. Therefore Diamond full item mask
-  `0xFFFF_FFF3` translates to EE `0x0008_0033`, drops low `0x40`, and must not
-  consume the next source fragment bit as hidden state. Exact EE-shaped
-  hidden-state updates with mask `0x40` remain supported separately. This removes
+- 2026-06-07 `P/05/01` Diamond full item `U/6` mask audit
+  (historical; later proof correction supersedes the `0x445160` server-writer
+  attribution): fixed a generalized mask translation error, but do not cite the
+  original `nwserver.exe` writer claim as evidence. The local checked decompile
+  set is `C:\NWN\NWN Decompile\fullNwnDecompilePart1.txt` and `Part2.txt`; in
+  those files the `0x445160`/`sub_444CC0` neighborhood is a Diamond client read
+  handler, not a server writer. The retained rule is client-reader-backed:
+  Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the full item update
+  through the name branch and has no source hidden-state BOOL for low `0x40`,
+  while EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` reads hidden state
+  only for explicit EE-shaped mask `0x40` records. Therefore Diamond full item
+  mask `0xFFFF_FFF3` still translates to EE `0x0008_0033`, drops low `0x40`,
+  and must not consume the next source fragment bit as hidden state. This removes
   a post-name overconsume risk, but the two unowned bits before the CEP v2.3
-  `U/10`/`A/6`/`U/6` sequence remain active; continue tracing the source writer
-  or CNW fragment storage/continuation handoff before changing cursor ownership.
+  `U/10`/`A/6`/`U/6` sequence remain active; continue tracing the true source
+  writer/handoff or local Diamond capture before changing cursor ownership.
 - 2026-06-06 `P/05/01` typed item-create/update declared-capacity handoff
   audit: no packet behavior changed. Added public fixture-free coverage proving
   source-side declared-length capacity rejects an `A/6 -> U/6` read prefix when
@@ -1632,7 +1637,7 @@ Current status:
   sibling still accepts when `A/6` owns its five source bits and the following
   full item update owns its own decompile-correct scalar/direct-name bits. This
   rules out stale-declared capacity as the two-bit owner in the CEP v2.3 handoff;
-  continue with original server writer / CNW fragment storage / continuation
+  continue with true source writer / CNW fragment storage / continuation
   evidence before the `U/10`/`A/6`/`U/6` sequence. Verified with `cargo test -q
   -p hgbridge-proxy2
   declared_length_capacity_rejects_item_create_borrowing_following_update_bits
@@ -2000,6 +2005,17 @@ Current status:
   payload bits, not CNW framing bits. Next useful target remains a local
   Diamond harness capture or deeper writer trace before the top-level
   `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 `P/05/01` full item `U/6` stale server-writer proof scrub: no
+  packet behavior changed. Rechecked the local decompile set and found only
+  `C:\NWN\NWN Decompile\fullNwnDecompilePart1.txt` plus `Part2.txt`; the
+  separate `nwserver diamond decompile.txt` cited by older notes is absent.
+  `0x445160` is inside Diamond client `sub_444CC0` and calls reader helpers such
+  as `sub_4FB840`, `sub_4FB4C0`, `sub_4FBB40`, and `sub_407340`, so it remains
+  invalid as source-writer proof. Cleaned the active issue text and item
+  translator comment to cite only the retained client-reader/EE-reader rule for
+  dropping low `0x40`. The CEP v2.3 two-bit owner remains active; next evidence
+  still needs a true source writer/handoff trace or local Diamond capture before
+  the `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

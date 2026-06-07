@@ -20,14 +20,14 @@ const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
 const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
 // Full U/6 item ownership is proven from both sides, not by a neighboring
 // cursor retry. Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the
-// generic prefix and item name; direct `nwserver.exe` disassembly of the server
-// U writer at 0x445160 emits U/type/id/mask at 0x4451DC..0x44520D, writes the
-// generic state bits at 0x446034..0x44605C, writes the 0x80000 name branch, and
-// then gates later branches on type 0x05 at 0x446247. Type 0x06 item updates
-// therefore return after the name branch: Diamond low 0x40 is not a source
-// hidden-state bit. EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` can
-// read an EE hidden-state BOOL for mask 0x40, but the Diamond full mask must
-// drop that bit rather than consume the following source bit.
+// generic prefix and item name. The local fullNwnDecompilePart*.txt files label
+// the earlier `0x445160`/`sub_444CC0` neighborhood as a client read handler, so
+// it is not Diamond server-writer proof and must not justify a cursor skip.
+// Diamond low 0x40 is still not a source hidden-state bit for the raw full mask:
+// the client item reader ends after the 0x80000 name branch. EE
+// `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` can read an EE hidden-state
+// BOOL for mask 0x40, but the Diamond full mask must drop that bit rather than
+// consume the following source bit.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
