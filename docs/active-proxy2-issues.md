@@ -112,6 +112,23 @@ Current status:
   inter-record BOOL or byte-free appearance-side owner has been found. Next
   target is the upstream live-object/fragment-storage source-tail handoff before
   the `P/5` record, not a retry window at the `U/5` boundary.
+- 2026-06-08 upstream source-tail trace for the same span: no packet behavior
+  changed. A focused private rerun shows the preceding creature-update span,
+  after the earlier appearance rewrite, accepts `U/5 0x3967` at
+  `offset=218`, `read_end=285`, `start_bit_cursor=44`, and
+  `end_bit_cursor=57`; the next full creature appearance enters at
+  `offset=325` with `bit_cursor=57`. The unresolved owner is therefore not the
+  following `U/5` and not the `P/5` direct-name bit; it is the preceding
+  interleaved fragment span currently promoted between that `U/5` read end and
+  the next `P/5`. The open proof question is whether that adjacent source span
+  is a fresh CNW fragment-storage blob with its own three-bit final-count
+  header, as the current generic promoter assumes, or a continuation/list
+  handoff with different cursor ownership. Added diagnostic logging for
+  creature-update interleaved-span promotion so the next harness/live rerun can
+  report `read_end`, `old_record_end`, `bits_promoted`, insertion cursor, and
+  start/end cursor directly. Do not change the three-bit header handling or
+  donate/borrow bits until decompile-backed source-writer/list-handoff proof or
+  a compact-source capture assigns that span.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
