@@ -86,6 +86,16 @@ Current status:
   caller cursor restored. This pins the Sooty offset-454 rejection as a real
   cursor-boundary problem, not a license to retry or borrow the two bits before
   the following `U/5`; the upstream source-tail owner remains unresolved.
+- 2026-06-08 full-appearance following-`U/5` fence audit: packet behavior
+  changed only by removing an unproven repair candidate. Following-side
+  cross-record fences now require the same named CNW header bit shapes proven
+  for preceding appearance fences (`CNW_FRAGMENT_HEADER_BITS` or
+  `CNW_FRAGMENT_HEADER_BITS + 1`). The old
+  `CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS` candidate
+  could claim a following `U/5` row's two position-owned bits as appearance-side
+  transport, so it is no longer offered. This keeps the Sooty exact-cursor
+  rejection active evidence; it does not assign the unresolved upstream two-bit
+  owner.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

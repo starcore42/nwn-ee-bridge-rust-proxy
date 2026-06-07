@@ -106,16 +106,14 @@ fn ee_active_property_extra_bool_insert_offset(name_bits: usize) -> usize {
 }
 
 // Diamond full-appearance records can be followed immediately by a creature U
-// update whose CNW fragment fence is still owned by the update parser.  The
-// observed fence widths are deliberately tiny and are only accepted when the
-// following U record exact parser, including interleaved-span proof, consumes a
-// complete record boundary.  This keeps the appearance rewrite from claiming a
-// transport split heuristically.
-const LEGACY_FULL_APPEARANCE_FOLLOWING_CREATURE_UPDATE_FRAGMENT_FENCE_CANDIDATES: [usize; 3] = [
-    CNW_FRAGMENT_HEADER_BITS,
-    CNW_FRAGMENT_HEADER_BITS + 1,
-    CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
-];
+// update whose CNW fragment fence is still owned by packetized transport.  The
+// observed fence widths are deliberately tiny and are accepted only when their
+// bits match a named CNW header shape and the following U record exact parser,
+// including interleaved-span proof, consumes a complete record boundary.  This
+// keeps the appearance rewrite from claiming the following update's own
+// position/orientation bits as a transport split.
+const LEGACY_FULL_APPEARANCE_FOLLOWING_CREATURE_UPDATE_FRAGMENT_FENCE_CANDIDATES: [usize; 2] =
+    [CNW_FRAGMENT_HEADER_BITS, CNW_FRAGMENT_HEADER_BITS + 1];
 // A full creature appearance may be preceded by packetized CNW fragment fence
 // bits in captured HG streams. This is transport framing, not an appearance
 // reader field, so it is only tried after a zero-fence appearance proof fails.
@@ -5014,6 +5012,23 @@ fn legacy_full_appearance_preceding_fence_bits_are_proven(
     }
 }
 
+fn legacy_full_appearance_following_fence_bits_are_proven(
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    following_fence_bits: usize,
+) -> bool {
+    // The following-update side uses the same packetized CNW fence shapes as
+    // the preceding-appearance side. In particular, a following `U/5` update's
+    // two position high bits are semantic input to the update reader, not an
+    // extra `CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS`
+    // fence that the appearance row may skip.
+    legacy_full_appearance_preceding_fence_bits_are_proven(
+        fragment_bits,
+        bit_cursor,
+        following_fence_bits,
+    )
+}
+
 fn proven_name_fragment_delta_for_byte_only_appearance_parse(
     name_shape: AppearanceNameShape,
     assumed_bits: usize,
@@ -6388,6 +6403,21 @@ fn select_following_creature_update_fragment_fence_bits(
             continue;
         };
         if probe_cursor > proof.fragment_bits.len() {
+            continue;
+        }
+        if !legacy_full_appearance_following_fence_bits_are_proven(
+            proof.fragment_bits,
+            base_cursor,
+            fence_bits,
+        ) {
+            trace_appearance_fence_candidate(
+                following_offset,
+                base_cursor,
+                fence_bits,
+                proof.translated_ee,
+                false,
+                "unproven-cnw-fence",
+            );
             continue;
         }
         if following_creature_update_validates_after_optional_action0_bridge_rewrite(
@@ -10669,6 +10699,33 @@ mod public_tests {
             try_get_legacy_creature_appearance_record_end(&bytes, 0, bytes.len()),
             Some(appearance_end),
             "the top-level boundary scan can still prove the appearance end without inventing fence bits"
+        );
+    }
+
+    #[test]
+    fn following_u5_fence_candidates_require_named_cnw_header_shape() {
+        assert_eq!(
+            LEGACY_FULL_APPEARANCE_FOLLOWING_CREATURE_UPDATE_FRAGMENT_FENCE_CANDIDATES,
+            [CNW_FRAGMENT_HEADER_BITS, CNW_FRAGMENT_HEADER_BITS + 1],
+            "a following U/5's two position bits are semantic update input, not an appearance-side CNW fence"
+        );
+        assert!(legacy_full_appearance_following_fence_bits_are_proven(
+            &[true, true, false],
+            0,
+            CNW_FRAGMENT_HEADER_BITS,
+        ));
+        assert!(legacy_full_appearance_following_fence_bits_are_proven(
+            &[true, false, true, true],
+            0,
+            CNW_FRAGMENT_HEADER_BITS + 1,
+        ));
+        assert!(
+            !legacy_full_appearance_following_fence_bits_are_proven(
+                &[true, true, false, true, false],
+                0,
+                CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+            ),
+            "header-plus-position widths must stay unowned until a capture/decompile trace proves a packetized CNW shape"
         );
     }
 
