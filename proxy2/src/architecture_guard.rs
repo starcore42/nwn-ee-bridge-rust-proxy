@@ -11,6 +11,20 @@ use std::{
 };
 
 const FORBIDDEN_PRODUCTION_EXAMPLE_TERMS: &[&str] = &[
+    "a08_barracks",
+    "bw167demo",
+    "chapter1",
+    "chapter2",
+    "cormanthor",
+    "dark_ranger",
+    "docksofascension",
+    "kingmaker",
+    "lance_lute",
+    "lute_patron",
+    "shadowguard",
+    "witchs_wake",
+    "cepv22",
+    "cepv23",
     "local_winds",
     "winds_of_eremor",
     "eremor",
@@ -33,7 +47,9 @@ fn production_translators_do_not_name_fixture_examples() {
         if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "tests.rs" || name == "architecture_guard.rs")
+            .is_some_and(|name| {
+                name == "tests.rs" || name.ends_with("_tests.rs") || name == "architecture_guard.rs"
+            })
         {
             continue;
         }

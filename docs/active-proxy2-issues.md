@@ -48,6 +48,13 @@ Current status:
   accept `read_end == record_end` after those bytes are promoted into the CNW
   fragment bitstream. Added fixture-free tests for both sides of that contract
   and re-ran the captured `0x2E01` inventory/GQ cases.
+- 2026-06-08 production hardcode guard audit: no packet behavior changed.
+  Tightened the Rust production architecture guard so test-only fixture modules
+  remain usable as evidence, while production translator/strict code is checked
+  against current named capture/module terms such as CEP v2.2/v2.3 starter
+  streams, Cormanthor/Chapter references, and Lance/Lute/Patron examples. This
+  does not assign the active `U/10`/`A/6`/`U/6` bits; it prevents future fixes
+  from encoding those evidence names instead of generalized packet/state rules.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
