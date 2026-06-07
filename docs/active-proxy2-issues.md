@@ -1613,22 +1613,26 @@ Current status:
   a two-bit neighboring-cursor skip. Later live-object rows therefore are not the
   missing owner for the CEP `U/6`; continue with the true source writer or
   CNW fragment storage/continuation handoff before `U/10`/`A/6`/`U/6`.
-- 2026-06-07 `P/05/01` Diamond full item `U/6` mask audit
-  (historical; later proof correction supersedes the `0x445160` server-writer
-  attribution): fixed a generalized mask translation error, but do not cite the
-  original `nwserver.exe` writer claim as evidence. The local checked decompile
-  set is `C:\NWN\NWN Decompile\fullNwnDecompilePart1.txt` and `Part2.txt`; in
-  those files the `0x445160`/`sub_444CC0` neighborhood is a Diamond client read
-  handler, not a server writer. The retained rule is client-reader-backed:
-  Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the full item update
-  through the name branch and has no source hidden-state BOOL for low `0x40`,
-  while EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` reads hidden state
-  only for explicit EE-shaped mask `0x40` records. Therefore Diamond full item
-  mask `0xFFFF_FFF3` still translates to EE `0x0008_0033`, drops low `0x40`,
-  and must not consume the next source fragment bit as hidden state. This removes
-  a post-name overconsume risk, but the two unowned bits before the CEP v2.3
-  `U/10`/`A/6`/`U/6` sequence remain active; continue tracing the true source
-  writer/handoff or local Diamond capture before changing cursor ownership.
+- 2026-06-07 `P/05/01` Diamond full item `U/6` server-writer recheck: no
+  packet behavior changed. Direct PE disassembly of
+  `C:\NWN\NWN Diamond\nwserver.exe` maps `0x445160` inside server `.text`, while
+  the local `fullNwnDecompilePart*.txt` `0x445160`/`sub_444CC0` neighborhood is a
+  separate client-reader decompile and must not be cited as server proof. The
+  server call graph has exactly three direct `sub_445160` call sites
+  (`0x43F7EC`, `0x444F23`, `0x4450AC`); the serializer writes `U`, object type,
+  object id, and mask at `0x4451DC..0x44520D` (`0x508080`, `0x507FE0`,
+  `0x508CB0`, `0x508450`). Server data bytes confirm object type 5 at
+  `0x6338AC` and item type 6 at `0x6338AD`; the later `0x446247` branch compares
+  against type 5, so item type 6 exits before the low-`0x40` branch. This agrees
+  with the Diamond client-reader rule
+  `sub_459700 -> sub_467AE0 -> sub_451AF0` and the EE reader rule
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0`: Diamond full item mask
+  `0xFFFF_FFF3` translates to EE `0x0008_0033`, drops low `0x40`, and must not
+  consume the next source fragment bit as hidden state. The recheck reconciles
+  the earlier stale text-decompile warning, but still does not own the two bits
+  before the CEP v2.3 `U/10`/`A/6`/`U/6` sequence; continue with local Diamond
+  capture or higher-level write-message/list-handoff evidence before changing
+  cursor ownership.
 - 2026-06-06 `P/05/01` typed item-create/update declared-capacity handoff
   audit: no packet behavior changed. Added public fixture-free coverage proving
   source-side declared-length capacity rejects an `A/6 -> U/6` read prefix when
