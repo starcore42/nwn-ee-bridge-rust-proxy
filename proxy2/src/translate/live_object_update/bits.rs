@@ -81,9 +81,11 @@ mod tests {
 
     #[test]
     fn fragment_header_uses_three_msb_valid_count_bits_before_payload() {
-        // Diamond `CreateWriteMessage` reserves the first three MSB bits before
-        // live-object payload bits. Packetized fragments store the final-byte
-        // valid-bit count there; semantic record bits start at cursor 3.
+        // Diamond `CreateWriteMessage` (`nwserver` 0x507E30) and EE
+        // `CreateWriteMessage` (`nwn` 0x1402D54A0) reserve the first three MSB
+        // bits before live-object payload bits. `GetWriteMessage` later stores
+        // the final-byte valid-bit count there; semantic record bits start at
+        // cursor 3.
         let payload_bits = [
             true, false, false, true, true, false, false, true, false, true, false,
         ];
@@ -97,5 +99,36 @@ mod tests {
             decode_msb_valid_bits(&packed, 3).expect("packed fragment should decode exactly");
         assert_eq!(&decoded[..3], &[true, true, false]);
         assert_eq!(&decoded[3..], payload_bits);
+    }
+
+    #[test]
+    fn fragment_header_repack_does_not_create_semantic_prefix_bits() {
+        // Diamond `WriteBOOL` (`nwserver` 0x507FC0 -> 0x507340) and EE
+        // `WriteBOOL` (`nwn` 0x1402DA920 -> 0x1402DB990) advance the same
+        // MSB-first cursor. The header rewrite may change bits 0..3, but it
+        // cannot donate one or two extra source bits before the next live
+        // object record. This pins the CEP-style U/6 handoff risk as a real
+        // semantic cursor question, not a CNW final-count artifact.
+        let next_record_bits = [
+            false, true, true, true, false, true, false, true, true, false, false, false, false,
+            false,
+        ];
+        let mut bits = vec![true, true, true];
+        bits.extend_from_slice(&next_record_bits);
+
+        let packed = pack_msb_valid_bits(bits, 3);
+        let decoded =
+            decode_msb_valid_bits(&packed, 3).expect("repacked fragment should decode exactly");
+
+        assert_eq!(
+            (packed[0] & 0xE0) >> 5,
+            ((3 + next_record_bits.len()) % 8) as u8,
+            "only the reserved header bits carry the final-byte valid-bit count"
+        );
+        assert_eq!(
+            &decoded[3..],
+            next_record_bits,
+            "semantic bits must remain at cursor 3 after final-count repack"
+        );
     }
 }

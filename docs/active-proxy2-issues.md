@@ -1564,6 +1564,20 @@ Current status:
   unresolved two-bit `U/6` cursor. Verified with `CARGO_INCREMENTAL=0
   CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260607-raw-cont-short
   cargo test -q -p hgbridge-proxy2 raw_prefixed_continuation -- --nocapture`.
+- 2026-06-07 `P/05/01` CNW fragment-header/finalization audit: no packet
+  behavior changed. Diamond server `CNWMessage::CreateWriteMessage`
+  (`nwserver` 0x507E30) and EE `CNWMessage::CreateWriteMessage`
+  (`nwn` 0x1402D54A0) both start the write buffer at byte offset 7 and reserve
+  exactly three MSB fragment-header bits before semantic BOOLs. Diamond
+  `GetWriteMessage` (`nwserver` 0x507F30) and EE `GetWriteMessage`
+  (`nwn` 0x1402D5880) overwrite only those top three bits with the final-byte
+  valid-bit count, while Diamond `WriteBOOL` (`0x507FC0 -> 0x507340`) and EE
+  `WriteBOOL` (`0x1402DA920 -> 0x1402DB990`) write later BOOLs with the same
+  MSB-first cursor. Added public coverage proving repack/final-count handling
+  preserves the next record's semantic bits at cursor 3. This rules out the CNW
+  fragment header or finalization step as the two-bit owner for the active CEP
+  v2.3 `U/6 mask=0xFFFF_FFF3` cursor; continue with the original server
+  writer/handoff or pre-`U/10` continuation evidence.
 - 2026-06-06 `P/05/01` full item `U/6` declared-window tail audit: no packet
   shape changed. Split the short update-tail ambiguity detector so item rows
   call the item-specific EE update verifier instead of the door/placeable-named

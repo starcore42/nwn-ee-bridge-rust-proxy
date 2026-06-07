@@ -89,11 +89,13 @@ const GAME_OBJECT_UPDATE_MAJOR: u8 = 0x05;
 const LIVE_OBJECT_MINOR: u8 = 0x01;
 const HIGH_LEVEL_HEADER_BYTES: usize = 3;
 const CNW_LENGTH_BYTES: usize = 4;
-// Diamond `CNWMessage::CreateWriteMessage` (`nwserver` 0x507E30) initializes
-// the write cursor at byte offset 7 and immediately writes three zero bits via
-// 0x507340. Packetized fragment storage later repurposes those first three MSB
-// bits as the final-byte valid-bit count, so live-object semantic bits begin
-// only after this fixed header.
+// Diamond `CNWMessage::CreateWriteMessage` (`nwserver` 0x507E30) and EE
+// `CNWMessage::CreateWriteMessage` (`nwn` 0x1402D54A0) initialize the write
+// cursor at byte offset 7 and immediately write three zero bits via the shared
+// MSB-first bit writer. `GetWriteMessage` (`nwserver` 0x507F30, EE
+// 0x1402D5880) later overwrites only those top three bits with the final-byte
+// valid-bit count, so live-object semantic bits begin only after this fixed
+// header.
 const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 
 const CREATURE_OBJECT_TYPE: u8 = 0x05;
