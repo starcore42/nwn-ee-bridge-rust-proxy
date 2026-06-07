@@ -4102,6 +4102,51 @@ mod tests {
         bits
     }
 
+    fn creature_update_3967_action0_scalar_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&LEGACY_CREATURE_UPDATE_3967_MASK.to_le_bytes());
+        bytes.extend_from_slice(&0x1111u16.to_le_bytes()); // position X low 16 bits.
+        bytes.extend_from_slice(&0x2222u16.to_le_bytes()); // position Y low 16 bits.
+        bytes.extend_from_slice(&0x3333u16.to_le_bytes()); // position Z low 16 bits.
+        bytes.push(0x44); // scalar orientation low 8 bits.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // portrait row, no CResRef.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // action scalar.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // action code 0.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // no status/effect rows.
+        bytes.push(0); // action state byte.
+        bytes.extend_from_slice(&0x1234u16.to_le_bytes()); // 0x0040 branch first field.
+        bytes.push(1); // 0x0040 branch mode without optional object id.
+        bytes.extend_from_slice(&0x5678u16.to_le_bytes());
+        bytes.push(2);
+        bytes.extend_from_slice(&0x1111_1111u32.to_le_bytes()); // 0x0100 first field.
+        bytes.extend_from_slice(&0x2222_2222u32.to_le_bytes()); // 0x0100 second field.
+        bytes.push(0); // 0x0800 byte.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // identity row prefix.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // first identity CExoString length.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // second identity CExoString length.
+        bytes.push(0);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.push(0); // identity row count after two identity BOOLs.
+        bytes.extend_from_slice(&0x8000_000Bu32.to_le_bytes()); // associate object id.
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
+    fn creature_update_3967_action0_scalar_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            true, false, // position Z high bits.
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation residual bits.
+            true,  // 0x0040 state BOOL.
+            false, true, // identity branch BOOLs.
+            true, false, // associate suffix BOOLs.
+        ]);
+        bits
+    }
+
     fn creature_update_4000_live_bytes() -> Vec<u8> {
         let mut bytes = vec![b'U', 0x05];
         bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
@@ -4381,6 +4426,60 @@ mod tests {
             "vector orientation, target object, implicit point, and mode-2 0x0040 object must share one exact 0x47 cursor"
         );
         assert_eq!(bit_cursor, bits.len());
+    }
+
+    #[test]
+    fn creature_update_3967_scalar_orientation_rejects_shifted_fragment_cursor() {
+        let bytes = creature_update_3967_action0_scalar_live_bytes();
+        let bits = creature_update_3967_action0_scalar_fragment_bits();
+        let mut exact_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut exact_cursor,
+            ),
+            "0x3967 action-0 scalar orientation owns position bits, scalar selector/residual bits, 0x0040 state, identity, and associate BOOLs from the exact cursor"
+        );
+        assert_eq!(exact_cursor, bits.len());
+
+        let mut shifted_cursor = super::super::CNW_FRAGMENT_HEADER_BITS + 2;
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut shifted_cursor,
+            ),
+            "a following 0x3967 row must not be rescued by retrying two bits before the caller-owned cursor"
+        );
+        assert_eq!(
+            shifted_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS + 2,
+            "failed shifted 0x3967 cursor proof must restore the caller cursor"
+        );
+
+        let mut missing_prefix_bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        missing_prefix_bits.extend_from_slice(&bits[super::super::CNW_FRAGMENT_HEADER_BITS + 2..]);
+        let mut missing_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &missing_prefix_bits,
+                &mut missing_cursor,
+            ),
+            "a tail that starts after the two position-owned bits is not a valid compact source for this 0x3967 row"
+        );
+        assert_eq!(
+            missing_cursor,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+            "failed truncated-tail 0x3967 cursor proof must restore the caller cursor"
+        );
     }
 
     #[test]

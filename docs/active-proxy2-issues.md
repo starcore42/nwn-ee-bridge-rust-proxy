@@ -77,6 +77,15 @@ Current status:
   old `candidate_tail=56` therefore duplicated pre-appearance/name-selector
   bits and remains invalid; the unresolved two-bit owner is outside this
   appearance bit-delta path.
+- 2026-06-08 `U/5 0x3967` scalar-orientation cursor audit: no packet behavior
+  changed. Added fixture-free coverage for the decompile-backed action-0
+  `0x3967` row order: position owns two fragment bits, scalar orientation owns
+  selector plus four residual bits at the exact caller cursor, then `0x0040`,
+  identity, and associate suffix BOOLs follow. The same test rejects a
+  two-bit-late cursor and a tail missing the two position-owned bits, with the
+  caller cursor restored. This pins the Sooty offset-454 rejection as a real
+  cursor-boundary problem, not a license to retry or borrow the two bits before
+  the following `U/5`; the upstream source-tail owner remains unresolved.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
