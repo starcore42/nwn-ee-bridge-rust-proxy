@@ -3277,9 +3277,9 @@ fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
     // Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
     // `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` agree on the shared
     // update-body order: position, orientation selector/body, appearance, state
-    // bits, then item name. Direct Diamond `nwserver.exe` writer evidence gates
-    // later low-mask branches on creature type, so full item rows drop low
-    // 0x40 instead of consuming a following hidden-state source bit.
+    // bits, then item name. The local Diamond client-reader proof assigns no
+    // hidden-state BOOL to low 0x40 for full item rows, so the bridge drops that
+    // bit instead of consuming a following source bit as hidden state.
     let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
     let mut payload =
         live_object_payload_with_bits(&live, item_update_full_mask_scalar_direct_name_bits());

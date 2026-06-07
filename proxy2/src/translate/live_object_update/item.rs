@@ -146,9 +146,9 @@ fn rewrite_update_record_for_ee_inner(
     // Re-audit: Diamond client `sub_459700` dispatches item updates through the
     // shared generic reader `sub_467AE0`, then item helper `sub_451AF0`.
     // `sub_467AE0` owns only generic low bits 0x1/0x2/0x4/0x8/0x20, and
-    // `sub_451AF0` owns only item-name mask 0x80000. The Diamond server U
-    // writer has the same boundary for type 0x06, so no Diamond item branch
-    // owns extra read-buffer bytes for item low 0x40.
+    // `sub_451AF0` owns only item-name mask 0x80000. Without a source-writer
+    // trace assigning extra bytes, item low 0x40 has no Diamond-owned
+    // read-buffer tail here.
     if common.read_end != *record_end {
         return None;
     }

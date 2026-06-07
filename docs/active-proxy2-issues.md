@@ -2016,6 +2016,21 @@ Current status:
   dropping low `0x40`. The CEP v2.3 two-bit owner remains active; next evidence
   still needs a true source writer/handoff trace or local Diamond capture before
   the `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 follow-up stale-attribution scrub: no packet behavior changed.
+  Removed remaining code/test comments that still described direct Diamond
+  server-writer proof for full item `U/6` low `0x40`. The retained proof is only
+  the Diamond client-reader / EE reader bit order above; extra full-item tails
+  and the two CEP v2.3 pre-`U/6` bits remain unowned until a true source-writer
+  trace or local Diamond capture assigns them.
+- 2026-06-07 source-writer symbol search note: no packet behavior changed. A
+  focused `rg` pass over `C:\NWN\NWN Decompile\fullNwnDecompilePart1.txt`,
+  `Part2.txt`, and `C:\NWN\HGX Source\hgx.server decompile\hgx.server
+  decompile.txt` found only the known Diamond client-reader anchors
+  (`sub_459700`, `sub_467AE0`, `sub_451AF0`) and no direct
+  `WriteGameObjUpdate`, `UpdateObject`, `0xFFFF_FFF3`, or `4294967283` server
+  writer match in HGX by those strings/constants. The next useful trace likely
+  needs binary/callgraph work or a local Diamond capture around the exact
+  `U/10`/`A/6`/`U/6` handoff rather than repeating those literal searches.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
