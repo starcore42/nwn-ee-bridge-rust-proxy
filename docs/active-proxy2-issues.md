@@ -2140,6 +2140,26 @@ Current status:
   compact `U/10 tail9` source writer or assign the two active pre-`U/6` bits.
   Next work still needs a compact writer/source capture or another
   server-binary-backed owner before the `U/10`/`A/6`/`U/6` handoff.
+- 2026-06-07 `P/05/01` CEP raw zlib-stream replay audit: no packet behavior
+  changed. Replayed the archived raw Diamond server send stream from
+  `C:\nwnbridge\local-diamond-bridge-20260523-190505\diamond-packets` with the
+  proxy2 M-frame rules: combine packetized seq1 frames
+  `000022..000027`, feed the coalesced deflated seq7 span in
+  `000030_sendto_socket740_len408.bin` (inflated 539, SHA-256
+  `DB940505C5600FA7A852B6D892F7F08BC0B6DBA4F9DBA3BBF5CEF3834E638B67`), then
+  continue the persistent raw server-deflate stream through seq10/12/16. The
+  first seq17 raw server datagram
+  `000042_sendto_socket740_len226.bin` inflates to the checked-in CEP fixture
+  exactly: len 411, declared 393, SHA-256
+  `5B8475DA3E00E0C653F0D60BDBF0FB10A6CD13DFFD5CF907413DD61FFB0632CF`, prefix
+  `50 05 01 89 01 00 00 41 0A 04 00 00 80 ...`. This corrects the narrower
+  seq17-only provenance note above: the raw M datagram alone is not
+  independently inflatable, but the full raw Diamond server stream proves the
+  active CEP bytes are original source output rather than a proxy chunk,
+  declared-offset, or post-transform artifact. It still does not identify the
+  compact `U/10 tail9` writer or assign the two active pre-`U/6` bits; continue
+  with server-binary/decompile proof for that source family before changing the
+  cursor owner.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

@@ -1070,11 +1070,12 @@ mod tests {
     fn local_cepv23_starter_single_frame_is_left_for_dispatcher() {
         // The local Diamond harness run
         // `C:\nwnbridge\local-diamond-bridge-20260523-190505` logged seq17 as
-        // one zlib M window: inflated=411, frames=1, compressed=210. The raw M
-        // datagram pins transport provenance; this fixture is the already
-        // inflated proxy-side payload handed to live_stream after inflater
-        // handling. The disputed tail therefore is not a proxy chunk/
-        // continuation boundary.
+        // one zlib M window: inflated=411, frames=1, compressed=210. The seq17
+        // datagram alone is a persistent-deflate chunk, but replaying the full
+        // raw Diamond server stream through the packetized seq1 window and the
+        // coalesced seq7 deflated span reproduces this fixture byte-for-byte.
+        // The disputed tail therefore is original server output, not a proxy
+        // chunk/continuation boundary or post-transform artifact.
         let mut state = SessionState::default();
         let reassembly = ServerDeflatedReassembly {
             inflated_length: 411,
