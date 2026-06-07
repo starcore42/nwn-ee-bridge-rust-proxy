@@ -2114,6 +2114,21 @@ Current status:
   unresolved owner remains before or inside the compact `U/10` source/capture
   boundary, not in `A/6`; next useful work is a compact writer/source capture or
   deeper proof for the `U/10` tail9 source family before the `U/6` handoff.
+- 2026-06-07 `P/05/01` CEP seq17 raw-M provenance audit: no packet behavior
+  changed. Rechecked the local Diamond packet dump
+  `C:\nwnbridge\local-diamond-bridge-20260523-190505\diamond-packets`; the
+  first raw server seq17 datagram is
+  `000042_sendto_socket740_len226.bin` (SHA-256
+  `AE5FECB58CED090785FE1162F4DE34DBD2F25F36FA9DF284142AA4CF8E659CFB`), with
+  `flags=0x0F`, `packetized_sequence=1`, payload length 214, inflated length
+  411, and 210 compressed bytes. The proxy log shows the checked-in inflated
+  CEP fixture comes from the proxy's server inflater immediately after seq16 was
+  semantically rewritten with `used_server_stream=true proxy_owned_stream=true`;
+  that fixture remains valid for live-object/dispatcher regression tests, but
+  the raw M datagram is transport provenance only, not a compact `U/10`
+  source-writer proof. The two pre-`U/6` bits therefore remain unowned; continue
+  with a true compact writer/source capture or decompile-backed owner before
+  the `U/10`/`A/6`/`U/6` handoff.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
