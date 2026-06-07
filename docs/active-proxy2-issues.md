@@ -2140,6 +2140,18 @@ Current status:
   compact `U/10 tail9` source writer or assign the two active pre-`U/6` bits.
   Next work still needs a compact writer/source capture or another
   server-binary-backed owner before the `U/10`/`A/6`/`U/6` handoff.
+- 2026-06-08 `P/05/01` stock server `U` writer census: no packet behavior
+  changed. A direct `nwserver.exe` Capstone scan over `CNWMessage` char-writer
+  calls with pushed opcode `0x55` found candidate server call sites at
+  `0x43F246`, `0x43F2AA`, `0x4417C9`, `0x443EA8`, `0x4445F1`, and `0x4451E2`.
+  Only the `0x4451E2` path inside serializer `0x445160` writes the typed
+  live-object update header in the required order: `U`, object type, object id,
+  then mask. The other candidates emit different subprotocol rows such as
+  id/mask-only updates or `G/i/U` and `G/M/U` GUI/state rows, so they are not
+  alternate stock writers for the compact `U/10 mask=0xFFFF_FFF7` tail9 record.
+  This strengthens the boundary that the compact tail9 row remains local/HG
+  capture evidence, not a proven normal Diamond writer shape; it still does not
+  assign the two active pre-`U/6` bits.
 - 2026-06-07 `P/05/01` CEP raw zlib-stream replay audit: no packet behavior
   changed. Replayed the archived raw Diamond server send stream from
   `C:\nwnbridge\local-diamond-bridge-20260523-190505\diamond-packets` with the
