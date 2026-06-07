@@ -2061,6 +2061,19 @@ Current status:
   following source BOOL. It does not assign the two active pre-`U/6` bits in the
   CEP v2.3 handoff; the next useful trace remains the upstream writer/handoff or
   local Diamond capture before the top-level `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-07 `P/05/01` server orchestrator/list-handoff audit: no packet
+  behavior changed. Direct `nwserver.exe` disassembly of the outer live-object
+  writer at `0x43FD30` shows `CreateWriteMessage` at `0x43FDB3`, then
+  record-family helpers/list walkers separated by `0x508B70` write-length
+  checks. The update-list handoff at `0x43FF38..0x43FF5A` only chooses
+  `0x444E60` or `0x445010`; there is no direct `WriteBOOL` call in that
+  handoff. The inspected `0x445010` global walker path calls the mask builder
+  `0x4447D0`, the `U` serializer at `0x4450AC`, then snapshot copier
+  `0x444C70`; no inter-record BOOL writer was found outside typed serializers.
+  This rules out an outer `P/05/01` orchestration/list-handoff BOOL as the two
+  active bits before the CEP v2.3 full item `U/6`. Continue with exact
+  preceding-record serializer proof or a fresh local Diamond capture around the
+  `U/10`/`A/6`/`U/6` boundary.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

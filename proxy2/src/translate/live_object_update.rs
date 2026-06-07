@@ -15,6 +15,11 @@
 //! - The mature C++ bridge's `RewriteLegacyLiveObjectUpdateRecords` carries
 //!   the same masks and cursor discipline; this Rust port keeps the transform
 //!   focused here instead of folding it into `m_frame`.
+//! - Diamond server `P/05/01` writer `nwserver` 0x43FD30 calls the live-object
+//!   record-family helpers and update-list walkers inside one CNW message.
+//!   The update-list handoff at 0x43FF38..0x43FF5A chooses 0x444E60 or
+//!   0x445010 and performs length checks only; direct binary disassembly found
+//!   no inter-record `WriteBOOL` outside the typed record serializers.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
