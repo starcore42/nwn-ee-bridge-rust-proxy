@@ -96,6 +96,22 @@ Current status:
   transport, so it is no longer offered. This keeps the Sooty exact-cursor
   rejection active evidence; it does not assign the unresolved upstream two-bit
   owner.
+- 2026-06-08 Diamond reader dispatch audit for the same `P/5 -> U/5 0x3967`
+  span: no packet behavior changed. Private fixture debug rerun accepted the
+  creature appearance at offset 325 with `record_end=454`,
+  `source_bit_cursor=57`, direct CExoString name, and translated
+  `fragment_bits=1`; the exact following `U/5` starts at offset 454 with
+  caller `bit_cursor=58`, rejects at `stage=orientation-scalar` after reaching
+  `read_cursor=471 bit_cursor=61`, and finds no action-0 bridge follow-up.
+  Diamond client decompile confirms the `P` and `U` records are separate outer
+  submessages: `sub_44EF00` dispatches `P`/type 5 to `sub_448E30`, returns to
+  the same outer loop, then dispatches `U`/type 5 through `sub_459700` to
+  `sub_44ADD0`. The `U` body begins from the passed mask/object id; for mask
+  `0x0001` it reads the three position values, then for mask `0x0002` it reads
+  the orientation BOOL and scalar/vector branch. No decompile-backed
+  inter-record BOOL or byte-free appearance-side owner has been found. Next
+  target is the upstream live-object/fragment-storage source-tail handoff before
+  the `P/5` record, not a retry window at the `U/5` boundary.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
