@@ -172,9 +172,8 @@ pub(super) fn parse_legacy_inline_named_door_placeable_update_record_for_ee(
         }
     }
 
-    // Diamond `CNWSMessage::WriteGameObjUpdate_UpdateObject` and EE
-    // `sub_14079C050` consume the shared generic door/placeable fields in
-    // decompile order:
+    // Diamond client `sub_467AE0` and EE client `sub_14079C050` consume the
+    // shared generic door/placeable fields in decompile order:
     //
     // 1. position (`0x1`) as the shared packed XYZ field,
     // 2. orientation (`0x2`) as BOOL scalar/vector branch plus the selected

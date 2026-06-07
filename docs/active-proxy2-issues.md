@@ -1019,9 +1019,10 @@ Current status:
   `cargo test -q -p hgbridge-proxy2 trigger_add -- --nocapture`.~~
 - 2026-05-27 `P/05/01` door state update cursor audit: no packet behavior
   changed, but public fixture-free coverage now proves the decompile-backed
-  `U/10` mask `0x10` state-BOOL handoff. Diamond `sub_44E2C0` owns five door
-  state BOOLs; EE `sub_140797780` owns those same five in order plus one
-  neutral sixth BOOL. The bridge rewrite must insert only that false sixth bit,
+  `U/10` mask `0x10` state-BOOL handoff. Diamond client reader `sub_44E2C0`
+  reads five door state BOOLs; EE `sub_140797780` owns those same five in order
+  plus one neutral sixth BOOL. The bridge rewrite must insert only that false
+  sixth bit,
   exact EE validation rejects a true sixth bit, and any extra fragment bit
   remains unclaimed. Verified with `cargo test -q -p hgbridge-proxy2
   door_state_update -- --nocapture`.
@@ -1088,7 +1089,7 @@ Current status:
   and `cargo test -q -p hgbridge-proxy2 trigger_update -- --nocapture`.
 - 2026-05-29 `P/05/01` all-bits door/placeable tail9 terminal-bit audit:
   extended the terminal residual-bit guard to the older `U/9`/`U/10`
-  `0xFFFFFFF7` tail9 converter. The proven compact-tail source cursor is
+  `0xFFFFFFF7` tail9 converter. The capture-backed compact-tail cursor is
   position residual bits, five state BOOLs, and the legacy name BOOL; the EE
   writer inserts scalar-orientation bits and one neutral door/placeable state
   BOOL, but any remaining terminal fragment bit is unowned until a decompile
@@ -1104,7 +1105,7 @@ Current status:
 - 2026-05-29 `P/05/01` inline-name door/placeable terminal-bit audit:
   tightened the plain legacy `U/9`/`U/10` name-drop path adjacent to the
   low-tail/tail9 guards. Terminal inline-name repairs may now proceed only
-  through the compact decompile-owned source fragment cursor: position BOOLs,
+  through the compact reader/capture-backed fragment cursor: position BOOLs,
   five state BOOLs, and Diamond's input-only name BOOL before the direct
   CExoString bytes are dropped. If the record would instead need the
   read-body interleaved-fragment fallback, it must have a following live-object
@@ -2129,6 +2130,16 @@ Current status:
   source-writer proof. The two pre-`U/6` bits therefore remain unowned; continue
   with a true compact writer/source capture or decompile-backed owner before
   the `U/10`/`A/6`/`U/6` handoff.
+- 2026-06-07 `P/05/01` compact door/placeable reader-vs-writer address audit:
+  no packet behavior changed. Direct `nwserver.exe` disassembly around
+  `0x44E2C0`/`0x44E4A0` shows those VAs are not direct-call server writer
+  entries in the server binary (no direct `E8` call targets were found; the
+  range lies inside a different server writer body). Treat `sub_44E2C0` and
+  `sub_44E4A0` only as Diamond client-reader anchors from the local client
+  decompile. They remain useful for reader bit order, but they do not prove the
+  compact `U/10 tail9` source writer or assign the two active pre-`U/6` bits.
+  Next work still needs a compact writer/source capture or another
+  server-binary-backed owner before the `U/10`/`A/6`/`U/6` handoff.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

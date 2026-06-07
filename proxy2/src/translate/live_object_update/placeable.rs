@@ -23,9 +23,9 @@ pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // bits with a bounded name/control tail after the shared generic prefix.
     // Neither EE's shared reader (`sub_14079C050`) nor its placeable-specific
     // reader (`sub_140797780`) consumes those low bits; Diamond's matching
-    // reader pair (`sub_467AE0` / `sub_44EB40`) likewise only consumes 0x10 and
-    // 0x80000 in the placeable-specific leg. The typed record rewriter owns and
-    // drops that tail before this translated mask is emitted.
+    // client-reader pair (`sub_467AE0` / `sub_44EB40`) likewise only consumes
+    // 0x10 and 0x80000 in the placeable-specific leg. The typed record rewriter
+    // owns and drops that tail before this translated mask is emitted.
     raw_mask
         & (LEGACY_UPDATE_POSITION_MASK
             | LEGACY_UPDATE_ORIENTATION_MASK

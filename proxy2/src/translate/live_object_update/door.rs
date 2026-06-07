@@ -22,9 +22,10 @@ pub(super) fn translate_update_mask(raw_mask: u32) -> u32 {
     // Local XP2 captures also show low 0x40/0x80 door update bits with the same
     // bounded control tail used by placeables. EE's shared generic reader and
     // door-specific reader (`sub_140797780`) consume neither bit; Diamond's
-    // matching pair (`sub_467AE0` / `sub_44E2C0`) consumes only the documented
-    // generic bits plus five state BOOLs. The record rewriter drops the suffix
-    // only after the exact typed prefix and following boundary are proven.
+    // matching client-reader pair (`sub_467AE0` / `sub_44E2C0`) consumes only
+    // the documented generic bits plus five state BOOLs. The record rewriter
+    // drops the suffix only after the exact typed prefix and following boundary
+    // are proven.
     raw_mask
         & (LEGACY_UPDATE_POSITION_MASK
             | LEGACY_UPDATE_ORIENTATION_MASK
