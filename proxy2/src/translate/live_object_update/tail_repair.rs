@@ -11,14 +11,13 @@
 
 use super::creature;
 
-const CREATURE_P_TAIL_REPAIR_CANDIDATE_WINDOW_BITS: usize = 16;
-
 #[derive(Debug, Clone)]
 pub(super) struct PendingCreatureAppearanceTailRepair {
     original_bits: Vec<bool>,
     original_tail_start: usize,
     rewritten_tail_start: usize,
     inserted_bits: usize,
+    removed_bits: usize,
     appearance_offset: usize,
     object_id: u32,
 }
@@ -29,10 +28,11 @@ impl PendingCreatureAppearanceTailRepair {
         original_tail_start: usize,
         rewritten_tail_start: usize,
         inserted_bits: usize,
+        removed_bits: usize,
         appearance_offset: usize,
         object_id: u32,
     ) -> Option<Self> {
-        if original_tail_start > original_bits.len() || rewritten_tail_start < original_tail_start {
+        if original_tail_start > original_bits.len() {
             return None;
         }
         Some(Self {
@@ -40,6 +40,7 @@ impl PendingCreatureAppearanceTailRepair {
             original_tail_start,
             rewritten_tail_start,
             inserted_bits,
+            removed_bits,
             appearance_offset,
             object_id,
         })
@@ -297,45 +298,10 @@ fn trace_tail_repair_candidate(
 }
 
 fn candidate_tail_starts(pending: &PendingCreatureAppearanceTailRepair) -> Vec<usize> {
-    let mut starts = Vec::new();
-    push_unique(&mut starts, pending.original_tail_start);
-
-    if pending.original_tail_start >= pending.inserted_bits {
-        push_unique(
-            &mut starts,
-            pending.original_tail_start - pending.inserted_bits,
-        );
-    }
-    push_unique(
-        &mut starts,
-        pending
-            .original_tail_start
-            .saturating_add(pending.inserted_bits)
-            .min(pending.original_bits.len()),
-    );
-
-    for delta in 1..=CREATURE_P_TAIL_REPAIR_CANDIDATE_WINDOW_BITS {
-        if pending.original_tail_start >= delta {
-            push_unique(&mut starts, pending.original_tail_start - delta);
-        }
-        if delta
-            <= pending
-                .original_bits
-                .len()
-                .saturating_sub(pending.original_tail_start)
-        {
-            push_unique(&mut starts, pending.original_tail_start + delta);
-        }
-    }
-
-    starts.retain(|start| *start <= pending.original_bits.len());
-    starts
-}
-
-fn push_unique(values: &mut Vec<usize>, value: usize) {
-    if !values.contains(&value) {
-        values.push(value);
-    }
+    // This is a splice, not a cursor resynchronizer. The caller computes the
+    // original tail start from the exact appearance bit delta; if that start is
+    // wrong, the following focused creature-update validator must reject.
+    vec![pending.original_tail_start]
 }
 
 fn live_object_record_object_id(
@@ -368,13 +334,14 @@ fn trace_tail_repair_accept(
         return;
     }
     eprintln!(
-        "live-object creature-P tail repaired: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} accepted_tail={} rewritten_tail={} inserted_bits={} bit_cursor={bit_cursor}->{repaired_cursor} bits_len={old_bits_len}->{new_bits_len} action0_bytes_inserted={bytes_inserted} action0_bytes_removed={bytes_removed} action0_bits_inserted={bits_inserted}",
+        "live-object creature-P tail repaired: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} accepted_tail={} rewritten_tail={} inserted_bits={} removed_bits={} bit_cursor={bit_cursor}->{repaired_cursor} bits_len={old_bits_len}->{new_bits_len} action0_bytes_inserted={bytes_inserted} action0_bytes_removed={bytes_removed} action0_bits_inserted={bits_inserted}",
         pending.appearance_offset,
         pending.object_id,
         pending.original_tail_start,
         candidate_tail_start,
         pending.rewritten_tail_start,
         pending.inserted_bits,
+        pending.removed_bits,
     );
 }
 
@@ -388,11 +355,43 @@ fn trace_tail_repair_reject(
         return;
     }
     eprintln!(
-        "live-object creature-P tail repair rejected: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} rewritten_tail={} inserted_bits={} bit_cursor={bit_cursor}",
+        "live-object creature-P tail repair rejected: p_offset={} object_id=0x{:08X} record_offset={offset} record_end={record_end} original_tail={} rewritten_tail={} inserted_bits={} removed_bits={} bit_cursor={bit_cursor}",
         pending.appearance_offset,
         pending.object_id,
         pending.original_tail_start,
         pending.rewritten_tail_start,
         pending.inserted_bits,
+        pending.removed_bits,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_repair_candidates_do_not_scan_neighboring_cursors() {
+        let pending =
+            PendingCreatureAppearanceTailRepair::new(vec![false; 32], 10, 12, 2, 0, 0, 0x8000_0001)
+                .expect("test pending repair");
+
+        assert_eq!(
+            candidate_tail_starts(&pending),
+            vec![10],
+            "appearance tail repair must splice the decompile-owned source tail, not search nearby bit fits"
+        );
+    }
+
+    #[test]
+    fn tail_repair_candidates_remain_exact_when_no_bits_were_inserted() {
+        let pending =
+            PendingCreatureAppearanceTailRepair::new(vec![false; 32], 10, 10, 0, 0, 0, 0x8000_0001)
+                .expect("test pending repair");
+
+        assert_eq!(
+            candidate_tail_starts(&pending),
+            vec![10],
+            "already-EE-shaped appearance rows must not enable a +/- cursor window"
+        );
+    }
 }

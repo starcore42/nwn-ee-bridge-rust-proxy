@@ -4355,6 +4355,7 @@ pub fn rewrite_update_records_payload_if_possible(
             }
             let original_fragment_bits_for_tail_repair = fragment_bits.clone();
             let mut appearance_bits_inserted_for_tail_repair = 0usize;
+            let mut appearance_bits_removed_for_tail_repair = 0usize;
             let mut appearance_tail_fragment_bits_adjusted = false;
             let mut appearance_rewrite_changed_stream = false;
             let legacy_appearance_rewrite_candidate = bit_cursor_reliable
@@ -4382,6 +4383,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     appearance_bits_inserted_for_tail_repair = appearance_rewrite.bits_inserted;
+                    appearance_bits_removed_for_tail_repair = appearance_rewrite.bits_removed;
                     if appearance_rewrite.bits_inserted != 0
                         || appearance_rewrite.bits_removed != 0
                         || appearance_rewrite.bytes_inserted != 0
@@ -4425,6 +4427,9 @@ pub fn rewrite_update_records_payload_if_possible(
                     appearance_bits_inserted_for_tail_repair =
                         appearance_bits_inserted_for_tail_repair
                             .saturating_add(appearance_rewrite.bits_inserted);
+                    appearance_bits_removed_for_tail_repair =
+                        appearance_bits_removed_for_tail_repair
+                            .saturating_add(appearance_rewrite.bits_removed);
                     changed = true;
                     appearance_rewrite_changed_stream = true;
                     summary.bits_inserted = summary.bits_inserted.saturating_add(
@@ -4445,6 +4450,13 @@ pub fn rewrite_update_records_payload_if_possible(
                 {
                     if appearance_rewrite.bits_inserted != 0 || appearance_rewrite.bits_removed != 0
                     {
+                        appearance_bits_inserted_for_tail_repair =
+                            appearance_bits_inserted_for_tail_repair
+                                .saturating_add(appearance_rewrite.bits_inserted);
+                        appearance_bits_removed_for_tail_repair =
+                            appearance_bits_removed_for_tail_repair
+                                .saturating_add(appearance_rewrite.bits_removed);
+                        appearance_rewrite_changed_stream = true;
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -4629,23 +4641,27 @@ pub fn rewrite_update_records_payload_if_possible(
             }
             if bit_cursor_reliable
                 && (appearance_bits_inserted_for_tail_repair != 0
+                    || appearance_bits_removed_for_tail_repair != 0
                     || appearance_rewrite_changed_stream)
                 && !appearance_tail_fragment_bits_adjusted
-                && bit_cursor >= appearance_bits_inserted_for_tail_repair
             {
                 if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
                     eprintln!(
-                        "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} reason=appearance-stream-changed"
+                        "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} removed_bits={appearance_bits_removed_for_tail_repair} reason=appearance-stream-changed"
                     );
                 }
                 pending_creature_p_tail_repair =
                     live_object_record_object_id(&live_bytes, offset, record_end).and_then(
                         |object_id| {
+                            let original_tail_start = bit_cursor
+                                .checked_add(appearance_bits_removed_for_tail_repair)?
+                                .checked_sub(appearance_bits_inserted_for_tail_repair)?;
                             tail_repair::PendingCreatureAppearanceTailRepair::new(
                                 original_fragment_bits_for_tail_repair,
-                                bit_cursor - appearance_bits_inserted_for_tail_repair,
+                                original_tail_start,
                                 bit_cursor,
                                 appearance_bits_inserted_for_tail_repair,
+                                appearance_bits_removed_for_tail_repair,
                                 offset,
                                 object_id,
                             )
@@ -4671,6 +4687,7 @@ pub fn rewrite_update_records_payload_if_possible(
                                 fragment_bits.clone(),
                                 bit_cursor,
                                 bit_cursor,
+                                0,
                                 0,
                                 offset,
                                 object_id,

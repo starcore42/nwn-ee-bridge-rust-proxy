@@ -55,6 +55,16 @@ Current status:
   streams, Cormanthor/Chapter references, and Lance/Lute/Patron examples. This
   does not assign the active `U/10`/`A/6`/`U/6` bits; it prevents future fixes
   from encoding those evidence names instead of generalized packet/state rules.
+- 2026-06-08 `P/05/01` creature `P -> U/5 0x3967` tail-repair audit: removed
+  the transport helper's generic +/-16-bit source-tail scan. Tail repair now
+  splices only the caller-computed original tail start, including tracked
+  inserted/removed appearance bits, and rejects if the following focused
+  creature-update validator does not accept that exact cursor. The Sooty Crow
+  NPC fixture remains active evidence rather than a positive rewrite fixture:
+  exact `original_tail=58` rejected, while the old window accepted
+  `candidate_tail=56` and duplicated two earlier source bits. Do not restore a
+  cursor window; prove the missing two-bit owner from Diamond/EE appearance
+  decompiles or make the appearance rewrite report a decompile-backed bit delta.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

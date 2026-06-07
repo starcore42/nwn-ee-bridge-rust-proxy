@@ -3720,26 +3720,20 @@ fn hg_docks_inventory_2e01_missing_feature25_second_count_rewrites_before_claim(
 }
 
 #[test]
-fn hg_sooty_crow_npc_creature_span_rewrites_and_claims_exactly() {
+fn hg_sooty_crow_npc_creature_span_rejects_unproven_tail_window() {
     let payload =
         include_bytes!("../../../fixtures/live_object/hg_sooty_crow_npc_creature_span_len495.bin");
     let mut rewritten = payload.to_vec();
-    let rewrite = super::rewrite_update_records_payload_if_possible(&mut rewritten)
-        .expect("Sooty Crow NPC creature live-object span should have a focused rewrite");
-
-    assert!(rewrite.interleaved_fragment_spans_promoted >= 1);
-    assert!(rewrite.interleaved_fragment_bytes_promoted >= 3);
+    let original = rewritten.clone();
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut rewritten);
     assert!(
-        rewrite.bytes_inserted >= 8,
-        "the real legacy A/5 creature add should receive EE visual-transform storage"
+        rewrite.is_none(),
+        "Sooty Crow NPC fixture previously rewrote only because creature-P tail repair scanned nearby fragment cursors"
     );
-
-    let claim = super::claim_payload_if_verified(&rewritten)
-        .expect("Sooty Crow NPC creature live-object span should claim exactly after rewrite");
-    assert_eq!(claim.inventory_records, 1);
-    assert_eq!(claim.creature_update_records, 3);
-    assert_eq!(claim.creature_appearance_records, 2);
-    assert_eq!(claim.add_records, 1);
+    assert_eq!(
+        rewritten, original,
+        "unsupported tail repair rejection must not leave a partial rewrite behind"
+    );
 }
 
 #[test]
