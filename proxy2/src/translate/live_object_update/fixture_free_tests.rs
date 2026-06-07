@@ -224,7 +224,6 @@ fn item_update_full_mask_scalar_direct_name_bits() -> Vec<bool> {
         false, true, false, true, false, // scalar orientation selector plus residual bits.
         true, false, true, false, true,  // state bits.
         false, // direct CExoString item name.
-        true,  // EE hidden-state BOOL after item name.
     ]
 }
 
@@ -234,7 +233,6 @@ fn item_update_full_mask_vector_direct_name_bits() -> Vec<bool> {
         true, // vector orientation selector.
         true, false, true, false, true,  // state bits.
         false, // direct CExoString item name.
-        true,  // EE hidden-state BOOL after item name.
     ]
 }
 
@@ -245,7 +243,6 @@ fn item_update_full_mask_scalar_locstring_inline_bits() -> Vec<bool> {
         true, false, true, false, true,  // state bits.
         true,  // locstring item name helper.
         false, // inline CExoString component, not TLK token.
-        true,  // EE hidden-state BOOL after item name.
     ]
 }
 
@@ -256,7 +253,6 @@ fn item_update_full_mask_scalar_locstring_token_bits() -> Vec<bool> {
         true, false, true, false, true, // state bits.
         true, // locstring item name helper.
         true, // client-TLK/token component.
-        true, // EE hidden-state BOOL after the token payload.
     ]
 }
 
@@ -1143,7 +1139,6 @@ fn later_placeable_rows_do_not_rescue_shifted_full_item_update_cursor() {
         false, true, false, true, true, // scalar branch bits at cursor +2.
         false, false, false, false, false, // item state bits.
         false, // direct CExoString item name.
-        false, // EE hidden-state BOOL after item name.
     ];
     shifted_bits.extend_from_slice(&[true, false, true, false]); // compact A/9 source bits.
     shifted_bits.extend_from_slice(&exact_scalar_door_placeable_update_bits());
@@ -3280,11 +3275,11 @@ fn item_update_locstring_token_name_hands_off_after_token_payload() {
 #[test]
 fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
     // Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
-    // `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` agree on the low
+    // `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` agree on the shared
     // update-body order: position, orientation selector/body, appearance, state
-    // bits, item name, then EE's hidden-state BOOL. The raw Diamond full mask
-    // is translated to that EE mask only when the same fragment cursor proves
-    // every branch.
+    // bits, then item name. Direct Diamond `nwserver.exe` writer evidence gates
+    // later low-mask branches on creature type, so full item rows drop low
+    // 0x40 instead of consuming a following hidden-state source bit.
     let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
     let mut payload =
         live_object_payload_with_bits(&live, item_update_full_mask_scalar_direct_name_bits());
@@ -3309,8 +3304,8 @@ fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
         &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
     assert_eq!(
         super::read_u32_le(rewritten_live, 6),
-        Some(0x0008_0073),
-        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+        Some(0x0008_0033),
+        "translated EE mask keeps position/orientation/appearance/state/name only"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -3323,8 +3318,8 @@ fn item_full_update_scalar_direct_name_rewrites_mask_without_moving_cursor() {
 fn item_full_update_scalar_locstring_inline_rewrites_mask_without_moving_cursor() {
     // The full-mask item update uses the same decompiled name branch as the
     // narrower U/6 name tests. The outer locstring selector owns one extra
-    // fragment bit before the inline CExoString bytes; the following hidden BOOL
-    // remains after that component selector, not at the direct-name cursor.
+    // fragment bit before the inline CExoString bytes; no hidden-state source
+    // bit follows the Diamond full-item name branch.
     let live = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
     let following_bits = item_update_full_mask_scalar_locstring_inline_bits();
     let mut payload = live_object_payload_with_bits(&live, following_bits);
@@ -3349,8 +3344,8 @@ fn item_full_update_scalar_locstring_inline_rewrites_mask_without_moving_cursor(
         &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
     assert_eq!(
         super::read_u32_le(rewritten_live, 6),
-        Some(0x0008_0073),
-        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+        Some(0x0008_0033),
+        "translated EE mask keeps position/orientation/appearance/state/name only"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -3363,9 +3358,9 @@ fn item_full_update_scalar_locstring_inline_rewrites_mask_without_moving_cursor(
 fn item_full_update_scalar_locstring_token_rewrites_mask_without_moving_cursor() {
     // Diamond `sub_451AF0` and EE `sub_1407A08F0` read the full item name
     // branch as outer locstring selector, token/client-TLK selector bit, one
-    // read-buffer selector BYTE, and a DWORD token before EE's hidden-state
-    // BOOL. The token payload must not be mistaken for direct CExoString bytes
-    // or for fragment storage owned by a neighboring record.
+    // read-buffer selector BYTE, and a DWORD token. The token payload must not
+    // be mistaken for direct CExoString bytes or for fragment storage owned by a
+    // neighboring record.
     let live = item_update_full_mask_scalar_locstring_token_live_bytes(1, 0x0100_75D6);
     let following_bits = item_update_full_mask_scalar_locstring_token_bits();
     let mut payload = live_object_payload_with_bits(&live, following_bits);
@@ -3390,8 +3385,8 @@ fn item_full_update_scalar_locstring_token_rewrites_mask_without_moving_cursor()
         &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
     assert_eq!(
         super::read_u32_le(rewritten_live, 6),
-        Some(0x0008_0073),
-        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+        Some(0x0008_0033),
+        "translated EE mask keeps position/orientation/appearance/state/name only"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -3430,8 +3425,8 @@ fn item_full_update_vector_direct_name_rewrites_mask_without_moving_cursor() {
         &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..declared];
     assert_eq!(
         super::read_u32_le(rewritten_live, 6),
-        Some(0x0008_0073),
-        "translated EE mask keeps position/orientation/appearance/state/name/hidden only"
+        Some(0x0008_0033),
+        "translated EE mask keeps position/orientation/appearance/state/name only"
     );
 
     let claim = super::claim_payload_if_verified(&payload)
@@ -3492,7 +3487,7 @@ fn creature_add_fragment_prefix_before_item_update_feeds_exact_u6_cursor() {
     );
     assert_eq!(
         super::read_u32_le(rewritten_live, creature_add_len + 6),
-        Some(0x0008_0073),
+        Some(0x0008_0033),
         "the U/6 row still rewrites only through the exact item validator"
     );
     assert_eq!(
@@ -5367,7 +5362,6 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         false, true, false, true, true, // scalar orientation selector plus residual bits.
         false, false, false, false, false, // item state bits.
         false, // direct CExoString item name.
-        false, // EE hidden-state BOOL after item name.
     ];
     let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
     translated_item_update[6..10]
@@ -5434,7 +5428,6 @@ fn ee_shaped_door_add_cep_tail9_no_map_replays_raw_neighbor_u6_bits_without_repa
         false, true, false, true, true, // scalar orientation selector plus residual bits.
         false, false, false, false, false, // item state bits.
         false, // direct CExoString item name.
-        false, // EE hidden-state BOOL after item name.
     ];
     let mut translated_item_update = item_update_full_mask_scalar_direct_name_live_bytes(b"Lance");
     translated_item_update[6..10]
@@ -5574,7 +5567,6 @@ fn cep_no_map_raw_u6_neighboring_cursor_fits_are_not_ownership_proof() {
         false, true, false, true, true, // scalar orientation selector plus residual bits.
         false, false, false, false, false, // item state bits.
         false, // direct CExoString item name.
-        false, // EE hidden-state BOOL after item name.
         false, false, // following-stream bits available in the private trace.
     ];
 

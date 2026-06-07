@@ -1332,14 +1332,17 @@ Current status:
   `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` both read the generic
   update prefix as position bytes plus two bits, one orientation selector BOOL,
   either one scalar byte plus four bits or six vector bytes, appearance/resref,
-  five state bits, item name selector/data, then EE's hidden-state BOOL. Tests
-  now prove a raw Diamond `0xFFFF_FFF3` item row with decompile-correct scalar
-  bits and direct `CExoString` name translates to EE mask `0x00080073` without
-  moving bytes or fragment bits, and that the same scalar-looking read-buffer
-  bytes stay unclaimed/unchanged when the orientation BOOL is true and therefore
-  selects the vector branch. The typed `A/6` repair also exact-claims when
-  followed by a full `U/6` whose source bits are correct through orientation,
-  state, name, and hidden. Current CEP v2.3 debug still reaches the following
+  five state bits, and item name selector/data. A 2026-06-07 server-writer audit
+  superseded the earlier hidden-state assumption: Diamond item type `0x06` full
+  updates end after the name branch, while EE hidden-state BOOLs belong only to
+  explicit EE-shaped mask `0x40` records. Tests now prove a raw Diamond
+  `0xFFFF_FFF3` item row with decompile-correct scalar bits and direct
+  `CExoString` name translates to EE mask `0x00080033` without moving bytes or
+  fragment bits, and that the same scalar-looking read-buffer bytes stay
+  unclaimed/unchanged when the orientation BOOL is true and therefore selects
+  the vector branch. The typed `A/6` repair also exact-claims when followed by a
+  full `U/6` whose source bits are correct through orientation, state, and name.
+  Current CEP v2.3 debug still reaches the following
   `U/6 mask=0xFFFF_FFF3` at `offset=104`, `bit_cursor=28` with the next bits
   selecting vector while the bytes look scalar/direct-name, so do not add a
   U/6 scalar-byte rescue. Next step: trace the preceding source fragment cursor
@@ -1357,7 +1360,7 @@ Current status:
   remaining fragment bytes were already in the packet tail. The promoter now
   moves only the bounded prefix before a following live-object boundary, then
   the item update must exact-prove its own decompile-backed cursor before the
-  Diamond `0xFFFF_FFF3` mask can translate to EE `0x00080073`; no neighboring
+  Diamond `0xFFFF_FFF3` mask can translate to EE `0x00080033`; no neighboring
   item cursor search is allowed. The private CEP v2.3 fixture still quarantines
   at the unresolved `offset=104`, `bit_cursor=28` `U/6`, so the two-bit owner
   question remains active. Verified with `cargo test -q -p hgbridge-proxy2
@@ -1368,8 +1371,10 @@ Current status:
   behavior changed, but public fixture-free coverage now pins the locstring
   inline sibling of the same all-bits item-update rule. Diamond `sub_451AF0`
   and EE `sub_1407A08F0` read the item-name outer selector, then the
-  locstring component selector before the inline `CExoString`, and only then
-  the EE hidden-state BOOL. The typed `A/6` handoff coverage now proves the
+  locstring component selector before the inline `CExoString`. The 2026-06-07
+  server-writer audit later proved the Diamond full item row ends after that
+  name payload; EE hidden-state remains a separate explicit `0x40` update. The
+  typed `A/6` handoff coverage now proves the
   active-property insertion preserves those following U/6 locstring-inline bits
   just as it does direct-name bits, so the remaining CEP v2.3 boundary should
   stay focused on the actual source cursor/handoff bits rather than adding a
@@ -1379,9 +1384,11 @@ Current status:
   behavior changed, but public fixture-free coverage now pins the token sibling
   of the same all-bits item-update rule. Diamond `sub_451AF0` and EE
   `sub_1407A08F0` read the outer item-name selector, the token/client-TLK
-  selector bit, the read-buffer selector BYTE plus DWORD token, and only then
-  EE's hidden-state BOOL. Typed `A/6` active-property insertion also preserves
-  the following full `U/6` token-name cursor exactly, so the remaining CEP v2.3
+  selector bit, and the read-buffer selector BYTE plus DWORD token. The
+  2026-06-07 server-writer audit later proved the Diamond full item row ends
+  there; EE hidden-state remains a separate explicit `0x40` update. Typed `A/6`
+  active-property insertion also preserves the following full `U/6` token-name
+  cursor exactly, so the remaining CEP v2.3
   two-bit handoff evidence is not a missing token-name branch. Verified with
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-item-token cargo test -q -p hgbridge-proxy2 item_full_update -- --nocapture`
   and `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-item-token cargo test -q -p hgbridge-proxy2 typed_item_create -- --nocapture`.
@@ -1602,6 +1609,21 @@ Current status:
   a two-bit neighboring-cursor skip. Later live-object rows therefore are not the
   missing owner for the CEP `U/6`; continue with the original server writer or
   CNW fragment storage/continuation handoff before `U/10`/`A/6`/`U/6`.
+- 2026-06-07 `P/05/01` Diamond full item `U/6` server-writer audit: fixed a
+  generalized mask translation error. Direct `nwserver.exe` binary tracing shows
+  the real update writer is `0x445160`: `0x4451DC..0x44520D` writes top-level
+  `U`, object type, object id, and raw mask; the generic state BOOLs are written
+  at `0x446034..0x44605C`; the item-name branch is gated by mask `0x80000` at
+  `0x446061`; and `0x446247` then gates later type-specific branches on
+  creature type `0x05`, so item type `0x06` returns after the name branch. The
+  previously suspected `0x4401F0` routine is an add/snapshot writer because it
+  emits ASCII `A` at `0x4403E1`. Therefore Diamond full item mask
+  `0xFFFF_FFF3` translates to EE `0x0008_0033`, drops low `0x40`, and must not
+  consume the next source fragment bit as hidden state. Exact EE-shaped
+  hidden-state updates with mask `0x40` remain supported separately. This removes
+  a post-name overconsume risk, but the two unowned bits before the CEP v2.3
+  `U/10`/`A/6`/`U/6` sequence remain active; continue tracing the source writer
+  or CNW fragment storage/continuation handoff before changing cursor ownership.
 - 2026-06-06 `P/05/01` typed item-create/update declared-capacity handoff
   audit: no packet behavior changed. Added public fixture-free coverage proving
   source-side declared-length capacity rejects an `A/6 -> U/6` read prefix when
@@ -1620,9 +1642,9 @@ Current status:
   vector sibling of the all-bits item-update rule. Diamond `sub_467AE0` and EE
   `sub_14079C050` branch on the orientation BOOL before reading orientation
   bytes; when that BOOL is true, both readers consume six vector bytes and no
-  scalar residual orientation bits before appearance/state/name/hidden. Tests
-  now prove a correctly shaped vector `U/6 0xFFFF_FFF3` translates to EE mask
-  `0x0008_0073` without moving the cursor, and that a preceding typed `A/6`
+  scalar residual orientation bits before appearance/state/name. Tests now prove
+  a correctly shaped vector `U/6 0xFFFF_FFF3` translates to EE mask
+  `0x0008_0033` without moving the cursor, and that a preceding typed `A/6`
   active-property insert preserves those following vector bits exactly. This
   keeps the CEP v2.3 capture narrowed to shifted source bits rather than an
   unsupported vector-path gap. Verified with `cargo test -q -p
@@ -1684,8 +1706,9 @@ Current status:
   inserted active-property/CanUseItem BOOL. Debug-only rejection tracing now
   reports nearby item-update cursors when `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM`
   is set; the current CEP v2.3 run still rejects at `offset=104`,
-  `bit_cursor=28`, `raw_mask=0xFFFFFFF3`, translated mask `0x00080073`, with
-  neighboring cursors `-4`, `-3`, `-2`, `+2`, and `+4` also capable of
+  `bit_cursor=28`, `raw_mask=0xFFFFFFF3`, corrected translated mask
+  `0x00080033`, with neighboring cursors `-4`, `-3`, `-2`, `+2`, and `+4` also
+  capable of
   validating if the parser were allowed to cheat. Public coverage now pins the
   negative rule: a full scalar `U/6` remains unclaimed/unchanged when two
   unowned pre-cursor fragment bits are present, even though the same item

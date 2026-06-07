@@ -5353,7 +5353,6 @@ mod declared_length_repair_tests {
             false, true, false, true, false, // scalar orientation selector and residual bits.
             true, false, true, false, true,  // item state bits.
             false, // direct CExoString item name.
-            true,  // EE hidden-state BOOL after item name.
         ]
     }
 

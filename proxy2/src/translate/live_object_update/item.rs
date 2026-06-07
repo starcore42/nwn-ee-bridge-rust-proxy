@@ -18,20 +18,20 @@ use super::{
 const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
 const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
 const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
-// Full U/6 item ownership is proven from the client reader pair, not by a
-// neighboring-cursor retry: Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0`
-// and EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` read the generic
-// prefix, then item name, then EE's hidden-state BOOL. The local Diamond
-// decompile labels the 0x44515F/0x4451DE area as a client read block inside
-// `sub_444CC0`, not a server writer; its object-type table still confirms
-// 0x05 is creature and 0x06 is item. Extra bytes after the full U/6 item name
-// are therefore unowned tail bytes unless a separate server writer/handoff
-// proof assigns them.
+// Full U/6 item ownership is proven from both sides, not by a neighboring
+// cursor retry. Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the
+// generic prefix and item name; direct `nwserver.exe` disassembly of the server
+// U writer at 0x445160 emits U/type/id/mask at 0x4451DC..0x44520D, writes the
+// generic state bits at 0x446034..0x44605C, writes the 0x80000 name branch, and
+// then gates later branches on type 0x05 at 0x446247. Type 0x06 item updates
+// therefore return after the name branch: Diamond low 0x40 is not a source
+// hidden-state bit. EE `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` can
+// read an EE hidden-state BOOL for mask 0x40, but the Diamond full mask must
+// drop that bit rather than consume the following source bit.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
     | LEGACY_UPDATE_APPEARANCE_MASK
-    | EE_ITEM_UPDATE_HIDDEN_MASK
     | LEGACY_UPDATE_NAME_MASK;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -146,9 +146,9 @@ fn rewrite_update_record_for_ee_inner(
     // Re-audit: Diamond client `sub_459700` dispatches item updates through the
     // shared generic reader `sub_467AE0`, then item helper `sub_451AF0`.
     // `sub_467AE0` owns only generic low bits 0x1/0x2/0x4/0x8/0x20, and
-    // `sub_451AF0` owns only item-name mask 0x80000. No Diamond/EE reader owns
-    // extra read-buffer bytes for item low 0x40, so 0x40 can mean EE hidden
-    // state only when the record is already byte-exact after any 0x80 mask drop.
+    // `sub_451AF0` owns only item-name mask 0x80000. The Diamond server U
+    // writer has the same boundary for type 0x06, so no Diamond item branch
+    // owns extra read-buffer bytes for item low 0x40.
     if common.read_end != *record_end {
         return None;
     }
@@ -697,7 +697,6 @@ mod tests {
             false, true, false, true, true, // scalar branch bits at cursor +2.
             false, false, false, false, false, // item state bits.
             false, // direct CExoString item name.
-            false, // EE hidden-state BOOL after item name.
         ];
 
         let mut translated = live.clone();
@@ -753,7 +752,6 @@ mod tests {
             false, true, false, true, true, // scalar orientation branch.
             false, false, false, false, false, // item state bits.
             false, // direct CExoString item name.
-            false, // EE hidden-state BOOL after item name.
         ];
         let mut record_end = live.len();
 
