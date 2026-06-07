@@ -337,8 +337,11 @@ pub(super) fn rewrite_update_record_for_ee(
             // uses an orientation BOOL for mask 0x0002, so do not cite this
             // compact tail9 shape as that normal writer path. A 2026-06-08
             // stock server `U` writer census found no other typed
-            // `U/type/id/mask` writer for this row; keep the compact tail as
-            // capture-backed legacy evidence until a source writer is proven.
+            // `U/type/id/mask` writer for this row. The only executable
+            // little-endian `0xFFFFFFF7` hit is inside the 0x4401F0 add/snapshot
+            // writer and is passed to 0x44AC70 before that function emits `A`,
+            // not `U`. Keep the compact tail as capture-backed legacy evidence
+            // until a source writer is proven.
             // These bytes can also accidentally form a
             // bounded CExoString candidate, so this typed tail reader must win
             // before the compact inline-name repair is considered.

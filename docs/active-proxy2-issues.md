@@ -2162,6 +2162,19 @@ Current status:
   be reused as a normal stock writer cursor. The two active pre-`U/6` bits
   remain unowned; next useful work is still a compact-source capture or another
   source-writer/handoff proof before the `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
+  changed. A direct byte/Capstone scan of
+  `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian
+  `F7 FF FF FF` hit plus the `.rdata` mask table entry: `.text` VA
+  `0x44036C` and `.rdata` VA `0x633594`. The `.text` hit is inside server
+  add/snapshot writer `0x4401F0`: type table byte `0x6338B1 = 0x0A` selects the
+  `0xFFFFFFF7` side mask, then the function passes that mask to `0x44AC70` and
+  writes an add row (`A` at `0x4403E3`, type at `0x4403F0`, object id at
+  `0x4403FA`). The typed update row remains the `0x445160` path, which writes
+  `U/type/id/mask` at `0x4451DC..0x44520D` and uses the stock orientation BOOL
+  cursor for mask `0x0002`. Therefore the executable `0xFFFFFFF7` hit is not a
+  compact `U/10` source-writer proof and still cannot assign the two active
+  pre-`U/6` bits.
 - 2026-06-07 `P/05/01` CEP raw zlib-stream replay audit: no packet behavior
   changed. Replayed the archived raw Diamond server send stream from
   `C:\nwnbridge\local-diamond-bridge-20260523-190505\diamond-packets` with the

@@ -273,6 +273,8 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
     // This compact tail9 cursor is pinned from local legacy captures. It is not
     // the normal Diamond server 0x445160 mask-0x0002 writer path, which writes
     // an orientation selector BOOL before scalar/vector orientation payload.
+    // The stock binary's only executable 0xFFFFFFF7 assignment is in the
+    // 0x4401F0 add/snapshot path before it writes `A`, not a typed `U` row.
     vec![
         false, true, // position residual bits.
         true, false, true, false, true,  // legacy tail9 door state bits.
@@ -283,7 +285,8 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
 fn legacy_tail9_door_update_cep_name_suffix_source_bits() -> Vec<bool> {
     // Same local/HG compact tail9 family as `legacy_tail9_door_update_source_bits`,
     // with the CEP v2.3 state/name-bit values. This is capture-backed cursor
-    // evidence, not proof of the normal Diamond `0x445160` writer shape.
+    // evidence, not proof of the normal Diamond `0x445160` writer shape or the
+    // 0x4401F0 add/snapshot mask seed.
     vec![
         false, true, // position residual bits.
         true, false, false, false, true, // legacy door state bits from the CEP v2.3 stream.
