@@ -18,16 +18,17 @@ use super::{
 const EE_ITEM_UPDATE_HIDDEN_MASK: u32 = 0x0000_0040;
 const LEGACY_ITEM_IGNORED_LOW_80_MASK: u32 = 0x0000_0080;
 const DIAMOND_ITEM_FULL_UPDATE_MASK: u32 = 0xFFFF_FFF3;
-// Full U/6 item ownership is proven from both sides, not by a neighboring
-// cursor retry. Diamond `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the
-// generic prefix and item name. The local fullNwnDecompilePart*.txt files label
-// the earlier `0x445160`/`sub_444CC0` neighborhood as a client read handler, so
-// it is not Diamond server-writer proof and must not justify a cursor skip.
-// Diamond low 0x40 is still not a source hidden-state bit for the raw full mask:
-// the client item reader ends after the 0x80000 name branch. EE
-// `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` can read an EE hidden-state
-// BOOL for mask 0x40, but the Diamond full mask must drop that bit rather than
-// consume the following source bit.
+// Full U/6 item ownership is proven by the decompiled client readers and direct
+// Diamond server binary evidence, not by a neighboring cursor retry. Diamond
+// client `sub_459700 -> sub_467AE0 -> sub_451AF0` reads the generic prefix and
+// item name. The local fullNwnDecompilePart*.txt `0x445160`/`sub_444CC0`
+// neighborhood is only a client read handler, but direct `nwserver.exe`
+// disassembly shows the server U serializer at 0x445160 writes U/type/id/mask,
+// reaches the item name branch, then gates later low-0x40 branches behind
+// object type 5 at 0x446247; item type 6 exits. EE
+// `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` can read a hidden-state
+// BOOL for explicit EE-shaped mask 0x40, but Diamond full item mask
+// 0xFFFF_FFF3 must drop that bit rather than consume the following source bit.
 const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_ORIENTATION_MASK
     | LEGACY_UPDATE_STATE_MASK
@@ -146,8 +147,9 @@ fn rewrite_update_record_for_ee_inner(
     // Re-audit: Diamond client `sub_459700` dispatches item updates through the
     // shared generic reader `sub_467AE0`, then item helper `sub_451AF0`.
     // `sub_467AE0` owns only generic low bits 0x1/0x2/0x4/0x8/0x20, and
-    // `sub_451AF0` owns only item-name mask 0x80000. Without a source-writer
-    // trace assigning extra bytes, item low 0x40 has no Diamond-owned
+    // `sub_451AF0` owns only item-name mask 0x80000. Direct `nwserver.exe`
+    // writer disassembly agrees: after the item name path, type 6 exits before
+    // the later type-5 low-0x40 branch. Item low 0x40 has no Diamond-owned
     // read-buffer tail here.
     if common.read_end != *record_end {
         return None;
@@ -736,6 +738,38 @@ mod tests {
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
+    }
+
+    #[test]
+    fn full_item_update_drops_low40_without_consuming_hidden_bit() {
+        // Direct `nwserver.exe` disassembly of the server U serializer at
+        // 0x445160 writes U/type/id/mask, follows the item name branch, and
+        // reaches the object-type gate at 0x446247; type 6 exits before the
+        // later type-5 low-0x40 branch. Therefore a raw Diamond full item mask
+        // drops low 0x40 instead of consuming a source hidden-state BOOL.
+        let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
+        let bits = vec![
+            true, true, // position residual bits.
+            false, true, false, true, true, // scalar orientation branch.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+            true,  // following stream bit must remain unconsumed.
+        ];
+        let expected_next = bits.len() - 1;
+        let mut record_end = live.len();
+
+        let rewrite = rewrite_update_record_for_ee(&mut live, 0, &mut record_end, &bits, 0)
+            .expect("decompile-shaped full item update should translate its mask");
+
+        assert!(rewrite.rewritten);
+        assert!(rewrite.mask_changed);
+        assert_eq!(rewrite.next_bit_cursor, expected_next);
+        assert_eq!(
+            read_u32_le(&live, 6),
+            Some(DIAMOND_ITEM_FULL_UPDATE_EE_MASK),
+            "Diamond full item mask must not preserve EE's explicit hidden-state bit"
+        );
+        assert_eq!(record_end, live.len());
     }
 
     #[test]

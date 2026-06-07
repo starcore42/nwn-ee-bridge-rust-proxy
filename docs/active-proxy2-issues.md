@@ -2031,6 +2031,21 @@ Current status:
   writer match in HGX by those strings/constants. The next useful trace likely
   needs binary/callgraph work or a local Diamond capture around the exact
   `U/10`/`A/6`/`U/6` handoff rather than repeating those literal searches.
+- 2026-06-07 `P/05/01` direct `nwserver.exe` item `U/6` writer audit: no
+  packet behavior changed. Capstone/PE inspection of
+  `C:\NWN\NWN Diamond\nwserver.exe` separates the absent text-decompile proof
+  above from direct server-binary evidence: the server U serializer at
+  `0x445160` writes `U`, object type, object id, and mask at
+  `0x4451DC..0x44520D`; its three observed update-list call sites are
+  `0x43F7EC`, `0x444F23`, and `0x4450AC`. In that same server function, the
+  item/name branch writes the five state BOOLs and optional `0x80000` name path,
+  then reaches `0x446247`, where only object type `5` continues into the later
+  low-`0x40` branch at `0x4463B0`; object type `6` exits. This restores
+  server-writer evidence for the retained rule that Diamond full item mask
+  `0xFFFF_FFF3` drops EE's explicit hidden-state bit instead of consuming a
+  following source BOOL. It does not assign the two active pre-`U/6` bits in the
+  CEP v2.3 handoff; the next useful trace remains the upstream writer/handoff or
+  local Diamond capture before the top-level `U/10`/`A/6`/`U/6` sequence.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.
