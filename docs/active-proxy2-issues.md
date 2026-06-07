@@ -2098,6 +2098,22 @@ Current status:
   pre-`U/6` bits remain unowned; next useful work is still a compact
   writer/source capture or another server-binary/decompile-backed owner before
   the `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-07 `P/05/01` server `A/6` no-map writer proof: no packet behavior
+  changed. Generated a temporary Capstone PE listing for
+  `C:\NWN\NWN Diamond\nwserver.exe` under `target-codex-verify/` and traced the
+  server add/snapshot writer. `0x4401F0` selects item type 6 with table byte
+  `0x6338AD`, writes `A` at `0x4403E3`, object type at `0x4403F0`, object id at
+  `0x4403FA`, then enters the item branch at `0x4404F5`. That branch calls
+  `0x436E80` for byte-only model/appearance data and `0x436C60` for item body
+  fragment bits. In `0x436C60`, the no-name path writes exactly one name BOOL
+  at `0x436D1B` and then the four Diamond active-property/status BOOLs at
+  `0x436D52`, `0x436D8F`, `0x436D9D`, and `0x436DAB`; `0x436E80` uses only
+  byte/word writers in the checked model-type paths. This server-side proof
+  matches the public CEP no-map `A/6` source bits `00100` and rules out the
+  typed item-create row as owner for the two following pre-`U/6` bits. The
+  unresolved owner remains before or inside the compact `U/10` source/capture
+  boundary, not in `A/6`; next useful work is a compact writer/source capture or
+  deeper proof for the `U/10` tail9 source family before the `U/6` handoff.
 - 2026-06-01 `P/05/01` private exact-adapter fixture reclassification: no
   packet behavior changed, but the two stale positive private expectations
   from the live-object sweep now stay unclaimed under the bit-order standard.

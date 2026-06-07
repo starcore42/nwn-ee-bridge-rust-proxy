@@ -5489,6 +5489,10 @@ fn cep_raw_fragment_tail_starts_semantic_bits_after_cnw_header() {
     // header/storage residue.
     let raw_a10_bits = [true, true, false, true, false];
     let raw_tail9_u10_bits = [false, true, true, false, false, false, true, true];
+    // Server `nwserver.exe` 0x4401F0 identifies item type 6 via table byte
+    // 0x6338AD, writes `A/type/id`, then delegates to 0x436E80 for byte-only
+    // appearance data and 0x436C60 for exactly this no-map source cursor:
+    // name selector false, then four Diamond active-property/status BOOLs.
     let raw_no_map_a6_bits = [false, false, true, false, false];
     let raw_shifted_u6_prefix_bits = [
         false, true, // unowned pre-cursor residue in the private trace.

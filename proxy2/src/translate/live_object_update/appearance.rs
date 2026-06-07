@@ -99,6 +99,9 @@ fn ee_active_property_extra_bool_insert_offset(name_bits: usize) -> usize {
     // (0x14076BF1E..0x14076BF75) reads one BOOL, the same two DWORDs, then
     // four BOOLs. The EE-only BOOL is therefore the first post-DWORD BOOL,
     // immediately after the shared pre-DWORD BOOL in fragment-stream order.
+    // Diamond server `nwserver.exe` agrees: the `A/6` add writer reaches item
+    // body helper 0x436C60, writes the name selector at 0x436CE1/0x436D1B,
+    // then owns four source BOOLs at 0x436D52, 0x436D8F, 0x436D9D, 0x436DAB.
     name_bits.saturating_add(1)
 }
 
