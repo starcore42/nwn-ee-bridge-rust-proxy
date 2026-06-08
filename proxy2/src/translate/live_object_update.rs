@@ -1777,6 +1777,22 @@ pub(crate) fn advance_verified_creature_update_fragment_cursor_for_ee(
     )
 }
 
+pub(crate) fn advance_legacy_creature_update_fragment_cursor_for_transport(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: &mut usize,
+) -> bool {
+    creature::advance_verified_legacy_creature_update_record_for_span_owner(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+}
+
 pub(crate) fn trigger_add_record_end_for_ee(
     bytes: &[u8],
     offset: usize,

@@ -235,6 +235,17 @@ Current status:
   leaves that boundary unclaimable. This pins the byte-plausible
   full-appearance candidate selection around the Sooty offset-325 trace but does
   not assign the unresolved two bits before offset 454.
+- 2026-06-08 stale-declared `P/5 -> U/5 0x3967` split audit: tightened the
+  appearance/update read-window helper so a byte-shaped same-object pair is not
+  enough when the inherited CNW cursor is proven through the preceding
+  appearance row. In that proven path, the terminal `U/5` row must validate from
+  the exact cursor using the focused legacy/EE creature-update cursor advancer,
+  and a fixture-free regression now rejects the same split when only the
+  following `0x3967` row's two position residual bits are missing. Existing
+  full-current-player/full-appearance stale-declared positives remain
+  unsupported at this transport helper and rely on the later typed rewrite plus
+  exact EE validator; keep the active issue open until decompiles or compact
+  source captures assign that full-appearance tail provenance.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
