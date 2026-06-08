@@ -127,6 +127,72 @@ pub(super) fn repair_verified_ee_placeable_add_compact_source_bits(
     Some(true)
 }
 
+pub(super) fn repair_verified_ee_placeable_add_legacy_source_bits(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+) -> Option<bool> {
+    if *bit_cursor >= fragment_bits.len() {
+        return None;
+    }
+    let shape = verified_ee_placeable_add_guard_shape(live_bytes, offset, record_end)?;
+    if !(shape.direct_empty_name || shape.direct_inline_name)
+        || fragment_bits.get(*bit_cursor).copied()?
+    {
+        return None;
+    }
+
+    let post_name_bit = bit_cursor.checked_add(1)?;
+    if fragment_bits.len() < bit_cursor.checked_add(10)? {
+        return None;
+    }
+    let source_optional_object = fragment_bits.get(post_name_bit + 1).copied()?;
+    if source_optional_object != shape.optional_object_bytes_present {
+        return None;
+    }
+
+    let reputation_visual = fragment_bits.get(post_name_bit).copied()?;
+    let static_plot = fragment_bits.get(post_name_bit + 2).copied()?;
+    let useable = fragment_bits.get(post_name_bit + 3).copied()?;
+    let trap_disarmable = fragment_bits.get(post_name_bit + 4).copied()?;
+    let lockable = fragment_bits.get(post_name_bit + 5).copied()?;
+    let locked = fragment_bits.get(post_name_bit + 6).copied()?;
+    let unknown_1ac = fragment_bits.get(post_name_bit + 7).copied()?;
+    let name_valid = fragment_bits.get(post_name_bit + 8).copied()?;
+
+    // Diamond `sub_44E4A0` owns direct CExoString placeable-add bits as:
+    // name BOOL=false, post-name state BOOL, optional-object BOOL, then seven
+    // state BOOLs. EE `sub_1407A7800` reads the same direct-name and optional
+    // branch, plus one more neutral BOOL before ObjectVisualTransformData. When
+    // a prior pass has already inserted the EE visual map, repair the source
+    // bits by materializing that EE-width guard run instead of consuming a bit
+    // from the following top-level update row.
+    insert_bit(
+        fragment_bits,
+        post_name_bit + 1,
+        shape.optional_object_bytes_present,
+    )?;
+    let mut changed = true;
+    for (delta, value) in [
+        (0usize, reputation_visual),
+        (1, shape.optional_object_bytes_present),
+        (2, static_plot),
+        (3, useable),
+        (4, trap_disarmable),
+        (5, lockable),
+        (6, locked),
+        (7, unknown_1ac),
+        (8, name_valid),
+        (9, false),
+    ] {
+        changed |= set_bit(fragment_bits, post_name_bit + delta, value)?;
+    }
+    *bit_cursor = bit_cursor.saturating_add(11);
+    Some(changed)
+}
+
 fn verified_ee_placeable_add_guard_shape(
     live_bytes: &[u8],
     offset: usize,
@@ -199,6 +265,14 @@ fn set_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {
     let changed = *bit != value;
     *bit = value;
     Some(changed)
+}
+
+fn insert_bit(bits: &mut Vec<bool>, bit_index: usize, value: bool) -> Option<()> {
+    if bit_index > bits.len() {
+        return None;
+    }
+    bits.insert(bit_index, value);
+    Some(())
 }
 
 #[cfg(test)]
@@ -396,5 +470,57 @@ mod tests {
             &mut verified_cursor,
         ));
         assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn legacy_source_direct_name_repair_inserts_ee_guard_bit() {
+        let live = ee_placeable_add_without_optional_object();
+        let mut bits = vec![
+            false, true, false, false, true, false, true, false, true, true,
+        ];
+        let mut bit_cursor = 0;
+
+        let changed = repair_verified_ee_placeable_add_legacy_source_bits(
+            &live,
+            0,
+            live.len(),
+            &mut bits,
+            &mut bit_cursor,
+        )
+        .expect("legacy-width direct-name source bits should widen to EE");
+
+        assert!(changed);
+        assert_eq!(bit_cursor, 11);
+        assert_eq!(
+            bits,
+            vec![
+                false, true, false, false, true, false, true, false, true, true, false
+            ],
+            "Diamond state bits stay in order and EE's final visual guard is appended"
+        );
+    }
+
+    #[test]
+    fn legacy_source_direct_name_repair_rejects_optional_object_bit_mismatch() {
+        let live = ee_placeable_add_without_optional_object();
+        let mut bits = vec![
+            false, true, true, false, true, false, true, false, true, true,
+        ];
+        let original_bits = bits.clone();
+        let mut bit_cursor = 0;
+
+        assert!(
+            repair_verified_ee_placeable_add_legacy_source_bits(
+                &live,
+                0,
+                live.len(),
+                &mut bits,
+                &mut bit_cursor,
+            )
+            .is_none(),
+            "optional-object BOOL must match the bytes owned by the branch"
+        );
+        assert_eq!(bits, original_bits);
+        assert_eq!(bit_cursor, 0);
     }
 }

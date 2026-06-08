@@ -4213,6 +4213,76 @@ fn empty_placeable_add_direct_name_repair_reuses_stale_inner_bit_as_state() {
 }
 
 #[test]
+fn ee_inline_placeable_add_legacy_width_bits_insert_guard_before_following_update() {
+    // A previous add-map pass can leave the bytes already in EE's placeable-add
+    // layout while the fragment stream is still Diamond-width. Diamond
+    // `sub_44E4A0` owns ten direct-name source BOOLs here; EE `sub_1407A7800`
+    // owns the same state plus one extra neutral BOOL before the visual map.
+    // The add repair must insert that bit before the same-object update proves
+    // its own cursor, not consume the update's first position residual bit.
+    let object_id = 0x8000_34FDu32;
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&5u32.to_le_bytes());
+    live.extend_from_slice(b"Bench");
+    live.push(0x05);
+    live.extend_from_slice(&0x1231u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+
+    let legacy_add_bits = [
+        false, // direct CExoString name branch
+        true,  // reputation/visual selector
+        false, // absent optional object
+        false, // static/plot
+        true,  // useable
+        false, // trap disarmable
+        true,  // lockable
+        false, // locked
+        true,  // unknown 0x1AC sibling
+        true,  // name-valid
+    ];
+    let mut bits = legacy_add_bits.to_vec();
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "EE-width add validation must not borrow the following U/9 position bit"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy-width placeable add bits should be widened before the following update");
+    assert!(
+        rewrite.bits_inserted >= 2,
+        "one add guard bit and one update state bit should be inserted"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten placeable add/update pair should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+    let fragment_bits = super::bits::decode_msb_valid_bits(
+        &payload[claim.declared..],
+        super::CNW_FRAGMENT_HEADER_BITS,
+    )
+    .expect("rewritten fragment bits");
+    let owned = &fragment_bits[super::CNW_FRAGMENT_HEADER_BITS..];
+    assert_eq!(
+        &owned[..11],
+        &[
+            false, true, false, false, true, false, true, false, true, true, false
+        ],
+        "placeable add should preserve Diamond state bits and append EE's neutral guard"
+    );
+    assert_eq!(
+        &owned[11..],
+        exact_scalar_door_placeable_update_bits().as_slice(),
+        "following U/9 must retain its own exact cursor bits"
+    );
+}
+
+#[test]
 fn ee_empty_placeable_add_does_not_borrow_following_update_bits() {
     let object_id = 0x8000_18C2u32;
     let mut live = ee_empty_placeable_add_live_bytes(0x0009);
