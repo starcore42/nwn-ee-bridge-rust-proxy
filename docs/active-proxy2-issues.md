@@ -214,6 +214,16 @@ Current status:
   full-appearance/delete-equipment path as a generalized owner; next proof
   should trace the bitstream provenance before the full appearance or obtain a
   source capture/decompile-backed boundary owner.
+- 2026-06-08 creature-update suffix/top-level add boundary audit: narrowed the
+  `U/5` interleaved-fragment promoter so a candidate suffix beginning with a
+  decompile-shaped legacy/EE `A/5` creature add is kept as a top-level read
+  buffer row, not stripped as CNW fragment storage just because byte `0x41`
+  can decode as a plausible final-count header. Added fixture-free coverage for
+  `U/5 0x3967 -> A/5`: the helper rejects promotion, the ordinary add
+  translator inserts only EE visual-transform bytes, and the final stream
+  exact-claims with zero interleaved bits promoted. The private Sooty diagnostic
+  still rejects at the later full `P/5 -> U/5 0x3967` boundary, so this rules
+  out one false storage-owner path without assigning the unresolved two bits.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

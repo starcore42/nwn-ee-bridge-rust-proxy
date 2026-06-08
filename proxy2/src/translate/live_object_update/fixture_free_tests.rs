@@ -6869,6 +6869,63 @@ fn creature_interleaved_fragment_span_promotes_from_exact_bit_cursor() {
 }
 
 #[test]
+fn creature_update_span_promoter_keeps_following_top_level_add_out_of_storage() {
+    // A real top-level `A/5` after a shortened creature update is not a CNW
+    // storage suffix, even though its first byte can decode as a plausible
+    // final-count header. Diamond/EE live-object dispatch returns to the outer
+    // row loop at the `U/5` read end; the add row must stay in the read buffer
+    // and receive only the EE visual-transform byte widening.
+    let creature_id = 0x8000_000A;
+    let mut live = creature_update_3967_action0_scalar_live_bytes(creature_id);
+    let update_read_end = live.len();
+    live.extend_from_slice(&legacy_creature_add_live_bytes(creature_id));
+
+    let mut fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    fragment_bits.extend_from_slice(&creature_update_3967_action0_scalar_target_false_bits());
+    let original_fragment_bits = fragment_bits.clone();
+    let original_live = live.clone();
+    let old_record_end = live.len();
+    let mut record_end = old_record_end;
+
+    assert!(
+        super::fragment_spans::promote_creature_update_interleaved_fragment_span_for_ee(
+            &mut live,
+            &mut fragment_bits,
+            0,
+            &mut record_end,
+            super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .is_none(),
+        "a following top-level A/5 row must not be stripped as promoted CNW storage"
+    );
+    assert_eq!(record_end, old_record_end);
+    assert_eq!(live, original_live);
+    assert_eq!(fragment_bits, original_fragment_bits);
+    assert_eq!(
+        update_read_end + legacy_creature_add_live_bytes(creature_id).len(),
+        old_record_end
+    );
+
+    let mut payload = live_object_payload_with_bits(
+        &original_live,
+        creature_update_3967_action0_scalar_target_false_bits(),
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy A/5 should still widen through the ordinary add translator");
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 0);
+    assert_eq!(rewrite.interleaved_fragment_bits_promoted, 0);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten U/5 followed by top-level A/5 should exact-claim");
+    assert_eq!(claim.creature_update_records, 1);
+    assert_eq!(claim.add_records, 1);
+}
+
+#[test]
 fn unclassified_inter_record_span_summary_reports_next_boundary_and_cnw_shape() {
     let mut live = vec![0x00, 0x00, 0x00, 0x3C];
     live.extend_from_slice(&[

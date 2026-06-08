@@ -875,23 +875,33 @@ fn work_remaining_trailing_span_contains_top_level_boundary_after_fragment_prefi
     false
 }
 
-fn top_level_boundary_walk_reaches_end(live_bytes: &[u8], mut offset: usize) -> bool {
-    while offset < live_bytes.len() {
+fn top_level_boundary_walk_reaches_end(live_bytes: &[u8], offset: usize) -> bool {
+    top_level_boundary_walk_reaches_span_end(live_bytes, offset, live_bytes.len())
+}
+
+fn top_level_boundary_walk_reaches_span_end(
+    live_bytes: &[u8],
+    mut offset: usize,
+    end: usize,
+) -> bool {
+    if offset >= end || end > live_bytes.len() {
+        return false;
+    }
+
+    while offset < end {
         if !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset) {
             return false;
         }
         let next = boundary::find_next_legacy_live_object_sub_message_boundary_after(
-            live_bytes,
-            offset,
-            live_bytes.len(),
+            live_bytes, offset, end,
         );
-        if next <= offset || next > live_bytes.len() {
+        if next <= offset || next > end {
             return false;
         }
         offset = next;
     }
 
-    true
+    offset == end
 }
 
 fn work_remaining_offset_is_top_level_suffix(live_bytes: &[u8], work_offset: usize) -> bool {
@@ -1233,6 +1243,9 @@ fn find_creature_update_3967_interleaved_fragment_span(
         .max(min_read_end);
     let mut accepted: Option<CreatureUpdateFragmentSpanProof> = None;
     for read_end in scan_start..old_record_end {
+        if top_level_creature_add_record_owns_candidate_span(live_bytes, read_end, old_record_end) {
+            continue;
+        }
         let span = live_bytes.get(read_end..old_record_end)?;
         if span.is_empty() || span.len() > MAX_CREATURE_UPDATE_FRAGMENT_SPAN_BYTES {
             continue;
@@ -1288,6 +1301,17 @@ fn find_creature_update_3967_interleaved_fragment_span(
     }
 
     accepted
+}
+
+fn top_level_creature_add_record_owns_candidate_span(
+    live_bytes: &[u8],
+    offset: usize,
+    end: usize,
+) -> bool {
+    live_bytes.get(offset).copied() == Some(b'A')
+        && live_bytes.get(offset + 1).copied() == Some(0x05)
+        && (creature::looks_like_legacy_creature_add_transform_fields(live_bytes, offset, end)
+            || creature::looks_like_ee_creature_add_record(live_bytes, offset, end))
 }
 
 fn trace_creature_update_interleaved_fragment_span_promotion(
