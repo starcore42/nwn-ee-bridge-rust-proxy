@@ -3423,6 +3423,16 @@ Current status:
   these bits as generic padding. Next proof should trace whether an earlier
   door/placeable row stranded those bits or whether a decompile-backed
   stream-boundary owner exists.
+- 2026-06-08 follow-up terminal-six diagnostic: no packet behavior changed.
+  Debug rerun shows the first update pass legitimately trims a separate
+  eight-bit suffix after a source-owning door/placeable rewrite, then the
+  add-map pass repairs five already-EE-shaped add rows and the later update pass
+  still rejects the terminal six-bit suffix after the final `W current total`.
+  The residual bits are `[false, true, true, false, false, false]`; the trim gate
+  has no family, creature, GUI-item, promoted-span, or `W` storage owner for
+  `bit_cursor=146`. Added gated diagnostics for add-name repair summaries and
+  terminal residual bit previews so the next run can compare this suffix against
+  source-capture/decompile ownership instead of reconstructing the pass history.
 - 2026-05-28 `P/05/01` door-add visual-map cursor audit: fixed two stale
   door-add name call sites that advanced past an EE object visual-transform
   identity as if it were the legacy 40-byte scalar identity. EE

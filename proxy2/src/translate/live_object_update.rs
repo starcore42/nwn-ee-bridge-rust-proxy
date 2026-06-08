@@ -1219,6 +1219,11 @@ pub fn rewrite_add_name_fragment_bits_payload_if_possible(
 
     let fragment_bytes = bits::pack_msb_valid_bits(fragment_bits, CNW_FRAGMENT_HEADER_BITS);
     summary.new_fragment_bytes = u32::try_from(fragment_bytes.len()).unwrap_or(u32::MAX);
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+        eprintln!(
+            "live-object add-name repair summary before emit: bit_cursor={bit_cursor} summary={summary:?}"
+        );
+    }
     payload.truncate(declared);
     payload.extend_from_slice(&fragment_bytes);
     Some(summary)
@@ -5568,9 +5573,13 @@ pub fn rewrite_update_records_payload_if_possible(
                 terminal_work_remaining_non_empty_storage_allowed,
             );
         if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+            let residual_bits = fragment_bits
+                .get(bit_cursor..bit_cursor.saturating_add(24).min(fragment_bits.len()))
+                .unwrap_or(&[]);
             eprintln!(
-                "live-object terminal fragment trim gate: bit_cursor={bit_cursor} fragment_bits={} family_cursor={terminal_family_fragment_trim_cursor:?} family_allowed={terminal_family_fragment_trim_allowed} creature_cursor={terminal_creature_update_trim_cursor:?} creature_allowed={terminal_creature_update_trim_allowed} live_gui_item_cursor={terminal_live_gui_item_fragment_trim_cursor:?} live_gui_item_allowed={terminal_live_gui_item_trim_allowed} promoted_cursor={terminal_promoted_fragment_trim_cursor:?} promoted_allowed={terminal_promoted_fragment_trim_allowed} work_remaining_record={terminal_work_remaining_fragment_storage_record:?} work_remaining_allowed={terminal_work_remaining_trim_allowed}",
-                fragment_bits.len()
+                "live-object terminal fragment trim gate: bit_cursor={bit_cursor} fragment_bits={} residual_bits={} residual_preview={residual_bits:?} family_cursor={terminal_family_fragment_trim_cursor:?} family_allowed={terminal_family_fragment_trim_allowed} creature_cursor={terminal_creature_update_trim_cursor:?} creature_allowed={terminal_creature_update_trim_allowed} live_gui_item_cursor={terminal_live_gui_item_fragment_trim_cursor:?} live_gui_item_allowed={terminal_live_gui_item_trim_allowed} promoted_cursor={terminal_promoted_fragment_trim_cursor:?} promoted_allowed={terminal_promoted_fragment_trim_allowed} work_remaining_record={terminal_work_remaining_fragment_storage_record:?} work_remaining_allowed={terminal_work_remaining_trim_allowed}",
+                fragment_bits.len(),
+                fragment_bits.len().saturating_sub(bit_cursor)
             );
         }
         if !terminal_family_fragment_trim_allowed
