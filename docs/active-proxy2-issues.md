@@ -2402,6 +2402,23 @@ Current status:
   validate. This is evidence collection only: do not add a heuristic rejection
   or cursor search from that ambiguity. The active owner question remains the
   compact source writer/handoff before the `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-09 private compact handoff trace rerun: no packet behavior changed.
+  Re-ran
+  `dispatcher_quarantines_local_cepv23_starter_lance_lute_patron_live_object_after_boundary_audit`
+  with `RUSTFLAGS=--cfg hgbridge_private_fixtures`,
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1`, and isolated non-incremental cargo
+  target `C:\nwnbridge\codex-target-ee-bridge-20260609-u6-debug`. The trace
+  still normalizes the leading A/10, rewrites compact `U/10 mask=0xFFFF_FFF7`,
+  reaches the no-map A/6 row, and rejects the following full item
+  `U/6 mask=0xFFFF_FFF3` at `offset=104`, `record_end=148`, `bit_cursor=28`.
+  The rejected item row reports neighboring fits `-4`, `-3`, `-2`, `+2`, and
+  `+4`, matching the existing public ambiguity fixture. No
+  `item update accepted with neighboring cursor(s)` diagnostic appeared before
+  the rejection, so the accepted-cursor tracer found no earlier same-family
+  owner in this compact path. Continue with compact-source capture or a
+  decompile/server-binary proof for the source writer/handoff before the
+  `U/10`/`A/6`/`U/6` boundary; do not add item cursor search, scalar-byte
+  rescue, or accepted-neighbor rejection heuristics.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian
