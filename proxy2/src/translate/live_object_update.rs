@@ -4373,7 +4373,6 @@ pub fn rewrite_update_records_payload_if_possible(
             let mut appearance_bits_inserted_for_tail_repair = 0usize;
             let mut appearance_bits_removed_for_tail_repair = 0usize;
             let mut appearance_tail_fragment_bits_adjusted = false;
-            let mut appearance_rewrite_changed_stream = false;
             let legacy_appearance_rewrite_candidate = bit_cursor_reliable
                 && !creature_appearance_verified_ee_shaped
                 && creature_appearance_legacy_end
@@ -4405,7 +4404,6 @@ pub fn rewrite_update_records_payload_if_possible(
                         || appearance_rewrite.bytes_inserted != 0
                         || appearance_rewrite.bytes_removed != 0
                     {
-                        appearance_rewrite_changed_stream = true;
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -4447,7 +4445,6 @@ pub fn rewrite_update_records_payload_if_possible(
                         appearance_bits_removed_for_tail_repair
                             .saturating_add(appearance_rewrite.bits_removed);
                     changed = true;
-                    appearance_rewrite_changed_stream = true;
                     summary.bits_inserted = summary.bits_inserted.saturating_add(
                         u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
                     );
@@ -4472,7 +4469,6 @@ pub fn rewrite_update_records_payload_if_possible(
                         appearance_bits_removed_for_tail_repair =
                             appearance_bits_removed_for_tail_repair
                                 .saturating_add(appearance_rewrite.bits_removed);
-                        appearance_rewrite_changed_stream = true;
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -4657,13 +4653,12 @@ pub fn rewrite_update_records_payload_if_possible(
             }
             if bit_cursor_reliable
                 && (appearance_bits_inserted_for_tail_repair != 0
-                    || appearance_bits_removed_for_tail_repair != 0
-                    || appearance_rewrite_changed_stream)
+                    || appearance_bits_removed_for_tail_repair != 0)
                 && !appearance_tail_fragment_bits_adjusted
             {
                 if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
                     eprintln!(
-                        "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} removed_bits={appearance_bits_removed_for_tail_repair} reason=appearance-stream-changed"
+                        "live-object creature-P tail repair armed: offset={offset} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} removed_bits={appearance_bits_removed_for_tail_repair} reason=appearance-fragment-bits-changed"
                     );
                 }
                 pending_creature_p_tail_repair =
@@ -4715,7 +4710,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 && object_type == 0x05
             {
                 eprintln!(
-                    "live-object creature-P tail repair not armed: offset={offset} already_ee={creature_appearance_already_ee_shaped} bit_cursor_reliable={bit_cursor_reliable} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair}"
+                    "live-object creature-P tail repair not armed: offset={offset} already_ee={creature_appearance_already_ee_shaped} bit_cursor_reliable={bit_cursor_reliable} bit_cursor={bit_cursor} inserted_bits={appearance_bits_inserted_for_tail_repair} removed_bits={appearance_bits_removed_for_tail_repair}"
                 );
             }
             offset = record_end.max(offset + 1);

@@ -191,6 +191,17 @@ Current status:
   is not a generalized owner for those bits. The private offset-454 rejection
   remains active; next proof still needs source-capture/decompile ownership
   before the full appearance or a narrower full-appearance tail provenance rule.
+- 2026-06-08 byte-only full-appearance tail-repair audit: no accepted packet
+  behavior changed. A private Sooty debug rerun still shows the later full
+  `P/5` at offset `325` entering with `bit_cursor=57`, consuming only the
+  direct-name BOOL to reach `58`, and leaving the following `U/5 0x3967` at
+  offset `454` rejected from exact `original_tail=58`. The appearance rewrite
+  at this boundary inserted bytes only (`inserted_bits=0`, `removed_bits=0`),
+  so proxy2 no longer arms the `P`-side fragment-tail splice for that byte-only
+  widening. Normal following-`U/5` action repairs already run before any pending
+  tail splice; a byte-only appearance therefore cannot be treated as a fragment
+  cursor owner. The unresolved owner remains upstream of the full appearance or
+  in a decompile-backed source-capture boundary, not in a no-op tail splice.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
