@@ -2459,6 +2459,19 @@ Current status:
   bits. It is only reader-side boundary evidence; the unresolved CEP v2.3 item
   handoff still needs compact source capture or server writer/handoff proof
   before assigning the bits before `U/10`/`A/6`/`U/6`.
+- 2026-06-09 `P/05/01` alternate server update-list walker audit: no packet
+  behavior changed. Direct `nwserver.exe` disassembly of the handoff selected
+  at `0x43FF38..0x43FF5A` shows both walker branches are typed-row plumbing,
+  not fragment-bit owners. The `0x444E60` path and the already-inspected
+  `0x445010` path both call the mask builder `0x4447D0`, conditionally call the
+  typed `U` serializer `0x445160` (`0x444F23` or `0x4450AC`) when the computed
+  mask is nonzero, then call `0x444C70` to copy the selected snapshot fields.
+  No direct CNW byte/word/dword/bool/string/float writer calls were found in
+  the walker handoff or snapshot-copy path; fragment BOOL ownership remains
+  inside the typed serializer calls. This rules out the alternate server
+  update-list walker as a generic owner for the two active pre-`U/6` bits. The
+  unresolved CEP v2.3 handoff still needs compact source capture or a different
+  decompile/server-binary writer proof before changing cursor ownership.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian

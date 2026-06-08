@@ -18,8 +18,10 @@
 //! - Diamond server `P/05/01` writer `nwserver` 0x43FD30 calls the live-object
 //!   record-family helpers and update-list walkers inside one CNW message.
 //!   The update-list handoff at 0x43FF38..0x43FF5A chooses 0x444E60 or
-//!   0x445010 and performs length checks only; direct binary disassembly found
-//!   no inter-record `WriteBOOL` outside the typed record serializers.
+//!   0x445010. Both walkers call mask builder 0x4447D0, conditionally call the
+//!   typed `U` serializer 0x445160 (`0x444F23`/`0x4450AC`), then copy snapshot
+//!   fields through 0x444C70; direct binary disassembly found no inter-record
+//!   `WriteBOOL` outside the typed record serializers.
 //! - Diamond client `sub_455720` reads the live-object row opcode with
 //!   `sub_4FB4D0(8)`, then calls `sub_4FBB40` only as the post-read cursor/
 //!   overflow check. It dispatches directly to the row-specific reader; there
