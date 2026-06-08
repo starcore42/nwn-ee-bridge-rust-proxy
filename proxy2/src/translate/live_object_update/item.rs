@@ -69,6 +69,7 @@ pub(super) fn rewrite_update_record_for_ee(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<ItemUpdateRewrite> {
+    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
     let result = rewrite_update_record_for_ee_inner(
         live_bytes,
         record_offset,
@@ -76,14 +77,25 @@ pub(super) fn rewrite_update_record_for_ee(
         fragment_bits,
         bit_cursor,
     );
-    if result.is_none() && std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
-        trace_rejected_item_update_cursor(
-            live_bytes,
-            record_offset,
-            *record_end,
-            fragment_bits,
-            bit_cursor,
-        );
+    if debug_live_claim {
+        if let Some(rewrite) = result {
+            trace_accepted_item_update_cursor(
+                live_bytes,
+                record_offset,
+                *record_end,
+                fragment_bits,
+                bit_cursor,
+                rewrite.next_bit_cursor,
+            );
+        } else {
+            trace_rejected_item_update_cursor(
+                live_bytes,
+                record_offset,
+                *record_end,
+                fragment_bits,
+                bit_cursor,
+            );
+        }
     }
     result
 }
@@ -204,6 +216,37 @@ fn trace_rejected_item_update_cursor(
         translated_mask
             .map(|mask| format!("0x{mask:08X}"))
             .unwrap_or_else(|| "none".to_string()),
+        fragment_bits
+            .get(bit_cursor..bit_cursor.saturating_add(16).min(fragment_bits.len()))
+            .unwrap_or(&[])
+    );
+}
+
+fn trace_accepted_item_update_cursor(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    next_bit_cursor: usize,
+) {
+    let Some(mask) = item_update_mask(bytes, offset, record_end) else {
+        return;
+    };
+    let nearby = verified_neighboring_item_update_cursors(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        mask,
+        mask,
+    );
+    if nearby.is_empty() {
+        return;
+    }
+    eprintln!(
+        "live-object item update accepted with neighboring cursor(s): offset={offset} record_end={record_end} bit_cursor={bit_cursor} next_bit_cursor={next_bit_cursor} mask=0x{mask:08X} next_bits={:?} nearby_verified_cursors={nearby:?}",
         fragment_bits
             .get(bit_cursor..bit_cursor.saturating_add(16).min(fragment_bits.len()))
             .unwrap_or(&[])

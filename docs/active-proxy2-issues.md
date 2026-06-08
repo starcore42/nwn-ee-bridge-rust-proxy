@@ -2392,6 +2392,16 @@ Current status:
   `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260609-tail9-audit cargo test -q -p hgbridge-proxy2 compact_tail9_bytes_do_not_match_stock_u10_scalar_source_bits -- --nocapture`.
   This only strengthens the bit-order boundary; it still does not assign the
   two active pre-`U/6` bits or prove a stock compact-tail source writer.
+- 2026-06-09 `P/05/01` item `U/6` neighboring-cursor diagnostic audit: no
+  packet behavior changed. The full item-update reader remains exact at the
+  inherited CNW cursor, but packet bytes alone can be ambiguous when two
+  disputed pre-`U/6` bits are treated as position residuals and later rows
+  consume the real item tail. Added debug-only accepted-cursor tracing under
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` so harness/live replays report item
+  updates whose current cursor validates while nearby cursors would also
+  validate. This is evidence collection only: do not add a heuristic rejection
+  or cursor search from that ambiguity. The active owner question remains the
+  compact source writer/handoff before the `U/10`/`A/6`/`U/6` boundary.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian
