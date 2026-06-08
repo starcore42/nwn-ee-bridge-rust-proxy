@@ -1112,6 +1112,11 @@ pub(super) fn try_get_verified_ee_creature_appearance_record_end_and_cursor(
             }
             return None;
         }
+        if debug_live_claim_enabled_for_offset(offset) {
+            eprintln!(
+                "live-object EE appearance candidate accepted: offset={offset} candidate_end={candidate_end} exact_cursor={exact_cursor} boundary={candidate_is_boundary} verified_following_creature_update={candidate_is_verified_following_creature_update}"
+            );
+        }
         Some((candidate_end, exact_cursor))
     };
 
@@ -10967,6 +10972,69 @@ mod public_tests {
         assert_eq!(
             shifted_payload, original_shifted,
             "failed full-appearance handoff proof must leave bytes and fragment bits untouched"
+        );
+    }
+
+    #[test]
+    fn ee_full_appearance_candidate_selects_following_u5_boundary_from_name_bit() {
+        // Full creature appearances can contain byte-plausible shorter
+        // locstring/direct-name parses inside visible-equipment data. Diamond
+        // `sub_448E30` and EE `sub_14077FE10` choose the name branch from the
+        // current fragment bit first, then the live-object loop resumes at the
+        // following `U/5` boundary.
+        let object_id = 0x8000_0042;
+        let appearance = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
+        let following_update = creature_update_3967_action0_scalar_live_bytes(object_id);
+        let following_update_bits = creature_update_3967_action0_scalar_target_false_bits();
+        let mut live = appearance;
+        live.extend_from_slice(&following_update);
+
+        let mut exact_bits = direct_name_with_no_name_equipment_bits();
+        exact_bits.extend_from_slice(&following_update_bits);
+        let mut payload = live_object_payload_with_bits(&live, exact_bits);
+        super::super::rewrite_update_records_payload_if_possible(&mut payload)
+            .expect("full appearance should widen before the following U/5");
+
+        let declared = read_u32_le(&payload, super::super::HIGH_LEVEL_HEADER_BYTES)
+            .expect("rewritten declared length") as usize;
+        let rewritten_live = &payload
+            [super::super::HIGH_LEVEL_HEADER_BYTES + super::super::CNW_LENGTH_BYTES..declared];
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten CNW fragment bits");
+
+        let (appearance_end, cursor_after_appearance) =
+            try_get_verified_ee_creature_appearance_record_end_and_cursor(
+                rewritten_live,
+                0,
+                rewritten_live.len(),
+                &rewritten_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .expect("EE appearance helper should land on the following U/5 boundary");
+        assert_eq!(rewritten_live.get(appearance_end), Some(&b'U'));
+        assert_eq!(
+            read_u32_le(rewritten_live, appearance_end + 6),
+            Some(0x0000_3967)
+        );
+        assert_eq!(
+            cursor_after_appearance,
+            CNW_FRAGMENT_HEADER_BITS + direct_name_with_no_name_equipment_ee_bits().len(),
+            "the appearance helper must consume only direct-name plus visible-equipment EE bits before the following U/5"
+        );
+
+        let mut missing_name_bit = rewritten_bits.clone();
+        missing_name_bit.remove(CNW_FRAGMENT_HEADER_BITS);
+        assert!(
+            try_get_verified_ee_creature_appearance_record_end_and_cursor(
+                rewritten_live,
+                0,
+                rewritten_live.len(),
+                &missing_name_bit,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .is_none(),
+            "the full appearance cannot claim the following U/5 boundary without the decompile-owned name selector bit"
         );
     }
 

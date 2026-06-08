@@ -224,6 +224,17 @@ Current status:
   exact-claims with zero interleaved bits promoted. The private Sooty diagnostic
   still rejects at the later full `P/5 -> U/5 0x3967` boundary, so this rules
   out one false storage-owner path without assigning the unresolved two bits.
+- 2026-06-08 EE full-appearance candidate audit: no packet behavior changed.
+  Added debug-only accepted-candidate logging for verified EE `P/5` appearance
+  boundary selection, including the chosen end cursor and whether it was a
+  generic boundary or focused following-creature-update proof. Added a
+  fixture-free regression proving that after full appearance EE widening,
+  `try_get_verified_ee_creature_appearance_record_end_and_cursor` lands exactly
+  before the following `U/5 0x3967` and advances only the direct-name plus
+  visible-equipment EE BOOLs. Removing the decompile-owned name selector bit
+  leaves that boundary unclaimable. This pins the byte-plausible
+  full-appearance candidate selection around the Sooty offset-325 trace but does
+  not assign the unresolved two bits before offset 454.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
