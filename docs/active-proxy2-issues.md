@@ -2472,6 +2472,20 @@ Current status:
   update-list walker as a generic owner for the two active pre-`U/6` bits. The
   unresolved CEP v2.3 handoff still needs compact source capture or a different
   decompile/server-binary writer proof before changing cursor ownership.
+- 2026-06-09 `P/05/01` server writer finalization/handoff audit: no packet
+  behavior changed. Direct `nwserver.exe` disassembly of the same outer writer
+  keeps the row-family cursor continuous: `0x43FD30` calls
+  `CNWMessage::CreateWriteMessage` once at `0x43FDB3`, writes the live-object
+  helper rows and update-list rows, then calls the finalizer/packet handoff
+  `0x508B80` once at `0x4400B9` after the last row helper. The repeated
+  `0x508B70` calls between row-family helpers are not fragment finalization or
+  cursor reset points; `0x508B70` is a pure length expression
+  (`[message+0x18] + [message+0x0C] + 1`) and returns immediately. This rules
+  out a stock Diamond server row-family boundary reset/handoff as the two active
+  pre-`U/6` bits in the compact `U/10 tail9` -> no-map `A/6` -> full `U/6`
+  path. The remaining proof target is still the compact source writer/capture or
+  another source-side owner before the `U/10` record; do not add a cursor skip,
+  scalar-byte rescue, or generic inter-row padding trim.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian

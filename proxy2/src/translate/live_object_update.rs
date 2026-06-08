@@ -22,6 +22,11 @@
 //!   typed `U` serializer 0x445160 (`0x444F23`/`0x4450AC`), then copy snapshot
 //!   fields through 0x444C70; direct binary disassembly found no inter-record
 //!   `WriteBOOL` outside the typed record serializers.
+//! - The same server writer calls `CNWMessage::CreateWriteMessage` once at
+//!   0x43FDB3 and finalizes once through 0x508B80 at 0x4400B9, after all row
+//!   writers. Intermediate calls to 0x508B70 are pure length checks
+//!   (`read-bytes + fragment-bytes + 1`) and do not reset or hand off the
+//!   fragment cursor between row families.
 //! - Diamond client `sub_455720` reads the live-object row opcode with
 //!   `sub_4FB4D0(8)`, then calls `sub_4FBB40` only as the post-read cursor/
 //!   overflow check. It dispatches directly to the row-specific reader; there
