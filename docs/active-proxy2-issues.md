@@ -129,6 +129,18 @@ Current status:
   start/end cursor directly. Do not change the three-bit header handling or
   donate/borrow bits until decompile-backed source-writer/list-handoff proof or
   a compact-source capture assigns that span.
+- 2026-06-08 follow-up diagnostic audit for the Sooty span: no packet behavior
+  changed. The private negative fixture rerun with
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET=218,325,454` still rejects the
+  later `P/5` at `offset=325` and following `U/5 0x3967` at `offset=454`
+  without any mutating `interleaved fragment span promoted` trace. The visible
+  `offset=218` accepts are read-only appearance-fence probes, so they do not
+  prove that the `285..325` upstream bytes are a fresh CNW storage blob. Added
+  debug proof logging for the immutable creature-update interleaved-span
+  verifier and pinned fixture-free coverage that creature-update span promotion
+  inserts only payload bits after the three CNW final-count header bits. Next
+  verification should instrument or reduce the actual `285..325` source span
+  before assigning it as fresh header storage or continuation/list-handoff data.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

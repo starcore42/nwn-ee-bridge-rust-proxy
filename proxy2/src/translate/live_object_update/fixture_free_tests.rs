@@ -6664,6 +6664,12 @@ fn creature_interleaved_fragment_span_promotes_from_exact_bit_cursor() {
         );
         assert_eq!(promoted.bytes_promoted, span.len(), "{name} span bytes");
         assert_eq!(promoted.bits_promoted, 3, "{name} payload bits");
+        assert_eq!(
+            &fragment_bits
+                [promoted.end_bit_cursor..promoted.end_bit_cursor + promoted.bits_promoted],
+            &[true, false, true],
+            "{name} must promote only the CNW payload bits after the three-bit final-count header"
+        );
         assert_eq!(record_end, read_end, "{name} record_end");
         assert_eq!(live.len(), read_end, "{name} live length");
     }

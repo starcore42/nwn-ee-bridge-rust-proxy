@@ -420,14 +420,27 @@ pub(super) fn verified_creature_update_3967_read_end_before_interleaved_fragment
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    find_creature_update_3967_interleaved_fragment_span(
+    let proof = find_creature_update_3967_interleaved_fragment_span(
         live_bytes,
         offset,
         old_record_end,
         fragment_bits,
         bit_cursor,
-    )
-    .map(|proof| proof.read_end)
+    );
+    if let Some(proof) = &proof {
+        trace_creature_update_interleaved_fragment_span_proof(
+            live_bytes,
+            offset,
+            proof.read_end,
+            old_record_end,
+            proof.insertion_cursor,
+            proof.start_bit_cursor,
+            proof.end_bit_cursor,
+            proof.promoted_bits.len(),
+            proof.rewrite_bare_second_identity_string,
+        );
+    }
+    proof.map(|proof| proof.read_end)
 }
 
 pub(super) fn promote_appearance_following_creature_update_span_for_ee(
@@ -1296,6 +1309,42 @@ fn trace_creature_update_interleaved_fragment_span_promotion(
         "live-object creature-update interleaved fragment span promoted: offset={offset} raw_mask=0x{raw_mask:08X} read_end={read_end} old_record_end={old_record_end} span_bytes={} bits_promoted={bits_promoted} insertion_cursor={insertion_cursor} bit_cursor={start_bit_cursor}->{end_bit_cursor} bare_second_identity_rewrite={rewrite_bare_second_identity_string}",
         old_record_end.saturating_sub(read_end)
     );
+}
+
+fn trace_creature_update_interleaved_fragment_span_proof(
+    live_bytes: &[u8],
+    offset: usize,
+    read_end: usize,
+    old_record_end: usize,
+    insertion_cursor: usize,
+    start_bit_cursor: usize,
+    end_bit_cursor: usize,
+    bits_promoted: usize,
+    rewrite_bare_second_identity_string: bool,
+) {
+    if !debug_live_claim_enabled_for_offset(offset) {
+        return;
+    }
+    let raw_mask = read_u32_le(live_bytes, offset + 6).unwrap_or(0);
+    eprintln!(
+        "live-object creature-update interleaved fragment span proof: offset={offset} raw_mask=0x{raw_mask:08X} read_end={read_end} old_record_end={old_record_end} span_bytes={} bits_promoted={bits_promoted} insertion_cursor={insertion_cursor} bit_cursor={start_bit_cursor}->{end_bit_cursor} bare_second_identity_rewrite={rewrite_bare_second_identity_string}",
+        old_record_end.saturating_sub(read_end)
+    );
+}
+
+fn debug_live_claim_enabled_for_offset(offset: usize) -> bool {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return false;
+    }
+    let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {
+        return true;
+    };
+    filter.split(',').any(|part| {
+        part.trim()
+            .parse::<usize>()
+            .map(|wanted| wanted == offset)
+            .unwrap_or(false)
+    })
 }
 
 fn unpack_promoted_fragment_span_payload_bits(bytes: &[u8]) -> Option<Vec<bool>> {
