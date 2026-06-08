@@ -2372,6 +2372,15 @@ Current status:
   be reused as a normal stock writer cursor. The two active pre-`U/6` bits
   remain unowned; next useful work is still a compact-source capture or another
   source-writer/handoff proof before the `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-09 `P/05/01` inverse stock-vs-compact `U/10` cursor guard: no packet
+  behavior changed. Added public fixture-free coverage that pairs compact
+  `U/10 mask=0xFFFF_FFF7` tail9 bytes with the normal stock scalar-orientation
+  `U/10` source cursor. The rewrite must reject and roll back unchanged instead
+  of treating stock orientation selector/residual bits as compact tail9
+  state/name bits. Verified with
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260609-tail9-audit cargo test -q -p hgbridge-proxy2 compact_tail9_bytes_do_not_match_stock_u10_scalar_source_bits -- --nocapture`.
+  This only strengthens the bit-order boundary; it still does not assign the
+  two active pre-`U/6` bits or prove a stock compact-tail source writer.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian

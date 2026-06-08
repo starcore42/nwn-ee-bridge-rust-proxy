@@ -5332,6 +5332,30 @@ fn compact_tail9_bits_do_not_match_stock_u10_orientation_state_writer() {
 }
 
 #[test]
+fn compact_tail9_bytes_do_not_match_stock_u10_scalar_source_bits() {
+    // Inverse guard for the same decompile boundary: compact tail9 bytes must
+    // not borrow the normal stock `U/10` scalar-orientation source cursor.
+    // Otherwise the orientation selector/residuals would be shifted into the
+    // compact state/name tail.
+    let live = legacy_tail9_door_update_without_name_payload_live_bytes();
+    let mut payload = live_object_payload_with_bits(&live, scalar_door_placeable_update_bits());
+    let original = payload.clone();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "compact tail9 bytes must not exact-claim stock scalar-orientation source bits"
+    );
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "compact tail9 rewrite must reject stock U/10 scalar source bits"
+    );
+    assert_eq!(
+        payload, original,
+        "failed stock-vs-compact tail9 proof must leave the source payload untouched"
+    );
+}
+
+#[test]
 fn tail9_door_update_before_typed_item_create_preserves_following_full_item_update_bits() {
     // Pin the CEP v2.3 upstream cursor: a preceding all-bits door `U/10`
     // tail9 row owns eight legacy compact source bits and emits thirteen EE bits
