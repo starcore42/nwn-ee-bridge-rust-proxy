@@ -339,9 +339,10 @@ pub(super) fn rewrite_update_record_for_ee(
             // stock server `U` writer census found no other typed
             // `U/type/id/mask` writer for this row. The only executable
             // little-endian `0xFFFFFFF7` hit is inside the 0x4401F0 add/snapshot
-            // writer and is passed to 0x44AC70 before that function emits `A`,
-            // not `U`. Keep the compact tail as capture-backed legacy evidence
-            // until a source writer is proven.
+            // writer. That path passes the mask into the 0x44AC70 snapshot field
+            // copier, whose checked range has no direct CNW write calls, before
+            // 0x4401F0 emits an `A/type/id` row. Keep the compact tail as
+            // capture-backed legacy evidence until a source writer is proven.
             // These bytes can also accidentally form a
             // bounded CExoString candidate, so this typed tail reader must win
             // before the compact inline-name repair is considered.

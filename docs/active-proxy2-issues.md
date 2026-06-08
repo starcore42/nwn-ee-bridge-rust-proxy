@@ -2419,6 +2419,23 @@ Current status:
   decompile/server-binary proof for the source writer/handoff before the
   `U/10`/`A/6`/`U/6` boundary; do not add item cursor search, scalar-byte
   rescue, or accepted-neighbor rejection heuristics.
+- 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
+  changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
+  compact-tail source-writer boundary reproducible without trusting the text
+  decompile alone. Little-endian `F7 FF FF FF` appears only at executable VA
+  `0x44036E` (the immediate in `mov dword ptr [eax], 0xFFFFFFF7` at
+  `0x44036C`) and `.rdata` VA `0x633594`. The `0x4401F0` add/snapshot path
+  passes that side mask to `0x44AC70`, whose checked range has no direct calls
+  to the CNW byte/word/dword/bool/string/float writers, then returns to
+  `0x4401F0` to emit `A`, object type, and object id at `0x4403E3`,
+  `0x4403F0`, and `0x4403FA`. The typed `U` serializer remains `0x445160`,
+  reached only at direct call sites `0x43F7EC`, `0x444F23`, and `0x4450AC` in
+  the checked stock binary, and it writes `U/type/id/mask` at
+  `0x4451DC..0x44520D`. This further rules out the stock `0x4401F0`
+  `0xFFFFFFF7` mask seed and `0x44AC70` snapshot copier as owners for the two
+  active pre-`U/6` bits. The compact `U/10 tail9` source family is still
+  local/HG capture evidence; continue with compact-source capture or another
+  decompile/server-binary writer/handoff proof before assigning those bits.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian

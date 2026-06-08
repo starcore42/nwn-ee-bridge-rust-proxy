@@ -337,7 +337,8 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
     // the normal Diamond server 0x445160 mask-0x0002 writer path, which writes
     // an orientation selector BOOL before scalar/vector orientation payload.
     // The stock binary's only executable 0xFFFFFFF7 assignment is in the
-    // 0x4401F0 add/snapshot path before it writes `A`, not a typed `U` row.
+    // 0x4401F0 add/snapshot path. It feeds the 0x44AC70 snapshot field copier,
+    // then writes `A/type/id`, not a typed `U` row.
     vec![
         false, true, // position residual bits.
         true, false, true, false, true,  // legacy tail9 door state bits.
