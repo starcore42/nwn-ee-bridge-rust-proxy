@@ -141,6 +141,21 @@ Current status:
   inserts only payload bits after the three CNW final-count header bits. Next
   verification should instrument or reduce the actual `285..325` source span
   before assigning it as fresh header storage or continuation/list-handoff data.
+- 2026-06-08 inter-record reduction for the same span: no packet behavior
+  changed. Added debug-only record-candidate and span-owner scan reducers. A
+  private rerun shows the earlier `P/5` at `offset=81` rewrites, then the
+  following `U/5 0x3967` at `offset=218` is a real top-level record ending at
+  `285` with `bit_cursor=44->57`; the bounded span-owner scan reports
+  `accepted_read_end=None`. The bytes after that are not a fresh CNW storage
+  blob: the walker sees a top-level `A/5` creature add at `offset=285` ending
+  at `317`, and the EE visual-transform identity insert shifts the next `P/5`
+  candidate to `offset=325` without advancing the fragment cursor. The later
+  `P/5` consumes the direct CExoString selector (`57->58`), then the following
+  `U/5 0x3967` at `offset=454` also has `accepted_read_end=None` and rejects.
+  Next verification should audit the decompile-backed `U/5 0x3967` action-0
+  bit cursor for the `offset=218` shape, plus the intervening `A/5`
+  fragment-neutral add contract; do not treat `285..325` as donated CNW
+  storage and do not restore cursor borrowing.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

@@ -322,8 +322,11 @@ pub(super) fn legacy_creature_update_read_end_before_fragment_span_for_span_owne
         || old_record_end > bytes.len()
         || bytes.get(offset).copied()? != b'U'
         || bytes.get(offset + 1).copied()? != 0x05
-        || !is_appearance_following_creature_span_owner_mask(read_u32_le(bytes, offset + 6)?)
     {
+        return None;
+    }
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    if !is_appearance_following_creature_span_owner_mask(raw_mask) {
         return None;
     }
 
@@ -331,6 +334,7 @@ pub(super) fn legacy_creature_update_read_end_before_fragment_span_for_span_owne
     let scan_start = old_record_end
         .saturating_sub(max_span_bytes)
         .max(min_read_end);
+    let mut accepted = None;
     for read_end in scan_start..old_record_end {
         let mut proof_cursor = bit_cursor;
         if advance_verified_legacy_creature_update_record_for_span_owner(
@@ -340,10 +344,19 @@ pub(super) fn legacy_creature_update_read_end_before_fragment_span_for_span_owne
             fragment_bits,
             &mut proof_cursor,
         ) {
-            return Some((read_end, proof_cursor));
+            accepted = Some((read_end, proof_cursor));
+            break;
         }
     }
-    None
+    if debug_creature_update_cursor_trace_enabled(raw_mask) {
+        eprintln!(
+            "live-object creature update span-owner scan: offset={offset} raw_mask=0x{raw_mask:08X} old_record_end={old_record_end} scan_start={scan_start} max_span_bytes={max_span_bytes} start_bit_cursor={bit_cursor} accepted_read_end={:?} accepted_bit_cursor={:?} accepted_span_bytes={:?}",
+            accepted.map(|(read_end, _)| read_end),
+            accepted.map(|(_, cursor)| cursor),
+            accepted.map(|(read_end, _)| old_record_end.saturating_sub(read_end))
+        );
+    }
+    accepted
 }
 
 pub(super) fn legacy_creature_update_3967_read_end_before_fragment_span(

@@ -3461,6 +3461,15 @@ pub fn rewrite_update_records_payload_if_possible(
             last_verified_creature_add_record = None;
             last_verified_add_record = None;
             last_verified_door_add_fragment_span_record = None;
+            if offset == last_verified_record_end {
+                trace_unclassified_inter_record_span(
+                    &live_bytes,
+                    offset,
+                    bit_cursor,
+                    fragment_bits.len(),
+                    changed,
+                );
+            }
             offset += 1;
             continue;
         }
@@ -3599,6 +3608,13 @@ pub fn rewrite_update_records_payload_if_possible(
             offset += 1;
             continue;
         }
+        trace_update_rewrite_record_candidate(
+            &live_bytes,
+            offset,
+            record_end,
+            bit_cursor,
+            bit_cursor_reliable,
+        );
 
         if let Some((bytes_removed, bits_promoted)) =
             remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
@@ -6000,6 +6016,121 @@ fn trace_update_rewrite_cursor_unreliable(
         live_bytes.get(offset + 1).copied().unwrap_or_default(),
         preview
     );
+}
+
+fn trace_update_rewrite_record_candidate(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    bit_cursor: usize,
+    bit_cursor_reliable: bool,
+) {
+    if !debug_live_claim_enabled_for_span(offset, record_end) {
+        return;
+    }
+    let preview_end = record_end
+        .min(live_bytes.len())
+        .min(offset.saturating_add(32));
+    let preview = live_bytes.get(offset..preview_end).unwrap_or(&[]);
+    eprintln!(
+        "live-object update rewrite record candidate: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} opcode=0x{:02X} marker=0x{:02X} preview={:02X?}",
+        live_bytes.get(offset).copied().unwrap_or_default(),
+        live_bytes.get(offset + 1).copied().unwrap_or_default(),
+        preview
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnclassifiedInterRecordSpanSummary {
+    span_start: usize,
+    span_end: usize,
+    span_len: usize,
+    next_opcode: u8,
+    next_marker: u8,
+    cnw_final_bits: Option<usize>,
+    cnw_valid_bits: Option<usize>,
+    cnw_payload_bits: Option<usize>,
+    all_zero: bool,
+}
+
+fn summarize_unclassified_inter_record_span(
+    live_bytes: &[u8],
+    span_start: usize,
+) -> Option<UnclassifiedInterRecordSpanSummary> {
+    if span_start >= live_bytes.len()
+        || boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, span_start)
+    {
+        return None;
+    }
+    let span_end = ((span_start + 1)..live_bytes.len().saturating_sub(1)).find(|candidate| {
+        boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, *candidate)
+    })?;
+    let span = live_bytes.get(span_start..span_end)?;
+    let cnw_final_bits = span.first().map(|byte| usize::from((byte & 0xE0) >> 5));
+    let decoded = bits::decode_msb_valid_bits(span, CNW_FRAGMENT_HEADER_BITS);
+    let cnw_valid_bits = decoded.as_ref().map(Vec::len);
+    let cnw_payload_bits = cnw_valid_bits.and_then(|valid_bits| {
+        valid_bits
+            .checked_sub(CNW_FRAGMENT_HEADER_BITS)
+            .filter(|payload_bits| *payload_bits > 0)
+    });
+    Some(UnclassifiedInterRecordSpanSummary {
+        span_start,
+        span_end,
+        span_len: span.len(),
+        next_opcode: live_bytes.get(span_end).copied().unwrap_or_default(),
+        next_marker: live_bytes.get(span_end + 1).copied().unwrap_or_default(),
+        cnw_final_bits,
+        cnw_valid_bits,
+        cnw_payload_bits,
+        all_zero: span.iter().all(|byte| *byte == 0),
+    })
+}
+
+fn trace_unclassified_inter_record_span(
+    live_bytes: &[u8],
+    span_start: usize,
+    bit_cursor: usize,
+    fragment_bits_len: usize,
+    changed: bool,
+) {
+    let Some(summary) = summarize_unclassified_inter_record_span(live_bytes, span_start) else {
+        return;
+    };
+    if !debug_live_claim_enabled_for_span(summary.span_start, summary.span_end) {
+        return;
+    }
+    let preview = live_bytes
+        .get(summary.span_start..summary.span_end.min(summary.span_start + 40))
+        .unwrap_or(&[]);
+    eprintln!(
+        "live-object unclassified inter-record span: span_start={} span_end={} span_bytes={} next_opcode=0x{:02X} next_marker=0x{:02X} bit_cursor={bit_cursor} fragment_bits={fragment_bits_len} changed={changed} cnw_final_bits={:?} cnw_valid_bits={:?} cnw_payload_bits={:?} all_zero={} preview={:02X?}",
+        summary.span_start,
+        summary.span_end,
+        summary.span_len,
+        summary.next_opcode,
+        summary.next_marker,
+        summary.cnw_final_bits,
+        summary.cnw_valid_bits,
+        summary.cnw_payload_bits,
+        summary.all_zero,
+        preview
+    );
+}
+
+fn debug_live_claim_enabled_for_span(span_start: usize, span_end: usize) -> bool {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return false;
+    }
+    let Ok(filter) = std::env::var("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET") else {
+        return true;
+    };
+    filter.split(',').any(|part| {
+        part.trim()
+            .parse::<usize>()
+            .map(|wanted| wanted == span_start || wanted == span_end)
+            .unwrap_or(false)
+    })
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {

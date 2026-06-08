@@ -6674,3 +6674,34 @@ fn creature_interleaved_fragment_span_promotes_from_exact_bit_cursor() {
         assert_eq!(live.len(), read_end, "{name} live length");
     }
 }
+
+#[test]
+fn unclassified_inter_record_span_summary_reports_next_boundary_and_cnw_shape() {
+    let mut live = vec![0x00, 0x00, 0x00, 0x3C];
+    live.extend_from_slice(&[
+        b'P',
+        super::CREATURE_OBJECT_TYPE,
+        0x01,
+        0x00,
+        0x00,
+        0x80,
+        0x00,
+        0x00,
+    ]);
+
+    let summary = super::summarize_unclassified_inter_record_span(&live, 0)
+        .expect("span summary should stop at the following creature appearance boundary");
+
+    assert_eq!(summary.span_start, 0);
+    assert_eq!(summary.span_end, 4);
+    assert_eq!(summary.span_len, 4);
+    assert_eq!(summary.next_opcode, b'P');
+    assert_eq!(summary.next_marker, super::CREATURE_OBJECT_TYPE);
+    assert_eq!(summary.cnw_final_bits, Some(0));
+    assert_eq!(summary.cnw_valid_bits, Some(32));
+    assert_eq!(summary.cnw_payload_bits, Some(29));
+    assert!(
+        !summary.all_zero,
+        "nonzero unclassified spans must be distinguishable from empty padding"
+    );
+}
