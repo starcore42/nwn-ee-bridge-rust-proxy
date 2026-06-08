@@ -720,7 +720,7 @@ pub fn declared_length_repair_read_window_ends_after_creature_appearance_update_
         return false;
     };
     let live = &bytes[LEGACY_LIVE_BYTES_OFFSET..split];
-    let mut appearance_ids = HashSet::new();
+    let mut pending_creature_appearance_update_proof: Option<u32> = None;
     let mut offset = 0usize;
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut bit_cursor_reliable = true;
@@ -741,6 +741,7 @@ pub fn declared_length_repair_read_window_ends_after_creature_appearance_update_
         let opcode = live[offset];
         let object_type = live[offset + 1];
         let object_id = read_u32_le(live, offset + 2).unwrap_or(u32::MAX);
+        let adjacent_appearance_object_id = pending_creature_appearance_update_proof.take();
         if object_type == CREATURE_OBJECT_TYPE && object_id != u32::MAX {
             if opcode == b'P' {
                 let mut appearance_cursor = bit_cursor;
@@ -754,9 +755,14 @@ pub fn declared_length_repair_read_window_ends_after_creature_appearance_update_
                     bit_cursor_reliable = false;
                 } else {
                     bit_cursor = appearance_cursor;
+                    pending_creature_appearance_update_proof = Some(object_id);
                 }
-                appearance_ids.insert(object_id);
-            } else if opcode == b'U' && appearance_ids.contains(&object_id) && next == live.len() {
+            } else if opcode == b'U'
+                && adjacent_appearance_object_id == Some(object_id)
+                && read_u32_le(live, offset.saturating_add(6))
+                    == Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+                && next == live.len()
+            {
                 if !bit_cursor_reliable {
                     return true;
                 }
@@ -5546,6 +5552,16 @@ mod declared_length_repair_tests {
         ]
     }
 
+    fn legacy_creature_add_live_bytes(object_id: u32) -> Vec<u8> {
+        let mut live = vec![b'A', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        for value in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0] {
+            live.extend_from_slice(&value.to_le_bytes());
+        }
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live
+    }
+
     fn push_u16(bytes: &mut Vec<u8>, value: u16) {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -6705,6 +6721,37 @@ mod declared_length_repair_tests {
                 &missing_repair
             ),
             "byte-shaped P/5 -> U/5 is not enough: the following 0x3967 row owns its two position bits"
+        );
+    }
+
+    #[test]
+    fn declared_length_creature_appearance_update_pair_requires_adjacent_u5_3967() {
+        // This stale-declared helper is a transport gate for the adjacent
+        // `P/5 -> U/5 0x3967` handoff only. An intervening top-level record may
+        // be fragment-neutral, such as Diamond's 32-byte `A/5` creature add, but
+        // it still breaks the decompile-owned adjacent pair proof and must fall
+        // through to the normal semantic rewrite plus exact validator.
+        let object_id = 0x8000_0042;
+        let appearance = creature_name_only_direct_appearance_live_bytes(object_id);
+        let update = creature_update_3967_action0_scalar_live_bytes(object_id);
+        let update_bits = creature_update_3967_action0_scalar_bits();
+        let mut live = appearance;
+        live.extend_from_slice(&legacy_creature_add_live_bytes(0x8000_0043));
+        live.extend_from_slice(&update);
+
+        let mut exact_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        exact_bits.push(false); // direct CExoString creature name selector.
+        exact_bits.extend_from_slice(&update_bits);
+        let mut payload = live_object_payload_with_fragment_bits(&live, exact_bits);
+        let repair = creature_appearance_update_pair_repair(&live, payload.len());
+        payload[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES]
+            .copy_from_slice(&repair.old_declared.to_le_bytes());
+
+        assert!(
+            !declared_length_repair_read_window_ends_after_creature_appearance_update_pair(
+                &payload, &repair
+            ),
+            "a non-adjacent same-object U/5 must not reuse stale P/5 cursor proof"
         );
     }
 

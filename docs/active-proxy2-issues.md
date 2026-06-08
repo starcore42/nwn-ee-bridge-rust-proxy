@@ -258,6 +258,17 @@ Current status:
   and exact EE validator. The Sooty offset-454 owner remains unresolved; this
   proves only that transport capacity must not borrow across a proven adjacent
   full `P/5 -> U/5 0x3967` boundary.
+- 2026-06-09 stale-declared adjacency audit for the same `P/5 -> U/5 0x3967`
+  helper: tightened the transport-only pair proof to a proven immediately
+  preceding same-object `P/5` record followed by terminal `U/5 mask=0x3967`.
+  The older helper remembered any prior same-object creature appearance, which
+  made the code broader than the decompile-backed adjacent-pair rule and could
+  ignore an intervening top-level row while checking the terminal update cursor.
+  Added a fixture-free `P/5 -> A/5 -> U/5 0x3967` negative proving even a
+  fragment-neutral Diamond creature add breaks this stale-declared helper's
+  adjacency proof; such streams must continue through the normal typed rewrite
+  plus exact EE validator. This does not assign the unresolved Sooty two-bit
+  owner.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
