@@ -338,7 +338,9 @@ fn legacy_tail9_door_update_source_bits() -> Vec<bool> {
     // an orientation selector BOOL before scalar/vector orientation payload.
     // The stock binary's only executable 0xFFFFFFF7 assignment is in the
     // 0x4401F0 add/snapshot path. It feeds the 0x44AC70 snapshot field copier,
-    // then writes `A/type/id`, not a typed `U` row.
+    // then writes `A/type/id`, not a typed `U` row. The HGX server decompile's
+    // five 0xFFFFFFF7 literal hits sit in mask/string cleanup neighborhoods, not
+    // CNWMessage writer paths.
     vec![
         false, true, // position residual bits.
         true, false, true, false, true,  // legacy tail9 door state bits.

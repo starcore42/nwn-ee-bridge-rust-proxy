@@ -341,7 +341,9 @@ pub(super) fn rewrite_update_record_for_ee(
             // little-endian `0xFFFFFFF7` hit is inside the 0x4401F0 add/snapshot
             // writer. That path passes the mask into the 0x44AC70 snapshot field
             // copier, whose checked range has no direct CNW write calls, before
-            // 0x4401F0 emits an `A/type/id` row. Keep the compact tail as
+            // 0x4401F0 emits an `A/type/id` row. The HGX decompile's five
+            // 0xFFFFFFF7 text hits are mask/string cleanup, not CNWMessage
+            // emission. Keep the compact tail as
             // capture-backed legacy evidence until a source writer is proven.
             // These bytes can also accidentally form a
             // bounded CExoString candidate, so this typed tail reader must win

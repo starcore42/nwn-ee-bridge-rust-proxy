@@ -2436,6 +2436,17 @@ Current status:
   active pre-`U/6` bits. The compact `U/10 tail9` source family is still
   local/HG capture evidence; continue with compact-source capture or another
   decompile/server-binary writer/handoff proof before assigning those bits.
+- 2026-06-09 `P/05/01` HGX `0xFFFFFFF7` literal audit: no packet behavior
+  changed. Rechecked all five literal hits in
+  `C:\NWN\HGX Source\hgx.server decompile\hgx.server decompile.txt`:
+  `0x1001B119`, `0x1001B541`, `0x1001C216`, `0x100325B7`, and
+  `0x10040627`. They are mask normalization or string cleanup/destructor
+  neighborhoods, with no nearby `CNWMessage` byte/word/dword/bool/string/float
+  writer calls and no `U/type/id/mask` emission. This rules out the HGX
+  `0xFFFFFFF7` text-decompile hits as compact `U/10 tail9` source-writer proof.
+  The two active pre-`U/6` bits remain unowned; next useful evidence is still a
+  compact source capture or a different decompile/server-binary handoff proof
+  before the `U/10`/`A/6`/`U/6` boundary.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian
