@@ -3402,13 +3402,27 @@ Current status:
   --nocapture`, and `cargo test -q -p hgbridge-proxy2
   pending_seq31_stream_rewrites_to_exact_live_object_claim --
   --nocapture`.~~
-- 2026-06-08 broad `live_object` filter re-surfaced a separate pending seq31
-  pre-pass failure: `rewrite_update_records_payload_if_possible` rejects before
-  the add-record visual-transform pass when the first row is a compact
-  top-level `A/09` placeable add (`offset=0`, `record_end=60`,
-  `add-record-cursor-advance-failed`). This did not hit the new adjacent
-  full-appearance/`U/5 0x3967` capacity branch. Treat it as a generalized
-  add-record cursor/pre-pass ordering audit, not as a seq31-specific workaround.
+- ~~2026-06-08 broad `live_object` filter seq31 pre-pass failure: resolved
+  2026-06-08. The root rule was generalized beyond the fixture: an inline-name
+  `A/09` placeable add with Diamond BYTE/WORD/WORD tail and legacy scalar
+  visual-transform identity owns its ten decompile-backed source BOOLs before a
+  following same-object update. The update pre-pass may now normalize that add
+  through the same transactional proof used for compact short-name rows:
+  legacy cursor advance, add rewrite, exact EE add cursor, same-object following
+  update boundary, and final exact validation. Verified with fixture-free
+  `inline_placeable_scalar_add_rewrites_before_following_same_object_update`,
+  private `pending_seq31_stream_rewrites_to_exact_live_object_claim`,
+  `compact_placeable`, and `live_object_update`.~~
+- 2026-06-08 broad `live_object` filter now reaches a separate mixed
+  door/placeable residual: private
+  `hg_door_mixed_add_update_fixture_rewrites_to_exact_ee_claim` rewrites through
+  repeated door/placeable add/update rows, then leaves six terminal fragment bits
+  after a final `W current total` (`bit_cursor=146`, `fragment_bits=152`,
+  `terminal-fragment-bits-unowned-after-rewrite`). The final `W` reader remains
+  fragment-neutral in Diamond `sub_44F160` and EE `sub_1407B85A0`; do not trim
+  these bits as generic padding. Next proof should trace whether an earlier
+  door/placeable row stranded those bits or whether a decompile-backed
+  stream-boundary owner exists.
 - 2026-05-28 `P/05/01` door-add visual-map cursor audit: fixed two stale
   door-add name call sites that advanced past an EE object visual-transform
   identity as if it were the legacy 40-byte scalar identity. EE

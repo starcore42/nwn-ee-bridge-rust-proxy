@@ -624,6 +624,18 @@ fn compact_placeable_token_name_add_live_bytes() -> Vec<u8> {
     live
 }
 
+fn inline_placeable_add_with_legacy_scalar_visual_transform_live_bytes(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&5u32.to_le_bytes());
+    live.extend_from_slice(b"Bench");
+    live.push(0x05);
+    live.extend_from_slice(&0x1231u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&super::visual_transform::LEGACY_SCALAR_VISUAL_TRANSFORM_IDENTITY_BYTES);
+    live
+}
+
 fn ee_empty_placeable_add_live_bytes(appearance: u16) -> Vec<u8> {
     let mut live = vec![b'A', super::PLACEABLE_OBJECT_TYPE];
     live.extend_from_slice(&0x8000_18C2u32.to_le_bytes());
@@ -4257,6 +4269,46 @@ fn compact_placeable_token_add_rewrites_before_following_same_object_update() {
 
     let claim = super::claim_payload_if_verified(&payload)
         .expect("compact add/update pair should claim after bounded rewrite");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn inline_placeable_scalar_add_rewrites_before_following_same_object_update() {
+    // Diamond `sub_44E4A0` owns the inline name, BYTE/WORD/WORD placeable
+    // tail, and ten source BOOLs before the following same-object update. The
+    // legacy scalar visual-transform identity at the tail cursor is byte-owned
+    // add state, not a reason for the update pre-pass to lose the add cursor.
+    let object_id = 0x8000_34FDu32;
+    let mut live = inline_placeable_add_with_legacy_scalar_visual_transform_live_bytes(object_id);
+    live.extend_from_slice(&placeable_stale_gap_update_live_bytes_for_object(object_id));
+
+    let mut bits = vec![
+        false, true, false, false, false, false, false, false, false, false,
+    ];
+    bits.extend_from_slice(&scalar_door_placeable_update_bits());
+    let mut payload = live_object_payload_with_bits(&live, bits);
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "legacy scalar visual-transform bytes must not exact-claim as an EE placeable add"
+    );
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("inline placeable add should rewrite before the following update");
+    assert_eq!(rewrite.update_records_rewritten, 1);
+    assert!(
+        rewrite.bytes_removed
+            >= super::visual_transform::LEGACY_SCALAR_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "legacy scalar identity should be replaced, not left as an EE map"
+    );
+    assert!(
+        rewrite.bytes_inserted
+            >= super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32,
+        "placeable add should receive EE's object visual-transform map"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("inline add/update pair should claim after bounded rewrite");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
 }

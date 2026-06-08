@@ -2713,9 +2713,6 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
     if record_end >= live_bytes.len()
         || live_bytes.get(offset).copied() != Some(b'A')
         || live_bytes.get(offset + 1).copied() != Some(PLACEABLE_OBJECT_TYPE)
-        || boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
-            live_bytes, offset, record_end,
-        ) != Some(record_end)
     {
         return None;
     }
@@ -2741,8 +2738,12 @@ fn compact_legacy_placeable_add_rewrite_claims_following_same_object_update(
         return None;
     }
 
-    let legacy_short_name_token =
-        read_u32_le(live_bytes, offset + 6).is_some_and(|name_token| name_token != 0);
+    let legacy_short_name_transport =
+        boundary::try_get_legacy_placeable_short_name_add_record_end_for_transport(
+            live_bytes, offset, record_end,
+        ) == Some(record_end);
+    let legacy_short_name_token = legacy_short_name_transport
+        && read_u32_le(live_bytes, offset + 6).is_some_and(|name_token| name_token != 0);
 
     let mut legacy_cursor = bit_cursor;
     if !cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
