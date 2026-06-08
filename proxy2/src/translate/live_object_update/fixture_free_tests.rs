@@ -165,6 +165,15 @@ fn creature_update_3967_action0_scalar_target_false_bits() -> Vec<bool> {
     ]
 }
 
+fn creature_name_only_direct_appearance_live_bytes(object_id: u32, name: &[u8]) -> Vec<u8> {
+    let mut live = vec![b'P', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&0x0400u16.to_le_bytes());
+    live.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    live.extend_from_slice(name);
+    live
+}
+
 fn legacy_zero_count_creature_4408_payload(
     rows: &[(u8, u16)],
     extra_before_scalar: &[u8],
@@ -3640,6 +3649,59 @@ fn creature_add_visual_transform_insert_is_fragment_neutral_before_u5_3967() {
         .expect("rewritten A/5 plus following 0x3967 update should exact-claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.creature_update_records, 1);
+}
+
+#[test]
+fn u5_a5_p5_u5_stream_keeps_later_3967_position_bits_owned_by_later_u5() {
+    // This is the generalized cursor shape behind the Sooty offset-454 audit:
+    // a decompile-owned `U/5 0x3967`, then a byte-only `A/5` visual-transform
+    // insert, then a creature `P/5` direct-name selector before another
+    // `U/5 0x3967`. The earlier records must not donate or borrow the later
+    // update's two position residual bits.
+    let creature_id = 0x8000_000A;
+    let first_update = creature_update_3967_action0_scalar_live_bytes(creature_id);
+    let first_update_bits = creature_update_3967_action0_scalar_target_false_bits();
+    let appearance = creature_name_only_direct_appearance_live_bytes(creature_id, b"Guard");
+    let following_update = creature_update_3967_action0_scalar_live_bytes(creature_id);
+    let following_update_bits = creature_update_3967_action0_scalar_target_false_bits();
+
+    let mut live = first_update;
+    live.extend_from_slice(&legacy_creature_add_live_bytes(creature_id));
+    live.extend_from_slice(&appearance);
+    live.extend_from_slice(&following_update);
+
+    let mut exact_bits = first_update_bits.clone();
+    exact_bits.push(false); // direct creature-name CExoString selector.
+    exact_bits.extend_from_slice(&following_update_bits);
+    let mut exact_payload = live_object_payload_with_bits(&live, exact_bits);
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+        .expect("legacy A/5 visual-transform widening should preserve exact U/P/U cursors");
+    assert_eq!(
+        rewrite.bits_inserted, 0,
+        "the A/5 and name-only P/5 path is byte-only before the later U/5"
+    );
+    assert_eq!(rewrite.bits_removed, 0);
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 0);
+    assert_eq!(rewrite.interleaved_fragment_bits_promoted, 0);
+    let claim = super::claim_payload_if_verified(&exact_payload)
+        .expect("exact U/5 -> A/5 -> P/5 -> U/5 cursor chain should claim");
+    assert_eq!(claim.creature_update_records, 2);
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.creature_appearance_records, 1);
+
+    let mut missing_following_position_bits = first_update_bits;
+    missing_following_position_bits.push(false);
+    missing_following_position_bits.extend_from_slice(&following_update_bits[2..]);
+    let mut shifted_payload = live_object_payload_with_bits(&live, missing_following_position_bits);
+    let original_shifted = shifted_payload.clone();
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut shifted_payload).is_none(),
+        "the earlier U/A/P chain must not make a later 0x3967 row validate after its two position bits are missing"
+    );
+    assert_eq!(
+        shifted_payload, original_shifted,
+        "failed cursor proof must not leave a partial visual-transform rewrite"
+    );
 }
 
 #[test]

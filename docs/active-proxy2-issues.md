@@ -168,6 +168,18 @@ Current status:
   rejection remains unresolved; next verification should trace the earlier
   cursor owner before the later `P/5`/`U/5` pair, not the intervening `A/5` or
   the already pinned offset-218 action-0 row.
+- 2026-06-08 later `U/5 0x3967` handoff regression: no packet behavior
+  changed. Added a public fixture-free stream shaped as
+  `U/5 0x3967 -> A/5 -> P/5 direct-name -> U/5 0x3967`. The exact stream
+  claims after the normal `A/5` EE visual-transform byte insertion, with zero
+  fragment bits inserted/removed/promoted, while a sibling missing the later
+  `U/5` row's two position residual bits rejects and rolls back unchanged.
+  This rules out a generalized cursor donation from the earlier `0x3967`
+  action-0 row, the intervening creature add, or a name-only creature
+  appearance selector. The private offset-454 full-appearance rejection remains
+  active; next verification should focus on the full `P/5` appearance
+  rewrite/tail provenance or a source-capture/decompile owner before that
+  full appearance, not on borrowing the later `U/5` position bits.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
