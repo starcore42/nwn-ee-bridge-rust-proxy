@@ -63,7 +63,6 @@ const LEGACY_UPDATE_NAME_MASK: u32 = 0x0008_0000;
 const LEGACY_UPDATE_HEADER_BYTES: usize = 10;
 const LEGACY_CREATURE_APPEARANCE_HEADER_BYTES: usize = 8;
 const LEGACY_CREATURE_UPDATE_3967_MASK: u32 = 0x0000_3967;
-const LEGACY_CREATURE_UPDATE_3967_MIN_READ_BYTES: usize = 67;
 const MAX_APPEARANCE_FOLLOWING_CREATURE_FRAGMENT_SPAN_BYTES: usize = 256;
 const LEGACY_UPDATE_POSITION_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_POSITION_FRAGMENT_BITS: usize = 2;
@@ -444,6 +443,7 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
 
     let mut offset = start;
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    let mut pending_creature_appearance_update_proof: Option<(u32, usize)> = None;
     while offset < end {
         if !looks_like_legacy_live_object_sub_message_boundary(bytes, offset) {
             return false;
@@ -470,15 +470,6 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                 record_end = span_end;
             }
         }
-        if bytes.get(offset).copied() == Some(b'U')
-            && bytes.get(offset + 1).copied() == Some(CREATURE_OBJECT_TYPE)
-            && read_u32_le(bytes, offset.saturating_add(6))
-                == Some(LEGACY_CREATURE_UPDATE_3967_MASK)
-            && record_end < offset.saturating_add(LEGACY_CREATURE_UPDATE_3967_MIN_READ_BYTES)
-        {
-            return false;
-        }
-
         match (bytes[offset], bytes[offset + 1]) {
             (b'A', ITEM_OBJECT_TYPE) => {
                 if !crate::translate::live_object_update::advance_legacy_item_create_fragment_cursor_for_transport(
@@ -545,6 +536,48 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                     return false;
                 }
             }
+            (b'U', CREATURE_OBJECT_TYPE) => {
+                if read_u32_le(bytes, offset.saturating_add(6))
+                    == Some(LEGACY_CREATURE_UPDATE_3967_MASK)
+                    && pending_creature_appearance_update_proof
+                        .is_some_and(|(object_id, _)| {
+                            read_u32_le(bytes, offset.saturating_add(2)) == Some(object_id)
+                        })
+                {
+                    // A same-object creature appearance immediately before
+                    // `U/5 0x3967` proves the inherited source cursor. Reuse
+                    // the focused legacy/EE update simulators here instead of
+                    // letting the update borrow unspent appearance bits.
+                    let mut legacy_cursor = bit_cursor;
+                    if crate::translate::live_object_update::advance_legacy_creature_update_fragment_cursor_for_transport(
+                        bytes,
+                        offset,
+                        record_end,
+                        bits,
+                        &mut legacy_cursor,
+                    ) {
+                        bit_cursor = legacy_cursor;
+                    } else {
+                        let mut ee_cursor = bit_cursor;
+                        if !crate::translate::live_object_update::advance_verified_creature_update_fragment_cursor_for_ee(
+                            bytes,
+                            offset,
+                            record_end,
+                            bits,
+                            &mut ee_cursor,
+                        ) {
+                            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                                eprintln!(
+                                    "live-object declared capacity rejected: reason=creature-update offset={offset} record_end={record_end} bit_cursor={bit_cursor}"
+                                );
+                            }
+                            return false;
+                        }
+                        bit_cursor = ee_cursor;
+                    }
+                    pending_creature_appearance_update_proof = None;
+                }
+            }
             (b'P', CREATURE_OBJECT_TYPE) => {
                 let short_partial_appearance =
                     partial_creature_appearance_claim_for_transport_record(
@@ -559,24 +592,29 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
                         return false;
                     }
                     bit_cursor = bit_cursor.saturating_add(claim.fragment_bits);
-                }
-                let mask = read_u16_le(bytes, offset.saturating_add(6));
-                let non_full_mask = mask.is_some_and(|mask| mask != 0xFFFF);
-                // Full 0xFFFF appearances can rewrite visible-equipment item
-                // name/property bits before the exact EE validator runs. The
-                // transport preflight only enforces stable non-full records
-                // here; full records stay with the typed appearance pass.
-                if short_partial_appearance.is_none()
-                    && non_full_mask
-                    && !crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
+                    pending_creature_appearance_update_proof =
+                        read_u32_le(bytes, offset.saturating_add(2)).map(|object_id| {
+                            (object_id, bit_cursor)
+                        });
+                } else {
+                    let mut appearance_cursor = bit_cursor;
+                    if crate::translate::live_object_update::advance_legacy_creature_appearance_fragment_cursor_for_transport(
                         bytes,
                         offset,
                         record_end,
                         bits,
-                        &mut bit_cursor,
-                    )
-                {
-                    return false;
+                        &mut appearance_cursor,
+                    ) {
+                        bit_cursor = appearance_cursor;
+                        pending_creature_appearance_update_proof =
+                            read_u32_le(bytes, offset.saturating_add(2)).map(|object_id| {
+                                (object_id, bit_cursor)
+                            });
+                    } else if read_u16_le(bytes, offset.saturating_add(6))
+                        .is_some_and(|mask| mask != 0xFFFF)
+                    {
+                        return false;
+                    }
                 }
             }
             (b'D', object_type) if matches!(object_type, 0x05 | 0x06 | 0x07 | 0x09 | 0x0A) => {
@@ -637,6 +675,9 @@ fn live_object_read_prefix_has_plausible_fragment_capacity(
             _ => {}
         }
 
+        if !(bytes[offset] == b'P' && bytes[offset + 1] == CREATURE_OBJECT_TYPE) {
+            pending_creature_appearance_update_proof = None;
+        }
         offset = record_end;
     }
 
@@ -5505,6 +5546,78 @@ mod declared_length_repair_tests {
         ]
     }
 
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_cexo_string(bytes: &mut Vec<u8>, text: &[u8]) {
+        push_u32(
+            bytes,
+            u32::try_from(text.len()).expect("test string length fits"),
+        );
+        bytes.extend_from_slice(text);
+    }
+
+    fn push_full_creature_appearance_tail_fields(bytes: &mut Vec<u8>) {
+        const LEGACY_APPEARANCE_BODY_PART_COUNT: u8 = 0x13;
+
+        push_u16(bytes, 2);
+        bytes.extend_from_slice(&[1, 2]);
+        bytes.push(3);
+        push_u32(bytes, 0x1122_3344);
+        push_u32(bytes, 0x5566_7788);
+        bytes.extend_from_slice(&[4, 5, 6, 7]);
+
+        bytes.push(LEGACY_APPEARANCE_BODY_PART_COUNT);
+        for part in 0..LEGACY_APPEARANCE_BODY_PART_COUNT {
+            bytes.push(part);
+        }
+
+        push_u16(bytes, 0x99AA);
+        push_u32(bytes, 0xBBCC_DDEE);
+    }
+
+    fn push_no_name_active_property_tail(bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        bytes.extend_from_slice(&[0x55, 0x66, 0x77, 0x88]);
+        bytes.push(0);
+        bytes.extend_from_slice(&[0, 0]);
+    }
+
+    fn push_visible_equipment_no_name_item(bytes: &mut Vec<u8>) {
+        bytes.push(b'A');
+        push_u32(bytes, 0x8000_0042);
+        push_u32(bytes, 2);
+        push_u32(bytes, 0x01);
+        bytes.extend_from_slice(&[0x07, 0x08, 0x09, 0x0A]);
+        push_no_name_active_property_tail(bytes);
+    }
+
+    fn full_creature_appearance_with_direct_name_and_no_name_equipment(object_id: u32) -> Vec<u8> {
+        let mut live = vec![b'P', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        push_cexo_string(&mut live, b"Hero");
+        push_full_creature_appearance_tail_fields(&mut live);
+        live.push(1);
+        push_visible_equipment_no_name_item(&mut live);
+        live
+    }
+
+    fn direct_name_with_no_name_equipment_bits() -> Vec<bool> {
+        vec![
+            false, // creature direct CExoString name.
+            true,  // first Diamond active-property BOOL.
+            false, // second Diamond active-property BOOL.
+            true,  // third Diamond active-property BOOL.
+            false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
     fn creature_appearance_update_pair_repair(
         live: &[u8],
         payload_len: usize,
@@ -6592,6 +6705,52 @@ mod declared_length_repair_tests {
                 &missing_repair
             ),
             "byte-shaped P/5 -> U/5 is not enough: the following 0x3967 row owns its two position bits"
+        );
+    }
+
+    #[test]
+    fn declared_length_capacity_counts_full_creature_appearance_bits_before_u5_3967() {
+        // Full `P/5` appearances can carry nested visible-equipment item BOOLs.
+        // Stale-declared transport capacity must spend those Diamond-owned
+        // source bits before proving the following `U/5 0x3967`; otherwise the
+        // nested active-property bits can masquerade as the update's missing
+        // position residual bits.
+        let object_id = 0x8000_0042;
+        let appearance = full_creature_appearance_with_direct_name_and_no_name_equipment(object_id);
+        let update = creature_update_3967_action0_scalar_live_bytes(object_id);
+        let update_bits = creature_update_3967_action0_scalar_bits();
+        let mut live = appearance;
+        live.extend_from_slice(&update);
+
+        assert!(
+            live_object_read_prefix_walks_to(&live, 0, live.len()),
+            "full appearance plus following U/5 should be a complete transport read prefix"
+        );
+
+        let mut shifted_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        shifted_bits.extend_from_slice(&direct_name_with_no_name_equipment_bits());
+        shifted_bits.extend_from_slice(&update_bits[LEGACY_UPDATE_POSITION_FRAGMENT_BITS..]);
+        assert!(
+            !live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &shifted_bits,
+            ),
+            "full P/5 source bits must not be skipped to make a shifted 0x3967 cursor pass preflight"
+        );
+
+        let mut exact_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        exact_bits.extend_from_slice(&direct_name_with_no_name_equipment_bits());
+        exact_bits.extend_from_slice(&update_bits);
+        assert!(
+            live_object_read_prefix_has_plausible_fragment_capacity(
+                &live,
+                0,
+                live.len(),
+                &exact_bits,
+            ),
+            "the same full P/5 -> U/5 prefix should pass when both records own their exact source bits"
         );
     }
 

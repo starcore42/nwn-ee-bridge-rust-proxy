@@ -246,6 +246,18 @@ Current status:
   unsupported at this transport helper and rely on the later typed rewrite plus
   exact EE validator; keep the active issue open until decompiles or compact
   source captures assign that full-appearance tail provenance.
+- 2026-06-08 stale-declared capacity follow-up for the same full-appearance
+  handoff: tightened the broad read-prefix capacity preflight only for an
+  adjacent same-object creature appearance followed by `U/5 0x3967` when the
+  preceding `P/5` cursor can be proven. In that bounded shape, the capacity gate
+  now reuses the focused legacy/EE update cursor advancers instead of a coarse
+  0x3967 byte-length floor, so nested full-appearance active-property bits
+  cannot masquerade as the update row's two missing position residual bits.
+  Existing stale-declared positive streams with unmodeled full-current-player
+  or other creature-update rows still fall through to the later typed rewrite
+  and exact EE validator. The Sooty offset-454 owner remains unresolved; this
+  proves only that transport capacity must not borrow across a proven adjacent
+  full `P/5 -> U/5 0x3967` boundary.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
@@ -3390,6 +3402,13 @@ Current status:
   --nocapture`, and `cargo test -q -p hgbridge-proxy2
   pending_seq31_stream_rewrites_to_exact_live_object_claim --
   --nocapture`.~~
+- 2026-06-08 broad `live_object` filter re-surfaced a separate pending seq31
+  pre-pass failure: `rewrite_update_records_payload_if_possible` rejects before
+  the add-record visual-transform pass when the first row is a compact
+  top-level `A/09` placeable add (`offset=0`, `record_end=60`,
+  `add-record-cursor-advance-failed`). This did not hit the new adjacent
+  full-appearance/`U/5 0x3967` capacity branch. Treat it as a generalized
+  add-record cursor/pre-pass ordering audit, not as a seq31-specific workaround.
 - 2026-05-28 `P/05/01` door-add visual-map cursor audit: fixed two stale
   door-add name call sites that advanced past an EE object visual-transform
   identity as if it were the legacy 40-byte scalar identity. EE
