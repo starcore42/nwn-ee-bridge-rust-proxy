@@ -20,6 +20,10 @@
 //!   The update-list handoff at 0x43FF38..0x43FF5A chooses 0x444E60 or
 //!   0x445010 and performs length checks only; direct binary disassembly found
 //!   no inter-record `WriteBOOL` outside the typed record serializers.
+//! - Diamond client `sub_455720` reads the live-object row opcode with
+//!   `sub_4FB4D0(8)`, then calls `sub_4FBB40` only as the post-read cursor/
+//!   overflow check. It dispatches directly to the row-specific reader; there
+//!   is no generic inter-row fragment BOOL for shifted `A`/`U`/`D` ownership.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},

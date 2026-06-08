@@ -2447,6 +2447,18 @@ Current status:
   The two active pre-`U/6` bits remain unowned; next useful evidence is still a
   compact source capture or a different decompile/server-binary handoff proof
   before the `U/10`/`A/6`/`U/6` boundary.
+- 2026-06-09 `P/05/01` Diamond client row-dispatch audit: no packet behavior
+  changed. Rechecked the client decompile around `sub_44EF00 -> sub_455720`.
+  `sub_455720` reads the live-object row opcode with `sub_4FB4D0(8)`, whose
+  byte path advances only the read-buffer cursor by one byte for width `>= 8`;
+  the following `sub_4FBB40` call is a cursor/overflow status check, not a
+  fragment BOOL reader. The `D` branch then calls `sub_44AC70` directly, while
+  sibling branches read their object-id/list payloads inside the row-specific
+  handler. This rules out a Diamond client-side generic inter-row BOOL between
+  `A`/`U`/`D` live-object rows as an explanation for the two active pre-`U/6`
+  bits. It is only reader-side boundary evidence; the unresolved CEP v2.3 item
+  handoff still needs compact source capture or server writer/handoff proof
+  before assigning the bits before `U/10`/`A/6`/`U/6`.
 - 2026-06-08 `P/05/01` `0xFFFFFFF7` binary-hit audit: no packet behavior
   changed. A direct byte/Capstone scan of
   `C:\NWN\NWN Diamond\nwserver.exe` found exactly one executable little-endian
