@@ -180,6 +180,17 @@ Current status:
   active; next verification should focus on the full `P/5` appearance
   rewrite/tail provenance or a source-capture/decompile owner before that
   full appearance, not on borrowing the later `U/5` position bits.
+- 2026-06-08 full-appearance stream handoff regression: no packet behavior
+  changed. Added a public fixture-free stream shaped as full `P/5` creature
+  appearance with direct creature name and a nested visible-equipment item add
+  followed by `U/5 0x3967`. The exact stream rewrites and claims with the full
+  appearance byte widening plus one EE active-property BOOL inserted inside the
+  nested item row; the following `0x3967` bits remain unchanged. The sibling
+  stream missing the following `U/5` row's two position residual bits rejects
+  transactionally, so the full appearance rewrite/visible-equipment item path
+  is not a generalized owner for those bits. The private offset-454 rejection
+  remains active; next proof still needs source-capture/decompile ownership
+  before the full appearance or a narrower full-appearance tail provenance rule.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

@@ -9178,6 +9178,23 @@ mod public_tests {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn live_object_payload_with_bits(live: &[u8], owned_bits: Vec<bool>) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x05, 0x01];
+        let declared = (super::super::HIGH_LEVEL_HEADER_BYTES
+            + super::super::CNW_LENGTH_BYTES
+            + live.len()) as u32;
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(live);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend(owned_bits);
+        payload.extend_from_slice(&bits::pack_msb_valid_bits(
+            fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        ));
+        payload
+    }
+
     fn push_cexo_string(bytes: &mut Vec<u8>, text: &[u8]) {
         push_u32(
             bytes,
@@ -9560,6 +9577,61 @@ mod public_tests {
             false, // second Diamond active-property BOOL.
             true,  // third Diamond active-property BOOL.
             false, // fourth Diamond active-property BOOL.
+        ]
+    }
+
+    fn direct_name_with_no_name_equipment_ee_bits() -> Vec<bool> {
+        vec![
+            false, // creature direct CExoString name.
+            true,  // shared pre-DWORD active-property BOOL.
+            false, // EE-only CanUseItem BOOL inserted after the shared pre-DWORD BOOL.
+            false, // first shared post-DWORD active-property BOOL.
+            true,  // second shared post-DWORD active-property BOOL.
+            false, // third shared post-DWORD active-property BOOL.
+        ]
+    }
+
+    fn creature_update_3967_action0_scalar_live_bytes(object_id: u32) -> Vec<u8> {
+        let mut bytes = vec![b'U', LEGACY_CREATURE_TYPE];
+        push_u32(&mut bytes, object_id);
+        push_u32(&mut bytes, 0x0000_3967);
+        push_u16(&mut bytes, 0x1111); // position X low 16 bits.
+        push_u16(&mut bytes, 0x2222); // position Y low 16 bits.
+        push_u16(&mut bytes, 0x3333); // position Z low 16 bits.
+        bytes.push(0x44); // scalar orientation low 8 bits.
+        push_u16(&mut bytes, 0); // portrait row, no CResRef.
+        push_u32(&mut bytes, 0); // action scalar.
+        push_u16(&mut bytes, 0); // action code 0.
+        push_u16(&mut bytes, 0); // no status/effect rows.
+        bytes.push(0); // action state byte.
+        push_u16(&mut bytes, 0x1234); // 0x0040 branch first field.
+        bytes.push(1); // 0x0040 branch mode without optional object id.
+        push_u16(&mut bytes, 0x5678);
+        bytes.push(2);
+        push_u32(&mut bytes, 0x1111_1111); // 0x0100 first field.
+        push_u32(&mut bytes, 0x2222_2222); // 0x0100 second field.
+        bytes.push(0); // 0x0800 byte.
+        push_u16(&mut bytes, 0); // identity row prefix.
+        push_u32(&mut bytes, 0); // first identity CExoString length.
+        push_u32(&mut bytes, 0); // second identity CExoString length.
+        bytes.push(0);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 0);
+        bytes.push(0); // identity row count after two identity BOOLs.
+        push_u32(&mut bytes, 0x8000_000B); // associate object id.
+        push_u16(&mut bytes, 0);
+        bytes
+    }
+
+    fn creature_update_3967_action0_scalar_target_false_bits() -> Vec<bool> {
+        vec![
+            true, false, // position residual bits.
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation residual bits.
+            false, // explicit orientation-target guard: no target object id.
+            true,  // 0x0040 state BOOL after the read-buffer action/status body.
+            false, true, // identity branch BOOLs.
+            true, false, // associate suffix BOOLs.
         ]
     }
 
@@ -10772,6 +10844,64 @@ mod public_tests {
         assert_eq!(
             bit_cursor, 6,
             "EE validation must account for the inserted active-property BOOL without moving the item boundary"
+        );
+    }
+
+    #[test]
+    fn full_appearance_stream_keeps_following_u5_position_bits_owned_by_u5() {
+        // This is the full-appearance sibling of the Sooty `P/5 -> U/5
+        // 0x3967` cursor audit. Diamond `sub_448E30` and EE `sub_14077FE10`
+        // own the direct creature-name selector and nested visible-equipment
+        // item BOOLs inside the `P/5` row. The EE build-byte/item-map widening
+        // must not donate or borrow the following update's two position bits.
+        let object_id = 0x8000_0042;
+        let appearance = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
+        let following_update = creature_update_3967_action0_scalar_live_bytes(object_id);
+        let following_update_bits = creature_update_3967_action0_scalar_target_false_bits();
+        let mut live = appearance;
+        live.extend_from_slice(&following_update);
+
+        let mut exact_bits = direct_name_with_no_name_equipment_bits();
+        exact_bits.extend_from_slice(&following_update_bits);
+        let mut exact_payload = live_object_payload_with_bits(&live, exact_bits);
+        let rewrite = super::super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+            .expect("full P/5 rewrite should preserve the following U/5 cursor");
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(rewrite.interleaved_fragment_spans_promoted, 0);
+        assert_eq!(rewrite.interleaved_fragment_bits_promoted, 0);
+
+        let declared = read_u32_le(&exact_payload, super::super::HIGH_LEVEL_HEADER_BYTES)
+            .expect("rewritten declared length") as usize;
+        let fragment_bits =
+            bits::decode_msb_valid_bits(&exact_payload[declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten CNW fragment bits");
+        let mut expected_bits = direct_name_with_no_name_equipment_ee_bits();
+        expected_bits.extend_from_slice(&following_update_bits);
+        assert_eq!(
+            &fragment_bits[CNW_FRAGMENT_HEADER_BITS..],
+            expected_bits.as_slice(),
+            "full P/5 widening inserts only its EE active-property BOOL before the later U/5 bits"
+        );
+
+        let claim = super::super::claim_payload_if_verified(&exact_payload)
+            .expect("rewritten full P/5 followed by U/5 should claim exactly");
+        assert_eq!(claim.creature_appearance_records, 1);
+        assert_eq!(claim.creature_update_records, 1);
+
+        let mut missing_following_position_bits = direct_name_with_no_name_equipment_bits();
+        missing_following_position_bits.extend_from_slice(&following_update_bits[2..]);
+        let mut shifted_payload =
+            live_object_payload_with_bits(&live, missing_following_position_bits);
+        let original_shifted = shifted_payload.clone();
+        assert!(
+            super::super::rewrite_update_records_payload_if_possible(&mut shifted_payload)
+                .is_none(),
+            "the full P/5 rewrite must not make a later 0x3967 row validate after its two position bits are missing"
+        );
+        assert_eq!(
+            shifted_payload, original_shifted,
+            "failed full-appearance handoff proof must leave bytes and fragment bits untouched"
         );
     }
 
