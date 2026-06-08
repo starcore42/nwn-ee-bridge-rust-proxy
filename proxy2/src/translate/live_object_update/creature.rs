@@ -4160,6 +4160,20 @@ mod tests {
         bits
     }
 
+    fn creature_update_3967_action0_scalar_target_false_fragment_bits() -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            true, false, // position Z high bits.
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation residual bits.
+            false, // explicit orientation-target guard: no target object id.
+            true,  // 0x0040 state BOOL after the action/status read-buffer body.
+            false, true, // identity branch BOOLs.
+            true, false, // associate suffix BOOLs.
+        ]);
+        bits
+    }
+
     fn creature_update_4000_live_bytes() -> Vec<u8> {
         let mut bytes = vec![b'U', 0x05];
         bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
@@ -4492,6 +4506,34 @@ mod tests {
             missing_cursor,
             super::super::CNW_FRAGMENT_HEADER_BITS,
             "failed truncated-tail 0x3967 cursor proof must restore the caller cursor"
+        );
+    }
+
+    #[test]
+    fn creature_update_3967_scalar_orientation_target_guard_advances_before_state() {
+        let bytes = creature_update_3967_action0_scalar_live_bytes();
+        let bits = creature_update_3967_action0_scalar_target_false_fragment_bits();
+        let mut cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut cursor,
+            ),
+            "explicit false target ownership must validate before the later 0x0040 state BOOL"
+        );
+        assert_eq!(
+            cursor,
+            bits.len(),
+            "the preferred decompile-backed 0x3967 action-0 shape owns position, scalar orientation, explicit false target, 0x0040, identity, and associate BOOLs"
+        );
+        assert_eq!(
+            cursor - super::super::CNW_FRAGMENT_HEADER_BITS,
+            13,
+            "the Sooty offset-218 shape advances 13 CNW bits when the orientation target guard is emitted"
         );
     }
 

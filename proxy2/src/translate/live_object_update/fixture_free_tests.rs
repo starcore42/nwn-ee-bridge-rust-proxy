@@ -111,6 +111,60 @@ fn ee_creature_add_live_bytes(object_id: u32) -> Vec<u8> {
     live
 }
 
+fn legacy_creature_add_live_bytes(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'A', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    for value in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0] {
+        live.extend_from_slice(&value.to_le_bytes());
+    }
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live
+}
+
+fn creature_update_3967_action0_scalar_live_bytes(object_id: u32) -> Vec<u8> {
+    let mut live = vec![b'U', super::CREATURE_OBJECT_TYPE];
+    live.extend_from_slice(&object_id.to_le_bytes());
+    live.extend_from_slice(&0x0000_3967u32.to_le_bytes());
+    live.extend_from_slice(&0x1111u16.to_le_bytes()); // position X low 16 bits.
+    live.extend_from_slice(&0x2222u16.to_le_bytes()); // position Y low 16 bits.
+    live.extend_from_slice(&0x3333u16.to_le_bytes()); // position Z low 16 bits.
+    live.push(0x44); // scalar orientation low 8 bits.
+    live.extend_from_slice(&0u16.to_le_bytes()); // portrait row, no CResRef.
+    live.extend_from_slice(&0u32.to_le_bytes()); // action scalar.
+    live.extend_from_slice(&0u16.to_le_bytes()); // action code 0.
+    live.extend_from_slice(&0u16.to_le_bytes()); // no status/effect rows.
+    live.push(0); // action state byte.
+    live.extend_from_slice(&0x1234u16.to_le_bytes()); // 0x0040 branch first field.
+    live.push(1); // 0x0040 branch mode without optional object id.
+    live.extend_from_slice(&0x5678u16.to_le_bytes());
+    live.push(2);
+    live.extend_from_slice(&0x1111_1111u32.to_le_bytes()); // 0x0100 first field.
+    live.extend_from_slice(&0x2222_2222u32.to_le_bytes()); // 0x0100 second field.
+    live.push(0); // 0x0800 byte.
+    live.extend_from_slice(&0u16.to_le_bytes()); // identity row prefix.
+    live.extend_from_slice(&0u32.to_le_bytes()); // first identity CExoString length.
+    live.extend_from_slice(&0u32.to_le_bytes()); // second identity CExoString length.
+    live.push(0);
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live.push(0); // identity row count after two identity BOOLs.
+    live.extend_from_slice(&0x8000_000Bu32.to_le_bytes()); // associate object id.
+    live.extend_from_slice(&0u16.to_le_bytes());
+    live
+}
+
+fn creature_update_3967_action0_scalar_target_false_bits() -> Vec<bool> {
+    vec![
+        true, false, // position residual bits.
+        false, // scalar orientation branch.
+        true, false, true, false, // scalar orientation residual bits.
+        false, // explicit orientation-target guard: no target object id.
+        true,  // 0x0040 state BOOL after the read-buffer action/status body.
+        false, true, // identity branch BOOLs.
+        true, false, // associate suffix BOOLs.
+    ]
+}
+
 fn legacy_zero_count_creature_4408_payload(
     rows: &[(u8, u16)],
     extra_before_scalar: &[u8],
@@ -3509,6 +3563,83 @@ fn creature_add_fragment_prefix_before_item_update_feeds_exact_u6_cursor() {
         .expect("prefix-promoted creature-add plus item update should exact-claim");
     assert_eq!(claim.add_records, 1);
     assert_eq!(claim.update_records, 1);
+}
+
+#[test]
+fn creature_add_visual_transform_insert_is_fragment_neutral_before_u5_3967() {
+    // Diamond `A/5` creature adds are 32 read-buffer bytes. EE inserts only the
+    // object visual-transform identity map at the add read cursor; it does not
+    // consume or donate CNW fragment bits to a following creature `U/5`.
+    let creature_id = 0x8000_000A;
+    let following_update = creature_update_3967_action0_scalar_live_bytes(creature_id);
+    let update_bits = creature_update_3967_action0_scalar_target_false_bits();
+    let mut update_fragment_bits = vec![false; super::CNW_FRAGMENT_HEADER_BITS];
+    update_fragment_bits.extend_from_slice(&update_bits);
+    let mut update_cursor = super::CNW_FRAGMENT_HEADER_BITS;
+    assert!(
+        super::creature::advance_verified_noop_creature_update_record_exact_cursor(
+            &following_update,
+            0,
+            following_update.len(),
+            &update_fragment_bits,
+            &mut update_cursor,
+        ),
+        "the following 0x3967 action-0 row must prove its own exact cursor"
+    );
+    assert_eq!(
+        update_cursor - super::CNW_FRAGMENT_HEADER_BITS,
+        13,
+        "explicit false-target 0x3967 shape owns 13 fragment bits from its caller cursor"
+    );
+
+    let mut live = legacy_creature_add_live_bytes(creature_id);
+    let legacy_add_len = live.len();
+    live.extend_from_slice(&following_update);
+    let mut payload = live_object_payload_with_bits(&live, update_bits);
+    let old_declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("legacy declared length") as usize;
+    let original_fragment_tail = payload[old_declared..].to_vec();
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "legacy A/5 is missing EE visual-transform storage before rewrite"
+    );
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("legacy A/5 should receive EE visual-transform storage");
+    assert_eq!(
+        rewrite.bytes_inserted,
+        super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN as u32
+    );
+    assert_eq!(rewrite.bits_inserted, 0);
+    assert_eq!(rewrite.bits_removed, 0);
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 0);
+    assert_eq!(rewrite.interleaved_fragment_bits_promoted, 0);
+
+    let new_declared = super::read_u32_le(&payload, super::HIGH_LEVEL_HEADER_BYTES)
+        .expect("rewritten declared length") as usize;
+    let rewritten_live =
+        &payload[super::HIGH_LEVEL_HEADER_BYTES + super::CNW_LENGTH_BYTES..new_declared];
+    let shifted_update_offset =
+        legacy_add_len + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN;
+    assert_eq!(
+        rewritten_live.get(shifted_update_offset),
+        Some(&b'U'),
+        "the following U/5 moves only by the EE visual-transform byte insert"
+    );
+    assert_eq!(
+        super::read_u32_le(rewritten_live, shifted_update_offset + 6),
+        Some(0x0000_3967)
+    );
+    assert_eq!(
+        &payload[new_declared..],
+        original_fragment_tail.as_slice(),
+        "A/5 visual-transform insertion must leave the CNW fragment tail byte-for-byte unchanged"
+    );
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("rewritten A/5 plus following 0x3967 update should exact-claim");
+    assert_eq!(claim.add_records, 1);
+    assert_eq!(claim.creature_update_records, 1);
 }
 
 #[test]

@@ -156,6 +156,18 @@ Current status:
   bit cursor for the `offset=218` shape, plus the intervening `A/5`
   fragment-neutral add contract; do not treat `285..325` as donated CNW
   storage and do not restore cursor borrowing.
+- 2026-06-08 offset-218 `U/5 0x3967` / intervening `A/5` contract audit: no
+  packet behavior changed. Added generalized tests for the decompile-backed
+  action-0 scalar orientation shape with the explicit false orientation-target
+  guard; it advances the caller CNW cursor by 13 bits (`position`, scalar
+  selector/residuals, target guard, `0x0040`, identity, associate). Added a
+  fixture-free stream regression proving a legacy `A/5` creature add inserts
+  only EE object visual-transform bytes before a following `U/5 0x3967`: no
+  fragment bits are inserted, removed, promoted, consumed, or donated, and the
+  packed CNW fragment tail remains byte-for-byte identical. The offset-454
+  rejection remains unresolved; next verification should trace the earlier
+  cursor owner before the later `P/5`/`U/5` pair, not the intervening `A/5` or
+  the already pinned offset-218 action-0 row.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
