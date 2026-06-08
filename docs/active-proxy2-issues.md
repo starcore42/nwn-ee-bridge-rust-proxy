@@ -2419,6 +2419,18 @@ Current status:
   decompile/server-binary proof for the source writer/handoff before the
   `U/10`/`A/6`/`U/6` boundary; do not add item cursor search, scalar-byte
   rescue, or accepted-neighbor rejection heuristics.
+- 2026-06-09 `P/05/01` item `U/6` source-window diagnostic: no packet behavior
+  changed. Added production debug tracing for the exact failure point where a
+  reliable cursor becomes unreliable on an item `U/6` rewrite. Under
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM`, the rewriter now emits a bounded window
+  of nearby live-object row starts, object ids, update masks, read-byte
+  previews, and before/after fragment bits around the inherited cursor. This is
+  evidence collection only and does not try neighboring cursors or trim bits.
+  Next verification should rerun the private compact handoff fixture with
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1` and
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET=104,148` to inspect whether
+  the transformed row window exposes a source-side boundary or confirms that
+  the owner remains before the compact `U/10` record.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

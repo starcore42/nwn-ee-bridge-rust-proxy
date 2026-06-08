@@ -221,6 +221,26 @@ mod diagnostic_tests {
             live_object_fixture_dump_signature(&second, "live-object-combined-records-len233")
         );
     }
+
+    #[test]
+    fn item_failure_source_window_keeps_focus_row_and_neighbors() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', DOOR_OBJECT_TYPE, 0x10, 0, 0, 0]);
+        live.extend_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
+        live.extend_from_slice(&[b'A', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
+        live.extend_from_slice(&[b'U', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
+        live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+
+        let rows = live_object_source_window_rows(&live, 16, 26, 2, 1);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].offset, 0);
+        assert_eq!(rows[0].update_mask, Some(0xFFFF_FFF7));
+        assert_eq!(rows[1].offset, 10);
+        assert_eq!(rows[1].object_id, Some(0x0000_0020));
+        assert_eq!(rows[2].offset, 16);
+        assert_eq!(rows[2].record_end, 26);
+        assert_eq!(rows[2].update_mask, Some(0xFFFF_FFF3));
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5586,6 +5606,14 @@ pub fn rewrite_update_records_payload_if_possible(
                 );
             }
             if object_type == ITEM_OBJECT_TYPE && bit_cursor_was_reliable && !bit_cursor_reliable {
+                trace_item_update_source_window(
+                    "item-update-fragment-cursor-unowned",
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                );
                 fatal_item_update_cursor_failure = true;
             }
             offset = record_end.max(offset + 1);
@@ -6188,6 +6216,161 @@ fn trace_update_rewrite_cursor_unreliable(
         live_bytes.get(offset + 1).copied().unwrap_or_default(),
         preview
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectSourceWindowRow {
+    offset: usize,
+    record_end: usize,
+    opcode: u8,
+    marker: u8,
+    object_id: Option<u32>,
+    update_mask: Option<u32>,
+}
+
+fn live_object_source_window_rows(
+    live_bytes: &[u8],
+    focus_offset: usize,
+    focus_record_end: usize,
+    before: usize,
+    after: usize,
+) -> Vec<LiveObjectSourceWindowRow> {
+    if live_bytes.is_empty() || focus_offset >= live_bytes.len() {
+        return Vec::new();
+    }
+
+    let mut starts = Vec::new();
+    for offset in 0..live_bytes.len().saturating_sub(1) {
+        if live_object_debug_row_start_at(live_bytes, offset) {
+            starts.push(offset);
+        }
+    }
+    if !starts.contains(&focus_offset) {
+        starts.push(focus_offset);
+    }
+    starts.sort_unstable();
+    starts.dedup();
+
+    let focus_index = starts
+        .iter()
+        .position(|offset| *offset == focus_offset)
+        .unwrap_or_else(|| {
+            starts
+                .iter()
+                .position(|offset| *offset > focus_offset)
+                .unwrap_or(starts.len())
+                .saturating_sub(1)
+        });
+    let start_index = focus_index.saturating_sub(before);
+    let end_index = focus_index
+        .saturating_add(after)
+        .saturating_add(1)
+        .min(starts.len());
+
+    starts[start_index..end_index]
+        .iter()
+        .enumerate()
+        .map(|(window_index, offset)| {
+            let absolute_index = start_index + window_index;
+            let mut record_end = starts
+                .get(absolute_index + 1)
+                .copied()
+                .unwrap_or(live_bytes.len())
+                .min(live_bytes.len());
+            if *offset == focus_offset {
+                record_end = focus_record_end.min(live_bytes.len()).max(*offset);
+            }
+            let opcode = live_bytes.get(*offset).copied().unwrap_or_default();
+            let marker = live_bytes
+                .get(offset.saturating_add(1))
+                .copied()
+                .unwrap_or_default();
+            let object_id = matches!(opcode, b'A' | b'D' | b'P' | b'U')
+                .then(|| read_u32_le(live_bytes, offset.saturating_add(2)))
+                .flatten();
+            let update_mask = (opcode == b'U')
+                .then(|| read_u32_le(live_bytes, offset.saturating_add(6)))
+                .flatten();
+            LiveObjectSourceWindowRow {
+                offset: *offset,
+                record_end,
+                opcode,
+                marker,
+                object_id,
+                update_mask,
+            }
+        })
+        .collect()
+}
+
+fn live_object_debug_row_start_at(live_bytes: &[u8], offset: usize) -> bool {
+    if offset + 1 >= live_bytes.len() {
+        return false;
+    }
+    if boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset)
+        || gui::looks_like_legacy_live_gui_rewrite_boundary(live_bytes, offset)
+    {
+        return true;
+    }
+    matches!(
+        (live_bytes[offset], live_bytes[offset + 1]),
+        (
+            b'A' | b'D' | b'P' | b'U',
+            CREATURE_OBJECT_TYPE
+                | ITEM_OBJECT_TYPE
+                | TRIGGER_OBJECT_TYPE
+                | PLACEABLE_OBJECT_TYPE
+                | DOOR_OBJECT_TYPE
+        ) | (b'W', _)
+    )
+}
+
+fn trace_item_update_source_window(
+    reason: &'static str,
+    live_bytes: &[u8],
+    focus_offset: usize,
+    focus_record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) {
+    if !debug_live_claim_enabled_for_span(focus_offset, focus_record_end) {
+        return;
+    }
+
+    let before_start = bit_cursor.saturating_sub(16);
+    let before_bits = fragment_bits.get(before_start..bit_cursor).unwrap_or(&[]);
+    let after_bits = fragment_bits
+        .get(bit_cursor..bit_cursor.saturating_add(32).min(fragment_bits.len()))
+        .unwrap_or(&[]);
+    eprintln!(
+        "live-object item update source window: reason={reason} focus_offset={focus_offset} focus_record_end={focus_record_end} bit_cursor={bit_cursor} fragment_bits={} before_cursor_bits={before_bits:?} after_cursor_bits={after_bits:?}",
+        fragment_bits.len()
+    );
+
+    for row in live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3) {
+        let preview = live_bytes
+            .get(row.offset..row.record_end.min(row.offset.saturating_add(32)))
+            .unwrap_or(&[]);
+        let object_id = row
+            .object_id
+            .map(|value| format!("0x{value:08X}"))
+            .unwrap_or_else(|| "none".to_string());
+        let update_mask = row
+            .update_mask
+            .map(|value| format!("0x{value:08X}"))
+            .unwrap_or_else(|| "none".to_string());
+        eprintln!(
+            "live-object item update source window row: offset={} record_end={} len={} opcode=0x{:02X} marker=0x{:02X} object_id={} update_mask={} preview={:02X?}",
+            row.offset,
+            row.record_end,
+            row.record_end.saturating_sub(row.offset),
+            row.opcode,
+            row.marker,
+            object_id,
+            update_mask,
+            preview
+        );
+    }
 }
 
 fn trace_update_rewrite_record_candidate(
