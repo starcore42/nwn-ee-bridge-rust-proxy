@@ -10737,6 +10737,71 @@ mod public_tests {
     }
 
     #[test]
+    fn byte_only_full_appearance_stream_keeps_following_u5_position_bits_owned_by_u5() {
+        // This is the byte-only full-appearance shape behind the Sooty
+        // `P/5 -> U/5 0x3967` cursor audit. Delete-only visible-equipment rows
+        // and EE build-byte widening own read-buffer bytes only; the following
+        // creature update must still supply and consume its own position bits.
+        let object_id = 0x8000_0042;
+        let appearance = full_legacy_creature_appearance_with_direct_name_and_delete_equipment(3);
+        let following_update = creature_update_3967_action0_scalar_live_bytes(object_id);
+        let following_update_bits = creature_update_3967_action0_scalar_target_false_bits();
+        let mut live = appearance;
+        live.extend_from_slice(&following_update);
+
+        let mut exact_bits = direct_name_bits();
+        exact_bits.extend_from_slice(&following_update_bits);
+        let mut exact_payload = live_object_payload_with_bits(&live, exact_bits);
+        let rewrite = super::super::rewrite_update_records_payload_if_possible(&mut exact_payload)
+            .expect("byte-only full P/5 widening should preserve the following U/5 cursor");
+        assert_eq!(
+            rewrite.bytes_inserted, 21,
+            "only EE full-appearance read-buffer widening should be inserted"
+        );
+        assert_eq!(rewrite.bits_inserted, 0);
+        assert_eq!(rewrite.bits_removed, 0);
+        assert_eq!(rewrite.interleaved_fragment_spans_promoted, 0);
+        assert_eq!(rewrite.interleaved_fragment_bits_promoted, 0);
+
+        let declared = read_u32_le(&exact_payload, super::super::HIGH_LEVEL_HEADER_BYTES)
+            .expect("rewritten declared length") as usize;
+        let fragment_bits =
+            bits::decode_msb_valid_bits(&exact_payload[declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten CNW fragment bits");
+        let mut expected_bits = direct_name_bits();
+        expected_bits.extend_from_slice(&following_update_bits);
+        assert_eq!(
+            &fragment_bits[CNW_FRAGMENT_HEADER_BITS..],
+            expected_bits.as_slice(),
+            "byte-only full P/5 widening must leave later 0x3967 bits unchanged"
+        );
+
+        let claim = super::super::claim_payload_if_verified(&exact_payload)
+            .expect("rewritten byte-only full P/5 followed by U/5 should claim exactly");
+        assert_eq!(claim.creature_appearance_records, 1);
+        assert_eq!(claim.creature_update_records, 1);
+
+        let mut missing_following_position_bits = direct_name_bits();
+        missing_following_position_bits.extend_from_slice(&following_update_bits[2..]);
+        let mut shifted_payload =
+            live_object_payload_with_bits(&live, missing_following_position_bits);
+        let original_shifted = shifted_payload.clone();
+        assert!(
+            super::super::rewrite_update_records_payload_if_possible(&mut shifted_payload)
+                .is_none(),
+            "byte-only full P/5 widening must not make a later 0x3967 row validate after its two position bits are missing"
+        );
+        assert_eq!(
+            shifted_payload, original_shifted,
+            "rejected byte-only full-appearance handoff must leave bytes and fragment bits untouched"
+        );
+        assert!(
+            super::super::claim_payload_if_verified(&shifted_payload).is_none(),
+            "missing later U/5 position bits must remain quarantinable"
+        );
+    }
+
+    #[test]
     fn full_appearance_no_proof_requires_explicit_boundary_before_following_u5() {
         let mut bytes = full_legacy_creature_appearance_with_direct_name_and_no_name_equipment();
         let appearance_end = bytes.len();

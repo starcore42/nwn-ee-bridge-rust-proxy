@@ -202,6 +202,18 @@ Current status:
   tail splice; a byte-only appearance therefore cannot be treated as a fragment
   cursor owner. The unresolved owner remains upstream of the full appearance or
   in a decompile-backed source-capture boundary, not in a no-op tail splice.
+- 2026-06-08 byte-only full-appearance stream regression: no packet behavior
+  changed. Added a public fixture-free stream shaped as full `P/5` creature
+  appearance with direct creature name and delete-only visible-equipment rows
+  followed by `U/5 0x3967`. The exact stream rewrites and claims with only EE
+  full-appearance read-buffer widening (`bits_inserted=0`,
+  `bits_removed=0`, no interleaved span promotion), and the packed CNW
+  fragment bits remain `direct-name + following 0x3967` unchanged. A sibling
+  missing the following `U/5` row's two position bits rejects
+  transactionally and remains quarantinable. This rules out the byte-only
+  full-appearance/delete-equipment path as a generalized owner; next proof
+  should trace the bitstream provenance before the full appearance or obtain a
+  source capture/decompile-backed boundary owner.
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed
