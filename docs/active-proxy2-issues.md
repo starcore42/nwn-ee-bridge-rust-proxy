@@ -2480,6 +2480,15 @@ Current status:
   an orientation/scale tail owner. This makes the compact `U/10` boundary a
   reusable production parser state; it still does not assign the two active
   pre-`U/6` bits.
+- 2026-06-09 `P/05/01` item `U/6` rewrite-claim refactor: packet behavior
+  unchanged. The item update rewriter now validates an immutable
+  `ItemUpdateRewriteClaim` carrying raw mask, translated mask, read end,
+  next bit cursor, and scalar/vector orientation metadata before mutating the
+  row. The live-object source-window ledger uses the same claim instead of an
+  ad hoc translated-mask candidate, so neighboring-cursor diagnostics now match
+  the parser contract the rewriter can actually commit. This still does not
+  assign the two active pre-`U/6` bits; next proof remains compact source
+  writer/capture evidence before `U/10`/`A/6`/`U/6`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

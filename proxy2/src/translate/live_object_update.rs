@@ -6616,26 +6616,21 @@ fn live_object_source_window_item_update_claim(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<(&'static str, usize)> {
-    let raw_mask = row.update_mask?;
-    let translated_mask = item::translate_update_mask(raw_mask);
-    let mut candidate = live_bytes.to_vec();
-    if translated_mask != raw_mask {
-        write_u32_le(&mut candidate, row.offset.checked_add(6)?, translated_mask)?;
-    }
-    item::advance_verified_ee_item_update_record(
-        &candidate,
+    let claim = item::parse_item_update_rewrite_claim(
+        live_bytes,
         row.offset,
         row.record_end,
         fragment_bits,
         bit_cursor,
-    )
-    .map(|bit_end| {
-        if translated_mask == raw_mask {
-            ("item-update", bit_end)
+    )?;
+    Some((
+        if claim.mask_changed() {
+            "item-update-translated"
         } else {
-            ("item-update-translated", bit_end)
-        }
-    })
+            "item-update"
+        },
+        claim.cursor.next_bit_cursor,
+    ))
 }
 
 fn live_object_source_window_generic_update_claim(
@@ -6669,22 +6664,6 @@ fn live_object_source_window_item_neighbor_cursor_claims(
         return Vec::new();
     }
 
-    let Some(raw_mask) = row.update_mask else {
-        return Vec::new();
-    };
-    let translated_mask = item::translate_update_mask(raw_mask);
-    let mut candidate = live_bytes.to_vec();
-    if translated_mask != raw_mask
-        && write_u32_le(
-            &mut candidate,
-            row.offset.saturating_add(6),
-            translated_mask,
-        )
-        .is_none()
-    {
-        return Vec::new();
-    }
-
     let start = expected_bit_cursor.saturating_sub(4);
     let end = expected_bit_cursor
         .saturating_add(4)
@@ -6694,8 +6673,8 @@ fn live_object_source_window_item_neighbor_cursor_claims(
         if cursor == expected_bit_cursor {
             continue;
         }
-        let Ok(claim) = item::parse_ee_item_update_cursor_claim(
-            &candidate,
+        let Some(claim) = item::parse_item_update_rewrite_claim(
+            live_bytes,
             row.offset,
             row.record_end,
             fragment_bits,
@@ -6706,10 +6685,10 @@ fn live_object_source_window_item_neighbor_cursor_claims(
         claims.push(LiveObjectSourceWindowItemNeighborCursorClaim {
             delta: cursor as isize - expected_bit_cursor as isize,
             bit_start: cursor,
-            bit_end: claim.next_bit_cursor,
-            read_end: claim.read_end,
-            translated_mask: claim.mask,
-            orientation_vector: claim.orientation_vector,
+            bit_end: claim.cursor.next_bit_cursor,
+            read_end: claim.cursor.read_end,
+            translated_mask: claim.translated_mask,
+            orientation_vector: claim.cursor.orientation_vector,
             relation: live_object_source_window_neighbor_relation(
                 cursor,
                 expected_bit_cursor,

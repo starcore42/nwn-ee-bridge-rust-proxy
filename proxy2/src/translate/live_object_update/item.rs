@@ -44,6 +44,19 @@ pub(super) struct ItemUpdateRewrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ItemUpdateRewriteClaim {
+    pub(super) raw_mask: u32,
+    pub(super) translated_mask: u32,
+    pub(super) cursor: ItemUpdateCursorClaim,
+}
+
+impl ItemUpdateRewriteClaim {
+    pub(super) fn mask_changed(self) -> bool {
+        self.raw_mask != self.translated_mask
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ItemUpdateCursorClaim {
     pub(super) read_end: usize,
     pub(super) next_bit_cursor: usize,
@@ -197,51 +210,64 @@ fn rewrite_update_record_for_ee_inner(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<ItemUpdateRewrite> {
-    if let Some(next_bit_cursor) = advance_verified_ee_item_update_record(
+    let claim = parse_item_update_rewrite_claim(
         live_bytes,
         record_offset,
         *record_end,
         fragment_bits,
         bit_cursor,
-    ) {
-        return Some(ItemUpdateRewrite {
-            next_bit_cursor,
-            ..ItemUpdateRewrite::default()
+    )?;
+    if claim.mask_changed() {
+        write_u32_le(live_bytes, record_offset + 6, claim.translated_mask)?;
+    }
+    Some(ItemUpdateRewrite {
+        rewritten: claim.mask_changed(),
+        mask_changed: claim.mask_changed(),
+        next_bit_cursor: claim.cursor.next_bit_cursor,
+        ..ItemUpdateRewrite::default()
+    })
+}
+
+pub(super) fn parse_item_update_rewrite_claim(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<ItemUpdateRewriteClaim> {
+    let raw_mask = item_update_mask(bytes, offset, record_end)?;
+    if let Ok(cursor) =
+        parse_ee_item_update_cursor_claim(bytes, offset, record_end, fragment_bits, bit_cursor)
+    {
+        return Some(ItemUpdateRewriteClaim {
+            raw_mask,
+            translated_mask: raw_mask,
+            cursor,
         });
     }
 
-    let raw_mask = item_update_mask(live_bytes, record_offset, *record_end)?;
     let translated_mask = translate_update_mask(raw_mask);
     let common = parse_item_update_common_prefix(
-        live_bytes,
-        record_offset,
-        *record_end,
+        bytes,
+        offset,
+        record_end,
         fragment_bits,
         bit_cursor,
         raw_mask,
     )?;
 
     if raw_mask == DIAMOND_ITEM_FULL_UPDATE_MASK {
-        let mut candidate = live_bytes.clone();
-        write_u32_le(&mut candidate, record_offset + 6, translated_mask)?;
-        let verified_next = advance_verified_ee_item_update_record(
-            &candidate,
-            record_offset,
-            *record_end,
+        return parse_translated_item_update_rewrite_claim(
+            bytes,
+            offset,
+            record_end,
             fragment_bits,
             bit_cursor,
-        )?;
-
-        *live_bytes = candidate;
-        return Some(ItemUpdateRewrite {
-            rewritten: translated_mask != raw_mask,
-            mask_changed: translated_mask != raw_mask,
-            next_bit_cursor: verified_next,
-            ..ItemUpdateRewrite::default()
-        });
+            raw_mask,
+            translated_mask,
+        );
     }
 
-    let mut candidate = live_bytes.clone();
     if (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
         return None;
     }
@@ -253,25 +279,46 @@ fn rewrite_update_record_for_ee_inner(
     // writer disassembly agrees: after the item name path, type 6 exits before
     // the later type-5 low-0x40 branch. Item low 0x40 has no Diamond-owned
     // read-buffer tail here.
-    if common.read_end != *record_end {
+    if common.read_end != record_end {
         return None;
     }
 
-    write_u32_le(&mut candidate, record_offset + 6, translated_mask)?;
-    let verified_next = advance_verified_ee_item_update_record(
-        &candidate,
-        record_offset,
-        *record_end,
+    parse_translated_item_update_rewrite_claim(
+        bytes,
+        offset,
+        record_end,
         fragment_bits,
         bit_cursor,
-    )?;
+        raw_mask,
+        translated_mask,
+    )
+}
 
-    *live_bytes = candidate;
-    Some(ItemUpdateRewrite {
-        rewritten: translated_mask != raw_mask,
-        mask_changed: translated_mask != raw_mask,
-        next_bit_cursor: verified_next,
-        ..ItemUpdateRewrite::default()
+fn parse_translated_item_update_rewrite_claim(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    raw_mask: u32,
+    translated_mask: u32,
+) -> Option<ItemUpdateRewriteClaim> {
+    let mut candidate = bytes.to_vec();
+    if translated_mask != raw_mask {
+        write_u32_le(&mut candidate, offset + 6, translated_mask)?;
+    }
+    let cursor = parse_ee_item_update_cursor_claim(
+        &candidate,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+    .ok()?;
+    Some(ItemUpdateRewriteClaim {
+        raw_mask,
+        translated_mask,
+        cursor,
     })
 }
 
@@ -1251,6 +1298,33 @@ mod tests {
         assert_eq!(claim.next_bit_cursor, bits.len() - 1);
         assert_eq!(claim.mask, DIAMOND_ITEM_FULL_UPDATE_EE_MASK);
         assert_eq!(claim.orientation_vector, Some(false));
+    }
+
+    #[test]
+    fn item_update_rewrite_claim_carries_raw_and_translated_full_mask() {
+        let live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
+        let bits = vec![
+            true, true, // position residual bits.
+            false, true, false, true, true, // scalar orientation branch.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+            true,  // following stream bit.
+        ];
+
+        let claim = parse_item_update_rewrite_claim(&live, 0, live.len(), &bits, 0)
+            .expect("raw Diamond full item update should produce a translated rewrite claim");
+
+        assert!(claim.mask_changed());
+        assert_eq!(claim.raw_mask, DIAMOND_ITEM_FULL_UPDATE_MASK);
+        assert_eq!(claim.translated_mask, DIAMOND_ITEM_FULL_UPDATE_EE_MASK);
+        assert_eq!(claim.cursor.read_end, live.len());
+        assert_eq!(claim.cursor.next_bit_cursor, bits.len() - 1);
+        assert_eq!(claim.cursor.orientation_vector, Some(false));
+        assert_eq!(
+            read_u32_le(&live, 6),
+            Some(DIAMOND_ITEM_FULL_UPDATE_MASK),
+            "claim parsing must not mutate source bytes"
+        );
     }
 
     #[test]
