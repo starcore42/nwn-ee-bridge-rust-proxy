@@ -530,6 +530,19 @@ Current status:
   Verified with `cargo test -q -p hgbridge-proxy2 public_static_direction_tests
   -- --nocapture`. Keep the broader issue open pending visual replay against a
   confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` static-placeable module-repair claim audit: hardened
+  the module-resource repair path so the unique static GIT match is carried as
+  an immutable row claim before any appearance/position/direction bytes are
+  rewritten. The claim records the source row cursor, original appearance,
+  placement triplet, direction triplet, matched module row, and match kind
+  (`appearance+two coordinates` or `zero appearance+all coordinates`), then the
+  writer revalidates that claim against the current source bytes before
+  mutation. This keeps module-backed trap/use/lock context and static-row
+  repairs tied to the exact decompiled row identity rather than a stale tuple.
+  Verified with `cargo test -q -p hgbridge-proxy2 module_static --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check -- proxy2/src/translate/area.rs`,
+  and `cargo check -q -p hgbridge-proxy2`. Keep the broader issue open pending
+  visual replay against a confirmed bad static/live placeable capture.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
