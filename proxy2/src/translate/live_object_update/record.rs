@@ -47,6 +47,22 @@ struct FragmentRewrite {
     bits_removed: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CompactDoorPlaceableTail9UpdateClaim {
+    tail_offset: usize,
+    tail: reader::LegacyNamedUpdateTail,
+    following_payload_ready: bool,
+    translated_mask: u32,
+    fragment_source_mask: u32,
+    orientation_rewrite: OrientationFragmentRewrite,
+}
+
+impl CompactDoorPlaceableTail9UpdateClaim {
+    fn tail_needs_empty_name(self) -> bool {
+        !self.following_payload_ready
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlaceableUpdateStateBits {
     visual_selector: bool,
@@ -193,6 +209,7 @@ pub(super) fn rewrite_update_record_for_ee(
     let mut can_translate_read_buffer = translated_mask == raw_mask;
     let mut tail_ready = false;
     let mut tail_needs_empty_name = false;
+    let mut compact_tail9_claim = None;
     let mut inline_name_drop_begin = None;
     let mut byte_gap_drop_range: Option<(usize, usize)> = None;
     let mut inline_name_compact_proven = false;
@@ -306,30 +323,14 @@ pub(super) fn rewrite_update_record_for_ee(
     } else if matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
         && (raw_mask & LEGACY_UPDATE_NAME_MASK) != 0
     {
-        let legacy_tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-        let raw_has_legacy_generic_tail =
-            (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
-        let legacy_tail =
-            if legacy_tail_offset <= *record_end && *record_end - legacy_tail_offset >= 9 {
-                reader::read_legacy_named_update_tail9(live_bytes, legacy_tail_offset, false)
-                    .and_then(|tail| {
-                        let following_payload_ready =
-                            reader::legacy_named_update_tail_following_payload_ready(
-                                live_bytes,
-                                legacy_tail_offset,
-                                *record_end,
-                            );
-                        if following_payload_ready || raw_has_legacy_generic_tail {
-                            Some((tail, following_payload_ready))
-                        } else {
-                            None
-                        }
-                    })
-            } else {
-                None
-            };
-
-        if let Some((tail, following_payload_ready)) = legacy_tail {
+        if let Some(claim) = parse_compact_door_placeable_tail9_update_claim(
+            live_bytes,
+            record_offset,
+            *record_end,
+            object_type,
+            raw_mask,
+            translated_mask,
+        ) {
             // Legacy compact door/placeable update captures can carry a bounded
             // nine-byte tail at the post-position cursor: WORD facing, one
             // legacy generic byte, FLOAT scale, WORD generic state. Direct
@@ -349,24 +350,11 @@ pub(super) fn rewrite_update_record_for_ee(
             // bounded CExoString candidate, so this typed tail reader must win
             // before the compact inline-name repair is considered.
             tail_ready = true;
-            tail_needs_empty_name = !following_payload_ready;
-            // The tail9 cursor does not contain EE's mask-0x20 appearance
-            // WORD. Diamond and EE both read appearance before scale/state in
-            // the shared generic reader; this legacy tail starts with facing,
-            // then scale/state, so carrying 0x20 into the EE mask would shift
-            // the scale cursor while still landing on the same byte length.
-            translated_mask &= !LEGACY_UPDATE_APPEARANCE_MASK;
-            if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-                translated_mask |= LEGACY_UPDATE_ORIENTATION_MASK;
-                let orientation_scalar12 =
-                    writer::encode_ee_scalar_orientation_from_legacy_facing(tail.facing);
-                orientation_fragment_rewrite =
-                    OrientationFragmentRewrite::InsertScalar(orientation_scalar12);
-                fragment_source_mask &= !LEGACY_UPDATE_ORIENTATION_MASK;
-            }
-            if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-                translated_mask |= LEGACY_UPDATE_SCALE_STATE_MASK;
-            }
+            tail_needs_empty_name = claim.tail_needs_empty_name();
+            translated_mask = claim.translated_mask;
+            fragment_source_mask = claim.fragment_source_mask;
+            orientation_fragment_rewrite = claim.orientation_rewrite;
+            compact_tail9_claim = Some(claim);
         } else if let Some(inline_name) =
             reader::parse_legacy_inline_named_door_placeable_update_record_for_ee(
                 live_bytes,
@@ -1212,11 +1200,13 @@ pub(super) fn rewrite_update_record_for_ee(
         && (translated_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK))
             != 0
     {
-        let tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
-        if let Some(tail) = reader::read_legacy_named_update_tail9(live_bytes, tail_offset, false) {
+        if let Some(claim) = compact_tail9_claim {
             let ee_tail =
-                writer::build_ee_door_placeable_generic_update_bytes(tail, translated_mask);
-            live_bytes.splice(tail_offset..tail_offset + 9, ee_tail.iter().copied());
+                writer::build_ee_door_placeable_generic_update_bytes(claim.tail, translated_mask);
+            live_bytes.splice(
+                claim.tail_offset..claim.tail_offset + 9,
+                ee_tail.iter().copied(),
+            );
             if ee_tail.len() >= 9 {
                 rewrite.bytes_inserted = rewrite
                     .bytes_inserted
@@ -1410,6 +1400,63 @@ pub(super) fn rewrite_update_record_for_ee(
         "server->client live-object update record translated for EE"
     );
     Some(rewrite)
+}
+
+fn parse_compact_door_placeable_tail9_update_claim(
+    bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    object_type: u8,
+    raw_mask: u32,
+    translated_mask: u32,
+) -> Option<CompactDoorPlaceableTail9UpdateClaim> {
+    if !matches!(object_type, PLACEABLE_OBJECT_TYPE | DOOR_OBJECT_TYPE)
+        || (raw_mask & LEGACY_UPDATE_NAME_MASK) == 0
+    {
+        return None;
+    }
+
+    let tail_offset = door_placeable_update_name_cursor(record_offset, raw_mask);
+    if tail_offset > record_end || record_end.saturating_sub(tail_offset) < 9 {
+        return None;
+    }
+
+    let tail = reader::read_legacy_named_update_tail9(bytes, tail_offset, false)?;
+    let following_payload_ready =
+        reader::legacy_named_update_tail_following_payload_ready(bytes, tail_offset, record_end);
+    let raw_has_legacy_generic_tail =
+        (raw_mask & (LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_SCALE_STATE_MASK)) != 0;
+    if !following_payload_ready && !raw_has_legacy_generic_tail {
+        return None;
+    }
+
+    // The tail9 cursor does not contain EE's mask-0x20 appearance WORD. Diamond
+    // and EE both read appearance before scale/state in the shared generic
+    // reader; this legacy tail starts with facing, then scale/state, so carrying
+    // 0x20 into the EE mask would shift the scale cursor while still landing on
+    // the same byte length.
+    let mut claim_translated_mask = translated_mask & !LEGACY_UPDATE_APPEARANCE_MASK;
+    let mut fragment_source_mask = raw_mask;
+    let mut orientation_rewrite = OrientationFragmentRewrite::PreserveExisting;
+    if (raw_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        claim_translated_mask |= LEGACY_UPDATE_ORIENTATION_MASK;
+        let orientation_scalar12 =
+            writer::encode_ee_scalar_orientation_from_legacy_facing(tail.facing);
+        orientation_rewrite = OrientationFragmentRewrite::InsertScalar(orientation_scalar12);
+        fragment_source_mask &= !LEGACY_UPDATE_ORIENTATION_MASK;
+    }
+    if (raw_mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
+        claim_translated_mask |= LEGACY_UPDATE_SCALE_STATE_MASK;
+    }
+
+    Some(CompactDoorPlaceableTail9UpdateClaim {
+        tail_offset,
+        tail,
+        following_payload_ready,
+        translated_mask: claim_translated_mask,
+        fragment_source_mask,
+        orientation_rewrite,
+    })
 }
 
 fn placeable_update_state_bits_at(
@@ -2086,6 +2133,90 @@ mod tests {
             lockable,
             visual_payload,
         }
+    }
+
+    fn compact_tail9_update_bytes(raw_mask: u32) -> Vec<u8> {
+        let mut live = vec![b'U', DOOR_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_0004u32.to_le_bytes());
+        live.extend_from_slice(&raw_mask.to_le_bytes());
+        live.extend_from_slice(&[0xD0, 0x07, 0xF4, 0x01, 0x0F, 0x0F]);
+        live.extend_from_slice(&0x2EA8u16.to_le_bytes());
+        live.push(0x02);
+        live.extend_from_slice(&1.0f32.to_le_bytes());
+        live.extend_from_slice(&0x0016u16.to_le_bytes());
+        live.extend_from_slice(&0x0000_14E5u32.to_le_bytes());
+        live
+    }
+
+    #[test]
+    fn compact_tail9_claim_separates_capture_tail_from_stock_orientation_cursor() {
+        let raw_mask = 0xFFFF_FFF7;
+        let live = compact_tail9_update_bytes(raw_mask);
+        let translated_mask = translate_legacy_live_object_update_mask(DOOR_OBJECT_TYPE, raw_mask);
+
+        let claim = parse_compact_door_placeable_tail9_update_claim(
+            &live,
+            0,
+            live.len(),
+            DOOR_OBJECT_TYPE,
+            raw_mask,
+            translated_mask,
+        )
+        .expect("bounded compact tail9 update should claim");
+
+        assert_eq!(
+            claim.tail_offset,
+            LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES
+        );
+        assert_eq!(claim.tail.facing, 0x2EA8);
+        assert_eq!(claim.tail.generic_state_word, 0x0016);
+        assert!(!claim.following_payload_ready);
+        assert!(claim.tail_needs_empty_name());
+        assert_eq!(
+            claim.translated_mask,
+            LEGACY_UPDATE_POSITION_MASK
+                | LEGACY_UPDATE_ORIENTATION_MASK
+                | LEGACY_UPDATE_SCALE_STATE_MASK
+                | LEGACY_UPDATE_STATE_MASK,
+            "tail9 must drop EE's appearance/name bits before emission"
+        );
+        assert_eq!(
+            claim.fragment_source_mask & LEGACY_UPDATE_ORIENTATION_MASK,
+            0,
+            "tail9 source bits start at position/state/name; stock orientation BOOLs are inserted"
+        );
+        assert_ne!(
+            claim.fragment_source_mask & LEGACY_UPDATE_NAME_MASK,
+            0,
+            "the legacy name BOOL is input-only and removed by the bit rewrite"
+        );
+        match claim.orientation_rewrite {
+            OrientationFragmentRewrite::InsertScalar(scalar12) => assert_eq!(
+                scalar12,
+                writer::encode_ee_scalar_orientation_from_legacy_facing(0x2EA8)
+            ),
+            other => panic!("expected inserted scalar orientation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_tail9_claim_rejects_name_only_suffix_without_generic_tail_owner() {
+        let raw_mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_NAME_MASK;
+        let live = compact_tail9_update_bytes(raw_mask);
+        let translated_mask = translate_legacy_live_object_update_mask(DOOR_OBJECT_TYPE, raw_mask);
+
+        assert!(
+            parse_compact_door_placeable_tail9_update_claim(
+                &live,
+                0,
+                live.len(),
+                DOOR_OBJECT_TYPE,
+                raw_mask,
+                translated_mask,
+            )
+            .is_none(),
+            "invalid legacy suffix bytes are not enough without orientation/scale tail ownership"
+        );
     }
 
     #[test]
