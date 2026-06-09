@@ -16,9 +16,10 @@ use super::{
     TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, object_ids, placeable,
     read_f32_le, read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
 };
+use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
+#[cfg(test)]
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
-    AreaPlaceableContextState,
+    AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
 };
 
 const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
@@ -1474,60 +1475,26 @@ fn trace_placeable_update_area_context(
     let Some(context) = area_context else {
         return;
     };
-    let matches = context
-        .light_rows
-        .iter()
-        .filter(move |row| {
-            object_ids::equivalent_legacy_external_object_ids(row.object_id, object_id)
-        })
-        .map(|row| (AreaPlaceableContextRowKind::Light, row))
-        .chain(
-            context
-                .static_rows
-                .iter()
-                .filter(move |row| {
-                    object_ids::equivalent_legacy_external_object_ids(row.object_id, object_id)
-                })
-                .map(|row| (AreaPlaceableContextRowKind::Static, row)),
-        )
-        .collect::<Vec<_>>();
-    if matches.is_empty() {
+    let overlap = context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    if overlap.is_empty() {
         return;
     }
 
-    let mut area_rows = String::new();
-    let mut source_area_module_lock_mismatch = false;
-    let mut ee_area_module_lock_mismatch = false;
-    for (index, (kind, row)) in matches.iter().enumerate() {
-        if index != 0 {
-            area_rows.push(',');
-        }
-        if *kind == AreaPlaceableContextRowKind::Static
-            && let Some(module_state) = row.module_state
-        {
-            if let Some(source_state) = source_state_bits {
-                source_area_module_lock_mismatch |=
-                    placeable_update_lock_state_conflicts_with_area_module_state(
-                        source_state,
-                        module_state,
-                    );
-            }
-            if let Some(ee_state) = ee_state_bits {
-                ee_area_module_lock_mismatch |=
-                    placeable_update_lock_state_conflicts_with_area_module_state(
-                        ee_state,
-                        module_state,
-                    );
-            }
-        }
-        area_rows.push_str(&format_area_placeable_context_row(*kind, row));
-    }
-    let area_light_duplicate = matches
-        .iter()
-        .any(|(kind, _)| *kind == AreaPlaceableContextRowKind::Light);
-    let area_static_duplicate = matches
-        .iter()
-        .any(|(kind, _)| *kind == AreaPlaceableContextRowKind::Static);
+    let area_rows = overlap.formatted_rows();
+    let source_area_module_lock_mismatch = source_state_bits.is_some_and(|source_state| {
+        overlap.any_static_module_state_conflict(|module_state| {
+            placeable_update_lock_state_conflicts_with_area_module_state(source_state, module_state)
+        })
+    });
+    let ee_area_module_lock_mismatch = ee_state_bits.is_some_and(|ee_state| {
+        overlap.any_static_module_state_conflict(|module_state| {
+            placeable_update_lock_state_conflicts_with_area_module_state(ee_state, module_state)
+        })
+    });
+    let area_light_duplicate = overlap.has_light_row();
+    let area_static_duplicate = overlap.has_static_row();
 
     tracing::info!(
         object_id = format_args!("0x{object_id:08X}"),
@@ -1553,52 +1520,6 @@ fn placeable_update_lock_state_conflicts_with_area_module_state(
     module_state: AreaPlaceableContextState,
 ) -> bool {
     state.lockable != module_state.lockable || state.locked != module_state.locked
-}
-
-fn format_area_placeable_context_row(
-    kind: AreaPlaceableContextRowKind,
-    row: &AreaPlaceableContextRow,
-) -> String {
-    let module_state = row
-        .module_state
-        .map(format_area_placeable_module_state)
-        .unwrap_or_else(|| "unproven".to_string());
-    if row.has_direction {
-        format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
-            kind.as_str(),
-            row.object_id_confidence.as_str(),
-            row.appearance,
-            row.x,
-            row.y,
-            row.z,
-            row.dir_x,
-            row.dir_y,
-            row.dir_z
-        )
-    } else {
-        format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
-            kind.as_str(),
-            row.object_id_confidence.as_str(),
-            row.appearance,
-            row.x,
-            row.y,
-            row.z
-        )
-    }
-}
-
-fn format_area_placeable_module_state(module_state: AreaPlaceableContextState) -> String {
-    format!(
-        "static={} useable={} trap={} disarmable={} lockable={} locked={}",
-        module_state.static_object,
-        module_state.useable,
-        module_state.trap_flag,
-        module_state.trap_disarmable,
-        module_state.lockable,
-        module_state.locked
-    )
 }
 
 fn parse_compact_door_placeable_tail9_update_claim(

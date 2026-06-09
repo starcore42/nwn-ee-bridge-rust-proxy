@@ -30,9 +30,10 @@
 //! exactly where EE will begin reading the map, or for verified door/placeable
 //! add records at the EE decompile-backed cursor.
 
+use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
+#[cfg(test)]
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
-    AreaPlaceableContextState,
+    AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
 };
 use std::collections::HashSet;
 
@@ -3661,38 +3662,35 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     // for object that doesn't exist" on the following update. Keep overlap and
     // legacy UserNN rows diagnostic-only; model/resource compatibility belongs
     // in a typed placeable writer, not in an object-lifecycle suppression rule.
-    let area_placeable_overlap =
-        area_context.is_some_and(|context| context.contains_placeable_id(object_id));
-    let area_light_duplicate =
-        area_context.is_some_and(|context| context.contains_light_placeable_id(object_id));
-    let area_static_duplicate =
-        area_context.is_some_and(|context| context.contains_static_placeable_id(object_id));
+    let area_overlap =
+        area_context.map(|context| context.placeable_overlap_for_object_id(object_id));
+    let area_placeable_overlap = area_overlap
+        .as_ref()
+        .is_some_and(|overlap| !overlap.is_empty());
+    let area_light_duplicate = area_overlap
+        .as_ref()
+        .is_some_and(|overlap| overlap.has_light_row());
+    let area_static_duplicate = area_overlap
+        .as_ref()
+        .is_some_and(|overlap| overlap.has_static_row());
     let legacy_user_defined_static = is_legacy_user_defined_placeable_appearance(appearance);
     if area_placeable_overlap || legacy_user_defined_static {
-        let mut area_rows = String::new();
-        let mut area_module_state_mismatch = false;
-        if let Some(context) = area_context {
-            for (index, matched) in context.matching_placeable_rows(object_id).enumerate() {
-                if index != 0 {
-                    area_rows.push(',');
-                }
-                if matched.kind == AreaPlaceableContextRowKind::Static {
-                    if let (Some(source_state), Some(module_state)) =
-                        (source_state_bits, matched.row.module_state)
-                    {
-                        area_module_state_mismatch |=
-                            placeable_add_state_conflicts_with_area_module_state(
-                                source_state,
-                                module_state,
-                            );
-                    }
-                }
-                area_rows.push_str(&format_area_placeable_context_row(
-                    matched.kind,
-                    matched.row,
-                ));
-            }
-        }
+        let area_rows = area_overlap
+            .as_ref()
+            .map(|overlap| overlap.formatted_rows())
+            .unwrap_or_default();
+        let area_module_state_mismatch =
+            area_overlap
+                .as_ref()
+                .zip(source_state_bits)
+                .is_some_and(|(overlap, source_state)| {
+                    overlap.any_static_module_state_conflict(|module_state| {
+                        placeable_add_state_conflicts_with_area_module_state(
+                            source_state,
+                            module_state,
+                        )
+                    })
+                });
         tracing::info!(
             object_id = format_args!("0x{object_id:08X}"),
             appearance,
@@ -3981,40 +3979,6 @@ fn legacy_placeable_add_state_bits(
     }
 }
 
-fn format_area_placeable_context_row(
-    kind: AreaPlaceableContextRowKind,
-    row: &AreaPlaceableContextRow,
-) -> String {
-    let module_state = row
-        .module_state
-        .map(format_area_placeable_module_state)
-        .unwrap_or_else(|| "unproven".to_string());
-    if row.has_direction {
-        format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
-            kind.as_str(),
-            row.object_id_confidence.as_str(),
-            row.appearance,
-            row.x,
-            row.y,
-            row.z,
-            row.dir_x,
-            row.dir_y,
-            row.dir_z
-        )
-    } else {
-        format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
-            kind.as_str(),
-            row.object_id_confidence.as_str(),
-            row.appearance,
-            row.x,
-            row.y,
-            row.z
-        )
-    }
-}
-
 fn placeable_add_state_conflicts_with_area_module_state(
     state: PlaceableAddStateBits,
     module_state: AreaPlaceableContextState,
@@ -4023,18 +3987,6 @@ fn placeable_add_state_conflicts_with_area_module_state(
         || state.trap_disarmable != module_state.trap_disarmable
         || state.lockable != module_state.lockable
         || state.locked != module_state.locked
-}
-
-fn format_area_placeable_module_state(module_state: AreaPlaceableContextState) -> String {
-    format!(
-        "static={} useable={} trap={} disarmable={} lockable={} locked={}",
-        module_state.static_object,
-        module_state.useable,
-        module_state.trap_flag,
-        module_state.trap_disarmable,
-        module_state.lockable,
-        module_state.locked
-    )
 }
 
 fn write_ee_placeable_add_state_bits(

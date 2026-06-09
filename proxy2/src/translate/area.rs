@@ -217,20 +217,19 @@ pub struct AreaPlaceableContext {
 }
 
 impl AreaPlaceableContext {
-    pub fn contains_placeable_id(&self, object_id: u32) -> bool {
-        self.contains_light_placeable_id(object_id) || self.contains_static_placeable_id(object_id)
-    }
-
+    #[cfg(test)]
     pub fn contains_light_placeable_id(&self, object_id: u32) -> bool {
         self.light_rows.iter().any(|row| row.object_id == object_id)
     }
 
+    #[cfg(test)]
     pub fn contains_static_placeable_id(&self, object_id: u32) -> bool {
         self.static_rows
             .iter()
             .any(|row| row.object_id == object_id)
     }
 
+    #[cfg(test)]
     pub fn matching_placeable_rows(
         &self,
         object_id: u32,
@@ -251,6 +250,40 @@ impl AreaPlaceableContext {
                         row,
                     }),
             )
+    }
+
+    pub fn placeable_overlap_by<F>(
+        &self,
+        mut matches_object_id: F,
+    ) -> AreaPlaceableContextOverlap<'_>
+    where
+        F: FnMut(u32) -> bool,
+    {
+        let mut rows = Vec::new();
+        for row in &self.light_rows {
+            if matches_object_id(row.object_id) {
+                rows.push(AreaPlaceableContextRowMatch {
+                    kind: AreaPlaceableContextRowKind::Light,
+                    row,
+                });
+            }
+        }
+        for row in &self.static_rows {
+            if matches_object_id(row.object_id) {
+                rows.push(AreaPlaceableContextRowMatch {
+                    kind: AreaPlaceableContextRowKind::Static,
+                    row,
+                });
+            }
+        }
+        AreaPlaceableContextOverlap { rows }
+    }
+
+    pub fn placeable_overlap_for_object_id(
+        &self,
+        object_id: u32,
+    ) -> AreaPlaceableContextOverlap<'_> {
+        self.placeable_overlap_by(move |row_object_id| row_object_id == object_id)
     }
 }
 
@@ -273,6 +306,63 @@ impl AreaPlaceableContextRowKind {
 pub struct AreaPlaceableContextRowMatch<'a> {
     pub kind: AreaPlaceableContextRowKind,
     pub row: &'a AreaPlaceableContextRow,
+}
+
+#[derive(Debug, Clone)]
+pub struct AreaPlaceableContextOverlap<'a> {
+    rows: Vec<AreaPlaceableContextRowMatch<'a>>,
+}
+
+impl<'a> AreaPlaceableContextOverlap<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn has_light_row(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|matched| matched.kind == AreaPlaceableContextRowKind::Light)
+    }
+
+    pub fn has_static_row(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|matched| matched.kind == AreaPlaceableContextRowKind::Static)
+    }
+
+    #[cfg(test)]
+    pub fn rows(&self) -> &[AreaPlaceableContextRowMatch<'a>] {
+        &self.rows
+    }
+
+    pub fn formatted_rows(&self) -> String {
+        let mut formatted = String::new();
+        for (index, matched) in self.rows.iter().enumerate() {
+            if index != 0 {
+                formatted.push(',');
+            }
+            formatted.push_str(&format_area_placeable_context_row(
+                matched.kind,
+                matched.row,
+            ));
+        }
+        formatted
+    }
+
+    pub fn any_static_module_state_conflict<F>(&self, mut conflicts: F) -> bool
+    where
+        F: FnMut(AreaPlaceableContextState) -> bool,
+    {
+        self.rows.iter().any(|matched| {
+            if matched.kind != AreaPlaceableContextRowKind::Static {
+                return false;
+            }
+            match matched.row.module_state {
+                Some(module_state) => conflicts(module_state),
+                None => false,
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -324,6 +414,52 @@ pub struct AreaPlaceableContextState {
     pub trap_disarmable: bool,
     pub lockable: bool,
     pub locked: bool,
+}
+
+pub fn format_area_placeable_context_row(
+    kind: AreaPlaceableContextRowKind,
+    row: &AreaPlaceableContextRow,
+) -> String {
+    let module_state = row
+        .module_state
+        .map(format_area_placeable_module_state)
+        .unwrap_or_else(|| "unproven".to_string());
+    if row.has_direction {
+        format!(
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.object_id_confidence.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z,
+            row.dir_x,
+            row.dir_y,
+            row.dir_z
+        )
+    } else {
+        format!(
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.object_id_confidence.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z
+        )
+    }
+}
+
+pub fn format_area_placeable_module_state(module_state: AreaPlaceableContextState) -> String {
+    format!(
+        "static={} useable={} trap={} disarmable={} lockable={} locked={}",
+        module_state.static_object,
+        module_state.useable,
+        module_state.trap_flag,
+        module_state.trap_disarmable,
+        module_state.lockable,
+        module_state.locked
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -9005,6 +9141,60 @@ mod public_static_direction_tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].kind, AreaPlaceableContextRowKind::Light);
         assert_eq!(matches[1].kind, AreaPlaceableContextRowKind::Static);
+    }
+
+    #[test]
+    fn placeable_context_overlap_formats_rows_and_checks_static_module_state() {
+        let context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            light_rows: vec![AreaPlaceableContextRow {
+                object_id: 0x8000_0077,
+                appearance: 77,
+                x: 5.0,
+                y: 6.0,
+                z: 0.0,
+                has_direction: false,
+                ..AreaPlaceableContextRow::default()
+            }],
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: 0x8000_0042,
+                appearance: 82,
+                x: 10.0,
+                y: 20.0,
+                z: 0.0,
+                dir_x: 0.0,
+                dir_y: 1.0,
+                dir_z: 0.0,
+                has_direction: true,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+            }],
+        };
+
+        let overlap = context
+            .placeable_overlap_by(|object_id| object_id == 0x8000_0077 || object_id == 0x8000_0042);
+        assert_eq!(overlap.rows().len(), 2);
+        assert!(overlap.has_light_row());
+        assert!(overlap.has_static_row());
+        assert_eq!(
+            overlap.formatted_rows(),
+            "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+        );
+        assert!(
+            overlap.any_static_module_state_conflict(|state| state.lockable && !state.locked),
+            "static module state should be visible to add/update overlap diagnostics"
+        );
+        assert!(
+            !overlap.any_static_module_state_conflict(|state| state.lockable && state.locked),
+            "non-conflicting module state closure should not report a mismatch"
+        );
     }
 
     #[test]
