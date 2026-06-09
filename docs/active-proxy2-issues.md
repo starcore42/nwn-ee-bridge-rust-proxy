@@ -2460,6 +2460,15 @@ Current status:
   The active two pre-`U/6` bits remain unowned; next useful production path is
   still compact source writer/capture evidence before the `U/10`/`A/6`/`U/6`
   handoff.
+- 2026-06-09 `P/05/01` item `U/6` neighbor-claim diagnostic: no packet rewrite
+  behavior changed. Extended the typed item-update claim result so accepted
+  candidates carry read end, translated mask, and scalar/vector orientation
+  branch metadata, and emitted those fields from the source-window neighboring
+  cursor trace. Public coverage pins the active `+2` neighbor as a translated
+  full-item scalar claim that starts inside the failed `U/6` row and consumes
+  the bounded item bytes; this remains ambiguity only, not owner proof. Next
+  useful evidence is still compact source writer/capture proof before the
+  `U/10`/`A/6`/`U/6` handoff.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

@@ -319,13 +319,29 @@ mod diagnostic_tests {
             claims[1].bit_start,
             claims[0].bit_end,
         );
-        assert!(
-            neighbors.iter().any(|neighbor| {
-                neighbor.delta == 2
-                    && neighbor.bit_start == claims[1].bit_start + 2
-                    && neighbor.relation == "inside-focus-row"
-            }),
-            "a +2 U/6 fit begins inside the failed item row unless a prior owner is proven"
+        let plus_two = neighbors
+            .iter()
+            .find(|neighbor| neighbor.delta == 2)
+            .expect("the active scalar-shaped item bytes should validate only at cursor +2");
+        assert_eq!(plus_two.bit_start, claims[1].bit_start + 2);
+        assert_eq!(plus_two.relation, "inside-focus-row");
+        assert_eq!(
+            plus_two.translated_mask,
+            super::item::translate_update_mask(0xFFFF_FFF3)
+        );
+        assert_eq!(plus_two.orientation_vector, Some(false));
+        assert_eq!(
+            plus_two.bit_end.saturating_sub(plus_two.bit_start),
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                + 1,
+            "the nearby fit is a scalar item claim, not a prior-row owner"
+        );
+        assert_eq!(
+            plus_two.read_end,
+            live.len(),
+            "the nearby item candidate consumes the bounded U/6 read bytes"
         );
     }
 }
@@ -6329,6 +6345,9 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     delta: isize,
     bit_start: usize,
     bit_end: usize,
+    read_end: usize,
+    translated_mask: u32,
+    orientation_vector: Option<bool>,
     relation: &'static str,
 }
 
@@ -6675,7 +6694,7 @@ fn live_object_source_window_item_neighbor_cursor_claims(
         if cursor == expected_bit_cursor {
             continue;
         }
-        let Some(bit_end) = item::advance_verified_ee_item_update_record(
+        let Ok(claim) = item::parse_ee_item_update_cursor_claim(
             &candidate,
             row.offset,
             row.record_end,
@@ -6687,7 +6706,10 @@ fn live_object_source_window_item_neighbor_cursor_claims(
         claims.push(LiveObjectSourceWindowItemNeighborCursorClaim {
             delta: cursor as isize - expected_bit_cursor as isize,
             bit_start: cursor,
-            bit_end,
+            bit_end: claim.next_bit_cursor,
+            read_end: claim.read_end,
+            translated_mask: claim.mask,
+            orientation_vector: claim.orientation_vector,
             relation: live_object_source_window_neighbor_relation(
                 cursor,
                 expected_bit_cursor,
@@ -6833,9 +6855,19 @@ fn trace_item_update_source_window(
             expected_bit_cursor,
             preceding_claim_bit_end,
         ) {
+            let orientation = neighbor
+                .orientation_vector
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} relation={}",
-                neighbor.delta, neighbor.bit_start, neighbor.bit_end, neighbor.relation
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={}",
+                neighbor.delta,
+                neighbor.bit_start,
+                neighbor.bit_end,
+                neighbor.read_end,
+                neighbor.translated_mask,
+                orientation,
+                neighbor.relation
             );
         }
     }

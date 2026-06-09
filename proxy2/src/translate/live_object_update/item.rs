@@ -47,6 +47,8 @@ pub(super) struct ItemUpdateRewrite {
 pub(super) struct ItemUpdateCursorClaim {
     pub(super) read_end: usize,
     pub(super) next_bit_cursor: usize,
+    pub(super) mask: u32,
+    pub(super) orientation_vector: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,6 +449,7 @@ pub(super) fn parse_ee_item_update_cursor_claim(
         fragment_bits,
         common.next_bit_cursor,
         mask,
+        common.orientation_vector,
     )?;
 
     if claim.read_end != record_end {
@@ -592,6 +595,7 @@ pub(super) fn update_record_read_end_candidates_for_transport(
 struct ItemUpdateCommonPrefix {
     read_end: usize,
     next_bit_cursor: usize,
+    orientation_vector: Option<bool>,
 }
 
 fn item_update_mask(bytes: &[u8], offset: usize, record_end: usize) -> Option<u32> {
@@ -654,6 +658,7 @@ fn parse_item_update_common_prefix_result(
             )
         })?;
     let mut fragment_cursor = bit_cursor;
+    let mut orientation_vector = None;
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
         read_cursor = advance_read_cursor(
             read_cursor,
@@ -690,6 +695,7 @@ fn parse_item_update_common_prefix_result(
                 Some(mask),
             )
         })?;
+        orientation_vector = Some(vector_branch);
         if vector_branch {
             read_cursor = advance_read_cursor(
                 read_cursor,
@@ -789,6 +795,7 @@ fn parse_item_update_common_prefix_result(
     Ok(ItemUpdateCommonPrefix {
         read_end: read_cursor,
         next_bit_cursor: fragment_cursor,
+        orientation_vector,
     })
 }
 
@@ -826,6 +833,7 @@ fn advance_verified_ee_item_tail_claim(
     fragment_bits: &[bool],
     bit_cursor: usize,
     mask: u32,
+    orientation_vector: Option<bool>,
 ) -> Result<ItemUpdateCursorClaim, ItemUpdateCursorFailure> {
     let mut read_cursor = read_cursor;
     let mut fragment_cursor = bit_cursor;
@@ -837,11 +845,12 @@ fn advance_verified_ee_item_tail_claim(
         // 0x1407A0A07..0x1407A0A7A. The following overflow checks are not
         // another fragment bit owner.
         let uses_locstring = fragment_bits.get(fragment_cursor).copied().ok_or_else(|| {
-            ItemUpdateCursorFailure::new(
+            item_update_failure(
                 ItemUpdateCursorStage::NameSelector,
                 read_cursor,
                 fragment_cursor,
                 Some(mask),
+                orientation_vector,
             )
         })?;
         fragment_cursor = advance_bits_result(
@@ -855,11 +864,12 @@ fn advance_verified_ee_item_tail_claim(
         )?;
         if uses_locstring {
             let uses_tlk_ref = fragment_bits.get(fragment_cursor).copied().ok_or_else(|| {
-                ItemUpdateCursorFailure::new(
+                item_update_failure(
                     ItemUpdateCursorStage::NameModeSelector,
                     read_cursor,
                     fragment_cursor,
                     Some(mask),
+                    orientation_vector,
                 )
             })?;
             fragment_cursor = advance_bits_result(
@@ -873,31 +883,34 @@ fn advance_verified_ee_item_tail_claim(
             )?;
             read_cursor = if uses_tlk_ref {
                 locstring::tlk_locstring_ref_end(bytes, read_cursor).ok_or_else(|| {
-                    ItemUpdateCursorFailure::new(
+                    item_update_failure(
                         ItemUpdateCursorStage::NameTlkRef,
                         read_cursor,
                         fragment_cursor,
                         Some(mask),
+                        orientation_vector,
                     )
                 })?
             } else {
                 locstring::inline_cexo_string_end(bytes, read_cursor).ok_or_else(|| {
-                    ItemUpdateCursorFailure::new(
+                    item_update_failure(
                         ItemUpdateCursorStage::NameInlineLocString,
                         read_cursor,
                         fragment_cursor,
                         Some(mask),
+                        orientation_vector,
                     )
                 })?
             };
         } else {
             read_cursor =
                 locstring::inline_cexo_string_end(bytes, read_cursor).ok_or_else(|| {
-                    ItemUpdateCursorFailure::new(
+                    item_update_failure(
                         ItemUpdateCursorStage::NameInlineString,
                         read_cursor,
                         fragment_cursor,
                         Some(mask),
+                        orientation_vector,
                     )
                 })?;
         }
@@ -911,14 +924,31 @@ fn advance_verified_ee_item_tail_claim(
             read_cursor,
             mask,
             ItemUpdateCursorStage::HiddenBit,
-            None,
+            orientation_vector,
         )?;
     }
 
     Ok(ItemUpdateCursorClaim {
         read_end: read_cursor,
         next_bit_cursor: fragment_cursor,
+        mask,
+        orientation_vector,
     })
+}
+
+fn item_update_failure(
+    stage: ItemUpdateCursorStage,
+    read_cursor: usize,
+    bit_cursor: usize,
+    mask: Option<u32>,
+    orientation_vector: Option<bool>,
+) -> ItemUpdateCursorFailure {
+    let failure = ItemUpdateCursorFailure::new(stage, read_cursor, bit_cursor, mask);
+    if let Some(orientation_vector) = orientation_vector {
+        failure.with_orientation(orientation_vector)
+    } else {
+        failure
+    }
 }
 
 fn advance_read_cursor(
@@ -1195,6 +1225,32 @@ mod tests {
             Some(LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK)
         );
         assert_eq!(failure.orientation_vector, Some(true));
+    }
+
+    #[test]
+    fn item_update_cursor_claim_reports_translated_mask_and_orientation_branch() {
+        let mut live = legacy_full_scalar_direct_name_item_update_live_bytes(b"Lance");
+        write_u32_le(
+            &mut live,
+            6,
+            translate_update_mask(DIAMOND_ITEM_FULL_UPDATE_MASK),
+        )
+        .expect("mask write");
+        let bits = vec![
+            true, true, // position residual bits.
+            false, true, false, true, true, // scalar orientation branch.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+            true,  // following stream bit.
+        ];
+
+        let claim = parse_ee_item_update_cursor_claim(&live, 0, live.len(), &bits, 0)
+            .expect("translated scalar full item update should claim exactly");
+
+        assert_eq!(claim.read_end, live.len());
+        assert_eq!(claim.next_bit_cursor, bits.len() - 1);
+        assert_eq!(claim.mask, DIAMOND_ITEM_FULL_UPDATE_EE_MASK);
+        assert_eq!(claim.orientation_vector, Some(false));
     }
 
     #[test]
