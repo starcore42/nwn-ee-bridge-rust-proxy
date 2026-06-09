@@ -43,6 +43,94 @@ pub(super) struct ItemUpdateRewrite {
     pub(super) next_bit_cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ItemUpdateCursorClaim {
+    pub(super) read_end: usize,
+    pub(super) next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ItemUpdateCursorFailure {
+    pub(super) stage: ItemUpdateCursorStage,
+    pub(super) read_cursor: usize,
+    pub(super) bit_cursor: usize,
+    pub(super) mask: Option<u32>,
+    pub(super) orientation_vector: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ItemUpdateCursorStage {
+    Header,
+    UnsupportedMask,
+    PositionReadBytes,
+    PositionBits,
+    OrientationSelector,
+    OrientationScalarReadBytes,
+    OrientationScalarBits,
+    OrientationVectorReadBytes,
+    OrientationVectorBits,
+    AppearanceWord,
+    AppearanceResref,
+    ScaleStateReadBytes,
+    StateBits,
+    NameSelector,
+    NameModeSelector,
+    NameTlkRef,
+    NameInlineLocString,
+    NameInlineString,
+    HiddenBit,
+    RecordEnd,
+}
+
+impl ItemUpdateCursorStage {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            ItemUpdateCursorStage::Header => "header",
+            ItemUpdateCursorStage::UnsupportedMask => "unsupported-mask",
+            ItemUpdateCursorStage::PositionReadBytes => "position-read-bytes",
+            ItemUpdateCursorStage::PositionBits => "position-bits",
+            ItemUpdateCursorStage::OrientationSelector => "orientation-selector",
+            ItemUpdateCursorStage::OrientationScalarReadBytes => "orientation-scalar-read-bytes",
+            ItemUpdateCursorStage::OrientationScalarBits => "orientation-scalar-bits",
+            ItemUpdateCursorStage::OrientationVectorReadBytes => "orientation-vector-read-bytes",
+            ItemUpdateCursorStage::OrientationVectorBits => "orientation-vector-bits",
+            ItemUpdateCursorStage::AppearanceWord => "appearance-word",
+            ItemUpdateCursorStage::AppearanceResref => "appearance-resref",
+            ItemUpdateCursorStage::ScaleStateReadBytes => "scale-state-read-bytes",
+            ItemUpdateCursorStage::StateBits => "state-bits",
+            ItemUpdateCursorStage::NameSelector => "name-selector",
+            ItemUpdateCursorStage::NameModeSelector => "name-mode-selector",
+            ItemUpdateCursorStage::NameTlkRef => "name-tlk-ref",
+            ItemUpdateCursorStage::NameInlineLocString => "name-inline-locstring",
+            ItemUpdateCursorStage::NameInlineString => "name-inline-string",
+            ItemUpdateCursorStage::HiddenBit => "hidden-bit",
+            ItemUpdateCursorStage::RecordEnd => "record-end",
+        }
+    }
+}
+
+impl ItemUpdateCursorFailure {
+    fn new(
+        stage: ItemUpdateCursorStage,
+        read_cursor: usize,
+        bit_cursor: usize,
+        mask: Option<u32>,
+    ) -> Self {
+        Self {
+            stage,
+            read_cursor,
+            bit_cursor,
+            mask,
+            orientation_vector: None,
+        }
+    }
+
+    fn with_orientation(mut self, orientation_vector: bool) -> Self {
+        self.orientation_vector = Some(orientation_vector);
+        self
+    }
+}
+
 pub(super) fn is_known_legacy_item_marker(marker: u8) -> bool {
     matches!(marker, 0x05 | 0xC5)
 }
@@ -208,8 +296,32 @@ fn trace_rejected_item_update_cursor(
             )
         })
         .unwrap_or_default();
+    let failure = translated_ee_item_update_cursor_failure(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    );
+    let failure_stage = failure
+        .map(|failure| failure.stage.as_str())
+        .unwrap_or("none");
+    let failure_read_cursor = failure
+        .map(|failure| failure.read_cursor.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let failure_bit_cursor = failure
+        .map(|failure| failure.bit_cursor.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let failure_mask = failure
+        .and_then(|failure| failure.mask)
+        .map(|mask| format!("0x{mask:08X}"))
+        .unwrap_or_else(|| "none".to_string());
+    let failure_orientation = failure
+        .and_then(|failure| failure.orientation_vector)
+        .map(|orientation| orientation.to_string())
+        .unwrap_or_else(|| "none".to_string());
     eprintln!(
-        "live-object item update rejected: offset={offset} record_end={record_end} bit_cursor={bit_cursor} raw_mask={} translated_mask={} next_bits={:?} nearby_verified_cursors={nearby:?}",
+        "live-object item update rejected: offset={offset} record_end={record_end} bit_cursor={bit_cursor} raw_mask={} translated_mask={} failure_stage={failure_stage} failure_read_cursor={failure_read_cursor} failure_bit_cursor={failure_bit_cursor} failure_mask={failure_mask} failure_orientation_vector={failure_orientation} next_bits={:?} nearby_verified_cursors={nearby:?}",
         raw_mask
             .map(|mask| format!("0x{mask:08X}"))
             .unwrap_or_else(|| "none".to_string()),
@@ -297,12 +409,31 @@ pub(super) fn advance_verified_ee_item_update_record(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    let mask = item_update_mask(bytes, offset, record_end)?;
+    parse_ee_item_update_cursor_claim(bytes, offset, record_end, fragment_bits, bit_cursor)
+        .ok()
+        .map(|claim| claim.next_bit_cursor)
+}
+
+pub(super) fn parse_ee_item_update_cursor_claim(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Result<ItemUpdateCursorClaim, ItemUpdateCursorFailure> {
+    let mask = item_update_mask(bytes, offset, record_end).ok_or_else(|| {
+        ItemUpdateCursorFailure::new(ItemUpdateCursorStage::Header, offset, bit_cursor, None)
+    })?;
     if !ee_item_update_mask_supported(mask) {
-        return None;
+        return Err(ItemUpdateCursorFailure::new(
+            ItemUpdateCursorStage::UnsupportedMask,
+            offset.saturating_add(LEGACY_UPDATE_HEADER_BYTES),
+            bit_cursor,
+            Some(mask),
+        ));
     }
 
-    let common = parse_item_update_common_prefix(
+    let common = parse_item_update_common_prefix_result(
         bytes,
         offset,
         record_end,
@@ -310,7 +441,7 @@ pub(super) fn advance_verified_ee_item_update_record(
         bit_cursor,
         mask,
     )?;
-    let (read_end, next_bit_cursor) = advance_verified_ee_item_tail(
+    let claim = advance_verified_ee_item_tail_claim(
         bytes,
         common.read_end,
         fragment_bits,
@@ -318,7 +449,41 @@ pub(super) fn advance_verified_ee_item_update_record(
         mask,
     )?;
 
-    (read_end == record_end).then_some(next_bit_cursor)
+    if claim.read_end != record_end {
+        return Err(ItemUpdateCursorFailure::new(
+            ItemUpdateCursorStage::RecordEnd,
+            claim.read_end,
+            claim.next_bit_cursor,
+            Some(mask),
+        ));
+    }
+
+    Ok(claim)
+}
+
+pub(super) fn translated_ee_item_update_cursor_failure(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<ItemUpdateCursorFailure> {
+    let raw_mask = item_update_mask(bytes, offset, record_end)?;
+    let translated_mask = translate_update_mask(raw_mask);
+    let mut candidate = bytes.to_vec();
+    if translated_mask != raw_mask
+        && write_u32_le(&mut candidate, offset + 6, translated_mask).is_none()
+    {
+        return Some(ItemUpdateCursorFailure::new(
+            ItemUpdateCursorStage::Header,
+            offset,
+            bit_cursor,
+            Some(translated_mask),
+        ));
+    }
+
+    parse_ee_item_update_cursor_claim(&candidate, offset, record_end, fragment_bits, bit_cursor)
+        .err()
 }
 
 pub(super) fn advance_legacy_item_update_fragment_cursor_for_transport(
@@ -450,22 +615,64 @@ fn parse_item_update_common_prefix(
     bit_cursor: usize,
     mask: u32,
 ) -> Option<ItemUpdateCommonPrefix> {
+    parse_item_update_common_prefix_result(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        mask,
+    )
+    .ok()
+}
+
+fn parse_item_update_common_prefix_result(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    mask: u32,
+) -> Result<ItemUpdateCommonPrefix, ItemUpdateCursorFailure> {
     if !legacy_item_update_mask_supported(mask) {
-        return None;
+        return Err(ItemUpdateCursorFailure::new(
+            ItemUpdateCursorStage::UnsupportedMask,
+            offset,
+            bit_cursor,
+            Some(mask),
+        ));
     }
 
-    let mut read_cursor = offset.checked_add(LEGACY_UPDATE_HEADER_BYTES)?;
+    let mut read_cursor = offset
+        .checked_add(LEGACY_UPDATE_HEADER_BYTES)
+        .ok_or_else(|| {
+            ItemUpdateCursorFailure::new(
+                ItemUpdateCursorStage::Header,
+                offset,
+                bit_cursor,
+                Some(mask),
+            )
+        })?;
     let mut fragment_cursor = bit_cursor;
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
-        fragment_cursor = advance_bits(
+        read_cursor = advance_read_cursor(
+            read_cursor,
+            LEGACY_UPDATE_POSITION_READ_BYTES,
+            record_end,
+            fragment_cursor,
+            mask,
+            ItemUpdateCursorStage::PositionReadBytes,
+            None,
+        )?;
+        fragment_cursor = advance_bits_result(
             fragment_bits,
             fragment_cursor,
             LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+            read_cursor,
+            mask,
+            ItemUpdateCursorStage::PositionBits,
+            None,
         )?;
-        if read_cursor > record_end {
-            return None;
-        }
     }
 
     if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
@@ -475,54 +682,111 @@ fn parse_item_update_common_prefix(
         // fields are scalar facing or XYZ orientation. A scalar-shaped byte
         // tail that verifies at a neighboring cursor is therefore ambiguity,
         // not permission to search or skip bits here.
-        let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
+        let vector_branch = fragment_bits.get(fragment_cursor).copied().ok_or_else(|| {
+            ItemUpdateCursorFailure::new(
+                ItemUpdateCursorStage::OrientationSelector,
+                read_cursor,
+                fragment_cursor,
+                Some(mask),
+            )
+        })?;
         if vector_branch {
-            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
-            fragment_cursor = advance_bits(
+            read_cursor = advance_read_cursor(
+                read_cursor,
+                EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES,
+                record_end,
+                fragment_cursor,
+                mask,
+                ItemUpdateCursorStage::OrientationVectorReadBytes,
+                Some(vector_branch),
+            )?;
+            fragment_cursor = advance_bits_result(
                 fragment_bits,
                 fragment_cursor,
                 EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
+                read_cursor,
+                mask,
+                ItemUpdateCursorStage::OrientationVectorBits,
+                Some(vector_branch),
             )?;
         } else {
-            read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
-            fragment_cursor = advance_bits(
+            read_cursor = advance_read_cursor(
+                read_cursor,
+                EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES,
+                record_end,
+                fragment_cursor,
+                mask,
+                ItemUpdateCursorStage::OrientationScalarReadBytes,
+                Some(vector_branch),
+            )?;
+            fragment_cursor = advance_bits_result(
                 fragment_bits,
                 fragment_cursor,
                 EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS,
+                read_cursor,
+                mask,
+                ItemUpdateCursorStage::OrientationScalarBits,
+                Some(vector_branch),
             )?;
-        }
-        if read_cursor > record_end {
-            return None;
         }
     }
 
     if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
-        let appearance_word = read_u16_le(bytes, read_cursor)?;
-        read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        let appearance_word = read_u16_le(bytes, read_cursor).ok_or_else(|| {
+            ItemUpdateCursorFailure::new(
+                ItemUpdateCursorStage::AppearanceWord,
+                read_cursor,
+                fragment_cursor,
+                Some(mask),
+            )
+        })?;
+        read_cursor = advance_read_cursor(
+            read_cursor,
+            EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+            record_end,
+            fragment_cursor,
+            mask,
+            ItemUpdateCursorStage::AppearanceWord,
+            None,
+        )?;
         if appearance_word >= 0xFFFE {
-            read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-        }
-        if read_cursor > record_end {
-            return None;
+            read_cursor = advance_read_cursor(
+                read_cursor,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+                record_end,
+                fragment_cursor,
+                mask,
+                ItemUpdateCursorStage::AppearanceResref,
+                None,
+            )?;
         }
     }
 
     if (mask & LEGACY_UPDATE_SCALE_STATE_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
-        if read_cursor > record_end {
-            return None;
-        }
-    }
-
-    if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-        fragment_cursor = advance_bits(
-            fragment_bits,
+        read_cursor = advance_read_cursor(
+            read_cursor,
+            EE_UPDATE_SCALE_STATE_READ_BYTES,
+            record_end,
             fragment_cursor,
-            LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+            mask,
+            ItemUpdateCursorStage::ScaleStateReadBytes,
+            None,
         )?;
     }
 
-    Some(ItemUpdateCommonPrefix {
+    if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        fragment_cursor = advance_bits_result(
+            fragment_bits,
+            fragment_cursor,
+            LEGACY_UPDATE_STATE_FRAGMENT_BITS,
+            read_cursor,
+            mask,
+            ItemUpdateCursorStage::StateBits,
+            None,
+        )?;
+    }
+
+    Ok(ItemUpdateCommonPrefix {
         read_end: read_cursor,
         next_bit_cursor: fragment_cursor,
     })
@@ -556,13 +820,13 @@ fn legacy_item_update_mask_supported(mask: u32) -> bool {
     mask != 0 && (mask & !allowed) == 0
 }
 
-fn advance_verified_ee_item_tail(
+fn advance_verified_ee_item_tail_claim(
     bytes: &[u8],
     read_cursor: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
     mask: u32,
-) -> Option<(usize, usize)> {
+) -> Result<ItemUpdateCursorClaim, ItemUpdateCursorFailure> {
     let mut read_cursor = read_cursor;
     let mut fragment_cursor = bit_cursor;
 
@@ -572,26 +836,144 @@ fn advance_verified_ee_item_tail(
         // EE `sub_1407A08F0` matches that shape at
         // 0x1407A0A07..0x1407A0A7A. The following overflow checks are not
         // another fragment bit owner.
-        let uses_locstring = fragment_bits.get(fragment_cursor).copied()?;
-        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        let uses_locstring = fragment_bits.get(fragment_cursor).copied().ok_or_else(|| {
+            ItemUpdateCursorFailure::new(
+                ItemUpdateCursorStage::NameSelector,
+                read_cursor,
+                fragment_cursor,
+                Some(mask),
+            )
+        })?;
+        fragment_cursor = advance_bits_result(
+            fragment_bits,
+            fragment_cursor,
+            1,
+            read_cursor,
+            mask,
+            ItemUpdateCursorStage::NameSelector,
+            None,
+        )?;
         if uses_locstring {
-            let uses_tlk_ref = fragment_bits.get(fragment_cursor).copied()?;
-            fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+            let uses_tlk_ref = fragment_bits.get(fragment_cursor).copied().ok_or_else(|| {
+                ItemUpdateCursorFailure::new(
+                    ItemUpdateCursorStage::NameModeSelector,
+                    read_cursor,
+                    fragment_cursor,
+                    Some(mask),
+                )
+            })?;
+            fragment_cursor = advance_bits_result(
+                fragment_bits,
+                fragment_cursor,
+                1,
+                read_cursor,
+                mask,
+                ItemUpdateCursorStage::NameModeSelector,
+                None,
+            )?;
             read_cursor = if uses_tlk_ref {
-                locstring::tlk_locstring_ref_end(bytes, read_cursor)?
+                locstring::tlk_locstring_ref_end(bytes, read_cursor).ok_or_else(|| {
+                    ItemUpdateCursorFailure::new(
+                        ItemUpdateCursorStage::NameTlkRef,
+                        read_cursor,
+                        fragment_cursor,
+                        Some(mask),
+                    )
+                })?
             } else {
-                locstring::inline_cexo_string_end(bytes, read_cursor)?
+                locstring::inline_cexo_string_end(bytes, read_cursor).ok_or_else(|| {
+                    ItemUpdateCursorFailure::new(
+                        ItemUpdateCursorStage::NameInlineLocString,
+                        read_cursor,
+                        fragment_cursor,
+                        Some(mask),
+                    )
+                })?
             };
         } else {
-            read_cursor = locstring::inline_cexo_string_end(bytes, read_cursor)?;
+            read_cursor =
+                locstring::inline_cexo_string_end(bytes, read_cursor).ok_or_else(|| {
+                    ItemUpdateCursorFailure::new(
+                        ItemUpdateCursorStage::NameInlineString,
+                        read_cursor,
+                        fragment_cursor,
+                        Some(mask),
+                    )
+                })?;
         }
     }
 
     if (mask & EE_ITEM_UPDATE_HIDDEN_MASK) != 0 {
-        fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
+        fragment_cursor = advance_bits_result(
+            fragment_bits,
+            fragment_cursor,
+            1,
+            read_cursor,
+            mask,
+            ItemUpdateCursorStage::HiddenBit,
+            None,
+        )?;
     }
 
-    Some((read_cursor, fragment_cursor))
+    Ok(ItemUpdateCursorClaim {
+        read_end: read_cursor,
+        next_bit_cursor: fragment_cursor,
+    })
+}
+
+fn advance_read_cursor(
+    read_cursor: usize,
+    byte_count: usize,
+    record_end: usize,
+    bit_cursor: usize,
+    mask: u32,
+    stage: ItemUpdateCursorStage,
+    orientation_vector: Option<bool>,
+) -> Result<usize, ItemUpdateCursorFailure> {
+    let next = read_cursor.checked_add(byte_count).ok_or_else(|| {
+        let failure = ItemUpdateCursorFailure::new(stage, read_cursor, bit_cursor, Some(mask));
+        if let Some(orientation_vector) = orientation_vector {
+            failure.with_orientation(orientation_vector)
+        } else {
+            failure
+        }
+    })?;
+    if next > record_end {
+        let failure = ItemUpdateCursorFailure::new(stage, next, bit_cursor, Some(mask));
+        return Err(if let Some(orientation_vector) = orientation_vector {
+            failure.with_orientation(orientation_vector)
+        } else {
+            failure
+        });
+    }
+    Ok(next)
+}
+
+fn advance_bits_result(
+    bits: &[bool],
+    cursor: usize,
+    count: usize,
+    read_cursor: usize,
+    mask: u32,
+    stage: ItemUpdateCursorStage,
+    orientation_vector: Option<bool>,
+) -> Result<usize, ItemUpdateCursorFailure> {
+    if bits.len().saturating_sub(cursor) < count {
+        let failure = ItemUpdateCursorFailure::new(stage, read_cursor, cursor, Some(mask));
+        return Err(if let Some(orientation_vector) = orientation_vector {
+            failure.with_orientation(orientation_vector)
+        } else {
+            failure
+        });
+    }
+    cursor.checked_add(count).ok_or_else(|| {
+        let failure = ItemUpdateCursorFailure::new(stage, read_cursor, cursor, Some(mask));
+        if let Some(orientation_vector) = orientation_vector {
+            failure.with_orientation(orientation_vector)
+        } else {
+            failure
+        }
+    })
 }
 
 #[cfg(test)]
@@ -751,6 +1133,11 @@ mod tests {
             translate_update_mask(DIAMOND_ITEM_FULL_UPDATE_MASK),
         )
         .expect("mask write");
+        let failure =
+            translated_ee_item_update_cursor_failure(&live, 0, live.len(), &shifted_bits, 0)
+                .expect("shifted full-mask row should report a translated EE failure");
+        assert_eq!(failure.mask, Some(DIAMOND_ITEM_FULL_UPDATE_EE_MASK));
+        assert_ne!(failure.stage, ItemUpdateCursorStage::Header);
         assert!(
             advance_verified_ee_item_update_record(
                 &translated,
@@ -781,6 +1168,33 @@ mod tests {
         );
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
+    }
+
+    #[test]
+    fn item_update_cursor_failure_reports_orientation_vector_read_stage() {
+        let live = legacy_hidden_item_update_with_mask(
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK,
+            &[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F, 0x00],
+        );
+        let bits = vec![
+            true, true, // position residual bits.
+            true, // vector orientation selector over a scalar-shaped byte tail.
+        ];
+
+        let failure = translated_ee_item_update_cursor_failure(&live, 0, live.len(), &bits, 0)
+            .expect("scalar-shaped orientation bytes should fail from a vector-selected cursor");
+
+        assert_eq!(
+            failure.stage,
+            ItemUpdateCursorStage::OrientationVectorReadBytes
+        );
+        assert_eq!(failure.read_cursor, LEGACY_UPDATE_HEADER_BYTES + 6 + 6);
+        assert_eq!(failure.bit_cursor, LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+        assert_eq!(
+            failure.mask,
+            Some(LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK)
+        );
+        assert_eq!(failure.orientation_vector, Some(true));
     }
 
     #[test]
@@ -839,11 +1253,4 @@ mod tests {
         assert_eq!(live, original);
         assert_eq!(record_end, original.len());
     }
-}
-
-fn advance_bits(bits: &[bool], cursor: usize, count: usize) -> Option<usize> {
-    if bits.len().saturating_sub(cursor) < count {
-        return None;
-    }
-    cursor.checked_add(count)
 }

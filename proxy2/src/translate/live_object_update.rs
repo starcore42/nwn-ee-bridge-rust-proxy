@@ -6798,6 +6798,30 @@ fn trace_item_update_source_window(
             .get(focus_index)
             .map(|claim| claim.bit_start)
             .unwrap_or(bit_cursor);
+        if let Some(failure) = item::translated_ee_item_update_cursor_failure(
+            live_bytes,
+            focus_row.offset,
+            focus_row.record_end,
+            fragment_bits,
+            expected_bit_cursor,
+        ) {
+            let failure_mask = failure
+                .mask
+                .map(|mask| format!("0x{mask:08X}"))
+                .unwrap_or_else(|| "none".to_string());
+            let orientation = failure
+                .orientation_vector
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            eprintln!(
+                "live-object item update source window focus failure: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} stage={} read_cursor={} fail_bit_cursor={} mask={} orientation_vector={}",
+                failure.stage.as_str(),
+                failure.read_cursor,
+                failure.bit_cursor,
+                failure_mask,
+                orientation
+            );
+        }
         let preceding_claim_bit_end = focus_index
             .checked_sub(1)
             .and_then(|previous| row_claims.get(previous))

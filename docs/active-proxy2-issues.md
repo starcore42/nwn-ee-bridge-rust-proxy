@@ -2449,6 +2449,17 @@ Current status:
   `inside-focus-row`: the preceding claims end at the inherited cursor, so a
   scalar-shaped fit two bits later is not ownership proof. Continue with compact
   source writer/capture evidence before assigning those bits.
+- 2026-06-09 `P/05/01` item `U/6` cursor-stage diagnostic: no packet rewrite
+  behavior changed. Refactored the production item-update cursor validator to
+  return a typed EE claim/failure result with stage, read cursor, bit cursor,
+  translated mask, and orientation branch metadata, then wired that into the
+  live-object source-window debug output. Focused coverage proves a
+  vector-selected cursor over scalar-shaped item update bytes reports the
+  `orientation-vector-read-bytes` failure stage, while the existing full-mask
+  `U/6` shifted-cursor regression still refuses to search neighboring cursors.
+  The active two pre-`U/6` bits remain unowned; next useful production path is
+  still compact source writer/capture evidence before the `U/10`/`A/6`/`U/6`
+  handoff.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
