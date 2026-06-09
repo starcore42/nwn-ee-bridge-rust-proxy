@@ -2499,6 +2499,19 @@ Current status:
   compact handoff fixture. This still does not assign the two active
   pre-`U/6` bits; next verification is another compact-source capture/debug run
   before the `U/10`/`A/6`/`U/6` boundary, not a cursor skip or scalar rescue.
+- 2026-06-09 `P/05/01` live-object rewrite ledger cursor-gap diagnostic: no
+  packet rewrite behavior changed. The committed-row ledger now classifies a
+  focus or neighboring cursor against the previous emitted EE row and reports
+  `after-previous-emitted-end`, `inside-previous-emitted-row`, or
+  `unowned-emitted-gap` plus the source/emitted delta. A private CEP v2.3
+  handoff rerun with `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM=1` and
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET=104,148` shows the real
+  `U/6` focus cursor at bit `28` is exactly after the committed no-map `A/6`
+  emitted range `22..28`, while the scalar-looking `+2` item candidate starts
+  at bit `30` with `ledger_relation=unowned-emitted-gap` and
+  `ledger_emitted_gap_bits=2`. This confirms the neighboring scalar fit still
+  requires two unowned emitted bits after committed rows; continue with compact
+  source writer/capture proof before assigning those bits.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

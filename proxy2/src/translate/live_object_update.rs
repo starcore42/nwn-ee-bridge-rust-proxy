@@ -413,6 +413,88 @@ mod diagnostic_tests {
             "the source cursor remains distinct from the EE-emitted cursor after insertions"
         );
     }
+
+    #[test]
+    fn rewrite_bit_ledger_classifies_unowned_emitted_cursor_gap() {
+        let mut live = vec![0; 32];
+        live[0] = b'A';
+        live[1] = DOOR_OBJECT_TYPE;
+        live[6] = b'U';
+        live[7] = DOOR_OBJECT_TYPE;
+        live[16] = b'A';
+        live[17] = ITEM_OBJECT_TYPE;
+        let mut ledger = Vec::new();
+        let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            0,
+            6,
+            CNW_FRAGMENT_HEADER_BITS,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            0,
+            0,
+            "add-exact",
+        );
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            6,
+            16,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            6,
+            1,
+            "update-rewrite",
+        );
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            16,
+            32,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            CNW_FRAGMENT_HEADER_BITS + 25,
+            1,
+            0,
+            "add-rewrite",
+        );
+
+        let exact_cursor = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
+            &ledger,
+            CNW_FRAGMENT_HEADER_BITS + 25,
+        )
+        .expect("exact cursor should be classified against the previous row");
+        assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
+        assert_eq!(exact_cursor.emitted_gap_bits, 0);
+        assert_eq!(
+            exact_cursor.previous_source_bit_end,
+            CNW_FRAGMENT_HEADER_BITS + 19
+        );
+        assert_eq!(
+            exact_cursor.previous_emitted_bit_end,
+            CNW_FRAGMENT_HEADER_BITS + 25
+        );
+        assert_eq!(
+            exact_cursor.source_emitted_delta_after_previous, 6,
+            "the focus cursor is six EE-inserted bits beyond the source cursor"
+        );
+
+        let shifted_candidate = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
+            &ledger,
+            CNW_FRAGMENT_HEADER_BITS + 27,
+        )
+        .expect("shifted neighbor cursor should be classified against the previous row");
+        assert_eq!(shifted_candidate.relation, "unowned-emitted-gap");
+        assert_eq!(shifted_candidate.emitted_gap_bits, 2);
+        assert_eq!(
+            shifted_candidate.source_emitted_delta_after_previous, 8,
+            "a +2 neighboring fit requires two unowned emitted bits after the committed rows"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -6506,6 +6588,19 @@ struct LiveObjectRewriteBitLedgerEntry {
     family: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectRewriteBitLedgerCursorGap {
+    previous_offset: usize,
+    previous_record_end: usize,
+    previous_family: &'static str,
+    previous_source_bit_end: usize,
+    previous_emitted_bit_end: usize,
+    cursor: usize,
+    emitted_gap_bits: usize,
+    source_emitted_delta_after_previous: isize,
+    relation: &'static str,
+}
+
 fn push_live_object_rewrite_bit_ledger_entry(
     ledger: &mut Vec<LiveObjectRewriteBitLedgerEntry>,
     source_bit_cursor: &mut usize,
@@ -6546,6 +6641,52 @@ fn push_live_object_rewrite_bit_ledger_entry(
         bits_removed,
         family,
     });
+}
+
+fn live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
+    ledger: &[LiveObjectRewriteBitLedgerEntry],
+    cursor: usize,
+) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
+    let previous = ledger
+        .iter()
+        .rev()
+        .find(|entry| entry.emitted_bit_start < cursor && cursor < entry.emitted_bit_end)
+        .or_else(|| {
+            ledger
+                .iter()
+                .rev()
+                .find(|entry| entry.emitted_bit_end <= cursor)
+        })
+        .or_else(|| ledger.first())?;
+    let relation = if cursor < previous.emitted_bit_start {
+        "before-ledger-row"
+    } else if cursor < previous.emitted_bit_end {
+        "inside-previous-emitted-row"
+    } else if cursor == previous.emitted_bit_end {
+        "after-previous-emitted-end"
+    } else {
+        "unowned-emitted-gap"
+    };
+    let emitted_gap_bits = cursor.saturating_sub(previous.emitted_bit_end);
+    Some(LiveObjectRewriteBitLedgerCursorGap {
+        previous_offset: previous.offset,
+        previous_record_end: previous.record_end,
+        previous_family: previous.family,
+        previous_source_bit_end: previous.source_bit_end,
+        previous_emitted_bit_end: previous.emitted_bit_end,
+        cursor,
+        emitted_gap_bits,
+        source_emitted_delta_after_previous: signed_bit_delta(cursor, previous.source_bit_end),
+        relation,
+    })
+}
+
+fn signed_bit_delta(left: usize, right: usize) -> isize {
+    if left >= right {
+        isize::try_from(left - right).unwrap_or(isize::MAX)
+    } else {
+        -isize::try_from(right - left).unwrap_or(isize::MAX)
+    }
 }
 
 fn live_object_source_window_rows(
@@ -6959,6 +7100,22 @@ fn trace_item_update_source_window(
             entry.bits_removed
         );
     }
+    if let Some(gap) =
+        live_object_rewrite_bit_ledger_cursor_gap_before_cursor(rewrite_bit_ledger, bit_cursor)
+    {
+        eprintln!(
+            "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
+            gap.cursor,
+            gap.relation,
+            gap.emitted_gap_bits,
+            gap.source_emitted_delta_after_previous,
+            gap.previous_offset,
+            gap.previous_record_end,
+            gap.previous_family,
+            gap.previous_source_bit_end,
+            gap.previous_emitted_bit_end
+        );
+    }
 
     let rows = live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3);
     let initial_bit_cursor = if rows.first().is_some_and(|row| row.offset == 0) {
@@ -7025,6 +7182,25 @@ fn trace_item_update_source_window(
             fragment_bits,
             expected_bit_cursor,
         ) {
+            if expected_bit_cursor != bit_cursor {
+                if let Some(gap) = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
+                    rewrite_bit_ledger,
+                    expected_bit_cursor,
+                ) {
+                    eprintln!(
+                        "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
+                        gap.cursor,
+                        gap.relation,
+                        gap.emitted_gap_bits,
+                        gap.source_emitted_delta_after_previous,
+                        gap.previous_offset,
+                        gap.previous_record_end,
+                        gap.previous_family,
+                        gap.previous_source_bit_end,
+                        gap.previous_emitted_bit_end
+                    );
+                }
+            }
             let failure_mask = failure
                 .mask
                 .map(|mask| format!("0x{mask:08X}"))
@@ -7057,15 +7233,38 @@ fn trace_item_update_source_window(
                 .orientation_vector
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
+            let ledger_gap = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
+                rewrite_bit_ledger,
+                neighbor.bit_start,
+            );
+            let ledger_relation = ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger");
+            let ledger_emitted_gap_bits = ledger_gap
+                .map(|gap| gap.emitted_gap_bits.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let ledger_source_delta = ledger_gap
+                .map(|gap| gap.source_emitted_delta_after_previous.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let ledger_previous = ledger_gap
+                .map(|gap| {
+                    format!(
+                        "{}..{}:{}",
+                        gap.previous_offset, gap.previous_record_end, gap.previous_family
+                    )
+                })
+                .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={}",
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
                 neighbor.delta,
                 neighbor.bit_start,
                 neighbor.bit_end,
                 neighbor.read_end,
                 neighbor.translated_mask,
                 orientation,
-                neighbor.relation
+                neighbor.relation,
+                ledger_relation,
+                ledger_emitted_gap_bits,
+                ledger_source_delta,
+                ledger_previous
             );
         }
     }
