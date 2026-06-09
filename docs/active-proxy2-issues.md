@@ -2489,6 +2489,16 @@ Current status:
   the parser contract the rewriter can actually commit. This still does not
   assign the two active pre-`U/6` bits; next proof remains compact source
   writer/capture evidence before `U/10`/`A/6`/`U/6`.
+- 2026-06-09 `P/05/01` live-object rewrite bit-ledger diagnostic: no packet
+  rewrite behavior changed. The update pass now records a bounded debug ledger
+  for committed add/update rows with source bit cursor, emitted EE bit cursor,
+  and inserted/removed bit deltas. When a reliable cursor fails at item `U/6`,
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` source-window output includes that ledger
+  before the row-window reconstruction, so the compact `U/10 tail9` and typed
+  `A/6` source-vs-emitted cursor gap can be checked directly on the private
+  compact handoff fixture. This still does not assign the two active
+  pre-`U/6` bits; next verification is another compact-source capture/debug run
+  before the `U/10`/`A/6`/`U/6` boundary, not a cursor skip or scalar rescue.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

@@ -344,6 +344,75 @@ mod diagnostic_tests {
             "the nearby item candidate consumes the bounded U/6 read bytes"
         );
     }
+
+    #[test]
+    fn rewrite_bit_ledger_tracks_source_and_emitted_cursors() {
+        let mut live = vec![0; 32];
+        live[0] = b'A';
+        live[1] = DOOR_OBJECT_TYPE;
+        live[6] = b'U';
+        live[7] = DOOR_OBJECT_TYPE;
+        live[16] = b'A';
+        live[17] = ITEM_OBJECT_TYPE;
+        let mut ledger = Vec::new();
+        let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            0,
+            6,
+            CNW_FRAGMENT_HEADER_BITS,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            0,
+            0,
+            "add-exact",
+        );
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            6,
+            16,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            6,
+            1,
+            "update-rewrite",
+        );
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut ledger,
+            &mut source_bit_cursor,
+            &live,
+            16,
+            32,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            CNW_FRAGMENT_HEADER_BITS + 25,
+            1,
+            0,
+            "add-rewrite",
+        );
+
+        assert_eq!(ledger.len(), 3);
+        assert_eq!(ledger[0].source_bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(ledger[0].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 6);
+        assert_eq!(ledger[1].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 6);
+        assert_eq!(
+            ledger[1].source_bit_end,
+            CNW_FRAGMENT_HEADER_BITS + 14,
+            "six inserted EE bits and one removed legacy bit mean the source row consumed eight bits"
+        );
+        assert_eq!(ledger[1].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
+        assert_eq!(ledger[2].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 14);
+        assert_eq!(ledger[2].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
+        assert_eq!(ledger[2].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 25);
+        assert_eq!(
+            source_bit_cursor,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            "the source cursor remains distinct from the EE-emitted cursor after insertions"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3352,6 +3421,8 @@ pub fn rewrite_update_records_payload_if_possible(
         }
     }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+    let mut rewrite_bit_ledger = Vec::new();
     let mut bit_cursor_reliable = true;
     let mut fatal_item_update_cursor_failure = false;
     let mut pending_creature_p_tail_repair: Option<
@@ -4210,6 +4281,18 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
+                    push_live_object_rewrite_bit_ledger_entry(
+                        &mut rewrite_bit_ledger,
+                        &mut source_bit_cursor,
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        exact_add_start_bit_cursor,
+                        bit_cursor,
+                        0,
+                        0,
+                        "add-exact",
+                    );
                     last_verified_record_end = record_end;
                     let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                         && creature::looks_like_ee_creature_add_record(
@@ -4262,6 +4345,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 bit_cursor = exact_add_start_bit_cursor;
 
                 if !appearance::starts_with_typed_live_object_add_marker(&live_bytes, offset) {
+                    let repair_start_bit_cursor = bit_cursor;
                     if let Some(repair) = appearance::repair_verified_ee_item_add_name_fragment_bits(
                         &live_bytes,
                         offset,
@@ -4277,6 +4361,18 @@ pub fn rewrite_update_records_payload_if_possible(
                             .bits_removed
                             .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
                         bit_cursor = repair.next_bit_cursor;
+                        push_live_object_rewrite_bit_ledger_entry(
+                            &mut rewrite_bit_ledger,
+                            &mut source_bit_cursor,
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            repair_start_bit_cursor,
+                            bit_cursor,
+                            repair.bits_inserted,
+                            repair.bits_removed,
+                            "add-name-fragment-repair",
+                        );
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record =
@@ -4305,6 +4401,8 @@ pub fn rewrite_update_records_payload_if_possible(
                     }
                 }
 
+                let mut add_extra_bits_inserted = 0usize;
+                let mut add_extra_bits_removed = 0usize;
                 if object_type == ITEM_OBJECT_TYPE {
                     if let Some(item_rewrite) = appearance::insert_ee_item_create_extras_for_ee(
                         &mut live_bytes,
@@ -4332,6 +4430,10 @@ pub fn rewrite_update_records_payload_if_possible(
                                 u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
                             );
                         }
+                        add_extra_bits_inserted =
+                            add_extra_bits_inserted.saturating_add(item_rewrite.bits_inserted);
+                        add_extra_bits_removed =
+                            add_extra_bits_removed.saturating_add(item_rewrite.bits_removed);
                     }
                 }
 
@@ -4362,6 +4464,10 @@ pub fn rewrite_update_records_payload_if_possible(
                                 u32::try_from(item_rewrite.bytes_removed).unwrap_or(u32::MAX),
                             );
                         }
+                        add_extra_bits_inserted =
+                            add_extra_bits_inserted.saturating_add(item_rewrite.bits_inserted);
+                        add_extra_bits_removed =
+                            add_extra_bits_removed.saturating_add(item_rewrite.bits_removed);
                     }
                 }
 
@@ -4373,6 +4479,22 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
+                    push_live_object_rewrite_bit_ledger_entry(
+                        &mut rewrite_bit_ledger,
+                        &mut source_bit_cursor,
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        exact_add_start_bit_cursor,
+                        bit_cursor,
+                        add_extra_bits_inserted,
+                        add_extra_bits_removed,
+                        if add_extra_bits_inserted != 0 || add_extra_bits_removed != 0 {
+                            "add-rewrite"
+                        } else {
+                            "add-exact"
+                        },
+                    );
                     last_verified_record_end = record_end;
                     let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                         && creature::looks_like_ee_creature_add_record(
@@ -5692,6 +5814,7 @@ pub fn rewrite_update_records_payload_if_possible(
 
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
         let bit_cursor_was_reliable = bit_cursor_reliable;
+        let update_start_bit_cursor = bit_cursor;
         let Some(record_rewrite) = record::rewrite_update_record_for_ee(
             &mut live_bytes,
             &mut record_end,
@@ -5716,6 +5839,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     record_end,
                     &fragment_bits,
                     bit_cursor,
+                    &rewrite_bit_ledger,
                 );
                 fatal_item_update_cursor_failure = true;
             }
@@ -5747,6 +5871,22 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
+        push_live_object_rewrite_bit_ledger_entry(
+            &mut rewrite_bit_ledger,
+            &mut source_bit_cursor,
+            &live_bytes,
+            offset,
+            record_end,
+            update_start_bit_cursor,
+            bit_cursor,
+            usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX),
+            usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX),
+            if record_rewrite.rewritten {
+                "update-rewrite"
+            } else {
+                "update-exact"
+            },
+        );
         // `W current total` is fragment-neutral in Diamond `sub_44F160` and
         // EE `sub_1407B85A0`: it never donates missing BOOLs to the preceding
         // update. A final W suffix may only preserve the older family terminal
@@ -6351,6 +6491,63 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     relation: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectRewriteBitLedgerEntry {
+    offset: usize,
+    record_end: usize,
+    opcode: u8,
+    marker: u8,
+    source_bit_start: usize,
+    source_bit_end: usize,
+    emitted_bit_start: usize,
+    emitted_bit_end: usize,
+    bits_inserted: usize,
+    bits_removed: usize,
+    family: &'static str,
+}
+
+fn push_live_object_rewrite_bit_ledger_entry(
+    ledger: &mut Vec<LiveObjectRewriteBitLedgerEntry>,
+    source_bit_cursor: &mut usize,
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    emitted_bit_start: usize,
+    emitted_bit_end: usize,
+    bits_inserted: usize,
+    bits_removed: usize,
+    family: &'static str,
+) {
+    let Some(emitted_delta) = emitted_bit_end.checked_sub(emitted_bit_start) else {
+        return;
+    };
+    let Some(source_delta_before_insertions) = emitted_delta.checked_add(bits_removed) else {
+        return;
+    };
+    let Some(source_delta) = source_delta_before_insertions.checked_sub(bits_inserted) else {
+        return;
+    };
+    let source_bit_start = *source_bit_cursor;
+    let Some(source_bit_end) = source_bit_start.checked_add(source_delta) else {
+        return;
+    };
+
+    *source_bit_cursor = source_bit_end;
+    ledger.push(LiveObjectRewriteBitLedgerEntry {
+        offset,
+        record_end,
+        opcode: live_bytes.get(offset).copied().unwrap_or_default(),
+        marker: live_bytes.get(offset + 1).copied().unwrap_or_default(),
+        source_bit_start,
+        source_bit_end,
+        emitted_bit_start,
+        emitted_bit_end,
+        bits_inserted,
+        bits_removed,
+        family,
+    });
+}
+
 fn live_object_source_window_rows(
     live_bytes: &[u8],
     focus_offset: usize,
@@ -6726,6 +6923,7 @@ fn trace_item_update_source_window(
     focus_record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
+    rewrite_bit_ledger: &[LiveObjectRewriteBitLedgerEntry],
 ) {
     if !debug_live_claim_enabled_for_span(focus_offset, focus_record_end) {
         return;
@@ -6740,6 +6938,27 @@ fn trace_item_update_source_window(
         "live-object item update source window: reason={reason} focus_offset={focus_offset} focus_record_end={focus_record_end} bit_cursor={bit_cursor} fragment_bits={} before_cursor_bits={before_bits:?} after_cursor_bits={after_bits:?}",
         fragment_bits.len()
     );
+    let ledger_start = rewrite_bit_ledger.len().saturating_sub(8);
+    for entry in rewrite_bit_ledger.iter().skip(ledger_start) {
+        eprintln!(
+            "live-object rewrite bit ledger row: offset={} record_end={} opcode=0x{:02X} marker=0x{:02X} family={} source_bits={}..{} source_delta={} emitted_bits={}..{} emitted_delta={} bits_inserted={} bits_removed={}",
+            entry.offset,
+            entry.record_end,
+            entry.opcode,
+            entry.marker,
+            entry.family,
+            entry.source_bit_start,
+            entry.source_bit_end,
+            entry.source_bit_end.saturating_sub(entry.source_bit_start),
+            entry.emitted_bit_start,
+            entry.emitted_bit_end,
+            entry
+                .emitted_bit_end
+                .saturating_sub(entry.emitted_bit_start),
+            entry.bits_inserted,
+            entry.bits_removed
+        );
+    }
 
     let rows = live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3);
     let initial_bit_cursor = if rows.first().is_some_and(|row| row.offset == 0) {
