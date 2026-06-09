@@ -35,12 +35,13 @@ const DIAMOND_ITEM_FULL_UPDATE_EE_MASK: u32 = LEGACY_UPDATE_POSITION_MASK
     | LEGACY_UPDATE_APPEARANCE_MASK
     | LEGACY_UPDATE_NAME_MASK;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub(super) struct ItemUpdateRewrite {
     pub(super) rewritten: bool,
     pub(super) mask_changed: bool,
     pub(super) bytes_removed: u32,
     pub(super) next_bit_cursor: usize,
+    pub(super) claim: ItemUpdateRewriteClaim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,8 +224,9 @@ fn rewrite_update_record_for_ee_inner(
     Some(ItemUpdateRewrite {
         rewritten: claim.mask_changed(),
         mask_changed: claim.mask_changed(),
+        bytes_removed: 0,
         next_bit_cursor: claim.cursor.next_bit_cursor,
-        ..ItemUpdateRewrite::default()
+        claim,
     })
 }
 

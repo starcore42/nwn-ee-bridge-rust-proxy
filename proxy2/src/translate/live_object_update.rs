@@ -6550,6 +6550,24 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
+        if let Some(item_claim) = record_rewrite.item_update_claim {
+            let current_mask = read_u32_le(&live_bytes, offset + 6);
+            if item_claim.cursor.read_end != record_end
+                || item_claim.cursor.next_bit_cursor != bit_cursor
+                || current_mask != Some(item_claim.translated_mask)
+            {
+                trace_update_rewrite_cursor_unreliable(
+                    "item-update-accepted-claim-commit-mismatch",
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    update_start_bit_cursor,
+                );
+                bit_cursor_reliable = false;
+                offset = record_end.max(offset + 1);
+                continue;
+            }
+        }
         if !rewrite_bit_ledger.commit_record(
             &live_bytes,
             LiveObjectRewriteBitLedgerCommit {
@@ -6559,7 +6577,13 @@ pub fn rewrite_update_records_payload_if_possible(
                 emitted_bit_end: bit_cursor,
                 bits_inserted: usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX),
                 bits_removed: usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX),
-                family: if record_rewrite.rewritten {
+                family: if record_rewrite.item_update_claim.is_some() {
+                    if record_rewrite.rewritten {
+                        "item-update-rewrite"
+                    } else {
+                        "item-update-exact"
+                    }
+                } else if record_rewrite.rewritten {
                     "update-rewrite"
                 } else {
                     "update-exact"

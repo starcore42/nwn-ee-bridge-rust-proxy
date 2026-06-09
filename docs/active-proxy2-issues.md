@@ -2237,6 +2237,20 @@ Current status:
   post-name bytes unowned. The active CEP v2.3 two-bit owner still requires a
   true server writer/handoff trace or local Diamond harness capture before the
   top-level `U/10`/`A/6`/`U/6` sequence.
+- 2026-06-10 `P/05/01` item `U/6` rewrite-claim propagation: packet behavior
+  remains exact-validator gated. The item update rewrite now carries the
+  accepted immutable `ItemUpdateRewriteClaim` through the shared update-record
+  rewrite, and the live-object rewrite ledger refuses to commit an item `U/6`
+  row if the emitted mask, read end, or final bit cursor no longer match that
+  accepted claim. This does not assign the CEP v2.3 two disputed bits and does
+  not add cursor retry/skip behavior; it makes future diagnostics and ledger
+  source-delta accounting consume the same typed `U/6` proof as the parser.
+  Verified with `CARGO_INCREMENTAL=0
+  CARGO_TARGET_DIR=C:\nwnbridge\codex-target-ee-bridge-20260610-item-claim-commit
+  cargo test -q -p hgbridge-proxy2
+  successful_item_update_rewrite_reports_accepted_claim -- --nocapture`,
+  `item_update_rewrite_claim`, `item_failure_source_window`, and
+  `raw_neighbor_u6`.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls

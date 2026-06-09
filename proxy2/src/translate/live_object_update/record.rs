@@ -29,6 +29,7 @@ pub(super) struct RecordRewrite {
     pub(super) bytes_removed: u32,
     pub(super) bits_inserted: u32,
     pub(super) bits_removed: u32,
+    pub(super) item_update_claim: Option<item::ItemUpdateRewriteClaim>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -174,6 +175,7 @@ pub(super) fn rewrite_update_record_for_ee(
             rewritten: item_rewrite.rewritten,
             mask_changed: item_rewrite.mask_changed,
             bytes_removed: item_rewrite.bytes_removed,
+            item_update_claim: Some(item_rewrite.claim),
             ..RecordRewrite::default()
         };
         if rewrite.rewritten {
@@ -2456,5 +2458,51 @@ mod tests {
         assert_eq!(record_end, original_live.len());
         assert_eq!(live, original_live);
         assert_eq!(bits, original_bits);
+    }
+
+    #[test]
+    fn successful_item_update_rewrite_reports_accepted_claim() {
+        let mut live = scalar_item_update_with_full_legacy_mask();
+        let mut record_end = live.len();
+        let mut bits = vec![
+            true, true, // position residual bits.
+            false, true, false, true, true, // scalar orientation selector/residuals.
+            false, false, false, false, false, // state bits.
+            false, // direct CExoString item name.
+            true,  // following stream bit, not owned by the raw Diamond full mask.
+        ];
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        let rewrite = rewrite_update_record_for_ee(
+            &mut live,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            &mut bit_cursor_reliable,
+            0,
+        )
+        .expect("decompile-shaped full item update should rewrite through the item claim");
+        let claim = rewrite
+            .item_update_claim
+            .expect("item update rewrites must report the accepted cursor claim");
+
+        assert!(bit_cursor_reliable);
+        assert!(rewrite.rewritten);
+        assert!(rewrite.mask_changed);
+        assert_eq!(claim.raw_mask, 0xFFFF_FFF3);
+        assert_eq!(
+            claim.translated_mask,
+            item::translate_update_mask(0xFFFF_FFF3)
+        );
+        assert_eq!(claim.cursor.read_end, record_end);
+        assert_eq!(claim.cursor.next_bit_cursor, bit_cursor);
+        assert_eq!(claim.cursor.orientation_vector, Some(false));
+        assert_eq!(read_u32_le(&live, 6), Some(claim.translated_mask));
+        assert_eq!(
+            bit_cursor,
+            bits.len() - 1,
+            "the following stream bit remains outside the item U/6 claim"
+        );
     }
 }
