@@ -555,6 +555,19 @@ Current status:
   --nocapture`, and `cargo test -q -p hgbridge-proxy2
   public_static_direction_tests -- --nocapture`. Keep the broader issue open
   pending visual replay against a confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` named static resource proof audit: aligned the
+  named-area module-resource selector with the same safe static-row predicate
+  used by repair and context export. A named area packet can no longer select a
+  local module resource from a static GIT row whose replacement geometry or
+  bearing is outside the decompiled static-row value domain, even when
+  appearance plus two coordinates match. Static row claims now also retain the
+  packet object id and the context exporter rechecks the raw row claim before
+  attaching module trap/use/lock state. Verified with `cargo test -q -p
+  hgbridge-proxy2 named_static_resource_candidate -- --nocapture`, `cargo
+  test -q -p hgbridge-proxy2 module_static -- --nocapture`, and `cargo test -q
+  -p hgbridge-proxy2 public_static_direction_tests -- --nocapture`. Keep the
+  broader issue open pending visual replay against a confirmed bad static/live
+  placeable capture.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

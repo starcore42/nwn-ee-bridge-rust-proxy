@@ -1483,6 +1483,7 @@ enum ModuleStaticPlaceableRowMatchKind {
 struct ModuleStaticPlaceableRowClaim {
     cursor: usize,
     placeable_index: usize,
+    object_id: u32,
     appearance: u16,
     x: f32,
     y: f32,
@@ -1495,7 +1496,7 @@ struct ModuleStaticPlaceableRowClaim {
 
 #[derive(Debug, Clone, Copy)]
 struct ModuleStaticPlaceableContextClaim {
-    cursor: usize,
+    row: ModuleStaticPlaceableRowClaim,
     state: AreaPlaceableContextState,
 }
 
@@ -3087,9 +3088,15 @@ fn collect_area_post_tile_placeable_context(
         let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
         let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
         let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
-        let module_state = module_context_claims
-            .iter()
-            .find_map(|claim| (claim.cursor == cursor).then_some(claim.state));
+        let module_state = module_context_claims.iter().find_map(|claim| {
+            (claim.row.cursor == cursor
+                && module_static_placeable_row_claim_matches_source(
+                    payload,
+                    fragment_offset,
+                    &claim.row,
+                )?)
+            .then_some(claim.state)
+        });
         if area_placeable_context_id_is_ambiguous(
             object_id,
             legacy_area_object_id,
@@ -3153,7 +3160,7 @@ fn module_static_placeable_context_claims(
             return None;
         }
         context_claims.push(ModuleStaticPlaceableContextClaim {
-            cursor: claim.cursor,
+            row: claim,
             state: area_placeable_context_state_from_module_placeable(placeable),
         });
     }
@@ -3719,6 +3726,7 @@ fn module_static_placeable_row_claim(
     placeable_index: usize,
     placeable: &ModuleAreaPlaceable,
 ) -> Option<ModuleStaticPlaceableRowClaim> {
+    let object_id = read_area_u32(payload, fragment_offset, cursor)?;
     let appearance = read_area_u16(payload, fragment_offset, cursor.checked_add(4)?)?;
     let x = read_area_f32(payload, fragment_offset, cursor.checked_add(6)?)?;
     let y = read_area_f32(payload, fragment_offset, cursor.checked_add(10)?)?;
@@ -3730,6 +3738,7 @@ fn module_static_placeable_row_claim(
     Some(ModuleStaticPlaceableRowClaim {
         cursor,
         placeable_index,
+        object_id,
         appearance,
         x,
         y,
@@ -3739,6 +3748,31 @@ fn module_static_placeable_row_claim(
         dir_z,
         match_kind,
     })
+}
+
+fn module_static_placeable_row_claim_matches_source(
+    payload: &[u8],
+    fragment_offset: usize,
+    claim: &ModuleStaticPlaceableRowClaim,
+) -> Option<bool> {
+    let object_id = read_area_u32(payload, fragment_offset, claim.cursor)?;
+    let appearance = read_area_u16(payload, fragment_offset, claim.cursor.checked_add(4)?)?;
+    let x = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(6)?)?;
+    let y = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(10)?)?;
+    let z = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(14)?)?;
+    let dir_x = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(18)?)?;
+    let dir_y = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(22)?)?;
+    let dir_z = read_area_f32(payload, fragment_offset, claim.cursor.checked_add(26)?)?;
+    Some(
+        object_id == claim.object_id
+            && appearance == claim.appearance
+            && same_f32_bits(x, claim.x)
+            && same_f32_bits(y, claim.y)
+            && same_f32_bits(z, claim.z)
+            && same_f32_bits(dir_x, claim.dir_x)
+            && same_f32_bits(dir_y, claim.dir_y)
+            && same_f32_bits(dir_z, claim.dir_z),
+    )
 }
 
 fn module_static_placeable_row_claim_matches_payload(
@@ -3755,7 +3789,9 @@ fn module_static_placeable_row_claim_matches_payload(
         placeable,
     )?;
     Some(
-        current.match_kind == claim.match_kind
+        module_static_placeable_row_claim_matches_source(payload, fragment_offset, claim)?
+            && current.match_kind == claim.match_kind
+            && current.object_id == claim.object_id
             && current.appearance == claim.appearance
             && same_f32_bits(current.x, claim.x)
             && same_f32_bits(current.y, claim.y)
@@ -5053,7 +5089,9 @@ fn module_named_static_placeable_packet_matches_resource(
     let static_placeables = info
         .placeables
         .iter()
-        .filter(|placeable| placeable.static_object)
+        .filter(|placeable| {
+            placeable.static_object && module_static_placeable_resource_row_safe(placeable)
+        })
         .collect::<Vec<_>>();
     unique_module_static_placeable_row_matches(payload, fragment_offset, &proof, &static_placeables)
         .is_some()
@@ -9359,6 +9397,43 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn named_static_resource_candidate_rejects_unsafe_static_rows() {
+        let (payload, fragment_offset, mut scan) =
+            static_placeable_source_row_payload(82, 10.0, 20.0, 0.0, 0.0, 0.0, 0.0);
+        scan.width = 1;
+        scan.packet_height = 1;
+        scan.inferred_height = 1;
+        scan.tile_count = 1;
+        legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("synthetic named static row should have exact source cursor proof");
+
+        let unsafe_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
+            tag: "unsafe_two_coordinate_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: MAX_STATIC_PLACEABLE_COMPONENT_ABS + 1.0,
+            bearing: std::f32::consts::FRAC_PI_4,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        }]);
+        assert!(
+            !module_named_static_placeable_packet_matches_resource(
+                &payload,
+                fragment_offset,
+                &scan,
+                "ttr01",
+                &unsafe_info,
+            ),
+            "appearance plus two coordinates must not select a named module resource when the GIT row is outside the static-row value domain"
+        );
+    }
+
+    #[test]
     fn module_static_row_repair_claim_records_source_identity_before_mutation() {
         let placeable = ModuleAreaPlaceable {
             tag: "claim_backed_chest".to_string(),
@@ -9400,6 +9475,7 @@ mod public_static_direction_tests {
             ModuleStaticPlaceableRowMatchKind::ExactAppearanceAtLeastTwoCoordinates
         );
         assert_eq!(claim.placeable_index, 0);
+        assert_eq!(claim.object_id, 0x8000_0042);
         assert_eq!(claim.appearance, 82);
         assert_eq!(claim.x, 10.0);
         assert_eq!(claim.y, 20.0);
@@ -9431,6 +9507,25 @@ mod public_static_direction_tests {
             ),
             Some(false),
             "a pre-mutation row claim must not authorize a later shifted source row"
+        );
+
+        let mut reassigned_payload = payload.clone();
+        write_area_u32(
+            &mut reassigned_payload,
+            fragment_offset,
+            claim.cursor,
+            0x8000_0043,
+        )
+        .expect("test should be able to alter the source object id");
+        assert_eq!(
+            module_static_placeable_row_claim_matches_payload(
+                &reassigned_payload,
+                fragment_offset,
+                &claim,
+                static_placeables[0],
+            ),
+            Some(false),
+            "a row claim must cover the packet object id even though module matching ignores it"
         );
     }
 
