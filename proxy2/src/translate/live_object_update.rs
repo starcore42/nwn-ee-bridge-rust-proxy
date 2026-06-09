@@ -579,6 +579,69 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn rewrite_bit_ledger_keeps_zero_bit_creature_updates_as_cursor_owners() {
+        let mut live = vec![0; 32];
+        live[0] = b'A';
+        live[1] = CREATURE_OBJECT_TYPE;
+        live[6] = b'U';
+        live[7] = CREATURE_OBJECT_TYPE;
+        live[16] = b'U';
+        live[17] = ITEM_OBJECT_TYPE;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 6,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 6,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "add-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 6,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 6,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 6,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "creature-visual-transform-exact",
+            },
+        ));
+
+        let exact_cursor = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 6)
+            .expect("cursor after zero-bit creature row should be classified");
+        assert_eq!(
+            exact_cursor.previous_family,
+            "creature-visual-transform-exact"
+        );
+        assert_eq!(exact_cursor.previous_offset, 6);
+        assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
+        assert_eq!(exact_cursor.source_relation, "after-previous-source-end");
+        assert_eq!(exact_cursor.source_gap_bits, 0);
+
+        let shifted_candidate = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 8)
+            .expect("shifted cursor after zero-bit creature row should be classified");
+        assert_eq!(
+            shifted_candidate.previous_family,
+            "creature-visual-transform-exact"
+        );
+        assert_eq!(shifted_candidate.emitted_gap_bits, 2);
+        assert_eq!(shifted_candidate.source_gap_bits, 2);
+        assert_eq!(
+            shifted_candidate.source_relation, "unowned-source-gap",
+            "zero-bit creature rows still cannot donate bits to a shifted following item"
+        );
+    }
+
+    #[test]
     fn rewrite_bit_ledger_rejects_impossible_source_delta_claims() {
         let mut live = vec![0; 8];
         live[0] = b'U';
@@ -5581,6 +5644,10 @@ pub fn rewrite_update_records_payload_if_possible(
 
         if opcode == b'U' && object_type == CREATURE_OBJECT_TYPE {
             if bit_cursor_reliable {
+                let creature_update_start_bit_cursor = bit_cursor;
+                let mut creature_update_bits_inserted_for_ledger = 0usize;
+                let creature_update_bits_removed_for_ledger = 0usize;
+                let mut creature_update_rewritten_for_ledger = false;
                 if let Some(effect_rewrite) =
                     effects::rewrite_legacy_looping_visual_effect_update_for_ee(
                         &mut live_bytes,
@@ -5605,12 +5672,36 @@ pub fn rewrite_update_records_payload_if_possible(
                         &mut advanced_effect_cursor,
                     ) {
                         bit_cursor = advanced_effect_cursor;
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: creature_update_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: 0,
+                                bits_removed: 0,
+                                family: "creature-update-effect-rewrite",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "creature-update-effect-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                creature_update_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_creature_4408_record_end = None;
                         offset = record_end.max(offset + 1);
                         continue;
                     }
                 }
 
+                let mut creature_visual_transform_rewritten_for_ledger = false;
                 if let Some(visual_rewrite) =
                     appearance::rewrite_creature_visual_transform_update_for_ee(
                         &mut live_bytes,
@@ -5644,12 +5735,40 @@ pub fn rewrite_update_records_payload_if_possible(
                         summary.interleaved_fragment_bits_promoted.saturating_add(
                             u32::try_from(visual_rewrite.bits_inserted).unwrap_or(u32::MAX),
                         );
+                    creature_visual_transform_rewritten_for_ledger = true;
                 }
                 if appearance::is_verified_ee_creature_visual_transform_update_record(
                     &live_bytes,
                     offset,
                     record_end,
                 ) {
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: creature_update_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: if creature_visual_transform_rewritten_for_ledger {
+                                "creature-visual-transform-rewrite"
+                            } else {
+                                "creature-visual-transform-exact"
+                            },
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-visual-transform-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            creature_update_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_creature_4408_record_end = None;
                     offset = record_end.max(offset + 1);
                     continue;
@@ -5664,6 +5783,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 .is_some()
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                 }
@@ -5677,6 +5797,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5694,6 +5815,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_removed = summary.bytes_removed.saturating_add(
@@ -5710,6 +5832,10 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
+                    creature_update_bits_inserted_for_ledger =
+                        creature_update_bits_inserted_for_ledger
+                            .saturating_add(action0_rewrite.bits_inserted);
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5732,6 +5858,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5748,6 +5875,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5764,6 +5892,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
@@ -5783,6 +5912,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5798,6 +5928,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     )
                 {
                     changed = true;
+                    creature_update_rewritten_for_ledger = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                     summary.bytes_inserted = summary.bytes_inserted.saturating_add(
@@ -5838,6 +5969,29 @@ pub fn rewrite_update_records_payload_if_possible(
                             promotion.end_bit_cursor,
                             promotion.bits_promoted,
                         );
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: promotion.start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: "creature-update-promoted-span",
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-effect-span-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end = None;
@@ -5880,6 +6034,29 @@ pub fn rewrite_update_records_payload_if_possible(
                             promotion.end_bit_cursor,
                             promotion.bits_promoted,
                         );
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: promotion.start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: "creature-update-promoted-span",
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-large-span-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end =
@@ -5924,6 +6101,29 @@ pub fn rewrite_update_records_payload_if_possible(
                         promotion.end_bit_cursor,
                         promotion.bits_promoted,
                     );
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: promotion.start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: "creature-update-promoted-span",
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-span-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = true;
                     last_verified_creature_4408_record_end =
@@ -5944,6 +6144,33 @@ pub fn rewrite_update_records_payload_if_possible(
                     &mut advanced_cursor,
                 ) {
                     bit_cursor = advanced_cursor;
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: creature_update_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: creature_update_bits_inserted_for_ledger,
+                            bits_removed: creature_update_bits_removed_for_ledger,
+                            family: if creature_update_rewritten_for_ledger {
+                                "creature-update-rewrite"
+                            } else {
+                                "creature-update-exact"
+                            },
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-update-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            creature_update_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     if bit_cursor < fragment_bits.len() {
                         terminal_creature_update_trim_cursor = Some(bit_cursor);
                     }

@@ -2568,6 +2568,15 @@ Current status:
   falling back to an older row. This does not assign the two active pre-`U/6`
   bits; continue with compact source writer/capture or another source-side
   owner before `U/10`/`A/6`/`U/6`.
+- 2026-06-10 `P/05/01` creature-update ledger audit: production state machinery
+  now commits verified creature `U/5` rows into `LiveObjectRewriteBitLedger`
+  after their exact cursor is proven, including zero-fragment visual-transform
+  rows and decompile-owned promoted-span creature updates. Promoted storage bits
+  are treated as source bits, not EE-generated insertions, so later item/creature
+  cursor-gap diagnostics no longer skip over a preceding `U/5` row or attribute
+  its zero-bit handoff to an older add/update/delete entry. Packet rewrite
+  behavior is unchanged; the compact `U/10`/`A/6`/`U/6` two-bit owner still
+  needs compact source-writer/capture or another source-side proof.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
