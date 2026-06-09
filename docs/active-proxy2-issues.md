@@ -543,6 +543,18 @@ Current status:
   --nocapture`, `cargo fmt --all --check`, `git diff --check -- proxy2/src/translate/area.rs`,
   and `cargo check -q -p hgbridge-proxy2`. Keep the broader issue open pending
   visual replay against a confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` static-placeable module-state context claim audit:
+  tightened the production context collector so module-backed trap/use/lock
+  state is exported only after the exact static list has a whole-list,
+  one-to-one row claim and each claimed direction triplet matches the module
+  bearing. Duplicate packet rows that can each match one module row still expose
+  static context, but no longer inherit resource state without the list-level
+  proof. Verified with `cargo test -q -p hgbridge-proxy2
+  placeable_context_module_state_requires_list_level_static_claims --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 module_static --
+  --nocapture`, and `cargo test -q -p hgbridge-proxy2
+  public_static_direction_tests -- --nocapture`. Keep the broader issue open
+  pending visual replay against a confirmed bad static/live placeable capture.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

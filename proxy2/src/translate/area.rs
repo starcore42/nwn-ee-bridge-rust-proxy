@@ -1493,6 +1493,12 @@ struct ModuleStaticPlaceableRowClaim {
     match_kind: ModuleStaticPlaceableRowMatchKind,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ModuleStaticPlaceableContextClaim {
+    cursor: usize,
+    state: AreaPlaceableContextState,
+}
+
 fn repair_compact_area_from_module_resource(
     payload: &mut Vec<u8>,
     fragment_offset: usize,
@@ -3064,6 +3070,13 @@ fn collect_area_post_tile_placeable_context(
     if cursor != source_tail_proof.static_rows_read_offset {
         return None;
     }
+    let module_context_claims = module_static_placeable_context_claims(
+        payload,
+        fragment_offset,
+        &source_tail_proof,
+        module_resource_info,
+    )
+    .unwrap_or_default();
     let mut static_rows = Vec::with_capacity(static_count as usize);
     for _ in 0..static_count {
         let object_id = read_area_u32(payload, fragment_offset, cursor)?;
@@ -3074,16 +3087,9 @@ fn collect_area_post_tile_placeable_context(
         let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
         let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
         let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
-        let module_state = module_static_placeable_context_state(
-            module_resource_info,
-            appearance,
-            x,
-            y,
-            z,
-            dir_x,
-            dir_y,
-            dir_z,
-        );
+        let module_state = module_context_claims
+            .iter()
+            .find_map(|claim| (claim.cursor == cursor).then_some(claim.state));
         if area_placeable_context_id_is_ambiguous(
             object_id,
             legacy_area_object_id,
@@ -3120,6 +3126,42 @@ fn collect_area_post_tile_placeable_context(
     })
 }
 
+fn module_static_placeable_context_claims(
+    payload: &[u8],
+    fragment_offset: usize,
+    proof: &LegacyAreaSourceTailProof,
+    module_resource_info: Option<&ModuleAreaResourceInfo>,
+) -> Option<Vec<ModuleStaticPlaceableContextClaim>> {
+    let info = module_resource_info?;
+    let static_placeables = info
+        .placeables
+        .iter()
+        .filter(|placeable| {
+            placeable.static_object && module_static_placeable_resource_row_safe(placeable)
+        })
+        .collect::<Vec<_>>();
+    let row_claims = unique_module_static_placeable_row_matches(
+        payload,
+        fragment_offset,
+        proof,
+        &static_placeables,
+    )?;
+    let mut context_claims = Vec::with_capacity(row_claims.len());
+    for claim in row_claims {
+        let placeable = static_placeables[claim.placeable_index];
+        if !module_static_placeable_row_claim_direction_matches_resource(&claim, placeable)? {
+            return None;
+        }
+        context_claims.push(ModuleStaticPlaceableContextClaim {
+            cursor: claim.cursor,
+            state: area_placeable_context_state_from_module_placeable(placeable),
+        });
+    }
+
+    Some(context_claims)
+}
+
+#[cfg(test)]
 fn module_static_placeable_context_state(
     module_resource_info: Option<&ModuleAreaResourceInfo>,
     appearance: u16,
@@ -3160,15 +3202,35 @@ fn module_static_placeable_context_state(
         return None;
     }
 
-    let placeable = static_placeables[0];
-    Some(AreaPlaceableContextState {
+    Some(area_placeable_context_state_from_module_placeable(
+        static_placeables[0],
+    ))
+}
+
+fn module_static_placeable_row_claim_direction_matches_resource(
+    claim: &ModuleStaticPlaceableRowClaim,
+    placeable: &ModuleAreaPlaceable,
+) -> Option<bool> {
+    let (expected_x, expected_y, expected_z) =
+        static_placeable_direction_from_bearing(placeable.bearing)?;
+    Some(
+        area_float_close(claim.dir_x, expected_x, 0.01)
+            && area_float_close(claim.dir_y, expected_y, 0.01)
+            && area_float_close(claim.dir_z, expected_z, 0.01),
+    )
+}
+
+fn area_placeable_context_state_from_module_placeable(
+    placeable: &ModuleAreaPlaceable,
+) -> AreaPlaceableContextState {
+    AreaPlaceableContextState {
         static_object: placeable.static_object,
         useable: placeable.useable,
         trap_flag: placeable.trap_flag,
         trap_disarmable: placeable.trap_disarmable,
         lockable: placeable.lockable,
         locked: placeable.locked,
-    })
+    }
 }
 
 fn area_placeable_context_id_is_ambiguous(
@@ -3704,6 +3766,7 @@ fn module_static_placeable_row_claim_matches_payload(
     )
 }
 
+#[cfg(test)]
 fn module_static_placeable_row_matches_resource(
     appearance: u16,
     x: f32,
@@ -9834,6 +9897,129 @@ mod public_static_direction_tests {
             ),
             None,
             "live/non-static module placeables must not seed static-row trap/use/lock context"
+        );
+    }
+
+    #[test]
+    fn placeable_context_module_state_requires_list_level_static_claims() {
+        let placeable = ModuleAreaPlaceable {
+            tag: "single_locked_static_chest".to_string(),
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: true,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        };
+        let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let info = module_info_with_placeables(vec![placeable]);
+        let (valid_payload, valid_fragment_offset, _valid_scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                1,
+                &[(
+                    82,
+                    10.0,
+                    20.0,
+                    0.0,
+                    expected_direction.0,
+                    expected_direction.1,
+                    expected_direction.2,
+                )],
+            );
+        let valid_context = collect_area_post_tile_placeable_context(
+            &valid_payload,
+            valid_fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            Some(&info),
+        )
+        .expect("exact one-row static list should be exposed as area context");
+        assert_eq!(valid_context.static_rows.len(), 1);
+        assert_eq!(
+            valid_context.static_rows[0].module_state,
+            Some(AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: true,
+                trap_disarmable: true,
+                lockable: true,
+                locked: true,
+            }),
+            "one-to-one static-list proof should export module trap/use/lock state"
+        );
+
+        let (payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                2,
+                &[
+                    (
+                        82,
+                        10.0,
+                        20.0,
+                        0.0,
+                        expected_direction.0,
+                        expected_direction.1,
+                        expected_direction.2,
+                    ),
+                    (
+                        82,
+                        10.0,
+                        20.0,
+                        0.0,
+                        expected_direction.0,
+                        expected_direction.1,
+                        expected_direction.2,
+                    ),
+                ],
+            );
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("duplicate static rows should still have exact decompiled cursor proof");
+        assert_eq!(proof.static_rows_count, 2);
+        assert_eq!(
+            module_static_placeable_context_state(
+                Some(&info),
+                82,
+                10.0,
+                20.0,
+                0.0,
+                expected_direction.0,
+                expected_direction.1,
+                expected_direction.2,
+            ),
+            Some(AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: true,
+                trap_disarmable: true,
+                lockable: true,
+                locked: true,
+            }),
+            "the row-local helper remains narrower than the production list-level handoff"
+        );
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            Some(&info),
+        )
+        .expect("exact static rows should still be exposed as area context rows");
+        assert_eq!(context.static_rows.len(), 2);
+        assert!(
+            context
+                .static_rows
+                .iter()
+                .all(|row| row.module_state.is_none()),
+            "module trap/use/lock state requires one-to-one claims for the whole static list"
         );
     }
 }
