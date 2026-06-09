@@ -1167,12 +1167,18 @@ fn translate_live_object_prefixed_fragments(
         &mut candidate,
         latest_area_placeables,
     );
-    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    let _ = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let _ = live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
         &mut candidate,
         latest_area_placeables,
     );
-    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    let _ = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     // Some local Diamond streams alternate legacy `A/9` add and `U/9` update
     // records. A focused update rewrite can shrink/drop a legacy name tail and
     // expose the next add record at its real boundary; that add rewrite can then
@@ -1182,7 +1188,10 @@ fn translate_live_object_prefixed_fragments(
         &mut candidate,
         latest_area_placeables,
     );
-    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    let _ = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     // Update translation can shrink conservative legacy `U` record windows and
     // expose following `A` door/placeable records that were intentionally not
     // split while the update shape was still unproven. Run the same exact
@@ -1202,7 +1211,10 @@ fn translate_live_object_prefixed_fragments(
         &mut candidate,
         latest_area_placeables,
     );
-    let _ = live_update::rewrite_payload_if_needed(&mut candidate);
+    let _ = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     if live_update::claim_payload_if_verified(&candidate).is_some() {
         dump_accepted_live_object_payload_if_enabled(
             &candidate,
@@ -1526,13 +1538,19 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_pre_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let update_pre_summary = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let add_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_post_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let update_post_summary = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let add_name_bit_summary =
         live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate);
     let add_after_add_name_summary =
@@ -1540,20 +1558,29 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_add_name_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let update_after_add_name_summary = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let add_after_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_final_add_summary = live_update::rewrite_payload_if_needed(&mut candidate);
+    let update_after_final_add_summary = live_update::rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    );
     let add_after_final_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
     let update_after_second_final_add_summary =
-        live_update::rewrite_payload_if_needed(&mut candidate);
+        live_update::rewrite_payload_if_needed_with_area_context(
+            &mut candidate,
+            latest_area_placeables,
+        );
     let external_object_id_summary =
         live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
 

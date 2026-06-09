@@ -13,8 +13,12 @@ use super::{
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, placeable, read_f32_le,
-    read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
+    TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, object_ids, placeable,
+    read_f32_le, read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
+};
+use crate::translate::area::{
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
+    AreaPlaceableContextState,
 };
 
 const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
@@ -89,6 +93,26 @@ pub(super) fn rewrite_update_record_for_ee(
     bit_cursor: &mut usize,
     bit_cursor_reliable: &mut bool,
     record_offset: usize,
+) -> Option<RecordRewrite> {
+    rewrite_update_record_for_ee_with_area_context(
+        live_bytes,
+        record_end,
+        bits,
+        bit_cursor,
+        bit_cursor_reliable,
+        record_offset,
+        None,
+    )
+}
+
+pub(super) fn rewrite_update_record_for_ee_with_area_context(
+    live_bytes: &mut Vec<u8>,
+    record_end: &mut usize,
+    bits: &mut Vec<bool>,
+    bit_cursor: &mut usize,
+    bit_cursor_reliable: &mut bool,
+    record_offset: usize,
+    area_context: Option<&AreaPlaceableContext>,
 ) -> Option<RecordRewrite> {
     if record_offset + LEGACY_UPDATE_HEADER_BYTES > *record_end || *record_end > live_bytes.len() {
         return None;
@@ -1408,6 +1432,16 @@ pub(super) fn rewrite_update_record_for_ee(
     let ee_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
         .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, translated_mask))
         .flatten();
+    trace_placeable_update_area_context(
+        area_context,
+        object_id,
+        raw_mask,
+        translated_mask,
+        record_offset,
+        *record_end,
+        source_placeable_state_bits,
+        ee_placeable_state_bits,
+    );
 
     tracing::info!(
         object_type,
@@ -1425,6 +1459,146 @@ pub(super) fn rewrite_update_record_for_ee(
         "server->client live-object update record translated for EE"
     );
     Some(rewrite)
+}
+
+fn trace_placeable_update_area_context(
+    area_context: Option<&AreaPlaceableContext>,
+    object_id: u32,
+    raw_mask: u32,
+    translated_mask: u32,
+    record_offset: usize,
+    record_end: usize,
+    source_state_bits: Option<PlaceableUpdateStateBits>,
+    ee_state_bits: Option<PlaceableUpdateStateBits>,
+) {
+    let Some(context) = area_context else {
+        return;
+    };
+    let matches = context
+        .light_rows
+        .iter()
+        .filter(move |row| {
+            object_ids::equivalent_legacy_external_object_ids(row.object_id, object_id)
+        })
+        .map(|row| (AreaPlaceableContextRowKind::Light, row))
+        .chain(
+            context
+                .static_rows
+                .iter()
+                .filter(move |row| {
+                    object_ids::equivalent_legacy_external_object_ids(row.object_id, object_id)
+                })
+                .map(|row| (AreaPlaceableContextRowKind::Static, row)),
+        )
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return;
+    }
+
+    let mut area_rows = String::new();
+    let mut source_area_module_lock_mismatch = false;
+    let mut ee_area_module_lock_mismatch = false;
+    for (index, (kind, row)) in matches.iter().enumerate() {
+        if index != 0 {
+            area_rows.push(',');
+        }
+        if *kind == AreaPlaceableContextRowKind::Static
+            && let Some(module_state) = row.module_state
+        {
+            if let Some(source_state) = source_state_bits {
+                source_area_module_lock_mismatch |=
+                    placeable_update_lock_state_conflicts_with_area_module_state(
+                        source_state,
+                        module_state,
+                    );
+            }
+            if let Some(ee_state) = ee_state_bits {
+                ee_area_module_lock_mismatch |=
+                    placeable_update_lock_state_conflicts_with_area_module_state(
+                        ee_state,
+                        module_state,
+                    );
+            }
+        }
+        area_rows.push_str(&format_area_placeable_context_row(*kind, row));
+    }
+    let area_light_duplicate = matches
+        .iter()
+        .any(|(kind, _)| *kind == AreaPlaceableContextRowKind::Light);
+    let area_static_duplicate = matches
+        .iter()
+        .any(|(kind, _)| *kind == AreaPlaceableContextRowKind::Static);
+
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        area_resref = context.area_resref.as_str(),
+        raw_mask = format_args!("0x{raw_mask:08X}"),
+        translated_mask = format_args!("0x{translated_mask:08X}"),
+        record_offset,
+        record_end,
+        area_placeable_overlap = true,
+        area_light_duplicate,
+        area_static_duplicate,
+        source_placeable_state = ?source_state_bits,
+        ee_placeable_state = ?ee_state_bits,
+        source_area_module_lock_mismatch,
+        ee_area_module_lock_mismatch,
+        area_rows = %area_rows,
+        "server->client live-object placeable update overlaps area/static context"
+    );
+}
+
+fn placeable_update_lock_state_conflicts_with_area_module_state(
+    state: PlaceableUpdateStateBits,
+    module_state: AreaPlaceableContextState,
+) -> bool {
+    state.lockable != module_state.lockable || state.locked != module_state.locked
+}
+
+fn format_area_placeable_context_row(
+    kind: AreaPlaceableContextRowKind,
+    row: &AreaPlaceableContextRow,
+) -> String {
+    let module_state = row
+        .module_state
+        .map(format_area_placeable_module_state)
+        .unwrap_or_else(|| "unproven".to_string());
+    if row.has_direction {
+        format!(
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.object_id_confidence.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z,
+            row.dir_x,
+            row.dir_y,
+            row.dir_z
+        )
+    } else {
+        format!(
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.object_id_confidence.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z
+        )
+    }
+}
+
+fn format_area_placeable_module_state(module_state: AreaPlaceableContextState) -> String {
+    format!(
+        "static={} useable={} trap={} disarmable={} lockable={} locked={}",
+        module_state.static_object,
+        module_state.useable,
+        module_state.trap_flag,
+        module_state.trap_disarmable,
+        module_state.lockable,
+        module_state.locked
+    )
 }
 
 fn parse_compact_door_placeable_tail9_update_claim(
@@ -2158,6 +2332,50 @@ mod tests {
             lockable,
             visual_payload,
         }
+    }
+
+    #[test]
+    fn placeable_update_area_context_helpers_keep_identity_and_lock_proof() {
+        let row = AreaPlaceableContextRow {
+            object_id: 0x8000_0042,
+            appearance: 0x0052,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            dir_x: 0.0,
+            dir_y: 1.0,
+            dir_z: 0.0,
+            has_direction: true,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+            module_state: Some(AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: false,
+                trap_disarmable: false,
+                lockable: true,
+                locked: false,
+            }),
+        };
+
+        assert_eq!(
+            format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &row),
+            "static:id=area-alias;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+        );
+        assert!(
+            placeable_update_lock_state_conflicts_with_area_module_state(
+                state(false, true, true, true, true),
+                row.module_state.expect("test row has module state"),
+            ),
+            "locked=true conflicts with the proven module static row"
+        );
+        assert!(
+            !placeable_update_lock_state_conflicts_with_area_module_state(
+                state(false, true, false, true, true),
+                row.module_state.expect("test row has module state"),
+            ),
+            "matching lockable/locked bits should not report a module mismatch"
+        );
     }
 
     fn compact_tail9_update_bytes(raw_mask: u32) -> Vec<u8> {

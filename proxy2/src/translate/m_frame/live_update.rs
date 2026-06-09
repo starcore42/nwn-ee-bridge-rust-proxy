@@ -48,8 +48,14 @@ impl ExactLiveObjectRewriteSummary {
     }
 }
 
-pub fn rewrite_payload_if_needed(payload: &mut Vec<u8>) -> Option<RewriteSummary> {
-    live_object_update::rewrite_update_records_payload_if_possible(payload)
+pub fn rewrite_payload_if_needed_with_area_context(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) -> Option<RewriteSummary> {
+    live_object_update::rewrite_update_records_payload_with_area_context_if_possible(
+        payload,
+        latest_area_placeables,
+    )
 }
 
 pub fn promote_work_remaining_trailing_fragment_span_if_needed(
@@ -146,7 +152,10 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         )
         .is_some(),
     );
-    summary.record_update(rewrite_payload_if_needed(&mut candidate).is_some());
+    summary.record_update(
+        rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables)
+            .is_some(),
+    );
     if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
@@ -165,7 +174,9 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
             return Some(summary);
         }
 
-        let update_changed = rewrite_payload_if_needed(&mut candidate).is_some();
+        let update_changed =
+            rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables)
+                .is_some();
         summary.record_update(update_changed);
         if exact_after_changed(&candidate, summary) {
             *payload = candidate;

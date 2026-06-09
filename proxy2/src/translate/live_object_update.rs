@@ -37,6 +37,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use crate::translate::area::AreaPlaceableContext;
+
 mod add;
 mod add_guard;
 mod appearance;
@@ -3594,6 +3596,13 @@ fn legacy_door_add_repair_claims_following_same_object_update(
 pub fn rewrite_update_records_payload_if_possible(
     payload: &mut Vec<u8>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
+    rewrite_update_records_payload_with_area_context_if_possible(payload, None)
+}
+
+pub fn rewrite_update_records_payload_with_area_context_if_possible(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+) -> Option<LiveObjectUpdateRewriteSummary> {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
             "live-object update rewrite entered: payload_len={} prefix={:02X?}",
@@ -6494,13 +6503,14 @@ pub fn rewrite_update_records_payload_if_possible(
         summary.update_records_examined = summary.update_records_examined.saturating_add(1);
         let bit_cursor_was_reliable = bit_cursor_reliable;
         let update_start_bit_cursor = bit_cursor;
-        let Some(record_rewrite) = record::rewrite_update_record_for_ee(
+        let Some(record_rewrite) = record::rewrite_update_record_for_ee_with_area_context(
             &mut live_bytes,
             &mut record_end,
             &mut fragment_bits,
             &mut bit_cursor,
             &mut bit_cursor_reliable,
             offset,
+            area_context,
         ) else {
             if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
                 eprintln!(
