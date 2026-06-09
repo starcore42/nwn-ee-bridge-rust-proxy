@@ -2542,6 +2542,14 @@ Current status:
   `unowned-source-gap` after subtracting the committed EE insertion delta. The
   next owner proof remains compact source writer/capture evidence or another
   source-side handoff before `U/10`/`A/6`/`U/6`.
+- 2026-06-09 `P/05/01` live-object rewrite ledger delete-row audit: no packet
+  rewrite behavior changed. Exact `D` rows now commit to the same
+  `LiveObjectRewriteBitLedger` after their decompile-owned delete fragment bits
+  are proven, so a later item `U/6` source-window trace attributes cursor gaps
+  to the immediately preceding delete row instead of an older add/update row.
+  Focused coverage pins exact and shifted cursors after a `delete-exact` span.
+  This does not assign the two active pre-`U/6` bits; continue with compact
+  source writer/capture or another source-side owner before `U/10`/`A/6`/`U/6`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

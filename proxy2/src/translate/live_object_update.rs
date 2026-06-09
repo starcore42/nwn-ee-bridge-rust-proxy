@@ -502,6 +502,62 @@ mod diagnostic_tests {
             "a +2 neighboring fit requires two unowned emitted bits after the committed rows"
         );
     }
+
+    #[test]
+    fn rewrite_bit_ledger_keeps_delete_rows_as_cursor_owners() {
+        let mut live = vec![0; 32];
+        live[0] = b'A';
+        live[1] = DOOR_OBJECT_TYPE;
+        live[6] = b'D';
+        live[7] = ITEM_OBJECT_TYPE;
+        live[16] = b'U';
+        live[17] = ITEM_OBJECT_TYPE;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+
+        ledger.commit_record(
+            &live,
+            0,
+            6,
+            CNW_FRAGMENT_HEADER_BITS,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            0,
+            0,
+            "add-exact",
+        );
+        ledger.commit_record(
+            &live,
+            6,
+            16,
+            CNW_FRAGMENT_HEADER_BITS + 6,
+            CNW_FRAGMENT_HEADER_BITS + 7,
+            0,
+            0,
+            "delete-exact",
+        );
+
+        let exact_cursor = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 7)
+            .expect("cursor after delete row should be classified");
+        assert_eq!(exact_cursor.previous_family, "delete-exact");
+        assert_eq!(exact_cursor.previous_offset, 6);
+        assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
+        assert_eq!(exact_cursor.source_relation, "after-previous-source-end");
+        assert_eq!(
+            exact_cursor.source_gap_bits, 0,
+            "a following row at the exact cursor starts after the proven delete bit"
+        );
+
+        let shifted_candidate = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 9)
+            .expect("shifted cursor after delete row should be classified");
+        assert_eq!(shifted_candidate.previous_family, "delete-exact");
+        assert_eq!(shifted_candidate.emitted_gap_bits, 2);
+        assert_eq!(shifted_candidate.source_gap_bits, 2);
+        assert_eq!(
+            shifted_candidate.source_relation, "unowned-source-gap",
+            "a neighboring fit after a delete row still needs a separate source owner"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4833,11 +4889,22 @@ pub fn rewrite_update_records_payload_if_possible(
 
         if opcode == b'D' {
             if bit_cursor_reliable {
+                let delete_start_bit_cursor = bit_cursor;
                 if let Some(delete_bits) =
                     cursor::legacy_live_delete_fragment_bit_count(&live_bytes, offset, record_end)
                 {
                     if fragment_bits.len().saturating_sub(bit_cursor) >= delete_bits {
                         bit_cursor += delete_bits;
+                        rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            delete_start_bit_cursor,
+                            bit_cursor,
+                            0,
+                            0,
+                            "delete-exact",
+                        );
                     } else {
                         trace_update_rewrite_cursor_unreliable(
                             "delete-record-fragment-bits-insufficient",
