@@ -268,6 +268,66 @@ mod diagnostic_tests {
         assert_eq!(claims[1].bit_start, CNW_FRAGMENT_HEADER_BITS + 1);
         assert_eq!(claims[1].bit_end, Some(CNW_FRAGMENT_HEADER_BITS + 2));
     }
+
+    fn diagnostic_full_item_update_live_bytes() -> Vec<u8> {
+        let mut live = vec![b'U', ITEM_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
+        live.extend_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+        live.extend_from_slice(&[0xB7, 0x05, 0xC1, 0x04, 0x0F, 0x0F]);
+        live.push(0);
+        live.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        live.extend_from_slice(&[0; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]);
+        live.extend_from_slice(&5u32.to_le_bytes());
+        live.extend_from_slice(b"Lance");
+        live
+    }
+
+    #[test]
+    fn item_failure_source_window_neighbor_fit_reports_focus_row_start() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'D', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
+        let item_offset = live.len();
+        live.extend_from_slice(&diagnostic_full_item_update_live_bytes());
+
+        let rows = live_object_source_window_rows(&live, item_offset, live.len(), 1, 0);
+        let mut fragment_bits = vec![false, false, false, false];
+        fragment_bits.extend_from_slice(&[
+            false, true, // unowned residue before the item update.
+            true, true, // item position residuals if a prior owner consumed the residue.
+            false, true, false, true, true, // scalar-orientation selector plus residual bits.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+        ]);
+        let claims = live_object_source_window_row_bit_claims(
+            &live,
+            &rows,
+            &fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        );
+
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0].family, "delete");
+        assert_eq!(claims[0].bit_end, Some(CNW_FRAGMENT_HEADER_BITS + 1));
+        assert_eq!(claims[1].offset, item_offset);
+        assert_eq!(claims[1].bit_start, CNW_FRAGMENT_HEADER_BITS + 1);
+        assert_eq!(claims[1].bit_end, None);
+
+        let neighbors = live_object_source_window_item_neighbor_cursor_claims(
+            &live,
+            &rows[1],
+            &fragment_bits,
+            claims[1].bit_start,
+            claims[0].bit_end,
+        );
+        assert!(
+            neighbors.iter().any(|neighbor| {
+                neighbor.delta == 2
+                    && neighbor.bit_start == claims[1].bit_start + 2
+                    && neighbor.relation == "inside-focus-row"
+            }),
+            "a +2 U/6 fit begins inside the failed item row unless a prior owner is proven"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -6264,6 +6324,14 @@ struct LiveObjectSourceWindowRowBitClaim {
     family: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectSourceWindowItemNeighborCursorClaim {
+    delta: isize,
+    bit_start: usize,
+    bit_end: usize,
+    relation: &'static str,
+}
+
 fn live_object_source_window_rows(
     live_bytes: &[u8],
     focus_offset: usize,
@@ -6571,6 +6639,85 @@ fn live_object_source_window_generic_update_claim(
     }
 }
 
+fn live_object_source_window_item_neighbor_cursor_claims(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    expected_bit_cursor: usize,
+    preceding_claim_bit_end: Option<usize>,
+) -> Vec<LiveObjectSourceWindowItemNeighborCursorClaim> {
+    if row.opcode != b'U' || row.marker != ITEM_OBJECT_TYPE {
+        return Vec::new();
+    }
+
+    let Some(raw_mask) = row.update_mask else {
+        return Vec::new();
+    };
+    let translated_mask = item::translate_update_mask(raw_mask);
+    let mut candidate = live_bytes.to_vec();
+    if translated_mask != raw_mask
+        && write_u32_le(
+            &mut candidate,
+            row.offset.saturating_add(6),
+            translated_mask,
+        )
+        .is_none()
+    {
+        return Vec::new();
+    }
+
+    let start = expected_bit_cursor.saturating_sub(4);
+    let end = expected_bit_cursor
+        .saturating_add(4)
+        .min(fragment_bits.len());
+    let mut claims = Vec::new();
+    for cursor in start..=end {
+        if cursor == expected_bit_cursor {
+            continue;
+        }
+        let Some(bit_end) = item::advance_verified_ee_item_update_record(
+            &candidate,
+            row.offset,
+            row.record_end,
+            fragment_bits,
+            cursor,
+        ) else {
+            continue;
+        };
+        claims.push(LiveObjectSourceWindowItemNeighborCursorClaim {
+            delta: cursor as isize - expected_bit_cursor as isize,
+            bit_start: cursor,
+            bit_end,
+            relation: live_object_source_window_neighbor_relation(
+                cursor,
+                expected_bit_cursor,
+                preceding_claim_bit_end,
+            ),
+        });
+    }
+    claims
+}
+
+fn live_object_source_window_neighbor_relation(
+    candidate_bit_start: usize,
+    expected_bit_start: usize,
+    preceding_claim_bit_end: Option<usize>,
+) -> &'static str {
+    if candidate_bit_start < expected_bit_start {
+        return if preceding_claim_bit_end.is_some_and(|bit_end| bit_end > candidate_bit_start) {
+            "overlaps-previous-claim"
+        } else {
+            "before-focus-without-owner"
+        };
+    }
+
+    if preceding_claim_bit_end.is_some_and(|bit_end| bit_end >= candidate_bit_start) {
+        "prior-claim-owned"
+    } else {
+        "inside-focus-row"
+    }
+}
+
 fn trace_item_update_source_window(
     reason: &'static str,
     live_bytes: &[u8],
@@ -6640,6 +6787,33 @@ fn trace_item_update_source_window(
             claim.family,
             preview
         );
+    }
+
+    if let Some((focus_index, focus_row)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.offset == focus_offset)
+    {
+        let expected_bit_cursor = row_claims
+            .get(focus_index)
+            .map(|claim| claim.bit_start)
+            .unwrap_or(bit_cursor);
+        let preceding_claim_bit_end = focus_index
+            .checked_sub(1)
+            .and_then(|previous| row_claims.get(previous))
+            .and_then(|claim| claim.bit_end);
+        for neighbor in live_object_source_window_item_neighbor_cursor_claims(
+            live_bytes,
+            focus_row,
+            fragment_bits,
+            expected_bit_cursor,
+            preceding_claim_bit_end,
+        ) {
+            eprintln!(
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} relation={}",
+                neighbor.delta, neighbor.bit_start, neighbor.bit_end, neighbor.relation
+            );
+        }
     }
 }
 

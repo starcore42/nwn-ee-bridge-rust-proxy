@@ -2441,6 +2441,14 @@ Current status:
   remain cursor-neighbor ambiguity only. Next source-side target is still the
   compact `U/10` source writer/capture before assigning two extra bits; do not
   add a `U/6` cursor skip, scalar-byte rescue, or generic inter-row trim.
+- 2026-06-09 `P/05/01` item `U/6` neighbor-owner diagnostic: no packet rewrite
+  behavior changed. Extended the source-window debug path so rejected item
+  update neighbors report whether a validating nearby cursor is already owned
+  by a prior row, overlaps a prior claim, or starts inside the failed focus
+  row. Public fixture-free coverage pins the active `+2` shape as
+  `inside-focus-row`: the preceding claims end at the inherited cursor, so a
+  scalar-shaped fit two bits later is not ownership proof. Continue with compact
+  source writer/capture evidence before assigning those bits.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
