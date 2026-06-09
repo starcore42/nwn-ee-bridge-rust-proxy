@@ -6568,6 +6568,56 @@ pub fn rewrite_update_records_payload_if_possible(
                 continue;
             }
         }
+        let ledger_bits_inserted =
+            usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX);
+        let ledger_bits_removed =
+            usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX);
+        let mut ledger_family = if record_rewrite.item_update_claim.is_some() {
+            if record_rewrite.rewritten {
+                "item-update-rewrite"
+            } else {
+                "item-update-exact"
+            }
+        } else if record_rewrite.rewritten {
+            "update-rewrite"
+        } else {
+            "update-exact"
+        };
+        if let Some(bit_claim) = record_rewrite.bit_claim {
+            let expected_source_bits =
+                usize::try_from(bit_claim.source_bits_consumed).unwrap_or(usize::MAX);
+            if live_object_rewrite_source_delta(
+                update_start_bit_cursor,
+                bit_cursor,
+                ledger_bits_inserted,
+                ledger_bits_removed,
+            ) != Some(expected_source_bits)
+            {
+                trace_update_rewrite_cursor_unreliable(
+                    "update-record-bit-claim-source-mismatch",
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    update_start_bit_cursor,
+                );
+                bit_cursor_reliable = false;
+                offset = record_end.max(offset + 1);
+                continue;
+            }
+            if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                eprintln!(
+                    "live-object update record bit claim accepted: offset={offset} record_end={record_end} family={} source_mask=0x{:08X} translated_mask=0x{:08X} source_bits_consumed={} emitted_bits={} bits_inserted={} bits_removed={}",
+                    bit_claim.family,
+                    bit_claim.source_mask,
+                    bit_claim.translated_mask,
+                    bit_claim.source_bits_consumed,
+                    bit_cursor.saturating_sub(update_start_bit_cursor),
+                    ledger_bits_inserted,
+                    ledger_bits_removed
+                );
+            }
+            ledger_family = bit_claim.family;
+        }
         if !rewrite_bit_ledger.commit_record(
             &live_bytes,
             LiveObjectRewriteBitLedgerCommit {
@@ -6575,19 +6625,9 @@ pub fn rewrite_update_records_payload_if_possible(
                 record_end,
                 emitted_bit_start: update_start_bit_cursor,
                 emitted_bit_end: bit_cursor,
-                bits_inserted: usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX),
-                bits_removed: usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX),
-                family: if record_rewrite.item_update_claim.is_some() {
-                    if record_rewrite.rewritten {
-                        "item-update-rewrite"
-                    } else {
-                        "item-update-exact"
-                    }
-                } else if record_rewrite.rewritten {
-                    "update-rewrite"
-                } else {
-                    "update-exact"
-                },
+                bits_inserted: ledger_bits_inserted,
+                bits_removed: ledger_bits_removed,
+                family: ledger_family,
             },
         ) {
             trace_update_rewrite_cursor_unreliable(
@@ -7337,10 +7377,24 @@ struct LiveObjectRewriteBitLedgerCommit {
 
 impl LiveObjectRewriteBitLedgerCommit {
     fn source_delta(self) -> Option<usize> {
-        let emitted_delta = self.emitted_bit_end.checked_sub(self.emitted_bit_start)?;
-        let before_insertions = emitted_delta.checked_add(self.bits_removed)?;
-        before_insertions.checked_sub(self.bits_inserted)
+        live_object_rewrite_source_delta(
+            self.emitted_bit_start,
+            self.emitted_bit_end,
+            self.bits_inserted,
+            self.bits_removed,
+        )
     }
+}
+
+fn live_object_rewrite_source_delta(
+    emitted_bit_start: usize,
+    emitted_bit_end: usize,
+    bits_inserted: usize,
+    bits_removed: usize,
+) -> Option<usize> {
+    let emitted_delta = emitted_bit_end.checked_sub(emitted_bit_start)?;
+    let before_insertions = emitted_delta.checked_add(bits_removed)?;
+    before_insertions.checked_sub(bits_inserted)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2591,6 +2591,19 @@ Current status:
   its zero-bit handoff to an older add/update/delete entry. Packet rewrite
   behavior is unchanged; the compact `U/10`/`A/6`/`U/6` two-bit owner still
   needs compact source-writer/capture or another source-side proof.
+- 2026-06-10 `P/05/01` compact tail9 bit-claim ledger audit: production
+  rewrite state now carries the typed compact door/placeable tail9 parser's
+  source-bit claim through `RecordRewrite`, and the live-object ledger refuses
+  to commit the row if final inserted/removed bit counts no longer match that
+  immutable claim. Private CEP boundary tracing now labels the compact
+  `U/10 mask=0xFFFF_FFF7` row as `update-compact-tail9-rewrite` with
+  source bits `9..17` and emitted bits `9..22` before the no-map `A/6`
+  owns source bits `17..22` and emitted bits `22..28`; the following full
+  item `U/6 mask=0xFFFF_FFF3` still rejects at bit `28`, while the +2 scalar
+  fit remains an unowned source/emitted gap. This tightens the compact-tail
+  source contract but still does not assign the two active pre-`U/6` bits;
+  continue with compact source-writer/capture or another source-side handoff
+  proof before changing cursor ownership.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

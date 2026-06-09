@@ -30,6 +30,15 @@ pub(super) struct RecordRewrite {
     pub(super) bits_inserted: u32,
     pub(super) bits_removed: u32,
     pub(super) item_update_claim: Option<item::ItemUpdateRewriteClaim>,
+    pub(super) bit_claim: Option<RecordRewriteBitClaim>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RecordRewriteBitClaim {
+    pub(super) source_mask: u32,
+    pub(super) translated_mask: u32,
+    pub(super) source_bits_consumed: u32,
+    pub(super) family: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1357,6 +1366,20 @@ pub(super) fn rewrite_update_record_for_ee(
         rewrite.bits_changed |= bit_rewrite.bits_changed;
     }
 
+    if tail_ready
+        && let Some(claim) = compact_tail9_claim
+        && let Ok(source_bits_consumed) = u32::try_from(
+            low_prefix_door_placeable_update_source_fragment_bits(claim.fragment_source_mask),
+        )
+    {
+        rewrite.bit_claim = Some(RecordRewriteBitClaim {
+            source_mask: claim.fragment_source_mask,
+            translated_mask,
+            source_bits_consumed,
+            family: "update-compact-tail9-rewrite",
+        });
+    }
+
     if translated_mask != raw_mask {
         write_u32_le(live_bytes, record_offset + 6, translated_mask)?;
         rewrite.mask_changed = true;
@@ -2218,6 +2241,58 @@ mod tests {
             )
             .is_none(),
             "invalid legacy suffix bytes are not enough without orientation/scale tail ownership"
+        );
+    }
+
+    #[test]
+    fn compact_tail9_rewrite_reports_source_bit_claim() {
+        let raw_mask = 0xFFFF_FFF7;
+        let mut live = compact_tail9_update_bytes(raw_mask);
+        let mut record_end = live.len();
+        let mut bits = vec![
+            true, false, // position fragment bits.
+            false, true, false, false, true, // compact source state block.
+            true, // legacy input-only name bit removed by the tail9 rewrite.
+        ];
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        let rewrite = rewrite_update_record_for_ee(
+            &mut live,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            &mut bit_cursor_reliable,
+            0,
+        )
+        .expect("compact tail9 row should rewrite through its typed claim");
+        let claim = rewrite
+            .bit_claim
+            .expect("compact tail9 rewrite must report source ownership");
+
+        assert!(bit_cursor_reliable);
+        assert!(rewrite.rewritten);
+        assert_eq!(claim.family, "update-compact-tail9-rewrite");
+        assert_eq!(
+            claim.source_mask & LEGACY_UPDATE_ORIENTATION_MASK,
+            0,
+            "tail9 source bits exclude stock orientation selector/residuals"
+        );
+        assert_eq!(
+            claim.source_bits_consumed,
+            (LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1) as u32
+        );
+        assert_eq!(claim.translated_mask, read_u32_le(&live, 6).unwrap());
+        assert_eq!(
+            bit_cursor, 13,
+            "EE emission owns position, inserted scalar orientation, widened state, and no name bit"
+        );
+        assert_eq!(
+            usize::try_from(rewrite.bits_inserted).unwrap()
+                - usize::try_from(rewrite.bits_removed).unwrap()
+                + usize::try_from(claim.source_bits_consumed).unwrap(),
+            bit_cursor,
+            "post-mutation bit counts must match the parser's source claim"
         );
     }
 
