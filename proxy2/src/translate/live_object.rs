@@ -3991,8 +3991,9 @@ fn format_area_placeable_context_row(
         .unwrap_or_else(|| "unproven".to_string());
     if row.has_direction {
         format!(
-            "{}:app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
+            row.object_id_confidence.as_str(),
             row.appearance,
             row.x,
             row.y,
@@ -4003,8 +4004,9 @@ fn format_area_placeable_context_row(
         )
     } else {
         format!(
-            "{}:app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
+            row.object_id_confidence.as_str(),
             row.appearance,
             row.x,
             row.y,
@@ -5089,7 +5091,7 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Light, &light),
-            "light:app=0x004D@5.00,6.00,0.00;state=unproven"
+            "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven"
         );
 
         let static_row = AreaPlaceableContextRow {
@@ -5102,6 +5104,8 @@ mod placeable_add_semantic_tests {
             dir_y: 1.0,
             dir_z: 0.0,
             has_direction: true,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
             module_state: Some(AreaPlaceableContextState {
                 static_object: true,
                 useable: true,
@@ -5113,7 +5117,7 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &static_row),
-            "static:app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
     }
 
@@ -8368,6 +8372,8 @@ mod tests {
                 dir_y: 0.0,
                 dir_z: 0.0,
                 has_direction: false,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: None,
             }],
             ..crate::translate::area::AreaPlaceableContext::default()

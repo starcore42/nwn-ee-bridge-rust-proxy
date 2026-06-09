@@ -582,6 +582,19 @@ Current status:
   --nocapture`, `cargo fmt --all --check`, `git diff --check`, and `cargo
   check -q -p hgbridge-proxy2`. Keep the broader issue open pending visual
   replay against a confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` -> `P/05/01` placeable context identity-confidence
+  audit: no emitted packet bytes changed. Area placeable context rows now carry
+  explicit object-id confidence (`unique`, area-object alias, duplicate, or
+  both) after the exact post-tile cursor proof, and non-unique rows no longer
+  export module trap/use/lock state into later live-object `A/09` mismatch
+  diagnostics. Duplicate light/static rows remain visible as diagnostic
+  context, but the bridge no longer treats their GIT state as a unique
+  engine-state fact. Verified with non-incremental isolated-target `cargo
+  check -q -p hgbridge-proxy2`, `cargo test -q -p hgbridge-proxy2
+  placeable_context_ -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_overlap_context_format_keeps_light_static_provenance --
+  --nocapture`, and `cargo fmt --all --check`. Keep the broader issue open
+  pending visual replay against a confirmed bad static/live placeable capture.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

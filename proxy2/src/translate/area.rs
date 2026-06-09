@@ -49,7 +49,7 @@
 //!   driver-only mode requires the proxy to insert both zero WORDs in-band.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Write,
     fs,
     path::{Path, PathBuf},
@@ -275,6 +275,32 @@ pub struct AreaPlaceableContextRowMatch<'a> {
     pub row: &'a AreaPlaceableContextRow,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AreaPlaceableContextObjectIdConfidence {
+    #[default]
+    Unique,
+    AreaObjectAlias,
+    DuplicateObjectId,
+    AreaObjectAliasDuplicate,
+}
+
+impl AreaPlaceableContextObjectIdConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AreaPlaceableContextObjectIdConfidence::Unique => "unique",
+            AreaPlaceableContextObjectIdConfidence::AreaObjectAlias => "area-alias",
+            AreaPlaceableContextObjectIdConfidence::DuplicateObjectId => "duplicate",
+            AreaPlaceableContextObjectIdConfidence::AreaObjectAliasDuplicate => {
+                "area-alias+duplicate"
+            }
+        }
+    }
+
+    fn is_unique(self) -> bool {
+        matches!(self, AreaPlaceableContextObjectIdConfidence::Unique)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AreaPlaceableContextRow {
     pub object_id: u32,
@@ -286,6 +312,7 @@ pub struct AreaPlaceableContextRow {
     pub dir_y: f32,
     pub dir_z: f32,
     pub has_direction: bool,
+    pub object_id_confidence: AreaPlaceableContextObjectIdConfidence,
     pub module_state: Option<AreaPlaceableContextState>,
 }
 
@@ -3161,10 +3188,16 @@ fn collect_area_post_tile_placeable_context(
             dir_y,
             dir_z,
             has_direction: true,
+            object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
             module_state,
         });
         cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
     }
+    mark_area_placeable_context_object_id_confidence(
+        legacy_area_object_id,
+        &mut light_rows,
+        &mut static_rows,
+    );
 
     Some(AreaPlaceableContext {
         area_resref: area_resref.to_string(),
@@ -3277,6 +3310,38 @@ fn area_placeable_context_state_from_module_placeable(
         trap_disarmable: placeable.trap_disarmable,
         lockable: placeable.lockable,
         locked: placeable.locked,
+    }
+}
+
+fn mark_area_placeable_context_object_id_confidence(
+    legacy_area_object_id: u32,
+    light_rows: &mut [AreaPlaceableContextRow],
+    static_rows: &mut [AreaPlaceableContextRow],
+) {
+    let mut object_id_counts = HashMap::<u32, usize>::new();
+    for object_id in light_rows
+        .iter()
+        .chain(static_rows.iter())
+        .map(|row| row.object_id)
+    {
+        *object_id_counts.entry(object_id).or_default() += 1;
+    }
+
+    for row in light_rows.iter_mut().chain(static_rows.iter_mut()) {
+        let area_alias = row.object_id == legacy_area_object_id;
+        let duplicate = object_id_counts
+            .get(&row.object_id)
+            .copied()
+            .is_some_and(|count| count > 1);
+        row.object_id_confidence = match (area_alias, duplicate) {
+            (false, false) => AreaPlaceableContextObjectIdConfidence::Unique,
+            (true, false) => AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+            (false, true) => AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+            (true, true) => AreaPlaceableContextObjectIdConfidence::AreaObjectAliasDuplicate,
+        };
+        if !row.object_id_confidence.is_unique() {
+            row.module_state = None;
+        }
     }
 }
 
@@ -8908,6 +8973,41 @@ mod public_static_direction_tests {
     }
 
     #[test]
+    fn placeable_context_marks_duplicate_light_static_object_ids() {
+        let duplicate_object_id = 0x8000_0042;
+        let (payload, fragment_offset, _scan) =
+            real_area_light_static_placeable_payload(duplicate_object_id);
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            None,
+        )
+        .expect("duplicate light/static ids should still expose exact wire rows");
+
+        assert_eq!(context.light_rows.len(), 1);
+        assert_eq!(context.static_rows.len(), 1);
+        assert_eq!(
+            context.light_rows[0].object_id_confidence,
+            AreaPlaceableContextObjectIdConfidence::DuplicateObjectId
+        );
+        assert_eq!(
+            context.static_rows[0].object_id_confidence,
+            AreaPlaceableContextObjectIdConfidence::DuplicateObjectId
+        );
+
+        let matches = context
+            .matching_placeable_rows(duplicate_object_id)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].kind, AreaPlaceableContextRowKind::Light);
+        assert_eq!(matches[1].kind, AreaPlaceableContextRowKind::Static);
+    }
+
+    #[test]
     fn placeable_context_rejects_unproven_light_row_shape() {
         let (payload, fragment_offset, scan) =
             real_area_light_static_placeable_payload(0x0000_0077);
@@ -10106,6 +10206,25 @@ mod public_static_direction_tests {
                 locked: true,
             }),
             "one-to-one static-list proof should export module trap/use/lock state"
+        );
+
+        let alias_context = collect_area_post_tile_placeable_context(
+            &valid_payload,
+            valid_fragment_offset,
+            "testarea",
+            0x8000_0042,
+            false,
+            Some(&info),
+        )
+        .expect("area-object alias row should still be exposed as exact wire context");
+        assert_eq!(alias_context.static_rows.len(), 1);
+        assert_eq!(
+            alias_context.static_rows[0].object_id_confidence,
+            AreaPlaceableContextObjectIdConfidence::AreaObjectAlias
+        );
+        assert_eq!(
+            alias_context.static_rows[0].module_state, None,
+            "area-object aliases are diagnostic context and must not seed live-object state mismatches"
         );
 
         let (payload, fragment_offset, scan) =

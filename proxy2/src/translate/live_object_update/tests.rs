@@ -2728,6 +2728,8 @@ fn local_cepv22_starter_area_entry_live_object_rewrites_to_exact_shape() {
             dir_y: 1.0,
             dir_z: 0.0,
             has_direction: true,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
             module_state: None,
         }],
         light_rows: Vec::new(),
