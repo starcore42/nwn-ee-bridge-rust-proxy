@@ -2550,6 +2550,14 @@ Current status:
   Focused coverage pins exact and shifted cursors after a `delete-exact` span.
   This does not assign the two active pre-`U/6` bits; continue with compact
   source writer/capture or another source-side owner before `U/10`/`A/6`/`U/6`.
+- 2026-06-09 `P/05/01` live-object rewrite ledger commit invariant: production
+  state machinery now commits add/update/delete ownership through a typed
+  ledger span with checked emitted/source bit deltas. Impossible spans, such as
+  a backwards emitted cursor or an inserted-bit count larger than the emitted
+  row delta, mark the cursor unreliable and stop row-local trim/promotion work
+  instead of silently omitting the diagnostic entry. This does not assign the two
+  active pre-`U/6` bits; it makes the next compact source-writer/capture proof
+  consume the same checked source/emitted ownership contract.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

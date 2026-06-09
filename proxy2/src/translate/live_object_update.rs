@@ -356,36 +356,42 @@ mod diagnostic_tests {
         live[17] = ITEM_OBJECT_TYPE;
         let mut ledger = LiveObjectRewriteBitLedger::new();
 
-        ledger.commit_record(
+        assert!(ledger.commit_record(
             &live,
-            0,
-            6,
-            CNW_FRAGMENT_HEADER_BITS,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            0,
-            0,
-            "add-exact",
-        );
-        ledger.commit_record(
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 6,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 6,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "add-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
             &live,
-            6,
-            16,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            CNW_FRAGMENT_HEADER_BITS + 19,
-            6,
-            1,
-            "update-rewrite",
-        );
-        ledger.commit_record(
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 6,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 6,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 19,
+                bits_inserted: 6,
+                bits_removed: 1,
+                family: "update-rewrite",
+            },
+        ));
+        assert!(ledger.commit_record(
             &live,
-            16,
-            32,
-            CNW_FRAGMENT_HEADER_BITS + 19,
-            CNW_FRAGMENT_HEADER_BITS + 25,
-            1,
-            0,
-            "add-rewrite",
-        );
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 16,
+                record_end: 32,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 19,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 25,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "add-rewrite",
+            },
+        ));
 
         let entries = ledger.entries();
         assert_eq!(entries.len(), 3);
@@ -419,36 +425,42 @@ mod diagnostic_tests {
         live[17] = ITEM_OBJECT_TYPE;
         let mut ledger = LiveObjectRewriteBitLedger::new();
 
-        ledger.commit_record(
+        assert!(ledger.commit_record(
             &live,
-            0,
-            6,
-            CNW_FRAGMENT_HEADER_BITS,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            0,
-            0,
-            "add-exact",
-        );
-        ledger.commit_record(
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 6,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 6,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "add-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
             &live,
-            6,
-            16,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            CNW_FRAGMENT_HEADER_BITS + 19,
-            6,
-            1,
-            "update-rewrite",
-        );
-        ledger.commit_record(
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 6,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 6,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 19,
+                bits_inserted: 6,
+                bits_removed: 1,
+                family: "update-rewrite",
+            },
+        ));
+        assert!(ledger.commit_record(
             &live,
-            16,
-            32,
-            CNW_FRAGMENT_HEADER_BITS + 19,
-            CNW_FRAGMENT_HEADER_BITS + 25,
-            1,
-            0,
-            "add-rewrite",
-        );
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 16,
+                record_end: 32,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 19,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 25,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "add-rewrite",
+            },
+        ));
 
         let exact_cursor = ledger
             .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 25)
@@ -514,26 +526,30 @@ mod diagnostic_tests {
         live[17] = ITEM_OBJECT_TYPE;
         let mut ledger = LiveObjectRewriteBitLedger::new();
 
-        ledger.commit_record(
+        assert!(ledger.commit_record(
             &live,
-            0,
-            6,
-            CNW_FRAGMENT_HEADER_BITS,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            0,
-            0,
-            "add-exact",
-        );
-        ledger.commit_record(
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 6,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 6,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "add-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
             &live,
-            6,
-            16,
-            CNW_FRAGMENT_HEADER_BITS + 6,
-            CNW_FRAGMENT_HEADER_BITS + 7,
-            0,
-            0,
-            "delete-exact",
-        );
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 6,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 6,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 7,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "delete-exact",
+            },
+        ));
 
         let exact_cursor = ledger
             .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 7)
@@ -557,6 +573,48 @@ mod diagnostic_tests {
             shifted_candidate.source_relation, "unowned-source-gap",
             "a neighboring fit after a delete row still needs a separate source owner"
         );
+    }
+
+    #[test]
+    fn rewrite_bit_ledger_rejects_impossible_source_delta_claims() {
+        let mut live = vec![0; 8];
+        live[0] = b'U';
+        live[1] = ITEM_OBJECT_TYPE;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+
+        assert!(!ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 4,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "update-rewrite",
+            },
+        ));
+        assert_eq!(ledger.source_bit_cursor(), CNW_FRAGMENT_HEADER_BITS);
+        assert!(ledger.entries().is_empty());
+
+        assert!(!ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 1,
+                bits_inserted: 2,
+                bits_removed: 0,
+                family: "update-rewrite",
+            },
+        ));
+        assert_eq!(
+            ledger.source_bit_cursor(),
+            CNW_FRAGMENT_HEADER_BITS,
+            "an impossible EE insertion claim must not advance the source cursor"
+        );
+        assert!(ledger.entries().is_empty());
     }
 }
 
@@ -4425,16 +4483,29 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
-                    rewrite_bit_ledger.commit_record(
+                    if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
-                        offset,
-                        record_end,
-                        exact_add_start_bit_cursor,
-                        bit_cursor,
-                        0,
-                        0,
-                        "add-exact",
-                    );
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: exact_add_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: "add-exact",
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "add-record-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            exact_add_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_record_end = record_end;
                     let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                         && creature::looks_like_ee_creature_add_record(
@@ -4503,16 +4574,29 @@ pub fn rewrite_update_records_payload_if_possible(
                             .bits_removed
                             .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
                         bit_cursor = repair.next_bit_cursor;
-                        rewrite_bit_ledger.commit_record(
+                        if !rewrite_bit_ledger.commit_record(
                             &live_bytes,
-                            offset,
-                            record_end,
-                            repair_start_bit_cursor,
-                            bit_cursor,
-                            repair.bits_inserted,
-                            repair.bits_removed,
-                            "add-name-fragment-repair",
-                        );
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: repair_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: repair.bits_inserted,
+                                bits_removed: repair.bits_removed,
+                                family: "add-name-fragment-repair",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "add-name-fragment-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                repair_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record =
@@ -4619,20 +4703,33 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
-                    rewrite_bit_ledger.commit_record(
+                    if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
-                        offset,
-                        record_end,
-                        exact_add_start_bit_cursor,
-                        bit_cursor,
-                        add_extra_bits_inserted,
-                        add_extra_bits_removed,
-                        if add_extra_bits_inserted != 0 || add_extra_bits_removed != 0 {
-                            "add-rewrite"
-                        } else {
-                            "add-exact"
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: exact_add_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: add_extra_bits_inserted,
+                            bits_removed: add_extra_bits_removed,
+                            family: if add_extra_bits_inserted != 0 || add_extra_bits_removed != 0 {
+                                "add-rewrite"
+                            } else {
+                                "add-exact"
+                            },
                         },
-                    );
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "add-rewrite-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            exact_add_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     last_verified_record_end = record_end;
                     let ee_creature_add_record = object_type == CREATURE_OBJECT_TYPE
                         && creature::looks_like_ee_creature_add_record(
@@ -4895,16 +4992,29 @@ pub fn rewrite_update_records_payload_if_possible(
                 {
                     if fragment_bits.len().saturating_sub(bit_cursor) >= delete_bits {
                         bit_cursor += delete_bits;
-                        rewrite_bit_ledger.commit_record(
+                        if !rewrite_bit_ledger.commit_record(
                             &live_bytes,
-                            offset,
-                            record_end,
-                            delete_start_bit_cursor,
-                            bit_cursor,
-                            0,
-                            0,
-                            "delete-exact",
-                        );
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: delete_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: 0,
+                                bits_removed: 0,
+                                family: "delete-exact",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "delete-record-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                delete_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                     } else {
                         trace_update_rewrite_cursor_unreliable(
                             "delete-record-fragment-bits-insufficient",
@@ -6028,20 +6138,33 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
-        rewrite_bit_ledger.commit_record(
+        if !rewrite_bit_ledger.commit_record(
             &live_bytes,
-            offset,
-            record_end,
-            update_start_bit_cursor,
-            bit_cursor,
-            usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX),
-            usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX),
-            if record_rewrite.rewritten {
-                "update-rewrite"
-            } else {
-                "update-exact"
+            LiveObjectRewriteBitLedgerCommit {
+                offset,
+                record_end,
+                emitted_bit_start: update_start_bit_cursor,
+                emitted_bit_end: bit_cursor,
+                bits_inserted: usize::try_from(record_rewrite.bits_inserted).unwrap_or(usize::MAX),
+                bits_removed: usize::try_from(record_rewrite.bits_removed).unwrap_or(usize::MAX),
+                family: if record_rewrite.rewritten {
+                    "update-rewrite"
+                } else {
+                    "update-exact"
+                },
             },
-        );
+        ) {
+            trace_update_rewrite_cursor_unreliable(
+                "update-record-ledger-commit-invalid",
+                &live_bytes,
+                offset,
+                record_end,
+                update_start_bit_cursor,
+            );
+            bit_cursor_reliable = false;
+            offset = record_end.max(offset + 1);
+            continue;
+        }
         // `W current total` is fragment-neutral in Diamond `sub_44F160` and
         // EE `sub_1407B85A0`: it never donates missing BOOLs to the preceding
         // update. A final W suffix may only preserve the older family terminal
@@ -6663,42 +6786,34 @@ impl LiveObjectRewriteBitLedger {
     fn commit_record(
         &mut self,
         live_bytes: &[u8],
-        offset: usize,
-        record_end: usize,
-        emitted_bit_start: usize,
-        emitted_bit_end: usize,
-        bits_inserted: usize,
-        bits_removed: usize,
-        family: &'static str,
-    ) {
-        let Some(emitted_delta) = emitted_bit_end.checked_sub(emitted_bit_start) else {
-            return;
-        };
-        let Some(source_delta_before_insertions) = emitted_delta.checked_add(bits_removed) else {
-            return;
-        };
-        let Some(source_delta) = source_delta_before_insertions.checked_sub(bits_inserted) else {
-            return;
+        commit: LiveObjectRewriteBitLedgerCommit,
+    ) -> bool {
+        let Some(source_delta) = commit.source_delta() else {
+            return false;
         };
         let source_bit_start = self.source_bit_cursor;
         let Some(source_bit_end) = source_bit_start.checked_add(source_delta) else {
-            return;
+            return false;
         };
 
         self.source_bit_cursor = source_bit_end;
         self.entries.push(LiveObjectRewriteBitLedgerEntry {
-            offset,
-            record_end,
-            opcode: live_bytes.get(offset).copied().unwrap_or_default(),
-            marker: live_bytes.get(offset + 1).copied().unwrap_or_default(),
+            offset: commit.offset,
+            record_end: commit.record_end,
+            opcode: live_bytes.get(commit.offset).copied().unwrap_or_default(),
+            marker: live_bytes
+                .get(commit.offset + 1)
+                .copied()
+                .unwrap_or_default(),
             source_bit_start,
             source_bit_end,
-            emitted_bit_start,
-            emitted_bit_end,
-            bits_inserted,
-            bits_removed,
-            family,
+            emitted_bit_start: commit.emitted_bit_start,
+            emitted_bit_end: commit.emitted_bit_end,
+            bits_inserted: commit.bits_inserted,
+            bits_removed: commit.bits_removed,
+            family: commit.family,
         });
+        true
     }
 
     #[cfg(test)]
@@ -6770,6 +6885,25 @@ impl LiveObjectRewriteBitLedger {
             relation,
             source_relation,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectRewriteBitLedgerCommit {
+    offset: usize,
+    record_end: usize,
+    emitted_bit_start: usize,
+    emitted_bit_end: usize,
+    bits_inserted: usize,
+    bits_removed: usize,
+    family: &'static str,
+}
+
+impl LiveObjectRewriteBitLedgerCommit {
+    fn source_delta(self) -> Option<usize> {
+        let emitted_delta = self.emitted_bit_end.checked_sub(self.emitted_bit_start)?;
+        let before_insertions = emitted_delta.checked_add(self.bits_removed)?;
+        before_insertions.checked_sub(self.bits_inserted)
     }
 }
 
