@@ -455,13 +455,29 @@ mod diagnostic_tests {
             .expect("exact cursor should be classified against the previous row");
         assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
         assert_eq!(exact_cursor.emitted_gap_bits, 0);
+        assert_eq!(exact_cursor.source_relation, "after-previous-source-end");
+        assert_eq!(exact_cursor.source_gap_bits, 0);
+        assert_eq!(
+            exact_cursor.previous_source_bit_start,
+            CNW_FRAGMENT_HEADER_BITS + 14
+        );
         assert_eq!(
             exact_cursor.previous_source_bit_end,
             CNW_FRAGMENT_HEADER_BITS + 19
         );
         assert_eq!(
+            exact_cursor.previous_emitted_bit_start,
+            CNW_FRAGMENT_HEADER_BITS + 19
+        );
+        assert_eq!(
             exact_cursor.previous_emitted_bit_end,
             CNW_FRAGMENT_HEADER_BITS + 25
+        );
+        assert_eq!(exact_cursor.cumulative_emitted_source_delta, 6);
+        assert_eq!(
+            exact_cursor.implied_source_cursor,
+            CNW_FRAGMENT_HEADER_BITS + 19,
+            "the exact emitted handoff maps back to the source end after removing EE insertions"
         );
         assert_eq!(
             exact_cursor.source_emitted_delta_after_previous, 6,
@@ -473,6 +489,14 @@ mod diagnostic_tests {
             .expect("shifted neighbor cursor should be classified against the previous row");
         assert_eq!(shifted_candidate.relation, "unowned-emitted-gap");
         assert_eq!(shifted_candidate.emitted_gap_bits, 2);
+        assert_eq!(shifted_candidate.source_relation, "unowned-source-gap");
+        assert_eq!(shifted_candidate.source_gap_bits, 2);
+        assert_eq!(shifted_candidate.cumulative_emitted_source_delta, 6);
+        assert_eq!(
+            shifted_candidate.implied_source_cursor,
+            CNW_FRAGMENT_HEADER_BITS + 21,
+            "subtracting the committed EE insertion delta still leaves a two-bit source gap"
+        );
         assert_eq!(
             shifted_candidate.source_emitted_delta_after_previous, 8,
             "a +2 neighboring fit requires two unowned emitted bits after the committed rows"
@@ -6640,16 +6664,36 @@ impl LiveObjectRewriteBitLedger {
             "unowned-emitted-gap"
         };
         let emitted_gap_bits = cursor.saturating_sub(previous.emitted_bit_end);
+        let cumulative_emitted_source_delta =
+            signed_bit_delta(previous.emitted_bit_end, previous.source_bit_end);
+        let implied_source_cursor =
+            emitted_cursor_to_source_cursor(cursor, cumulative_emitted_source_delta);
+        let source_relation = if implied_source_cursor < previous.source_bit_start {
+            "before-ledger-source-row"
+        } else if implied_source_cursor < previous.source_bit_end {
+            "inside-previous-source-row"
+        } else if implied_source_cursor == previous.source_bit_end {
+            "after-previous-source-end"
+        } else {
+            "unowned-source-gap"
+        };
+        let source_gap_bits = implied_source_cursor.saturating_sub(previous.source_bit_end);
         Some(LiveObjectRewriteBitLedgerCursorGap {
             previous_offset: previous.offset,
             previous_record_end: previous.record_end,
             previous_family: previous.family,
+            previous_source_bit_start: previous.source_bit_start,
             previous_source_bit_end: previous.source_bit_end,
+            previous_emitted_bit_start: previous.emitted_bit_start,
             previous_emitted_bit_end: previous.emitted_bit_end,
             cursor,
             emitted_gap_bits,
             source_emitted_delta_after_previous: signed_bit_delta(cursor, previous.source_bit_end),
+            cumulative_emitted_source_delta,
+            implied_source_cursor,
+            source_gap_bits,
             relation,
+            source_relation,
         })
     }
 }
@@ -6674,12 +6718,18 @@ struct LiveObjectRewriteBitLedgerCursorGap {
     previous_offset: usize,
     previous_record_end: usize,
     previous_family: &'static str,
+    previous_source_bit_start: usize,
     previous_source_bit_end: usize,
+    previous_emitted_bit_start: usize,
     previous_emitted_bit_end: usize,
     cursor: usize,
     emitted_gap_bits: usize,
     source_emitted_delta_after_previous: isize,
+    cumulative_emitted_source_delta: isize,
+    implied_source_cursor: usize,
+    source_gap_bits: usize,
     relation: &'static str,
+    source_relation: &'static str,
 }
 
 fn signed_bit_delta(left: usize, right: usize) -> isize {
@@ -6687,6 +6737,14 @@ fn signed_bit_delta(left: usize, right: usize) -> isize {
         isize::try_from(left - right).unwrap_or(isize::MAX)
     } else {
         -isize::try_from(right - left).unwrap_or(isize::MAX)
+    }
+}
+
+fn emitted_cursor_to_source_cursor(cursor: usize, emitted_source_delta: isize) -> usize {
+    if emitted_source_delta >= 0 {
+        cursor.saturating_sub(usize::try_from(emitted_source_delta).unwrap_or(usize::MAX))
+    } else {
+        cursor.saturating_add(usize::try_from(-emitted_source_delta).unwrap_or(usize::MAX))
     }
 }
 
@@ -7102,15 +7160,21 @@ fn trace_item_update_source_window(
     }
     if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(bit_cursor) {
         eprintln!(
-            "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
+            "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} source_relation={} source_gap_bits={} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{}",
             gap.cursor,
             gap.relation,
             gap.emitted_gap_bits,
+            gap.source_relation,
+            gap.source_gap_bits,
+            gap.implied_source_cursor,
+            gap.cumulative_emitted_source_delta,
             gap.source_emitted_delta_after_previous,
             gap.previous_offset,
             gap.previous_record_end,
             gap.previous_family,
+            gap.previous_source_bit_start,
             gap.previous_source_bit_end,
+            gap.previous_emitted_bit_start,
             gap.previous_emitted_bit_end
         );
     }
@@ -7183,15 +7247,21 @@ fn trace_item_update_source_window(
             if expected_bit_cursor != bit_cursor {
                 if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(expected_bit_cursor) {
                     eprintln!(
-                        "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
+                        "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} source_relation={} source_gap_bits={} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{}",
                         gap.cursor,
                         gap.relation,
                         gap.emitted_gap_bits,
+                        gap.source_relation,
+                        gap.source_gap_bits,
+                        gap.implied_source_cursor,
+                        gap.cumulative_emitted_source_delta,
                         gap.source_emitted_delta_after_previous,
                         gap.previous_offset,
                         gap.previous_record_end,
                         gap.previous_family,
+                        gap.previous_source_bit_start,
                         gap.previous_source_bit_end,
+                        gap.previous_emitted_bit_start,
                         gap.previous_emitted_bit_end
                     );
                 }
@@ -7236,6 +7306,18 @@ fn trace_item_update_source_window(
             let ledger_source_delta = ledger_gap
                 .map(|gap| gap.source_emitted_delta_after_previous.to_string())
                 .unwrap_or_else(|| "none".to_string());
+            let ledger_cumulative_delta = ledger_gap
+                .map(|gap| gap.cumulative_emitted_source_delta.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let ledger_source_relation = ledger_gap
+                .map(|gap| gap.source_relation)
+                .unwrap_or("no-ledger");
+            let ledger_source_gap_bits = ledger_gap
+                .map(|gap| gap.source_gap_bits.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let ledger_implied_source_cursor = ledger_gap
+                .map(|gap| gap.implied_source_cursor.to_string())
+                .unwrap_or_else(|| "none".to_string());
             let ledger_previous = ledger_gap
                 .map(|gap| {
                     format!(
@@ -7245,7 +7327,7 @@ fn trace_item_update_source_window(
                 })
                 .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_source_relation={} ledger_source_gap_bits={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
                 neighbor.delta,
                 neighbor.bit_start,
                 neighbor.bit_end,
@@ -7255,6 +7337,10 @@ fn trace_item_update_source_window(
                 neighbor.relation,
                 ledger_relation,
                 ledger_emitted_gap_bits,
+                ledger_source_relation,
+                ledger_source_gap_bits,
+                ledger_implied_source_cursor,
+                ledger_cumulative_delta,
                 ledger_source_delta,
                 ledger_previous
             );

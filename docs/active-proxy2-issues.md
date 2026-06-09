@@ -2523,6 +2523,17 @@ Current status:
   unowned emitted gap. Next production path remains compact source
   writer/capture proof or another source-side owner before `U/10`/`A/6`/`U/6`;
   do not add U/6 cursor skip, scalar-byte rescue, or generic inter-row trim.
+- 2026-06-09 `P/05/01` live-object rewrite ledger source-gap diagnostic: no
+  packet rewrite behavior changed. The committed-row ledger now maps an
+  emitted cursor back through the previous row's cumulative inserted/removed
+  bit delta and reports `source_relation`, `source_gap_bits`, and
+  `implied_source_cursor` beside the existing emitted-gap relation in the
+  gated item `U/6` source-window trace. Focused coverage proves that a cursor
+  exactly after an EE-inserting row maps back to `after-previous-source-end`,
+  while the scalar-looking `+2` item candidate still leaves a two-bit
+  `unowned-source-gap` after subtracting the committed EE insertion delta. The
+  next owner proof remains compact source writer/capture evidence or another
+  source-side handoff before `U/10`/`A/6`/`U/6`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
