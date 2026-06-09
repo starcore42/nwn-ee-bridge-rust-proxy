@@ -354,12 +354,9 @@ mod diagnostic_tests {
         live[7] = DOOR_OBJECT_TYPE;
         live[16] = b'A';
         live[17] = ITEM_OBJECT_TYPE;
-        let mut ledger = Vec::new();
-        let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
 
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             0,
             6,
@@ -369,9 +366,7 @@ mod diagnostic_tests {
             0,
             "add-exact",
         );
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             6,
             16,
@@ -381,9 +376,7 @@ mod diagnostic_tests {
             1,
             "update-rewrite",
         );
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             16,
             32,
@@ -394,21 +387,22 @@ mod diagnostic_tests {
             "add-rewrite",
         );
 
-        assert_eq!(ledger.len(), 3);
-        assert_eq!(ledger[0].source_bit_start, CNW_FRAGMENT_HEADER_BITS);
-        assert_eq!(ledger[0].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 6);
-        assert_eq!(ledger[1].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 6);
+        let entries = ledger.entries();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].source_bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(entries[0].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 6);
+        assert_eq!(entries[1].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 6);
         assert_eq!(
-            ledger[1].source_bit_end,
+            entries[1].source_bit_end,
             CNW_FRAGMENT_HEADER_BITS + 14,
             "six inserted EE bits and one removed legacy bit mean the source row consumed eight bits"
         );
-        assert_eq!(ledger[1].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
-        assert_eq!(ledger[2].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 14);
-        assert_eq!(ledger[2].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
-        assert_eq!(ledger[2].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 25);
+        assert_eq!(entries[1].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
+        assert_eq!(entries[2].source_bit_start, CNW_FRAGMENT_HEADER_BITS + 14);
+        assert_eq!(entries[2].source_bit_end, CNW_FRAGMENT_HEADER_BITS + 19);
+        assert_eq!(entries[2].emitted_bit_end, CNW_FRAGMENT_HEADER_BITS + 25);
         assert_eq!(
-            source_bit_cursor,
+            ledger.source_bit_cursor(),
             CNW_FRAGMENT_HEADER_BITS + 19,
             "the source cursor remains distinct from the EE-emitted cursor after insertions"
         );
@@ -423,12 +417,9 @@ mod diagnostic_tests {
         live[7] = DOOR_OBJECT_TYPE;
         live[16] = b'A';
         live[17] = ITEM_OBJECT_TYPE;
-        let mut ledger = Vec::new();
-        let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
 
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             0,
             6,
@@ -438,9 +429,7 @@ mod diagnostic_tests {
             0,
             "add-exact",
         );
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             6,
             16,
@@ -450,9 +439,7 @@ mod diagnostic_tests {
             1,
             "update-rewrite",
         );
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut ledger,
-            &mut source_bit_cursor,
+        ledger.commit_record(
             &live,
             16,
             32,
@@ -463,11 +450,9 @@ mod diagnostic_tests {
             "add-rewrite",
         );
 
-        let exact_cursor = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
-            &ledger,
-            CNW_FRAGMENT_HEADER_BITS + 25,
-        )
-        .expect("exact cursor should be classified against the previous row");
+        let exact_cursor = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 25)
+            .expect("exact cursor should be classified against the previous row");
         assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
         assert_eq!(exact_cursor.emitted_gap_bits, 0);
         assert_eq!(
@@ -483,11 +468,9 @@ mod diagnostic_tests {
             "the focus cursor is six EE-inserted bits beyond the source cursor"
         );
 
-        let shifted_candidate = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
-            &ledger,
-            CNW_FRAGMENT_HEADER_BITS + 27,
-        )
-        .expect("shifted neighbor cursor should be classified against the previous row");
+        let shifted_candidate = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 27)
+            .expect("shifted neighbor cursor should be classified against the previous row");
         assert_eq!(shifted_candidate.relation, "unowned-emitted-gap");
         assert_eq!(shifted_candidate.emitted_gap_bits, 2);
         assert_eq!(
@@ -3503,8 +3486,7 @@ pub fn rewrite_update_records_payload_if_possible(
         }
     }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
-    let mut source_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
-    let mut rewrite_bit_ledger = Vec::new();
+    let mut rewrite_bit_ledger = LiveObjectRewriteBitLedger::new();
     let mut bit_cursor_reliable = true;
     let mut fatal_item_update_cursor_failure = false;
     let mut pending_creature_p_tail_repair: Option<
@@ -4363,9 +4345,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
-                    push_live_object_rewrite_bit_ledger_entry(
-                        &mut rewrite_bit_ledger,
-                        &mut source_bit_cursor,
+                    rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         offset,
                         record_end,
@@ -4443,9 +4423,7 @@ pub fn rewrite_update_records_payload_if_possible(
                             .bits_removed
                             .saturating_add(u32::try_from(repair.bits_removed).unwrap_or(u32::MAX));
                         bit_cursor = repair.next_bit_cursor;
-                        push_live_object_rewrite_bit_ledger_entry(
-                            &mut rewrite_bit_ledger,
-                            &mut source_bit_cursor,
+                        rewrite_bit_ledger.commit_record(
                             &live_bytes,
                             offset,
                             record_end,
@@ -4561,9 +4539,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
-                    push_live_object_rewrite_bit_ledger_entry(
-                        &mut rewrite_bit_ledger,
-                        &mut source_bit_cursor,
+                    rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         offset,
                         record_end,
@@ -5953,9 +5929,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 .bits_removed
                 .saturating_add(record_rewrite.bits_removed);
         }
-        push_live_object_rewrite_bit_ledger_entry(
-            &mut rewrite_bit_ledger,
-            &mut source_bit_cursor,
+        rewrite_bit_ledger.commit_record(
             &live_bytes,
             offset,
             record_end,
@@ -6573,6 +6547,113 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     relation: &'static str,
 }
 
+#[derive(Debug, Clone)]
+struct LiveObjectRewriteBitLedger {
+    source_bit_cursor: usize,
+    entries: Vec<LiveObjectRewriteBitLedgerEntry>,
+}
+
+impl LiveObjectRewriteBitLedger {
+    fn new() -> Self {
+        Self {
+            source_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            entries: Vec::new(),
+        }
+    }
+
+    fn commit_record(
+        &mut self,
+        live_bytes: &[u8],
+        offset: usize,
+        record_end: usize,
+        emitted_bit_start: usize,
+        emitted_bit_end: usize,
+        bits_inserted: usize,
+        bits_removed: usize,
+        family: &'static str,
+    ) {
+        let Some(emitted_delta) = emitted_bit_end.checked_sub(emitted_bit_start) else {
+            return;
+        };
+        let Some(source_delta_before_insertions) = emitted_delta.checked_add(bits_removed) else {
+            return;
+        };
+        let Some(source_delta) = source_delta_before_insertions.checked_sub(bits_inserted) else {
+            return;
+        };
+        let source_bit_start = self.source_bit_cursor;
+        let Some(source_bit_end) = source_bit_start.checked_add(source_delta) else {
+            return;
+        };
+
+        self.source_bit_cursor = source_bit_end;
+        self.entries.push(LiveObjectRewriteBitLedgerEntry {
+            offset,
+            record_end,
+            opcode: live_bytes.get(offset).copied().unwrap_or_default(),
+            marker: live_bytes.get(offset + 1).copied().unwrap_or_default(),
+            source_bit_start,
+            source_bit_end,
+            emitted_bit_start,
+            emitted_bit_end,
+            bits_inserted,
+            bits_removed,
+            family,
+        });
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> &[LiveObjectRewriteBitLedgerEntry] {
+        &self.entries
+    }
+
+    fn recent_entries(&self, limit: usize) -> &[LiveObjectRewriteBitLedgerEntry] {
+        let start = self.entries.len().saturating_sub(limit);
+        &self.entries[start..]
+    }
+
+    #[cfg(test)]
+    fn source_bit_cursor(&self) -> usize {
+        self.source_bit_cursor
+    }
+
+    fn gap_before_cursor(&self, cursor: usize) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
+        let previous = self
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.emitted_bit_start < cursor && cursor < entry.emitted_bit_end)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.emitted_bit_end <= cursor)
+            })
+            .or_else(|| self.entries.first())?;
+        let relation = if cursor < previous.emitted_bit_start {
+            "before-ledger-row"
+        } else if cursor < previous.emitted_bit_end {
+            "inside-previous-emitted-row"
+        } else if cursor == previous.emitted_bit_end {
+            "after-previous-emitted-end"
+        } else {
+            "unowned-emitted-gap"
+        };
+        let emitted_gap_bits = cursor.saturating_sub(previous.emitted_bit_end);
+        Some(LiveObjectRewriteBitLedgerCursorGap {
+            previous_offset: previous.offset,
+            previous_record_end: previous.record_end,
+            previous_family: previous.family,
+            previous_source_bit_end: previous.source_bit_end,
+            previous_emitted_bit_end: previous.emitted_bit_end,
+            cursor,
+            emitted_gap_bits,
+            source_emitted_delta_after_previous: signed_bit_delta(cursor, previous.source_bit_end),
+            relation,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LiveObjectRewriteBitLedgerEntry {
     offset: usize,
@@ -6599,86 +6680,6 @@ struct LiveObjectRewriteBitLedgerCursorGap {
     emitted_gap_bits: usize,
     source_emitted_delta_after_previous: isize,
     relation: &'static str,
-}
-
-fn push_live_object_rewrite_bit_ledger_entry(
-    ledger: &mut Vec<LiveObjectRewriteBitLedgerEntry>,
-    source_bit_cursor: &mut usize,
-    live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    emitted_bit_start: usize,
-    emitted_bit_end: usize,
-    bits_inserted: usize,
-    bits_removed: usize,
-    family: &'static str,
-) {
-    let Some(emitted_delta) = emitted_bit_end.checked_sub(emitted_bit_start) else {
-        return;
-    };
-    let Some(source_delta_before_insertions) = emitted_delta.checked_add(bits_removed) else {
-        return;
-    };
-    let Some(source_delta) = source_delta_before_insertions.checked_sub(bits_inserted) else {
-        return;
-    };
-    let source_bit_start = *source_bit_cursor;
-    let Some(source_bit_end) = source_bit_start.checked_add(source_delta) else {
-        return;
-    };
-
-    *source_bit_cursor = source_bit_end;
-    ledger.push(LiveObjectRewriteBitLedgerEntry {
-        offset,
-        record_end,
-        opcode: live_bytes.get(offset).copied().unwrap_or_default(),
-        marker: live_bytes.get(offset + 1).copied().unwrap_or_default(),
-        source_bit_start,
-        source_bit_end,
-        emitted_bit_start,
-        emitted_bit_end,
-        bits_inserted,
-        bits_removed,
-        family,
-    });
-}
-
-fn live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
-    ledger: &[LiveObjectRewriteBitLedgerEntry],
-    cursor: usize,
-) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
-    let previous = ledger
-        .iter()
-        .rev()
-        .find(|entry| entry.emitted_bit_start < cursor && cursor < entry.emitted_bit_end)
-        .or_else(|| {
-            ledger
-                .iter()
-                .rev()
-                .find(|entry| entry.emitted_bit_end <= cursor)
-        })
-        .or_else(|| ledger.first())?;
-    let relation = if cursor < previous.emitted_bit_start {
-        "before-ledger-row"
-    } else if cursor < previous.emitted_bit_end {
-        "inside-previous-emitted-row"
-    } else if cursor == previous.emitted_bit_end {
-        "after-previous-emitted-end"
-    } else {
-        "unowned-emitted-gap"
-    };
-    let emitted_gap_bits = cursor.saturating_sub(previous.emitted_bit_end);
-    Some(LiveObjectRewriteBitLedgerCursorGap {
-        previous_offset: previous.offset,
-        previous_record_end: previous.record_end,
-        previous_family: previous.family,
-        previous_source_bit_end: previous.source_bit_end,
-        previous_emitted_bit_end: previous.emitted_bit_end,
-        cursor,
-        emitted_gap_bits,
-        source_emitted_delta_after_previous: signed_bit_delta(cursor, previous.source_bit_end),
-        relation,
-    })
 }
 
 fn signed_bit_delta(left: usize, right: usize) -> isize {
@@ -7064,7 +7065,7 @@ fn trace_item_update_source_window(
     focus_record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-    rewrite_bit_ledger: &[LiveObjectRewriteBitLedgerEntry],
+    rewrite_bit_ledger: &LiveObjectRewriteBitLedger,
 ) {
     if !debug_live_claim_enabled_for_span(focus_offset, focus_record_end) {
         return;
@@ -7079,8 +7080,7 @@ fn trace_item_update_source_window(
         "live-object item update source window: reason={reason} focus_offset={focus_offset} focus_record_end={focus_record_end} bit_cursor={bit_cursor} fragment_bits={} before_cursor_bits={before_bits:?} after_cursor_bits={after_bits:?}",
         fragment_bits.len()
     );
-    let ledger_start = rewrite_bit_ledger.len().saturating_sub(8);
-    for entry in rewrite_bit_ledger.iter().skip(ledger_start) {
+    for entry in rewrite_bit_ledger.recent_entries(8) {
         eprintln!(
             "live-object rewrite bit ledger row: offset={} record_end={} opcode=0x{:02X} marker=0x{:02X} family={} source_bits={}..{} source_delta={} emitted_bits={}..{} emitted_delta={} bits_inserted={} bits_removed={}",
             entry.offset,
@@ -7100,9 +7100,7 @@ fn trace_item_update_source_window(
             entry.bits_removed
         );
     }
-    if let Some(gap) =
-        live_object_rewrite_bit_ledger_cursor_gap_before_cursor(rewrite_bit_ledger, bit_cursor)
-    {
+    if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(bit_cursor) {
         eprintln!(
             "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
             gap.cursor,
@@ -7183,10 +7181,7 @@ fn trace_item_update_source_window(
             expected_bit_cursor,
         ) {
             if expected_bit_cursor != bit_cursor {
-                if let Some(gap) = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
-                    rewrite_bit_ledger,
-                    expected_bit_cursor,
-                ) {
+                if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(expected_bit_cursor) {
                     eprintln!(
                         "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source_end={} previous_emitted_end={}",
                         gap.cursor,
@@ -7233,10 +7228,7 @@ fn trace_item_update_source_window(
                 .orientation_vector
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
-            let ledger_gap = live_object_rewrite_bit_ledger_cursor_gap_before_cursor(
-                rewrite_bit_ledger,
-                neighbor.bit_start,
-            );
+            let ledger_gap = rewrite_bit_ledger.gap_before_cursor(neighbor.bit_start);
             let ledger_relation = ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger");
             let ledger_emitted_gap_bits = ledger_gap
                 .map(|gap| gap.emitted_gap_bits.to_string())

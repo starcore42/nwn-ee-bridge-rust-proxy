@@ -2512,6 +2512,17 @@ Current status:
   `ledger_emitted_gap_bits=2`. This confirms the neighboring scalar fit still
   requires two unowned emitted bits after committed rows; continue with compact
   source writer/capture proof before assigning those bits.
+- 2026-06-09 `P/05/01` live-object rewrite ledger state refactor: packet
+  rewrite behavior remains unchanged. The add/update rewrite pass now commits
+  source/emitted row spans through a `LiveObjectRewriteBitLedger` state object
+  instead of a loose `Vec` plus external source cursor, so source consumption,
+  EE-emitted cursor spans, inserted/removed bit deltas, and gap classification
+  share one production contract. The private CEP v2.3 boundary rerun still
+  quarantines the same full item `U/6`: focus bit `28` is exactly after the
+  no-map `A/6` emitted row, while the scalar-looking `+2` fit remains an
+  unowned emitted gap. Next production path remains compact source
+  writer/capture proof or another source-side owner before `U/10`/`A/6`/`U/6`;
+  do not add U/6 cursor skip, scalar-byte rescue, or generic inter-row trim.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
