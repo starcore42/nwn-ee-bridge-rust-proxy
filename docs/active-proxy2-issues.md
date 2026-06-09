@@ -568,6 +568,20 @@ Current status:
   -p hgbridge-proxy2 public_static_direction_tests -- --nocapture`. Keep the
   broader issue open pending visual replay against a confirmed bad static/live
   placeable capture.
+- 2026-06-10 `P/04/01` -> `P/05/01` placeable context provenance audit:
+  promoted the area-context overlap API from untyped row references to
+  light/static row-kind matches. Live-object `A/09` overlap diagnostics now
+  report light and static area rows separately and only compare live add state
+  against module trap/use/lock state on static-context rows. No emitted packet
+  bytes changed; this keeps the next visual replay evidence tied to the
+  decompiled light-list versus static-list owner instead of a generic
+  area/static overlap. Verified with `cargo test -q -p hgbridge-proxy2
+  placeable_context_uses_light_rows_before_static_rows -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  placeable_overlap_context_format_keeps_light_static_provenance --
+  --nocapture`, `cargo fmt --all --check`, `git diff --check`, and `cargo
+  check -q -p hgbridge-proxy2`. Keep the broader issue open pending visual
+  replay against a confirmed bad static/live placeable capture.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

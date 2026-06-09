@@ -218,21 +218,61 @@ pub struct AreaPlaceableContext {
 
 impl AreaPlaceableContext {
     pub fn contains_placeable_id(&self, object_id: u32) -> bool {
-        self.light_rows
+        self.contains_light_placeable_id(object_id) || self.contains_static_placeable_id(object_id)
+    }
+
+    pub fn contains_light_placeable_id(&self, object_id: u32) -> bool {
+        self.light_rows.iter().any(|row| row.object_id == object_id)
+    }
+
+    pub fn contains_static_placeable_id(&self, object_id: u32) -> bool {
+        self.static_rows
             .iter()
-            .chain(self.static_rows.iter())
             .any(|row| row.object_id == object_id)
     }
 
-    pub fn rows_with_placeable_id(
+    pub fn matching_placeable_rows(
         &self,
         object_id: u32,
-    ) -> impl Iterator<Item = &AreaPlaceableContextRow> {
+    ) -> impl Iterator<Item = AreaPlaceableContextRowMatch<'_>> {
         self.light_rows
             .iter()
-            .chain(self.static_rows.iter())
             .filter(move |row| row.object_id == object_id)
+            .map(|row| AreaPlaceableContextRowMatch {
+                kind: AreaPlaceableContextRowKind::Light,
+                row,
+            })
+            .chain(
+                self.static_rows
+                    .iter()
+                    .filter(move |row| row.object_id == object_id)
+                    .map(|row| AreaPlaceableContextRowMatch {
+                        kind: AreaPlaceableContextRowKind::Static,
+                        row,
+                    }),
+            )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaPlaceableContextRowKind {
+    Light,
+    Static,
+}
+
+impl AreaPlaceableContextRowKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AreaPlaceableContextRowKind::Light => "light",
+            AreaPlaceableContextRowKind::Static => "static",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AreaPlaceableContextRowMatch<'a> {
+    pub kind: AreaPlaceableContextRowKind,
+    pub row: &'a AreaPlaceableContextRow,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -8847,6 +8887,24 @@ mod public_static_direction_tests {
         assert!(!context.light_rows[0].has_direction);
         assert_eq!(context.static_rows[0].appearance, 82);
         assert!(context.static_rows[0].has_direction);
+
+        assert!(context.contains_light_placeable_id(0x8000_0077));
+        assert!(!context.contains_static_placeable_id(0x8000_0077));
+        let light_matches = context
+            .matching_placeable_rows(0x8000_0077)
+            .collect::<Vec<_>>();
+        assert_eq!(light_matches.len(), 1);
+        assert_eq!(light_matches[0].kind, AreaPlaceableContextRowKind::Light);
+        assert_eq!(light_matches[0].row.object_id, 0x8000_0077);
+
+        assert!(!context.contains_light_placeable_id(0x8000_0042));
+        assert!(context.contains_static_placeable_id(0x8000_0042));
+        let static_matches = context
+            .matching_placeable_rows(0x8000_0042)
+            .collect::<Vec<_>>();
+        assert_eq!(static_matches.len(), 1);
+        assert_eq!(static_matches[0].kind, AreaPlaceableContextRowKind::Static);
+        assert_eq!(static_matches[0].row.object_id, 0x8000_0042);
     }
 
     #[test]

@@ -30,7 +30,10 @@
 //! exactly where EE will begin reading the map, or for verified door/placeable
 //! add records at the EE decompile-backed cursor.
 
-use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
+use crate::translate::area::{
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
+    AreaPlaceableContextState,
+};
 use std::collections::HashSet;
 
 const HIGH_LEVEL_ENVELOPE: u8 = b'P';
@@ -3658,39 +3661,43 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     // for object that doesn't exist" on the following update. Keep overlap and
     // legacy UserNN rows diagnostic-only; model/resource compatibility belongs
     // in a typed placeable writer, not in an object-lifecycle suppression rule.
-    let area_static_duplicate =
+    let area_placeable_overlap =
         area_context.is_some_and(|context| context.contains_placeable_id(object_id));
+    let area_light_duplicate =
+        area_context.is_some_and(|context| context.contains_light_placeable_id(object_id));
+    let area_static_duplicate =
+        area_context.is_some_and(|context| context.contains_static_placeable_id(object_id));
     let legacy_user_defined_static = is_legacy_user_defined_placeable_appearance(appearance);
-    if area_static_duplicate || legacy_user_defined_static {
+    if area_placeable_overlap || legacy_user_defined_static {
         let mut area_rows = String::new();
         let mut area_module_state_mismatch = false;
         if let Some(context) = area_context {
-            for (index, row) in context.rows_with_placeable_id(object_id).enumerate() {
+            for (index, matched) in context.matching_placeable_rows(object_id).enumerate() {
                 if index != 0 {
                     area_rows.push(',');
                 }
-                if let (Some(source_state), Some(module_state)) =
-                    (source_state_bits, row.module_state)
-                {
-                    area_module_state_mismatch |=
-                        placeable_add_state_conflicts_with_area_module_state(
-                            source_state,
-                            module_state,
-                        );
+                if matched.kind == AreaPlaceableContextRowKind::Static {
+                    if let (Some(source_state), Some(module_state)) =
+                        (source_state_bits, matched.row.module_state)
+                    {
+                        area_module_state_mismatch |=
+                            placeable_add_state_conflicts_with_area_module_state(
+                                source_state,
+                                module_state,
+                            );
+                    }
                 }
-                let module_state = row
-                    .module_state
-                    .map(format_area_placeable_module_state)
-                    .unwrap_or_else(|| "unproven".to_string());
-                area_rows.push_str(&format!(
-                    "app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
-                    row.appearance, row.x, row.y, row.z
+                area_rows.push_str(&format_area_placeable_context_row(
+                    matched.kind,
+                    matched.row,
                 ));
             }
         }
         tracing::info!(
             object_id = format_args!("0x{object_id:08X}"),
             appearance,
+            area_placeable_overlap,
+            area_light_duplicate,
             area_static_duplicate,
             legacy_user_defined_static,
             area_module_state_mismatch,
@@ -3971,6 +3978,38 @@ fn legacy_placeable_add_state_bits(
         locked: bit(7),
         unknown_1ac: bit(8),
         name_valid: bit(9),
+    }
+}
+
+fn format_area_placeable_context_row(
+    kind: AreaPlaceableContextRowKind,
+    row: &AreaPlaceableContextRow,
+) -> String {
+    let module_state = row
+        .module_state
+        .map(format_area_placeable_module_state)
+        .unwrap_or_else(|| "unproven".to_string());
+    if row.has_direction {
+        format!(
+            "{}:app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z,
+            row.dir_x,
+            row.dir_y,
+            row.dir_z
+        )
+    } else {
+        format!(
+            "{}:app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            kind.as_str(),
+            row.appearance,
+            row.x,
+            row.y,
+            row.z
+        )
     }
 }
 
@@ -5035,6 +5074,47 @@ mod placeable_add_semantic_tests {
         assert_eq!(bits.get(post_name_bit + 7), Some(&expected.unknown_1ac));
         assert_eq!(bits.get(post_name_bit + 8), Some(&expected.name_valid));
         assert_eq!(bits.get(post_name_bit + 9), Some(&false));
+    }
+
+    #[test]
+    fn placeable_overlap_context_format_keeps_light_static_provenance() {
+        let light = AreaPlaceableContextRow {
+            object_id: 0x8000_0077,
+            appearance: 77,
+            x: 5.0,
+            y: 6.0,
+            z: 0.0,
+            has_direction: false,
+            ..AreaPlaceableContextRow::default()
+        };
+        assert_eq!(
+            format_area_placeable_context_row(AreaPlaceableContextRowKind::Light, &light),
+            "light:app=0x004D@5.00,6.00,0.00;state=unproven"
+        );
+
+        let static_row = AreaPlaceableContextRow {
+            object_id: 0x8000_0042,
+            appearance: 82,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            dir_x: 0.0,
+            dir_y: 1.0,
+            dir_z: 0.0,
+            has_direction: true,
+            module_state: Some(AreaPlaceableContextState {
+                static_object: true,
+                useable: true,
+                trap_flag: false,
+                trap_disarmable: false,
+                lockable: true,
+                locked: false,
+            }),
+        };
+        assert_eq!(
+            format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &static_row),
+            "static:app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+        );
     }
 
     #[test]
