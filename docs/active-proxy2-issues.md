@@ -2431,6 +2431,16 @@ Current status:
   `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM_OWNER_OFFSET=104,148` to inspect whether
   the transformed row window exposes a source-side boundary or confirms that
   the owner remains before the compact `U/10` record.
+- 2026-06-09 private compact source-window ledger rerun: no packet rewrite
+  behavior changed. Re-ran the private compact handoff fixture with the source
+  window enabled and extended the production debug path to report cumulative row
+  bit claims. The real stream now shows the current proof boundary exactly:
+  EE-shaped `A/10` owns bits `3..9`, compact rewritten `U/10` owns `9..22`,
+  no-map typed `A/6` owns `22..28`, and the following full item
+  `U/6 mask=0xFFFF_FFF3` remains unclaimed at bit `28`; the nearby scalar fits
+  remain cursor-neighbor ambiguity only. Next source-side target is still the
+  compact `U/10` source writer/capture before assigning two extra bits; do not
+  add a `U/6` cursor skip, scalar-byte rescue, or generic inter-row trim.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

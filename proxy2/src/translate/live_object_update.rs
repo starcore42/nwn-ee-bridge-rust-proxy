@@ -241,6 +241,33 @@ mod diagnostic_tests {
         assert_eq!(rows[2].record_end, 26);
         assert_eq!(rows[2].update_mask, Some(0xFFFF_FFF3));
     }
+
+    #[test]
+    fn item_failure_source_window_claims_show_cumulative_bit_cursor() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'D', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
+        live.extend_from_slice(&[b'U', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
+        live.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+
+        let rows = live_object_source_window_rows(&live, 6, 16, 1, 0);
+        let fragment_bits = vec![false, false, false, true, false];
+        let claims = live_object_source_window_row_bit_claims(
+            &live,
+            &rows,
+            &fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        );
+
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0].offset, 0);
+        assert_eq!(claims[0].family, "delete");
+        assert_eq!(claims[0].bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(claims[0].bit_end, Some(CNW_FRAGMENT_HEADER_BITS + 1));
+        assert_eq!(claims[1].offset, 6);
+        assert_eq!(claims[1].family, "item-update");
+        assert_eq!(claims[1].bit_start, CNW_FRAGMENT_HEADER_BITS + 1);
+        assert_eq!(claims[1].bit_end, Some(CNW_FRAGMENT_HEADER_BITS + 2));
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -6228,6 +6255,15 @@ struct LiveObjectSourceWindowRow {
     update_mask: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectSourceWindowRowBitClaim {
+    offset: usize,
+    record_end: usize,
+    bit_start: usize,
+    bit_end: Option<usize>,
+    family: &'static str,
+}
+
 fn live_object_source_window_rows(
     live_bytes: &[u8],
     focus_offset: usize,
@@ -6325,6 +6361,216 @@ fn live_object_debug_row_start_at(live_bytes: &[u8], offset: usize) -> bool {
     )
 }
 
+fn live_object_source_window_row_bit_claims(
+    live_bytes: &[u8],
+    rows: &[LiveObjectSourceWindowRow],
+    fragment_bits: &[bool],
+    initial_bit_cursor: usize,
+) -> Vec<LiveObjectSourceWindowRowBitClaim> {
+    let mut cursor = initial_bit_cursor;
+    rows.iter()
+        .map(|row| {
+            let bit_start = cursor;
+            let claim =
+                live_object_source_window_row_bit_claim(live_bytes, row, fragment_bits, bit_start);
+            if let Some((family, bit_end)) = claim {
+                cursor = bit_end;
+                LiveObjectSourceWindowRowBitClaim {
+                    offset: row.offset,
+                    record_end: row.record_end,
+                    bit_start,
+                    bit_end: Some(bit_end),
+                    family,
+                }
+            } else {
+                LiveObjectSourceWindowRowBitClaim {
+                    offset: row.offset,
+                    record_end: row.record_end,
+                    bit_start,
+                    bit_end: None,
+                    family: "unclaimed",
+                }
+            }
+        })
+        .collect()
+}
+
+fn live_object_source_window_row_bit_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    match row.opcode {
+        b'A' => live_object_source_window_add_claim(live_bytes, row, fragment_bits, bit_cursor),
+        b'D' => live_object_source_window_delete_claim(live_bytes, row, fragment_bits, bit_cursor),
+        b'P' if row.marker == CREATURE_OBJECT_TYPE => {
+            live_object_source_window_creature_appearance_claim(
+                live_bytes,
+                row,
+                fragment_bits,
+                bit_cursor,
+            )
+        }
+        b'U' if row.marker == ITEM_OBJECT_TYPE => {
+            live_object_source_window_item_update_claim(live_bytes, row, fragment_bits, bit_cursor)
+        }
+        b'U' => live_object_source_window_generic_update_claim(
+            live_bytes,
+            row,
+            fragment_bits,
+            bit_cursor,
+        ),
+        _ => None,
+    }
+}
+
+fn live_object_source_window_add_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    if row.marker == ITEM_OBJECT_TYPE {
+        let mut item_create_cursor = bit_cursor;
+        if appearance::advance_verified_ee_item_create_record(
+            live_bytes,
+            row.offset.checked_add(2)?,
+            row.record_end,
+            fragment_bits,
+            &mut item_create_cursor,
+        ) {
+            return Some(("item-create", item_create_cursor));
+        }
+
+        let mut item_add_cursor = bit_cursor;
+        if appearance::advance_verified_ee_item_add_record(
+            live_bytes,
+            row.offset,
+            row.record_end,
+            fragment_bits,
+            &mut item_add_cursor,
+        ) {
+            return Some(("item-add", item_add_cursor));
+        }
+    }
+
+    let mut generic_cursor = bit_cursor;
+    if cursor::advance_live_add_record_bit_cursor(
+        live_bytes,
+        fragment_bits,
+        row.offset,
+        row.record_end,
+        &mut generic_cursor,
+    ) {
+        return Some(("generic-add", generic_cursor));
+    }
+
+    let mut legacy_cursor = bit_cursor;
+    if cursor::advance_legacy_add_record_bit_cursor_for_update_pass(
+        live_bytes,
+        fragment_bits,
+        row.offset,
+        row.record_end,
+        &mut legacy_cursor,
+    ) {
+        return Some(("legacy-add", legacy_cursor));
+    }
+
+    None
+}
+
+fn live_object_source_window_delete_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let bits =
+        cursor::legacy_live_delete_fragment_bit_count(live_bytes, row.offset, row.record_end)?;
+    let bit_end = bit_cursor.checked_add(bits)?;
+    (bit_end <= fragment_bits.len()).then_some(("delete", bit_end))
+}
+
+fn live_object_source_window_creature_appearance_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let mut appearance_cursor = bit_cursor;
+    if appearance::advance_verified_ee_creature_appearance_record(
+        live_bytes,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        &mut appearance_cursor,
+    ) {
+        return Some(("creature-appearance", appearance_cursor));
+    }
+
+    let mut noop_cursor = bit_cursor;
+    if creature::advance_verified_noop_creature_appearance_record(
+        live_bytes,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        &mut noop_cursor,
+    ) {
+        return Some(("creature-appearance-noop", noop_cursor));
+    }
+
+    None
+}
+
+fn live_object_source_window_item_update_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let raw_mask = row.update_mask?;
+    let translated_mask = item::translate_update_mask(raw_mask);
+    let mut candidate = live_bytes.to_vec();
+    if translated_mask != raw_mask {
+        write_u32_le(&mut candidate, row.offset.checked_add(6)?, translated_mask)?;
+    }
+    item::advance_verified_ee_item_update_record(
+        &candidate,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+    .map(|bit_end| {
+        if translated_mask == raw_mask {
+            ("item-update", bit_end)
+        } else {
+            ("item-update-translated", bit_end)
+        }
+    })
+}
+
+fn live_object_source_window_generic_update_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let mut update_cursor = bit_cursor;
+    if record::advance_verified_update_record_for_ee(
+        live_bytes,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        &mut update_cursor,
+    ) {
+        Some(("update", update_cursor))
+    } else {
+        None
+    }
+}
+
 fn trace_item_update_source_window(
     reason: &'static str,
     live_bytes: &[u8],
@@ -6347,7 +6593,19 @@ fn trace_item_update_source_window(
         fragment_bits.len()
     );
 
-    for row in live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3) {
+    let rows = live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3);
+    let initial_bit_cursor = if rows.first().is_some_and(|row| row.offset == 0) {
+        CNW_FRAGMENT_HEADER_BITS
+    } else {
+        bit_cursor
+    };
+    let row_claims = live_object_source_window_row_bit_claims(
+        live_bytes,
+        &rows,
+        fragment_bits,
+        initial_bit_cursor,
+    );
+    for (row, claim) in rows.iter().zip(row_claims.iter()) {
         let preview = live_bytes
             .get(row.offset..row.record_end.min(row.offset.saturating_add(32)))
             .unwrap_or(&[]);
@@ -6359,8 +6617,16 @@ fn trace_item_update_source_window(
             .update_mask
             .map(|value| format!("0x{value:08X}"))
             .unwrap_or_else(|| "none".to_string());
+        let bit_end = claim
+            .bit_end
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let bit_delta = claim
+            .bit_end
+            .map(|value| value.saturating_sub(claim.bit_start).to_string())
+            .unwrap_or_else(|| "none".to_string());
         eprintln!(
-            "live-object item update source window row: offset={} record_end={} len={} opcode=0x{:02X} marker=0x{:02X} object_id={} update_mask={} preview={:02X?}",
+            "live-object item update source window row: offset={} record_end={} len={} opcode=0x{:02X} marker=0x{:02X} object_id={} update_mask={} bit_start={} bit_end={} bit_delta={} claim_family={} preview={:02X?}",
             row.offset,
             row.record_end,
             row.record_end.saturating_sub(row.offset),
@@ -6368,6 +6634,10 @@ fn trace_item_update_source_window(
             row.marker,
             object_id,
             update_mask,
+            claim.bit_start,
+            bit_end,
+            bit_delta,
+            claim.family,
             preview
         );
     }
