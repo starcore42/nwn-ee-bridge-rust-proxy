@@ -3126,6 +3126,8 @@ struct DoorPlaceableAddRewrite {
     maps_inserted: u32,
     bytes_inserted: u32,
     bytes_removed: u32,
+    bits_inserted: u32,
+    bits_removed: u32,
     fragment_bits_changed: bool,
     legacy_door_model_tokens_removed: u32,
 }
@@ -3135,6 +3137,8 @@ pub(crate) struct DoorPlaceableAddUpdatePassRewrite {
     pub maps_inserted: u32,
     pub bytes_inserted: u32,
     pub bytes_removed: u32,
+    pub bits_inserted: u32,
+    pub bits_removed: u32,
     pub fragment_bits_changed: bool,
     pub legacy_door_model_tokens_removed: u32,
 }
@@ -3158,6 +3162,8 @@ pub(crate) fn rewrite_legacy_door_placeable_add_record_for_update_pass(
         maps_inserted: rewrite.maps_inserted,
         bytes_inserted: rewrite.bytes_inserted,
         bytes_removed: rewrite.bytes_removed,
+        bits_inserted: rewrite.bits_inserted,
+        bits_removed: rewrite.bits_removed,
         fragment_bits_changed: rewrite.fragment_bits_changed,
         legacy_door_model_tokens_removed: rewrite.legacy_door_model_tokens_removed,
     })
@@ -3356,6 +3362,7 @@ fn rewrite_legacy_door_add_record_for_ee(
             .copy_from_slice(&tail);
         insert_cnw_msb_bit(bits, *bit_cursor, false)?;
         insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        summary.bits_inserted = summary.bits_inserted.saturating_add(2);
         // This compact Diamond/HG source shape carries the byte-aligned WORD
         // tail first and a zero-length direct name after it. EE's
         // `sub_140796DD0` reads the decompile-owned direct branch as:
@@ -3372,6 +3379,7 @@ fn rewrite_legacy_door_add_record_for_ee(
         write_u32_le(bytes, name_offset, 0)?;
         summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
         insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+        summary.bits_inserted = summary.bits_inserted.saturating_add(1);
         // Diamond short door-name rows carry the outer name BOOL followed by
         // four shared post-name door state BOOLs. EE's canonical direct
         // empty-name path has no StrRef read-buffer field, so the StrRef DWORD
@@ -3401,6 +3409,7 @@ fn rewrite_legacy_door_add_record_for_ee(
                 }
                 summary.fragment_bits_changed |= set_cnw_msb_bit(bits, *bit_cursor, false)?;
                 bits.remove(*bit_cursor + 1);
+                summary.bits_removed = summary.bits_removed.saturating_add(1);
                 summary.fragment_bits_changed = true;
                 *bit_cursor += 6;
                 return Some(summary);
@@ -3811,11 +3820,17 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         if compact_source_bits != 0 {
             let drain_end = bit_cursor.checked_add(compact_source_bits)?;
             bits.drain(*bit_cursor..drain_end);
+            summary.bits_removed = summary
+                .bits_removed
+                .saturating_add(compact_source_bits as u32);
         }
         let emitted_name_inner_bits = usize::from(compact_short_name_token_tail_end.is_some());
         for delta in 0..11 + emitted_name_inner_bits {
             insert_cnw_msb_bit(bits, *bit_cursor + delta, false)?;
         }
+        summary.bits_inserted = summary
+            .bits_inserted
+            .saturating_add((11 + emitted_name_inner_bits) as u32);
         if compact_short_name_token_tail_end.is_some() {
             // The four-byte legacy short-name/token slot has already been
             // canonicalized to an empty CExoString at the byte cursor. Emit the
@@ -3832,6 +3847,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             write_u32_le(bytes, name_offset, 0)?;
             set_cnw_msb_bit(bits, *bit_cursor, true)?;
             insert_cnw_msb_bit(bits, *bit_cursor + 1, false)?;
+            summary.bits_inserted = summary.bits_inserted.saturating_add(1);
             summary.fragment_bits_changed = true;
         } else if direct_name_mode_repair {
             // EE placeable add (`sub_1407A7800`) routes outer=true through the
@@ -3874,6 +3890,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             legacy_state,
             legacy_optional_object_bytes_present,
         )?;
+        summary.bits_inserted = summary.bits_inserted.saturating_add(1);
     }
 
     // EE's placeable add reader reaches `ObjectVisualTransformData::Read`
@@ -5139,6 +5156,8 @@ mod placeable_add_semantic_tests {
             rewrite.bytes_inserted,
             EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len() as u32
         );
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(rewrite.bits_removed, 0);
         assert_eq!(
             record_end,
             visual_offset + EE_LIVE_VISUAL_TRANSFORM_IDENTITY_MAP_BYTES.len()
@@ -5194,6 +5213,8 @@ mod placeable_add_semantic_tests {
             .expect("compact placeable add residue should rewrite through the same bounded rule");
 
             assert_eq!(rewrite.maps_inserted, 1);
+            assert_eq!(rewrite.bits_inserted, 12);
+            assert_eq!(rewrite.bits_removed, residue.len() as u32);
             assert_eq!(bit_cursor, 12);
             assert_eq!(bits.len(), 12);
             assert_eq!(bits[0], true, "outer locstring branch for residue {label}");

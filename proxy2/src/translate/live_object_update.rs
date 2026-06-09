@@ -138,6 +138,9 @@ const EE_UPDATE_APPEARANCE_WORD_READ_BYTES: usize = 2;
 const EE_UPDATE_APPEARANCE_RESREF_READ_BYTES: usize = 16;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
+const LEGACY_COMPACT_PLACEABLE_ADD_SOURCE_BITS: usize = 4;
+const EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS: usize = 11;
+const EE_PLACEABLE_ADD_LEGACY_GUARD_INSERTED_BITS: usize = 1;
 
 const MIN_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x0000_0001;
 const MAX_COMPACT_LEGACY_LIVE_OBJECT_ID: u32 = 0x00FF_FFFF;
@@ -4229,6 +4232,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     bit_cursor,
                 ) {
+                    let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(add_rewrite) =
                         crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
@@ -4260,6 +4264,31 @@ pub fn rewrite_update_records_payload_if_possible(
                                     .unwrap_or(u32::MAX),
                             );
                         }
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: add_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: usize::try_from(add_rewrite.bits_inserted)
+                                    .unwrap_or(usize::MAX),
+                                bits_removed: usize::try_from(add_rewrite.bits_removed)
+                                    .unwrap_or(usize::MAX),
+                                family: "add-rewrite",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "door-add-rewrite-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record = None;
@@ -4280,6 +4309,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     bit_cursor,
                 ) {
+                    let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(compact_guard_changed) =
                         add_guard::repair_verified_ee_placeable_add_compact_source_bits(
@@ -4302,6 +4332,29 @@ pub fn rewrite_update_records_payload_if_possible(
                                     .unwrap_or(u32::MAX),
                             );
                         }
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: add_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS,
+                                bits_removed: LEGACY_COMPACT_PLACEABLE_ADD_SOURCE_BITS,
+                                family: "add-compact-guard-repair",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "compact-placeable-add-guard-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record = None;
@@ -4320,6 +4373,7 @@ pub fn rewrite_update_records_payload_if_possible(
                     &fragment_bits,
                     bit_cursor,
                 ) {
+                    let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(placeable_guard_changed) =
                         add_guard::repair_verified_ee_placeable_add_legacy_source_bits(
@@ -4342,6 +4396,29 @@ pub fn rewrite_update_records_payload_if_possible(
                                     .unwrap_or(u32::MAX),
                             );
                         }
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: add_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: EE_PLACEABLE_ADD_LEGACY_GUARD_INSERTED_BITS,
+                                bits_removed: 0,
+                                family: "add-legacy-guard-repair",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "placeable-add-legacy-guard-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record = None;
@@ -4362,6 +4439,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         bit_cursor,
                     )
                 {
+                    let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(add_rewrite) =
                         crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
@@ -4401,6 +4479,32 @@ pub fn rewrite_update_records_payload_if_possible(
                                     .unwrap_or(u32::MAX),
                             );
                         }
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: add_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: usize::try_from(add_rewrite.bits_inserted)
+                                    .unwrap_or(usize::MAX),
+                                bits_removed: usize::try_from(add_rewrite.bits_removed)
+                                    .unwrap_or(usize::MAX)
+                                    .saturating_add(extra_compact_source_bits),
+                                family: "add-compact-rewrite",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "compact-placeable-add-rewrite-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
                         last_verified_creature_add_record = None;
@@ -4427,6 +4531,7 @@ pub fn rewrite_update_records_payload_if_possible(
                         record_end,
                     ) == Some(record_end);
                 if zero_source_compact_placeable_add {
+                    let add_start_bit_cursor = bit_cursor;
                     let before_fragment_bits_len = fragment_bits.len();
                     if let Some(add_rewrite) =
                         crate::translate::live_object::rewrite_legacy_door_placeable_add_record_for_update_pass(
@@ -4457,6 +4562,31 @@ pub fn rewrite_update_records_payload_if_possible(
                                 u32::try_from(before_fragment_bits_len - fragment_bits.len())
                                     .unwrap_or(u32::MAX),
                             );
+                        }
+                        if !rewrite_bit_ledger.commit_record(
+                            &live_bytes,
+                            LiveObjectRewriteBitLedgerCommit {
+                                offset,
+                                record_end,
+                                emitted_bit_start: add_start_bit_cursor,
+                                emitted_bit_end: bit_cursor,
+                                bits_inserted: usize::try_from(add_rewrite.bits_inserted)
+                                    .unwrap_or(usize::MAX),
+                                bits_removed: usize::try_from(add_rewrite.bits_removed)
+                                    .unwrap_or(usize::MAX),
+                                family: "add-zero-source-compact-rewrite",
+                            },
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "zero-source-placeable-add-ledger-commit-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
                         }
                         last_verified_record_end = record_end;
                         last_verified_record_allows_trailing_fragment_promotion = false;
@@ -4781,6 +4911,7 @@ pub fn rewrite_update_records_payload_if_possible(
                 }
                 bit_cursor = exact_add_start_bit_cursor;
 
+                let add_guard_start_bit_cursor = bit_cursor;
                 let add_guard_bits_before = fragment_bits.len();
                 if let Some(placeable_guard_changed) =
                     add_guard::repair_verified_ee_placeable_add_guard_bits(
@@ -4797,6 +4928,40 @@ pub fn rewrite_update_records_payload_if_possible(
                             u32::try_from(fragment_bits.len() - add_guard_bits_before)
                                 .unwrap_or(u32::MAX),
                         );
+                    }
+                    let add_guard_bits_after = fragment_bits.len();
+                    let guard_bits_removed = if add_guard_bits_after != add_guard_bits_before {
+                        add_guard_bits_before.saturating_sub(add_guard_start_bit_cursor)
+                    } else {
+                        0
+                    };
+                    let guard_bits_inserted = if add_guard_bits_after != add_guard_bits_before {
+                        EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS
+                    } else {
+                        0
+                    };
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: add_guard_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: guard_bits_inserted,
+                            bits_removed: guard_bits_removed,
+                            family: "add-guard-repair",
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "add-guard-repair-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            add_guard_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
                     }
                     last_verified_record_end = record_end;
                     last_verified_record_allows_trailing_fragment_promotion = false;
@@ -4936,6 +5101,26 @@ pub fn rewrite_update_records_payload_if_possible(
                         offset,
                         record_end,
                         bit_cursor,
+                    );
+                    bit_cursor_reliable = false;
+                } else if !rewrite_bit_ledger.commit_record(
+                    &live_bytes,
+                    LiveObjectRewriteBitLedgerCommit {
+                        offset,
+                        record_end,
+                        emitted_bit_start: add_record_start_bit_cursor,
+                        emitted_bit_end: bit_cursor,
+                        bits_inserted: 0,
+                        bits_removed: 0,
+                        family: "add-verified",
+                    },
+                ) {
+                    trace_update_rewrite_cursor_unreliable(
+                        "add-verified-ledger-commit-invalid",
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        add_record_start_bit_cursor,
                     );
                     bit_cursor_reliable = false;
                 }

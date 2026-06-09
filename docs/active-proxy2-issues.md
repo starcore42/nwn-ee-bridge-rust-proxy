@@ -2558,6 +2558,16 @@ Current status:
   instead of silently omitting the diagnostic entry. This does not assign the two
   active pre-`U/6` bits; it makes the next compact source-writer/capture proof
   consume the same checked source/emitted ownership contract.
+- 2026-06-09 `P/05/01` live-object add-row ledger audit: production state
+  machinery now exposes exact inserted/removed fragment-bit counts from the
+  door/placeable add rewriter and commits early add repair, guard-repair, and
+  cursor-only verified add rows through the same `LiveObjectRewriteBitLedger`
+  contract as update/delete rows. This closes a diagnostic blind spot before
+  compact-source handoff proof: later item `U/6` cursor-gap traces can now
+  attribute gaps to an immediately preceding compact add repair instead of
+  falling back to an older row. This does not assign the two active pre-`U/6`
+  bits; continue with compact source writer/capture or another source-side
+  owner before `U/10`/`A/6`/`U/6`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
