@@ -5392,16 +5392,24 @@ pub fn rewrite_update_records_payload_if_possible(
                         u32::try_from(action0_associate_rewrite.bytes_inserted).unwrap_or(u32::MAX),
                     );
                 }
-                if creature::repair_3967_action2_optional_float_bool_for_ee(
-                    &live_bytes,
-                    offset,
-                    record_end,
-                    &mut fragment_bits,
-                    bit_cursor,
-                ) {
+                if let Some(action2_optional_float_rewrite) =
+                    creature::repair_3967_action2_optional_float_bool_for_ee(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &mut fragment_bits,
+                        bit_cursor,
+                    )
+                {
                     changed = true;
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
+                    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                        eprintln!(
+                            "live-object creature update action2 optional-float repair applied: offset={offset} record_end={record_end} bit_rewritten={}",
+                            action2_optional_float_rewrite.bit_rewritten
+                        );
+                    }
                 }
                 if let Some(zero_count_rewrite) =
                     creature::repair_legacy_zero_count_status_effect_record_for_ee(

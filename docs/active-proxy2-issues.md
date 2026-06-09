@@ -269,6 +269,14 @@ Current status:
   adjacency proof; such streams must continue through the normal typed rewrite
   plus exact EE validator. This does not assign the unresolved Sooty two-bit
   owner.
+- ~~2026-06-09 `U/5 0x3967` action-2 optional-float guard audit: tightened the
+  typed repair so it first accepts already exact/interleaved-span-valid records
+  and reports the rewritten BOOL bit when it really clears the Diamond
+  action-followup optional-float guard. This prevents the alternate
+  orientation-target candidate from clearing the following `0x0040` state BOOL
+  on already valid action-2 rows whose optional-float guard is false. Verified
+  with fixture-free true-guard and false-guard regressions plus focused `3967`
+  and `live_object_update` tests.~~
 
 Most likely areas to re-audit first:
 - `P/04/01 Area_ClientArea`: static row bit/byte order, module-resource-backed

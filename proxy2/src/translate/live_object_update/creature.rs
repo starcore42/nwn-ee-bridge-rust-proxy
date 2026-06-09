@@ -1853,14 +1853,33 @@ pub(super) fn repair_3967_action2_optional_float_bool_for_ee(
     record_end: usize,
     fragment_bits: &mut [bool],
     bit_cursor: usize,
-) -> bool {
+) -> Option<Creature3967Action2OptionalFloatBoolRewrite> {
     if offset + 10 > record_end
         || record_end > bytes.len()
         || bytes.get(offset).copied() != Some(b'U')
         || bytes.get(offset + 1).copied() != Some(0x05)
         || read_u32_le(bytes, offset + 6) != Some(LEGACY_CREATURE_UPDATE_3967_MASK)
     {
-        return false;
+        return None;
+    }
+
+    let mut already_valid_cursor = bit_cursor;
+    if advance_verified_noop_creature_update_record_exact_cursor(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut already_valid_cursor,
+    ) || super::fragment_spans::verified_creature_update_3967_read_end_before_interleaved_fragment_span(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+    .is_some()
+    {
+        return None;
     }
 
     let Some(optional_float_bit) = find_legacy_3967_action2_optional_float_bit_for_repair(
@@ -1870,16 +1889,23 @@ pub(super) fn repair_3967_action2_optional_float_bool_for_ee(
         fragment_bits,
         bit_cursor,
     ) else {
-        return false;
+        return None;
     };
     let Some(bit) = fragment_bits.get_mut(optional_float_bit) else {
-        return false;
+        return None;
     };
     if !*bit {
-        return false;
+        return None;
     }
     *bit = false;
-    true
+    if debug_creature_update_cursor_trace_enabled(LEGACY_CREATURE_UPDATE_3967_MASK) {
+        eprintln!(
+            "live-object creature update 0x3967 action2 optional-float BOOL cleared: offset={offset} record_end={record_end} bit_cursor={bit_cursor} optional_float_bit={optional_float_bit}"
+        );
+    }
+    Some(Creature3967Action2OptionalFloatBoolRewrite {
+        bit_rewritten: optional_float_bit,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1923,6 +1949,11 @@ pub(super) struct Creature3967ActionFfffBridgeFollowupRewrite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Creature3967Action0EeBuild1fBoolRewrite {
     pub bits_inserted: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Creature3967Action2OptionalFloatBoolRewrite {
+    pub bit_rewritten: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3137,7 +3168,10 @@ fn find_legacy_3967_action2_optional_float_bit_for_repair(
         if !exact_record && !interleaved_span_record {
             continue;
         }
-        if accepted.replace(optional_float_bit).is_some() {
+        if accepted
+            .replace(optional_float_bit)
+            .is_some_and(|old| old != optional_float_bit)
+        {
             return None;
         }
     }
@@ -4174,6 +4208,60 @@ mod tests {
         bits
     }
 
+    fn creature_update_3967_action2_scalar_live_bytes() -> Vec<u8> {
+        let mut bytes = vec![b'U', 0x05];
+        bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
+        bytes.extend_from_slice(&LEGACY_CREATURE_UPDATE_3967_MASK.to_le_bytes());
+        bytes.extend_from_slice(&0x1111u16.to_le_bytes()); // position X low 16 bits.
+        bytes.extend_from_slice(&0x2222u16.to_le_bytes()); // position Y low 16 bits.
+        bytes.extend_from_slice(&0x3333u16.to_le_bytes()); // position Z low 16 bits.
+        bytes.push(0x44); // scalar orientation low 8 bits.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // portrait row, no CResRef.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // action scalar.
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // movement action code 2.
+        bytes.push(0); // action state byte.
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // one movement follow-up point.
+        bytes.extend_from_slice(&0x0101u16.to_le_bytes()); // movement point X.
+        bytes.extend_from_slice(&0x0202u16.to_le_bytes()); // movement point Y.
+        bytes.extend_from_slice(&0x1234u16.to_le_bytes()); // 0x0040 branch first field.
+        bytes.push(1); // 0x0040 branch mode without optional object id.
+        bytes.extend_from_slice(&0x5678u16.to_le_bytes());
+        bytes.push(2);
+        bytes.extend_from_slice(&0x1111_1111u32.to_le_bytes()); // 0x0100 first field.
+        bytes.extend_from_slice(&0x2222_2222u32.to_le_bytes()); // 0x0100 second field.
+        bytes.push(0); // 0x0800 byte.
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // identity row prefix.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // first identity CExoString length.
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // second identity CExoString length.
+        bytes.push(0);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.push(0); // identity row count after two identity BOOLs.
+        bytes.extend_from_slice(&0x8000_000Bu32.to_le_bytes()); // associate object id.
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
+    fn creature_update_3967_action2_scalar_fragment_bits(optional_float: bool) -> Vec<bool> {
+        let mut bits = vec![false; super::super::CNW_FRAGMENT_HEADER_BITS];
+        bits.extend_from_slice(&[
+            true,
+            false, // position Z high bits.
+            false, // scalar orientation branch.
+            true,
+            false,
+            true,
+            false,          // scalar orientation residual bits.
+            optional_float, // action-code 2 movement follow-up optional-float guard.
+            true,           // 0x0040 state BOOL.
+            false,
+            true, // identity branch BOOLs.
+            true,
+            false, // associate suffix BOOLs.
+        ]);
+        bits
+    }
+
     fn creature_update_4000_live_bytes() -> Vec<u8> {
         let mut bytes = vec![b'U', 0x05];
         bytes.extend_from_slice(&0x8000_000Au32.to_le_bytes());
@@ -4535,6 +4623,85 @@ mod tests {
             13,
             "the Sooty offset-218 shape advances 13 CNW bits when the orientation target guard is emitted"
         );
+    }
+
+    #[test]
+    fn creature_update_3967_action2_optional_float_repair_clears_exact_guard_bit() {
+        let bytes = creature_update_3967_action2_scalar_live_bytes();
+        let mut bits = creature_update_3967_action2_scalar_fragment_bits(true);
+        let optional_float_bit = super::super::CNW_FRAGMENT_HEADER_BITS + 2 + 1 + 4;
+        let mut unrepaired_cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+
+        assert!(
+            !advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut unrepaired_cursor,
+            ),
+            "without repair, EE reads an absent optional FLOAT before the movement point"
+        );
+
+        let repair = repair_3967_action2_optional_float_bool_for_ee(
+            &bytes,
+            0,
+            bytes.len(),
+            &mut bits,
+            super::super::CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("action-code 2 false optional-float branch should repair");
+        assert_eq!(repair.bit_rewritten, optional_float_bit);
+        assert!(
+            !bits[optional_float_bit],
+            "the repair must clear only the action-followup optional-float BOOL"
+        );
+
+        let mut cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut cursor,
+            ),
+            "the repaired action-code 2 row must exact-validate from the caller cursor"
+        );
+        assert_eq!(cursor, bits.len());
+    }
+
+    #[test]
+    fn creature_update_3967_action2_optional_float_repair_leaves_false_guard_untouched() {
+        let bytes = creature_update_3967_action2_scalar_live_bytes();
+        let mut bits = creature_update_3967_action2_scalar_fragment_bits(false);
+        let original_bits = bits.clone();
+
+        assert!(
+            repair_3967_action2_optional_float_bool_for_ee(
+                &bytes,
+                0,
+                bytes.len(),
+                &mut bits,
+                super::super::CNW_FRAGMENT_HEADER_BITS,
+            )
+            .is_none(),
+            "an already-false movement optional-float guard is not a rewrite"
+        );
+        assert_eq!(bits, original_bits);
+
+        let mut cursor = super::super::CNW_FRAGMENT_HEADER_BITS;
+        assert!(
+            advance_verified_noop_creature_update_record_exact_cursor(
+                &bytes,
+                0,
+                bytes.len(),
+                &bits,
+                &mut cursor,
+            ),
+            "the false optional-float branch is already decompile-owned"
+        );
+        assert_eq!(cursor, bits.len());
     }
 
     #[test]
