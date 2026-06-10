@@ -2465,6 +2465,16 @@ Current status:
   handoff without depending on debug-only stderr text. Next proof target is
   still a source capture or source-side writer/list-handoff owner before the
   `U/10`/`A/6`/`U/6` sequence; do not add cursor skip/retry behavior.
+- 2026-06-11 follow-up `P/05/01` item `U/6` bit-preview evidence: packet bytes
+  and cursor ownership remain unchanged. Retained item-update cursor failures
+  now include bounded source/emitted bit previews for the unowned neighboring
+  cursor gap, and each retained contiguous-tail ledger row carries source bits
+  from the immutable source snapshot plus emitted bits from the rewritten
+  fragment stream. Strict dispatch logs those structured previews, so the next
+  compact source capture can compare the exact `U/10 -> A/6 -> U/6` handoff
+  without scraping lower-level debug-only source-window text. The two active
+  pre-`U/6` bits remain unowned pending compact source capture or a
+  source-side writer/list-handoff proof.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls

@@ -1410,9 +1410,19 @@ mod diagnostic_tests {
             emitted_gap_bits: 2,
             emitted_gap_bit_start: cursor_after_row,
             emitted_gap_bit_end: cursor_after_row + 2,
+            emitted_gap_values: live_object_rewrite_bit_slice_evidence(
+                cursor_after_row,
+                cursor_after_row + 2,
+                &[true, false],
+            ),
             source_gap_bits: 2,
             source_gap_bit_start: cursor_after_row,
             source_gap_bit_end: cursor_after_row + 2,
+            source_gap_values: live_object_rewrite_bit_slice_evidence(
+                cursor_after_row,
+                cursor_after_row + 2,
+                &[false, true],
+            ),
             previous_offset: 0,
             previous_record_end: live.len(),
             previous_family: "item-create-rewrite",
@@ -1448,8 +1458,10 @@ mod diagnostic_tests {
         live[7] = DOOR_OBJECT_TYPE;
         live[16] = b'A';
         live[17] = ITEM_OBJECT_TYPE;
+        let source_bits = (0..32).map(|index| index % 2 == 0).collect::<Vec<_>>();
+        let emitted_bits = (0..32).map(|index| index % 2 != 0).collect::<Vec<_>>();
 
-        let mut ledger = LiveObjectRewriteBitLedger::new();
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
         assert!(ledger.commit_record(
             &live,
             LiveObjectRewriteBitLedgerCommit {
@@ -1494,7 +1506,7 @@ mod diagnostic_tests {
             record_end: 32,
             bit_cursor,
             unowned_neighbor: None,
-            contiguous_tail: ledger.contiguous_tail_evidence(bit_cursor),
+            contiguous_tail: ledger.contiguous_tail_evidence(&emitted_bits, bit_cursor),
         }
         .into_rewrite_failure();
 
@@ -1514,6 +1526,9 @@ mod diagnostic_tests {
         assert_eq!(tail.source_bit_end, CNW_FRAGMENT_HEADER_BITS + 18);
         assert_eq!(tail.emitted_bit_start, CNW_FRAGMENT_HEADER_BITS);
         assert_eq!(tail.emitted_bit_end, bit_cursor);
+        assert_eq!(tail.emitted_cursor, bit_cursor);
+        assert_eq!(tail.source_cursor, CNW_FRAGMENT_HEADER_BITS + 18);
+        assert_eq!(tail.emitted_source_delta, 1);
         assert_eq!(tail.emitted_gap_to_cursor, 0);
         assert_eq!(tail.source_gap_to_cursor, 0);
 
@@ -1534,6 +1549,19 @@ mod diagnostic_tests {
         assert_eq!(
             tail.entries[2].map(|entry| (entry.offset, entry.record_end, entry.bits_inserted)),
             Some((16, 22, 1))
+        );
+        let item_entry = tail.entries[2].expect("third retained entry should be the A/6 row");
+        assert_eq!(item_entry.source_bits.bit_count, 5);
+        assert_eq!(item_entry.source_bits.bits_retained, 5);
+        assert_eq!(
+            item_entry.source_bits.bits[0],
+            Some(source_bits[CNW_FRAGMENT_HEADER_BITS + 13])
+        );
+        assert_eq!(item_entry.emitted_bits.bit_count, 6);
+        assert_eq!(item_entry.emitted_bits.bits_retained, 6);
+        assert_eq!(
+            item_entry.emitted_bits.bits[0],
+            Some(emitted_bits[CNW_FRAGMENT_HEADER_BITS + 13])
         );
     }
 
@@ -1765,9 +1793,11 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
     pub emitted_gap_bits: usize,
     pub emitted_gap_bit_start: usize,
     pub emitted_gap_bit_end: usize,
+    pub emitted_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     pub source_gap_bits: usize,
     pub source_gap_bit_start: usize,
     pub source_gap_bit_end: usize,
+    pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     pub previous_offset: usize,
     pub previous_record_end: usize,
     pub previous_family: &'static str,
@@ -1775,6 +1805,16 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
+pub const LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateRewriteBitSliceEvidence {
+    pub bit_start: usize,
+    pub bit_end: usize,
+    pub bit_count: usize,
+    pub bits_retained: usize,
+    pub bits: [Option<bool>; LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT],
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateRewriteTailEvidence {
@@ -1784,6 +1824,9 @@ pub struct LiveObjectUpdateRewriteTailEvidence {
     pub source_bit_end: usize,
     pub emitted_bit_start: usize,
     pub emitted_bit_end: usize,
+    pub emitted_cursor: usize,
+    pub source_cursor: usize,
+    pub emitted_source_delta: isize,
     pub emitted_gap_to_cursor: usize,
     pub source_gap_to_cursor: usize,
     pub entries: [Option<LiveObjectUpdateRewriteTailEntryEvidence>;
@@ -1803,6 +1846,8 @@ pub struct LiveObjectUpdateRewriteTailEntryEvidence {
     pub bits_inserted: usize,
     pub bits_removed: usize,
     pub family: &'static str,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub emitted_bits: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8033,7 +8078,8 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     record_end,
                     bit_cursor,
                     unowned_neighbor,
-                    contiguous_tail: rewrite_bit_ledger.contiguous_tail_evidence(bit_cursor),
+                    contiguous_tail: rewrite_bit_ledger
+                        .contiguous_tail_evidence(&fragment_bits, bit_cursor),
                 };
                 *rewrite_failure = Some(failure.into_rewrite_failure());
                 fatal_item_update_cursor_failure = Some(failure);
@@ -9178,6 +9224,7 @@ impl LiveObjectRewriteBitLedger {
 
     fn contiguous_tail_evidence(
         &self,
+        fragment_bits: &[bool],
         cursor: usize,
     ) -> Option<LiveObjectUpdateRewriteTailEvidence> {
         let tail = self.contiguous_tail_before_cursor(cursor)?;
@@ -9188,6 +9235,8 @@ impl LiveObjectRewriteBitLedger {
         let retained_entries = &tail_entries[retain_start..];
         let mut entries = [None; LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT];
         for (slot, entry) in entries.iter_mut().zip(retained_entries.iter()) {
+            let source_values = self.source_values_for_entry(fragment_bits, entry);
+            let emitted_values = self.emitted_values_for_entry(fragment_bits, entry);
             *slot = Some(LiveObjectUpdateRewriteTailEntryEvidence {
                 offset: entry.offset,
                 record_end: entry.record_end,
@@ -9200,8 +9249,21 @@ impl LiveObjectRewriteBitLedger {
                 bits_inserted: entry.bits_inserted,
                 bits_removed: entry.bits_removed,
                 family: entry.family,
+                source_bits: live_object_rewrite_bit_slice_evidence(
+                    entry.source_bit_start,
+                    entry.source_bit_end,
+                    source_values,
+                ),
+                emitted_bits: live_object_rewrite_bit_slice_evidence(
+                    entry.emitted_bit_start,
+                    entry.emitted_bit_end,
+                    emitted_values,
+                ),
             });
         }
+        let source_cursor = tail
+            .source_bit_end
+            .saturating_add(tail.source_gap_to_cursor);
         Some(LiveObjectUpdateRewriteTailEvidence {
             entry_count: tail.entry_count,
             entries_retained: retained_entries.len(),
@@ -9209,6 +9271,9 @@ impl LiveObjectRewriteBitLedger {
             source_bit_end: tail.source_bit_end,
             emitted_bit_start: tail.emitted_bit_start,
             emitted_bit_end: tail.emitted_bit_end,
+            emitted_cursor: cursor,
+            source_cursor,
+            emitted_source_delta: signed_bit_delta(cursor, source_cursor),
             emitted_gap_to_cursor: tail.emitted_gap_to_cursor,
             source_gap_to_cursor: tail.source_gap_to_cursor,
             entries,
@@ -9229,6 +9294,26 @@ fn format_bit_values_preview(bits: &[bool]) -> String {
         bits.len(),
         &bits[..preview_end]
     )
+}
+
+fn live_object_rewrite_bit_slice_evidence(
+    bit_start: usize,
+    bit_end: usize,
+    values: &[bool],
+) -> LiveObjectUpdateRewriteBitSliceEvidence {
+    let mut bits = [None; LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT];
+    for (slot, value) in bits.iter_mut().zip(values.iter().copied()) {
+        *slot = Some(value);
+    }
+    LiveObjectUpdateRewriteBitSliceEvidence {
+        bit_start,
+        bit_end,
+        bit_count: bit_end.saturating_sub(bit_start),
+        bits_retained: values
+            .len()
+            .min(LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT),
+        bits,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9284,9 +9369,11 @@ impl LiveObjectItemUpdateCursorFailure {
                     emitted_gap_bits: neighbor.emitted_gap_bits,
                     emitted_gap_bit_start: neighbor.emitted_gap_bit_start,
                     emitted_gap_bit_end: neighbor.emitted_gap_bit_end,
+                    emitted_gap_values: neighbor.emitted_gap_values,
                     source_gap_bits: neighbor.source_gap_bits,
                     source_gap_bit_start: neighbor.source_gap_bit_start,
                     source_gap_bit_end: neighbor.source_gap_bit_end,
+                    source_gap_values: neighbor.source_gap_values,
                     previous_offset: neighbor.previous_offset,
                     previous_record_end: neighbor.previous_record_end,
                     previous_family: neighbor.previous_family,
@@ -9309,9 +9396,11 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     emitted_gap_bits: usize,
     emitted_gap_bit_start: usize,
     emitted_gap_bit_end: usize,
+    emitted_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     source_gap_bits: usize,
     source_gap_bit_start: usize,
     source_gap_bit_end: usize,
+    source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     previous_offset: usize,
     previous_record_end: usize,
     previous_family: &'static str,
@@ -9972,6 +10061,8 @@ fn nearest_unowned_item_update_neighbor_cursor(
         if gap.relation != "unowned-emitted-gap" && gap.source_relation != "unowned-source-gap" {
             continue;
         }
+        let emitted_gap_values = rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap);
+        let source_gap_values = rewrite_bit_ledger.source_gap_values(fragment_bits, &gap);
 
         let candidate = LiveObjectItemUpdateUnownedNeighbor {
             delta: candidate_cursor as isize - bit_cursor as isize,
@@ -9983,9 +10074,19 @@ fn nearest_unowned_item_update_neighbor_cursor(
             emitted_gap_bits: gap.emitted_gap_bits,
             emitted_gap_bit_start: gap.emitted_gap_bit_start,
             emitted_gap_bit_end: gap.emitted_gap_bit_end,
+            emitted_gap_values: live_object_rewrite_bit_slice_evidence(
+                gap.emitted_gap_bit_start,
+                gap.emitted_gap_bit_end,
+                emitted_gap_values,
+            ),
             source_gap_bits: gap.source_gap_bits,
             source_gap_bit_start: gap.source_gap_bit_start,
             source_gap_bit_end: gap.source_gap_bit_end,
+            source_gap_values: live_object_rewrite_bit_slice_evidence(
+                gap.source_gap_bit_start,
+                gap.source_gap_bit_end,
+                source_gap_values,
+            ),
             previous_offset: gap.previous_offset,
             previous_record_end: gap.previous_record_end,
             previous_family: gap.previous_family,

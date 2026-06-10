@@ -881,6 +881,8 @@ fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::
         source_gap_bits = neighbor.source_gap_bits,
         source_gap_start = neighbor.source_gap_bit_start,
         source_gap_end = neighbor.source_gap_bit_end,
+        emitted_gap_values = ?neighbor.emitted_gap_values,
+        source_gap_values = ?neighbor.source_gap_values,
         previous_offset = neighbor.previous_offset,
         previous_record_end = neighbor.previous_record_end,
         previous_family = neighbor.previous_family,
