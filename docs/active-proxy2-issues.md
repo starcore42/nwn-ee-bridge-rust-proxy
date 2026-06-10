@@ -2861,6 +2861,16 @@ Current status:
   after-rewrite marker. Packet bytes and cursor ownership are unchanged; the
   compact `U/10 -> A/6 -> U/6` path still requires compact source capture or
   decompile-backed source ownership before any `U/6` cursor change.
+- 2026-06-10 follow-up `P/05/01` item valid-neighbor gap classifier:
+  production failure state now records the nearest forward item `U/6` cursor
+  that validates only after an unowned ledger gap, and upgrades the fatal reason
+  to `item-update-cursor-failed-before-valid-neighbor-unowned-gap` only when the
+  inherited cursor itself is an exact ledger handoff. The private CEP handoff
+  fixture now reports focus bit `28`, valid neighbor bit `30`, emitted gap
+  `28..30`, source gap `22..24`, and previous owner
+  `51..104:item-create-rewrite`. Packet bytes and cursor ownership are still
+  unchanged; the next useful proof remains compact source capture or a
+  source-side writer/handoff owner before changing the `U/6` cursor.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
