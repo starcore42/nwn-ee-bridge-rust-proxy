@@ -2836,6 +2836,15 @@ Current status:
   pre-`U/6` bits instead of only reporting aggregate gap counts. Packet bytes
   are unchanged; continue with compact source-writer/capture proof before
   assigning those bits.
+- 2026-06-10 follow-up `P/05/01` contiguous handoff ledger diagnostic:
+  production source-window tracing now reports the contiguous committed
+  source/emitted row chain behind each focus, expected, and neighboring `U/6`
+  cursor. The ledger stops that chain at real emitted/source gaps, so the
+  compact `U/10 -> A/6 -> U/6` replay can distinguish "unowned two-bit gap
+  after the no-map item-create handoff" from "same contiguous writer chain
+  still owns this cursor". Packet bytes are unchanged; next proof remains a
+  compact source capture or decompile-backed source owner before changing
+  `U/6` cursor ownership.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

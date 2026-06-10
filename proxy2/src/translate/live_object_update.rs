@@ -733,6 +733,101 @@ mod diagnostic_tests {
             shifted_candidate.source_emitted_delta_after_previous, 8,
             "a +2 neighboring fit requires two unowned emitted bits after the committed rows"
         );
+
+        let tail = ledger
+            .contiguous_tail_before_cursor(CNW_FRAGMENT_HEADER_BITS + 27)
+            .expect("shifted cursor should retain the contiguous committed handoff");
+        assert_eq!(tail.entry_count, 3);
+        assert_eq!(
+            ledger.contiguous_tail_family_chain(tail),
+            "add-exact->update-rewrite->add-rewrite"
+        );
+        assert_eq!(
+            (tail.source_bit_start, tail.source_bit_end),
+            (CNW_FRAGMENT_HEADER_BITS, CNW_FRAGMENT_HEADER_BITS + 19)
+        );
+        assert_eq!(
+            (tail.emitted_bit_start, tail.emitted_bit_end),
+            (CNW_FRAGMENT_HEADER_BITS, CNW_FRAGMENT_HEADER_BITS + 25)
+        );
+        assert_eq!(
+            (tail.emitted_gap_to_cursor, tail.source_gap_to_cursor),
+            (2, 2),
+            "the contiguous row chain still leaves the same two-bit source/emitted gap"
+        );
+    }
+
+    #[test]
+    fn rewrite_bit_ledger_contiguous_tail_stops_at_emitted_gap() {
+        let mut live = vec![0; 24];
+        live[0] = b'A';
+        live[1] = DOOR_OBJECT_TYPE;
+        live[8] = b'G';
+        live[9] = b'Q';
+        live[16] = b'A';
+        live[17] = ITEM_OBJECT_TYPE;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 8,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 4,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "add-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 8,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 7,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 9,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "live-gui-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 16,
+                record_end: 24,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 9,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 15,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let tail = ledger
+            .contiguous_tail_before_cursor(CNW_FRAGMENT_HEADER_BITS + 17)
+            .expect("tail should classify against the latest contiguous run");
+
+        assert_eq!(tail.entry_count, 2);
+        assert_eq!(
+            ledger.contiguous_tail_family_chain(tail),
+            "live-gui-exact->item-create-rewrite",
+            "the earlier add row is separated by an emitted cursor gap"
+        );
+        assert_eq!(
+            (tail.emitted_bit_start, tail.emitted_bit_end),
+            (CNW_FRAGMENT_HEADER_BITS + 7, CNW_FRAGMENT_HEADER_BITS + 15)
+        );
+        assert_eq!(
+            (tail.source_bit_start, tail.source_bit_end),
+            (CNW_FRAGMENT_HEADER_BITS + 4, CNW_FRAGMENT_HEADER_BITS + 11)
+        );
+        assert_eq!(
+            (tail.emitted_gap_to_cursor, tail.source_gap_to_cursor),
+            (2, 2),
+            "the latest contiguous run cannot explain a later two-bit cursor shift"
+        );
     }
 
     #[test]
@@ -8134,18 +8229,8 @@ impl LiveObjectRewriteBitLedger {
     }
 
     fn gap_before_cursor(&self, cursor: usize) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
-        let previous = self
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| entry.emitted_bit_start < cursor && cursor < entry.emitted_bit_end)
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .rev()
-                    .find(|entry| entry.emitted_bit_end <= cursor)
-            })
-            .or_else(|| self.entries.first())?;
+        let previous_index = self.previous_entry_index_for_cursor(cursor)?;
+        let previous = self.entries.get(previous_index)?;
         let relation = if cursor < previous.emitted_bit_start {
             "before-ledger-row"
         } else if cursor < previous.emitted_bit_end {
@@ -8202,6 +8287,67 @@ impl LiveObjectRewriteBitLedger {
             relation,
             source_relation,
         })
+    }
+
+    fn previous_entry_index_for_cursor(&self, cursor: usize) -> Option<usize> {
+        self.entries
+            .iter()
+            .rposition(|entry| entry.emitted_bit_start < cursor && cursor < entry.emitted_bit_end)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .rposition(|entry| entry.emitted_bit_end <= cursor)
+            })
+            .or_else(|| (!self.entries.is_empty()).then_some(0))
+    }
+
+    fn contiguous_tail_before_cursor(
+        &self,
+        cursor: usize,
+    ) -> Option<LiveObjectRewriteBitLedgerContiguousTail> {
+        let end_index = self.previous_entry_index_for_cursor(cursor)?;
+        let mut start_index = end_index;
+        while start_index > 0 {
+            let previous = self.entries.get(start_index - 1)?;
+            let current = self.entries.get(start_index)?;
+            if previous.emitted_bit_end != current.emitted_bit_start
+                || previous.source_bit_end != current.source_bit_start
+            {
+                break;
+            }
+            start_index -= 1;
+        }
+
+        let first = self.entries.get(start_index)?;
+        let last = self.entries.get(end_index)?;
+        Some(LiveObjectRewriteBitLedgerContiguousTail {
+            start_index,
+            end_index,
+            entry_count: end_index.saturating_sub(start_index).saturating_add(1),
+            source_bit_start: first.source_bit_start,
+            source_bit_end: last.source_bit_end,
+            emitted_bit_start: first.emitted_bit_start,
+            emitted_bit_end: last.emitted_bit_end,
+            emitted_gap_to_cursor: cursor.saturating_sub(last.emitted_bit_end),
+            source_gap_to_cursor: emitted_cursor_to_source_cursor(
+                cursor,
+                signed_bit_delta(last.emitted_bit_end, last.source_bit_end),
+            )
+            .saturating_sub(last.source_bit_end),
+        })
+    }
+
+    fn contiguous_tail_family_chain(
+        &self,
+        tail: LiveObjectRewriteBitLedgerContiguousTail,
+    ) -> String {
+        self.entries
+            .get(tail.start_index..=tail.end_index)
+            .unwrap_or(&[])
+            .iter()
+            .map(|entry| entry.family)
+            .collect::<Vec<_>>()
+            .join("->")
     }
 }
 
@@ -8274,6 +8420,19 @@ struct LiveObjectRewriteBitLedgerCursorGap {
     source_gap_bit_end: usize,
     relation: &'static str,
     source_relation: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectRewriteBitLedgerContiguousTail {
+    start_index: usize,
+    end_index: usize,
+    entry_count: usize,
+    source_bit_start: usize,
+    source_bit_end: usize,
+    emitted_bit_start: usize,
+    emitted_bit_end: usize,
+    emitted_gap_to_cursor: usize,
+    source_gap_to_cursor: usize,
 }
 
 fn signed_bit_delta(left: usize, right: usize) -> isize {
@@ -8765,7 +8924,7 @@ fn trace_item_update_source_window(
             .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
             .unwrap_or(&[]);
         eprintln!(
-            "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{}",
+            "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{} contiguous_tail={}",
             gap.cursor,
             gap.relation,
             gap.emitted_gap_bits,
@@ -8786,7 +8945,8 @@ fn trace_item_update_source_window(
             gap.previous_source_bit_start,
             gap.previous_source_bit_end,
             gap.previous_emitted_bit_start,
-            gap.previous_emitted_bit_end
+            gap.previous_emitted_bit_end,
+            format_rewrite_bit_ledger_contiguous_tail(rewrite_bit_ledger, bit_cursor)
         );
     }
 
@@ -8864,7 +9024,7 @@ fn trace_item_update_source_window(
                         .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
                         .unwrap_or(&[]);
                     eprintln!(
-                        "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{}",
+                        "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{} contiguous_tail={}",
                         gap.cursor,
                         gap.relation,
                         gap.emitted_gap_bits,
@@ -8885,7 +9045,11 @@ fn trace_item_update_source_window(
                         gap.previous_source_bit_start,
                         gap.previous_source_bit_end,
                         gap.previous_emitted_bit_start,
-                        gap.previous_emitted_bit_end
+                        gap.previous_emitted_bit_end,
+                        format_rewrite_bit_ledger_contiguous_tail(
+                            rewrite_bit_ledger,
+                            expected_bit_cursor,
+                        )
                     );
                 }
             }
@@ -8975,8 +9139,10 @@ fn trace_item_update_source_window(
                     )
                 })
                 .unwrap_or_else(|| "none".to_string());
+            let ledger_tail =
+                format_rewrite_bit_ledger_contiguous_tail(rewrite_bit_ledger, neighbor.bit_start);
             eprintln!(
-                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_emitted_gap={} ledger_emitted_gap_values={} ledger_source_relation={} ledger_source_gap_bits={} ledger_source_gap={} ledger_source_gap_values={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_emitted_gap={} ledger_emitted_gap_values={} ledger_source_relation={} ledger_source_gap_bits={} ledger_source_gap={} ledger_source_gap_values={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={} ledger_contiguous_tail={}",
                 neighbor.delta,
                 neighbor.bit_start,
                 neighbor.bit_end,
@@ -8995,10 +9161,31 @@ fn trace_item_update_source_window(
                 ledger_implied_source_cursor,
                 ledger_cumulative_delta,
                 ledger_source_delta,
-                ledger_previous
+                ledger_previous,
+                ledger_tail
             );
         }
     }
+}
+
+fn format_rewrite_bit_ledger_contiguous_tail(
+    rewrite_bit_ledger: &LiveObjectRewriteBitLedger,
+    cursor: usize,
+) -> String {
+    let Some(tail) = rewrite_bit_ledger.contiguous_tail_before_cursor(cursor) else {
+        return "none".to_string();
+    };
+    format!(
+        "entries={} families={} source={}..{} emitted={}..{} emitted_gap_to_cursor={} source_gap_to_cursor={}",
+        tail.entry_count,
+        rewrite_bit_ledger.contiguous_tail_family_chain(tail),
+        tail.source_bit_start,
+        tail.source_bit_end,
+        tail.emitted_bit_start,
+        tail.emitted_bit_end,
+        tail.emitted_gap_to_cursor,
+        tail.source_gap_to_cursor,
+    )
 }
 
 fn trace_update_rewrite_record_candidate(
