@@ -2871,6 +2871,15 @@ Current status:
   `51..104:item-create-rewrite`. Packet bytes and cursor ownership are still
   unchanged; the next useful proof remains compact source capture or a
   source-side writer/handoff owner before changing the `U/6` cursor.
+- 2026-06-11 follow-up `P/05/01` ledger source-bit snapshot diagnostic:
+  production rewrite state now snapshots the live-object source fragment bits
+  when `LiveObjectRewriteBitLedger` starts, after any pre-ledger fragment-span
+  promotion. Source-window gap diagnostics print source gap values from that
+  immutable source coordinate space while keeping emitted gap values tied to the
+  current EE-facing bitstream, so prior EE insertions no longer make a
+  post-rewrite vector slice look like source proof. Packet bytes and cursor
+  ownership are unchanged; continue with compact source capture or a
+  source-side writer/handoff owner before assigning the two pre-`U/6` bits.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

@@ -768,6 +768,55 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn rewrite_bit_ledger_source_gap_values_use_source_snapshot() {
+        let mut live = vec![0; 16];
+        live[0] = b'A';
+        live[1] = ITEM_OBJECT_TYPE;
+        let source_bits = vec![
+            false, false, false, // CNW header
+            true, false, true, true, // first row source bits
+            true, false, // unowned source gap bits
+        ];
+        let mut rewritten_bits = source_bits.clone();
+        rewritten_bits.splice(5..5, [false, false, false]);
+
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 7,
+                bits_inserted: 3,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let gap = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 9)
+            .expect("shifted cursor should expose a two-bit source gap");
+        assert_eq!(
+            ledger.source_gap_values(&rewritten_bits, &gap),
+            &[true, false],
+            "source gap diagnostics must use the pre-rewrite source bit coordinates"
+        );
+        assert_eq!(
+            rewritten_bits
+                .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
+                .unwrap_or(&[]),
+            &[false, true],
+            "a stale post-rewrite slice at source coordinates would report the wrong bits"
+        );
+        assert_eq!(
+            ledger.emitted_gap_values(&rewritten_bits, &gap),
+            &[true, false],
+            "emitted gap diagnostics still describe the current EE-facing bitstream"
+        );
+    }
+
+    #[test]
     fn rewrite_bit_ledger_contiguous_tail_stops_at_emitted_gap() {
         let mut live = vec![0; 24];
         live[0] = b'A';
@@ -4487,7 +4536,7 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
         }
     }
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
-    let mut rewrite_bit_ledger = LiveObjectRewriteBitLedger::new();
+    let mut rewrite_bit_ledger = LiveObjectRewriteBitLedger::with_source_bits(&fragment_bits);
     let mut bit_cursor_reliable = true;
     let mut fatal_item_update_cursor_failure: Option<LiveObjectItemUpdateCursorFailure> = None;
     let mut pending_creature_p_tail_repair: Option<
@@ -8304,6 +8353,7 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
 #[derive(Debug, Clone)]
 struct LiveObjectRewriteBitLedger {
     source_bit_cursor: usize,
+    source_bits: Vec<bool>,
     entries: Vec<LiveObjectRewriteBitLedgerEntry>,
 }
 
@@ -8311,6 +8361,15 @@ impl LiveObjectRewriteBitLedger {
     fn new() -> Self {
         Self {
             source_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            source_bits: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    fn with_source_bits(source_bits: &[bool]) -> Self {
+        Self {
+            source_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            source_bits: source_bits.to_vec(),
             entries: Vec::new(),
         }
     }
@@ -8422,6 +8481,31 @@ impl LiveObjectRewriteBitLedger {
             relation,
             source_relation,
         })
+    }
+
+    fn emitted_gap_values<'a>(
+        &self,
+        fragment_bits: &'a [bool],
+        gap: &LiveObjectRewriteBitLedgerCursorGap,
+    ) -> &'a [bool] {
+        fragment_bits
+            .get(gap.emitted_gap_bit_start..gap.emitted_gap_bit_end)
+            .unwrap_or(&[])
+    }
+
+    fn source_gap_values<'a>(
+        &'a self,
+        fragment_bits: &'a [bool],
+        gap: &LiveObjectRewriteBitLedgerCursorGap,
+    ) -> &'a [bool] {
+        let source_bits = if self.source_bits.is_empty() {
+            fragment_bits
+        } else {
+            &self.source_bits
+        };
+        source_bits
+            .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
+            .unwrap_or(&[])
     }
 
     fn item_update_cursor_failure_reason(&self, cursor: usize) -> &'static str {
@@ -9211,12 +9295,8 @@ fn trace_item_update_source_window(
         );
     }
     if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(bit_cursor) {
-        let emitted_gap_bits = fragment_bits
-            .get(gap.emitted_gap_bit_start..gap.emitted_gap_bit_end)
-            .unwrap_or(&[]);
-        let source_gap_bits = fragment_bits
-            .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
-            .unwrap_or(&[]);
+        let emitted_gap_bits = rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap);
+        let source_gap_bits = rewrite_bit_ledger.source_gap_values(fragment_bits, &gap);
         eprintln!(
             "live-object rewrite bit ledger focus cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{} contiguous_tail={}",
             gap.cursor,
@@ -9311,12 +9391,9 @@ fn trace_item_update_source_window(
         ) {
             if expected_bit_cursor != bit_cursor {
                 if let Some(gap) = rewrite_bit_ledger.gap_before_cursor(expected_bit_cursor) {
-                    let emitted_gap_bits = fragment_bits
-                        .get(gap.emitted_gap_bit_start..gap.emitted_gap_bit_end)
-                        .unwrap_or(&[]);
-                    let source_gap_bits = fragment_bits
-                        .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
-                        .unwrap_or(&[]);
+                    let emitted_gap_bits =
+                        rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap);
+                    let source_gap_bits = rewrite_bit_ledger.source_gap_values(fragment_bits, &gap);
                     eprintln!(
                         "live-object rewrite bit ledger expected cursor: cursor={} relation={} emitted_gap_bits={} emitted_gap={}..{} emitted_gap_values={:?} source_relation={} source_gap_bits={} source_gap={}..{} source_gap_values={:?} implied_source_cursor={} cumulative_emitted_source_delta={} source_emitted_delta_after_previous={} previous_offset={} previous_record_end={} previous_family={} previous_source={}..{} previous_emitted={}..{} contiguous_tail={}",
                         gap.cursor,
@@ -9406,9 +9483,7 @@ fn trace_item_update_source_window(
                 .map(|gap| {
                     format!(
                         "{:?}",
-                        fragment_bits
-                            .get(gap.emitted_gap_bit_start..gap.emitted_gap_bit_end)
-                            .unwrap_or(&[])
+                        rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap)
                     )
                 })
                 .unwrap_or_else(|| "none".to_string());
@@ -9416,9 +9491,7 @@ fn trace_item_update_source_window(
                 .map(|gap| {
                     format!(
                         "{:?}",
-                        fragment_bits
-                            .get(gap.source_gap_bit_start..gap.source_gap_bit_end)
-                            .unwrap_or(&[])
+                        rewrite_bit_ledger.source_gap_values(fragment_bits, &gap)
                     )
                 })
                 .unwrap_or_else(|| "none".to_string());
