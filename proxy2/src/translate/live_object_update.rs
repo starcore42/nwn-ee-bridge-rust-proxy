@@ -1078,6 +1078,49 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn item_update_cursor_failure_reason_uses_ledger_gap_shape() {
+        let mut live = vec![0; 16];
+        live[0] = b'A';
+        live[1] = ITEM_OBJECT_TYPE;
+
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+        assert_eq!(
+            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS),
+            "item-update-cursor-failed-without-ledger"
+        );
+
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 4,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 8,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        assert_eq!(
+            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 2),
+            "item-update-cursor-failed-before-ledger-row"
+        );
+        assert_eq!(
+            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 6),
+            "item-update-cursor-failed-inside-ledger-row"
+        );
+        assert_eq!(
+            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 8),
+            "item-update-cursor-failed-after-ledger-handoff"
+        );
+        assert_eq!(
+            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 10),
+            "item-update-cursor-failed-after-unowned-ledger-gap"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_and_update_mentions_expose_state_bits() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
@@ -4413,7 +4456,7 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
     let mut bit_cursor = CNW_FRAGMENT_HEADER_BITS;
     let mut rewrite_bit_ledger = LiveObjectRewriteBitLedger::new();
     let mut bit_cursor_reliable = true;
-    let mut fatal_item_update_cursor_failure = false;
+    let mut fatal_item_update_cursor_failure: Option<LiveObjectItemUpdateCursorFailure> = None;
     let mut pending_creature_p_tail_repair: Option<
         tail_repair::PendingCreatureAppearanceTailRepair,
     > = None;
@@ -7388,8 +7431,9 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                 );
             }
             if object_type == ITEM_OBJECT_TYPE && bit_cursor_was_reliable && !bit_cursor_reliable {
+                let reason = rewrite_bit_ledger.item_update_cursor_failure_reason(bit_cursor);
                 trace_item_update_source_window(
-                    "item-update-fragment-cursor-unowned",
+                    reason,
                     &live_bytes,
                     offset,
                     record_end,
@@ -7397,7 +7441,12 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                     bit_cursor,
                     &rewrite_bit_ledger,
                 );
-                fatal_item_update_cursor_failure = true;
+                fatal_item_update_cursor_failure = Some(LiveObjectItemUpdateCursorFailure {
+                    reason,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                });
             }
             offset = record_end.max(offset + 1);
             continue;
@@ -7685,13 +7734,13 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
         return None;
     }
 
-    if fatal_item_update_cursor_failure {
+    if let Some(failure) = fatal_item_update_cursor_failure {
         trace_update_rewrite_cursor_unreliable(
-            "item-update-cursor-failed-after-rewrite",
+            failure.reason,
             &live_bytes,
-            last_verified_record_end.min(live_bytes.len()),
-            live_bytes.len(),
-            bit_cursor,
+            failure.offset.min(live_bytes.len()),
+            failure.record_end.min(live_bytes.len()),
+            failure.bit_cursor,
         );
         return None;
     }
@@ -8299,6 +8348,25 @@ impl LiveObjectRewriteBitLedger {
         })
     }
 
+    fn item_update_cursor_failure_reason(&self, cursor: usize) -> &'static str {
+        let Some(gap) = self.gap_before_cursor(cursor) else {
+            return "item-update-cursor-failed-without-ledger";
+        };
+        if gap.relation == "unowned-emitted-gap" || gap.source_relation == "unowned-source-gap" {
+            return "item-update-cursor-failed-after-unowned-ledger-gap";
+        }
+        if gap.relation == "inside-previous-emitted-row"
+            || gap.source_relation == "inside-previous-source-row"
+        {
+            return "item-update-cursor-failed-inside-ledger-row";
+        }
+        if gap.relation == "before-ledger-row" || gap.source_relation == "before-ledger-source-row"
+        {
+            return "item-update-cursor-failed-before-ledger-row";
+        }
+        "item-update-cursor-failed-after-ledger-handoff"
+    }
+
     fn previous_entry_index_for_cursor(&self, cursor: usize) -> Option<usize> {
         self.entries
             .iter()
@@ -8392,6 +8460,14 @@ impl LiveObjectRewriteBitLedger {
             .get(tail.start_index..=tail.end_index)
             .unwrap_or(&[])
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectItemUpdateCursorFailure {
+    reason: &'static str,
+    offset: usize,
+    record_end: usize,
+    bit_cursor: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

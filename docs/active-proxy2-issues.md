@@ -2853,6 +2853,14 @@ Current status:
   same line as the remaining `U/6` cursor gap. Packet bytes are unchanged; the
   two pre-`U/6` bits still need compact source-writer/capture proof or another
   source-side handoff before any cursor ownership change.
+- 2026-06-10 follow-up `P/05/01` item cursor-failure reason audit:
+  production rewrite state now stores the first fatal item `U/6` cursor failure
+  with the exact focus row and a ledger-derived reason such as
+  `item-update-cursor-failed-after-unowned-ledger-gap`. The final rejection and
+  source-window trace now use that structured reason instead of a generic
+  after-rewrite marker. Packet bytes and cursor ownership are unchanged; the
+  compact `U/10 -> A/6 -> U/6` path still requires compact source capture or
+  decompile-backed source ownership before any `U/6` cursor change.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
