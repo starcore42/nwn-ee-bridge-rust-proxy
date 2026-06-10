@@ -274,6 +274,54 @@ mod diagnostic_tests {
         assert_eq!(claims[1].bit_end, Some(CNW_FRAGMENT_HEADER_BITS + 2));
     }
 
+    #[test]
+    fn source_window_claims_name_gui_inventory_and_world_status_rows() {
+        let live = vec![b'G', b'Q', 0, b'W', 1, 2];
+        let rows = live_object_source_window_rows(&live, 0, 3, 0, 1);
+        let claims = live_object_source_window_row_bit_claims(
+            &live,
+            &rows,
+            &[false, false, false],
+            CNW_FRAGMENT_HEADER_BITS,
+        );
+
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0].offset, 0);
+        assert_eq!(claims[0].family, "live-gui");
+        assert_eq!(claims[0].bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(claims[0].bit_end, Some(CNW_FRAGMENT_HEADER_BITS));
+        assert_eq!(claims[1].offset, 3);
+        assert_eq!(claims[1].family, "world-status");
+        assert_eq!(claims[1].bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(claims[1].bit_end, Some(CNW_FRAGMENT_HEADER_BITS));
+
+        let mut inventory = vec![b'I'];
+        inventory.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        inventory.extend_from_slice(&0x0400u16.to_le_bytes());
+        inventory.push(0);
+        inventory.push(1);
+        inventory.push(0x10);
+        let inventory_row = LiveObjectSourceWindowRow {
+            offset: 0,
+            record_end: inventory.len(),
+            opcode: b'I',
+            marker: inventory[1],
+            object_id: None,
+            update_mask: None,
+        };
+
+        assert_eq!(
+            live_object_source_window_row_bit_claim(
+                &inventory,
+                &inventory_row,
+                &[false, false, false, true],
+                CNW_FRAGMENT_HEADER_BITS,
+            ),
+            Some(("inventory", CNW_FRAGMENT_HEADER_BITS + 1)),
+            "a verified inventory row owns its set-slot BOOL in the source-window diagnostic"
+        );
+    }
+
     fn diagnostic_full_item_update_live_bytes() -> Vec<u8> {
         let mut live = vec![b'U', ITEM_OBJECT_TYPE];
         live.extend_from_slice(&0x8000_00B8u32.to_le_bytes());
@@ -641,6 +689,78 @@ mod diagnostic_tests {
             shifted_candidate.source_relation, "unowned-source-gap",
             "zero-bit creature rows still cannot donate bits to a shifted following item"
         );
+    }
+
+    #[test]
+    fn rewrite_bit_ledger_keeps_gui_inventory_and_world_status_rows_as_cursor_owners() {
+        let mut live = vec![0; 40];
+        live[0] = b'G';
+        live[1] = b'Q';
+        live[8] = b'I';
+        live[9] = 0xFE;
+        live[24] = b'W';
+        live[25] = 1;
+        live[26] = 2;
+        live[32] = b'U';
+        live[33] = ITEM_OBJECT_TYPE;
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 8,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "live-gui-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 8,
+                record_end: 24,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 1,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "inventory-exact",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 24,
+                record_end: 27,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 1,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 1,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "world-status-exact",
+            },
+        ));
+
+        let exact_cursor = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 1)
+            .expect("cursor after W should be classified against the W row");
+        assert_eq!(exact_cursor.previous_family, "world-status-exact");
+        assert_eq!(exact_cursor.previous_offset, 24);
+        assert_eq!(exact_cursor.relation, "after-previous-emitted-end");
+        assert_eq!(exact_cursor.source_relation, "after-previous-source-end");
+        assert_eq!(
+            exact_cursor.source_gap_bits, 0,
+            "a zero-bit W row owns the handoff but still consumes no source bits"
+        );
+
+        let shifted_candidate = ledger
+            .gap_before_cursor(CNW_FRAGMENT_HEADER_BITS + 3)
+            .expect("shifted cursor after W should still need a separate owner");
+        assert_eq!(shifted_candidate.previous_family, "world-status-exact");
+        assert_eq!(shifted_candidate.emitted_gap_bits, 2);
+        assert_eq!(shifted_candidate.source_relation, "unowned-source-gap");
+        assert_eq!(shifted_candidate.source_gap_bits, 2);
     }
 
     #[test]
@@ -4591,6 +4711,30 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
         }
 
         if world_status::claim_identity_record_for_ee(&live_bytes, offset, record_end) {
+            let world_status_start_bit_cursor = bit_cursor;
+            if !rewrite_bit_ledger.commit_record(
+                &live_bytes,
+                LiveObjectRewriteBitLedgerCommit {
+                    offset,
+                    record_end,
+                    emitted_bit_start: world_status_start_bit_cursor,
+                    emitted_bit_end: bit_cursor,
+                    bits_inserted: 0,
+                    bits_removed: 0,
+                    family: "world-status-exact",
+                },
+            ) {
+                trace_update_rewrite_cursor_unreliable(
+                    "world-status-ledger-commit-invalid",
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    world_status_start_bit_cursor,
+                );
+                bit_cursor_reliable = false;
+                offset = record_end.max(offset + 1);
+                continue;
+            }
             terminal_work_remaining_fragment_storage_record =
                 (record_end == live_bytes.len()).then_some((offset, record_end));
             last_verified_record_end = record_end;
@@ -6578,6 +6722,11 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
 
         if opcode == b'G' {
             if bit_cursor_reliable {
+                let gui_start_bit_cursor = bit_cursor;
+                let mut gui_bits_inserted_for_ledger = 0usize;
+                let mut gui_bits_removed_for_ledger = 0usize;
+                let mut gui_promoted_for_ledger = false;
+                let mut gui_rewritten_for_ledger = false;
                 if let Some(promotion) = gui::promote_legacy_live_gui_item_fragment_span_for_ee(
                     &mut live_bytes,
                     &mut fragment_bits,
@@ -6586,6 +6735,8 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                     bit_cursor,
                 ) {
                     changed = true;
+                    gui_promoted_for_ledger =
+                        promotion.bytes_promoted != 0 || promotion.bits_promoted != 0;
                     summary.interleaved_fragment_spans_promoted = summary
                         .interleaved_fragment_spans_promoted
                         .saturating_add(1);
@@ -6615,6 +6766,11 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                         || gui_rewrite.missing_add_inner_opcodes_repaired != 0
                     {
                         changed = true;
+                        gui_rewritten_for_ledger = true;
+                        gui_bits_inserted_for_ledger =
+                            gui_bits_inserted_for_ledger.saturating_add(gui_rewrite.bits_inserted);
+                        gui_bits_removed_for_ledger =
+                            gui_bits_removed_for_ledger.saturating_add(gui_rewrite.bits_removed);
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(gui_rewrite.bits_inserted).unwrap_or(u32::MAX),
                         );
@@ -6652,27 +6808,59 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                         bit_cursor,
                     );
                     bit_cursor_reliable = false;
-                } else if record_end == live_bytes.len()
-                    && gui_claim.is_some_and(|claim| claim.item_create && claim.fragment_bits > 0)
-                    && bit_cursor < fragment_bits.len()
-                {
-                    terminal_live_gui_item_fragment_trim_cursor = Some(bit_cursor);
-                } else if let Some(bytes_removed) =
-                    gui::remove_zero_fragment_storage_after_verified_live_gui_item_record_for_ee(
-                        &mut live_bytes,
-                        record_end,
-                    )
-                {
-                    changed = true;
-                    summary.interleaved_fragment_spans_promoted = summary
-                        .interleaved_fragment_spans_promoted
-                        .saturating_add(1);
-                    summary.interleaved_fragment_bytes_promoted = summary
-                        .interleaved_fragment_bytes_promoted
-                        .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
-                    summary.bytes_removed = summary
-                        .bytes_removed
-                        .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+                } else if let Some(gui_claim) = gui_claim {
+                    let ledger_family = match (gui_promoted_for_ledger, gui_rewritten_for_ledger) {
+                        (true, true) => "live-gui-promoted-rewrite",
+                        (true, false) => "live-gui-promoted-span",
+                        (false, true) => "live-gui-rewrite",
+                        (false, false) => "live-gui-exact",
+                    };
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: gui_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: gui_bits_inserted_for_ledger,
+                            bits_removed: gui_bits_removed_for_ledger,
+                            family: ledger_family,
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "live-gui-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            gui_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
+                    if record_end == live_bytes.len()
+                        && gui_claim.item_create
+                        && gui_claim.fragment_bits > 0
+                        && bit_cursor < fragment_bits.len()
+                    {
+                        terminal_live_gui_item_fragment_trim_cursor = Some(bit_cursor);
+                    } else if let Some(bytes_removed) =
+                        gui::remove_zero_fragment_storage_after_verified_live_gui_item_record_for_ee(
+                            &mut live_bytes,
+                            record_end,
+                        )
+                    {
+                        changed = true;
+                        summary.interleaved_fragment_spans_promoted = summary
+                            .interleaved_fragment_spans_promoted
+                            .saturating_add(1);
+                        summary.interleaved_fragment_bytes_promoted = summary
+                            .interleaved_fragment_bytes_promoted
+                            .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+                        summary.bytes_removed = summary
+                            .bytes_removed
+                            .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+                    }
                 }
             }
             last_verified_record_end = record_end;
@@ -6682,6 +6870,7 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
         }
 
         if inventory::owns_fragment_tail(opcode) {
+            let mut inventory_rewritten_for_ledger = false;
             if let Some(inventory_rewrite) = inventory::rewrite_legacy_inventory_record_for_ee(
                 &mut live_bytes,
                 offset,
@@ -6690,6 +6879,8 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                 bit_cursor,
             ) {
                 changed = true;
+                inventory_rewritten_for_ledger =
+                    inventory_rewrite.bytes_inserted != 0 || inventory_rewrite.bytes_removed != 0;
                 summary.bytes_inserted = summary.bytes_inserted.saturating_add(
                     u32::try_from(inventory_rewrite.bytes_inserted).unwrap_or(u32::MAX),
                 );
@@ -6701,6 +6892,7 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
             if bit_cursor_reliable {
                 let inventory_start_bit_cursor = bit_cursor;
                 let mut inventory_promotion_bits: Option<usize> = None;
+                let mut inventory_promoted_for_ledger = false;
                 if let Some(promotion) =
                     fragment_spans::promote_inventory_interleaved_fragment_span_for_ee(
                         &mut live_bytes,
@@ -6711,6 +6903,8 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                     )
                 {
                     changed = true;
+                    inventory_promoted_for_ledger =
+                        promotion.bytes_promoted != 0 || promotion.bits_promoted != 0;
                     summary.interleaved_fragment_spans_promoted = summary
                         .interleaved_fragment_spans_promoted
                         .saturating_add(1);
@@ -6779,6 +6973,39 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                         bit_cursor,
                     );
                     bit_cursor_reliable = false;
+                } else if inventory_claim.is_some() {
+                    let ledger_family = match (
+                        inventory_promoted_for_ledger,
+                        inventory_rewritten_for_ledger,
+                    ) {
+                        (true, true) => "inventory-promoted-rewrite",
+                        (true, false) => "inventory-promoted-span",
+                        (false, true) => "inventory-rewrite",
+                        (false, false) => "inventory-exact",
+                    };
+                    if !rewrite_bit_ledger.commit_record(
+                        &live_bytes,
+                        LiveObjectRewriteBitLedgerCommit {
+                            offset,
+                            record_end,
+                            emitted_bit_start: inventory_start_bit_cursor,
+                            emitted_bit_end: bit_cursor,
+                            bits_inserted: 0,
+                            bits_removed: 0,
+                            family: ledger_family,
+                        },
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "inventory-ledger-commit-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            inventory_start_bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                 }
                 if let Some(bits_promoted) = inventory_promotion_bits {
                     terminal_promoted_fragment_trim_cursor = promoted_fragment_storage_trim_cursor(
@@ -7971,6 +8198,10 @@ fn live_object_source_window_row_bit_claim(
     match row.opcode {
         b'A' => live_object_source_window_add_claim(live_bytes, row, fragment_bits, bit_cursor),
         b'D' => live_object_source_window_delete_claim(live_bytes, row, fragment_bits, bit_cursor),
+        b'G' => live_object_source_window_gui_claim(live_bytes, row, fragment_bits, bit_cursor),
+        b'I' => {
+            live_object_source_window_inventory_claim(live_bytes, row, fragment_bits, bit_cursor)
+        }
         b'P' if row.marker == CREATURE_OBJECT_TYPE => {
             live_object_source_window_creature_appearance_claim(
                 live_bytes,
@@ -7988,6 +8219,7 @@ fn live_object_source_window_row_bit_claim(
             fragment_bits,
             bit_cursor,
         ),
+        b'W' => live_object_source_window_world_status_claim(live_bytes, row, bit_cursor),
         _ => None,
     }
 }
@@ -8057,6 +8289,56 @@ fn live_object_source_window_delete_claim(
         cursor::legacy_live_delete_fragment_bit_count(live_bytes, row.offset, row.record_end)?;
     let bit_end = bit_cursor.checked_add(bits)?;
     (bit_end <= fragment_bits.len()).then_some(("delete", bit_end))
+}
+
+fn live_object_source_window_gui_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let mut gui_cursor = bit_cursor;
+    let claim = gui::advance_verified_live_gui_record(
+        live_bytes,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        &mut gui_cursor,
+    )?;
+    Some((
+        if claim.item_create {
+            "live-gui-item-create"
+        } else {
+            "live-gui"
+        },
+        gui_cursor,
+    ))
+}
+
+fn live_object_source_window_inventory_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    let mut inventory_cursor = bit_cursor;
+    inventory::advance_verified_inventory_record(
+        live_bytes,
+        row.offset,
+        row.record_end,
+        fragment_bits,
+        &mut inventory_cursor,
+    )?;
+    Some(("inventory", inventory_cursor))
+}
+
+fn live_object_source_window_world_status_claim(
+    live_bytes: &[u8],
+    row: &LiveObjectSourceWindowRow,
+    bit_cursor: usize,
+) -> Option<(&'static str, usize)> {
+    world_status::is_verified_work_remaining_record(live_bytes, row.offset, row.record_end)
+        .then_some(("world-status", bit_cursor))
 }
 
 fn live_object_source_window_creature_appearance_claim(
