@@ -2808,6 +2808,27 @@ Current status:
   source contract but still does not assign the two active pre-`U/6` bits;
   continue with compact source-writer/capture or another source-side handoff
   proof before changing cursor ownership.
+- 2026-06-10 `P/05/01` exact GUI/inventory/W ledger audit: production rewrite
+  state now commits verified `G` GUI rows, `I` inventory rows, and zero-bit
+  `W current total` work-remaining rows into `LiveObjectRewriteBitLedger` after
+  their exact validators prove the cursor. Interleaved GUI/inventory fragment
+  promotions remain source-bit movement, while GUI rewrite bit deltas are
+  recorded as emitted EE insertions/removals. The source-window diagnostic now
+  names the same exact row families so a later compact `U/10 -> A/6 -> U/6`
+  cursor-gap trace can attribute ownership to immediate `G`/`I`/`W` neighbors
+  instead of an older row. This does not assign the active +2 pre-`U/6` bits;
+  continue with compact source-writer/capture or another decompile-backed
+  source owner before changing cursor ownership.
+- 2026-06-10 follow-up `P/05/01` typed item-create ledger audit: production
+  rewrite state now carries the decompile-selected `A/6` item-create source
+  and emitted fragment-bit counts out of the shared item-create translator, and
+  the live-object ledger verifies those counts before committing the row as
+  `item-create-rewrite`. This pins the no-map `A/6` handoff as a five-source/
+  six-emitted-bit owner after EE's active-property BOOL insertion, so a later
+  `U/6` neighbor fit at cursor +2 remains an unowned source/emitted gap rather
+  than bits donated by the item-create row. Packet bytes are unchanged; the
+  remaining owner still needs compact source-writer/capture proof or another
+  source-side handoff before changing `U/6` cursor ownership.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

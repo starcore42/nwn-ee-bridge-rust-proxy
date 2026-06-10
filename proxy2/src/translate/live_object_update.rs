@@ -335,6 +335,145 @@ mod diagnostic_tests {
         live
     }
 
+    fn diagnostic_model_type2_typed_item_create_record() -> Vec<u8> {
+        vec![
+            b'A',
+            ITEM_OBJECT_TYPE,
+            0xB8,
+            0x00,
+            0x00,
+            0x80,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x0C,
+            0x00,
+            0x0B,
+            0x00,
+            0x0B,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            0x00,
+            b'L',
+            b'a',
+            b'n',
+            b'c',
+            b'e',
+            0x02,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0xFF,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    }
+
+    #[test]
+    fn item_create_rewrite_reports_typed_source_bit_claim_for_ledger() {
+        let mut live = diagnostic_model_type2_typed_item_create_record();
+        let mut record_end = live.len();
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let source_record_bits = [false, false, true, false, false];
+        let following_record_bits = [true, false];
+        fragment_bits.extend_from_slice(&source_record_bits);
+        fragment_bits.extend_from_slice(&following_record_bits);
+        let add_start_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+
+        let rewrite = appearance::insert_ee_item_create_extras_for_ee(
+            &mut live,
+            2,
+            &mut record_end,
+            &mut fragment_bits,
+            add_start_bit_cursor,
+        )
+        .expect("typed A/6 item-create rewrite should expose its bit claim");
+
+        assert_eq!(rewrite.bits_inserted, 1);
+        assert_eq!(
+            rewrite.source_fragment_bits_consumed,
+            Some(source_record_bits.len())
+        );
+        assert_eq!(
+            rewrite.emitted_fragment_bits_consumed,
+            Some(source_record_bits.len() + rewrite.bits_inserted)
+        );
+
+        let mut emitted_cursor = add_start_bit_cursor;
+        assert!(add::advance_verified_add_record(
+            &live,
+            0,
+            record_end,
+            &fragment_bits,
+            &mut emitted_cursor,
+        ));
+        assert_eq!(
+            emitted_cursor,
+            add_start_bit_cursor + rewrite.emitted_fragment_bits_consumed.unwrap()
+        );
+        assert_eq!(
+            &fragment_bits[emitted_cursor..],
+            &following_record_bits,
+            "the inserted EE active-property bit must stay inside A/6"
+        );
+
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end,
+                emitted_bit_start: add_start_bit_cursor,
+                emitted_bit_end: emitted_cursor,
+                bits_inserted: rewrite.bits_inserted,
+                bits_removed: rewrite.bits_removed,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let entry = ledger
+            .entries()
+            .last()
+            .expect("ledger should contain the item-create row");
+        assert_eq!(entry.family, "item-create-rewrite");
+        assert_eq!(entry.source_bit_start, add_start_bit_cursor);
+        assert_eq!(
+            entry.source_bit_end,
+            add_start_bit_cursor + source_record_bits.len()
+        );
+        assert_eq!(entry.emitted_bit_end, emitted_cursor);
+        let shifted_candidate = ledger
+            .gap_before_cursor(emitted_cursor + 2)
+            .expect("shifted U/6 neighbor should be classified after A/6");
+        assert_eq!(shifted_candidate.previous_family, "item-create-rewrite");
+        assert_eq!(shifted_candidate.source_relation, "unowned-source-gap");
+        assert_eq!(shifted_candidate.source_gap_bits, 2);
+    }
+
     #[test]
     fn item_failure_source_window_neighbor_fit_reports_focus_row_start() {
         let mut live = Vec::new();
@@ -5293,6 +5432,9 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
 
                 let mut add_extra_bits_inserted = 0usize;
                 let mut add_extra_bits_removed = 0usize;
+                let mut add_source_fragment_bits_consumed = None;
+                let mut add_emitted_fragment_bits_consumed = None;
+                let mut add_ledger_family_override = None;
                 if object_type == ITEM_OBJECT_TYPE {
                     if let Some(item_rewrite) = appearance::insert_ee_item_create_extras_for_ee(
                         &mut live_bytes,
@@ -5324,6 +5466,11 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                             add_extra_bits_inserted.saturating_add(item_rewrite.bits_inserted);
                         add_extra_bits_removed =
                             add_extra_bits_removed.saturating_add(item_rewrite.bits_removed);
+                        add_source_fragment_bits_consumed =
+                            item_rewrite.source_fragment_bits_consumed;
+                        add_emitted_fragment_bits_consumed =
+                            item_rewrite.emitted_fragment_bits_consumed;
+                        add_ledger_family_override = Some("item-create-rewrite");
                     }
                 }
 
@@ -5358,6 +5505,11 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                             add_extra_bits_inserted.saturating_add(item_rewrite.bits_inserted);
                         add_extra_bits_removed =
                             add_extra_bits_removed.saturating_add(item_rewrite.bits_removed);
+                        add_source_fragment_bits_consumed =
+                            item_rewrite.source_fragment_bits_consumed;
+                        add_emitted_fragment_bits_consumed =
+                            item_rewrite.emitted_fragment_bits_consumed;
+                        add_ledger_family_override = Some("item-add-rewrite");
                     }
                 }
 
@@ -5369,6 +5521,45 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                     &fragment_bits,
                     &mut bit_cursor,
                 ) {
+                    if let (Some(source_fragment_bits), Some(emitted_fragment_bits)) = (
+                        add_source_fragment_bits_consumed,
+                        add_emitted_fragment_bits_consumed,
+                    ) {
+                        let source_delta = live_object_rewrite_source_delta(
+                            exact_add_start_bit_cursor,
+                            bit_cursor,
+                            add_extra_bits_inserted,
+                            add_extra_bits_removed,
+                        );
+                        if source_delta != Some(source_fragment_bits)
+                            || bit_cursor.saturating_sub(exact_add_start_bit_cursor)
+                                != emitted_fragment_bits
+                        {
+                            trace_update_rewrite_cursor_unreliable(
+                                "add-record-bit-claim-source-mismatch",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                exact_add_start_bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
+                        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
+                            eprintln!(
+                                "live-object add record bit claim accepted: offset={offset} record_end={record_end} family={} source_bits_consumed={source_fragment_bits} emitted_bits={emitted_fragment_bits} bits_inserted={add_extra_bits_inserted} bits_removed={add_extra_bits_removed}",
+                                add_ledger_family_override.unwrap_or("add-rewrite")
+                            );
+                        }
+                    }
+                    let add_ledger_family = add_ledger_family_override.unwrap_or_else(|| {
+                        if add_extra_bits_inserted != 0 || add_extra_bits_removed != 0 {
+                            "add-rewrite"
+                        } else {
+                            "add-exact"
+                        }
+                    });
                     if !rewrite_bit_ledger.commit_record(
                         &live_bytes,
                         LiveObjectRewriteBitLedgerCommit {
@@ -5378,11 +5569,7 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                             emitted_bit_end: bit_cursor,
                             bits_inserted: add_extra_bits_inserted,
                             bits_removed: add_extra_bits_removed,
-                            family: if add_extra_bits_inserted != 0 || add_extra_bits_removed != 0 {
-                                "add-rewrite"
-                            } else {
-                                "add-exact"
-                            },
+                            family: add_ledger_family,
                         },
                     ) {
                         trace_update_rewrite_cursor_unreliable(

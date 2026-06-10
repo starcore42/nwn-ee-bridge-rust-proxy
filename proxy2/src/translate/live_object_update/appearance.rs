@@ -474,6 +474,8 @@ pub(super) struct CreatureAppearanceExtraRewrite {
     pub bits_removed: usize,
     pub bytes_inserted: usize,
     pub bytes_removed: usize,
+    pub source_fragment_bits_consumed: Option<usize>,
+    pub emitted_fragment_bits_consumed: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1770,6 +1772,9 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
         }
         return None;
     };
+    let emitted_fragment_bits_consumed = record
+        .fragment_bits_consumed
+        .checked_add(record.ee_extra_fragment_bits)?;
     *bytes = staged_bytes;
     *record_end = staged_record_end;
     *fragment_bits = staged_fragment_bits;
@@ -1792,6 +1797,8 @@ pub(super) fn insert_ee_item_add_extras_for_ee(
         bits_removed: 0,
         bytes_inserted: byte_apply.bytes_inserted,
         bytes_removed: byte_apply.bytes_removed,
+        source_fragment_bits_consumed: Some(record.fragment_bits_consumed),
+        emitted_fragment_bits_consumed: Some(emitted_fragment_bits_consumed),
     })
 }
 
@@ -2322,6 +2329,9 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
     if matching_records.next().is_some() {
         return None;
     }
+    let emitted_fragment_bits_consumed = record
+        .fragment_bits_consumed
+        .checked_add(record.ee_extra_fragment_bits)?;
 
     // GUI inventory/repository item-create rows call the same EE helper as
     // top-level item adds after their GUI prefix:
@@ -2361,6 +2371,8 @@ pub(super) fn insert_ee_item_create_extras_for_ee(
         bits_removed: 0,
         bytes_inserted: byte_apply.bytes_inserted,
         bytes_removed: byte_apply.bytes_removed,
+        source_fragment_bits_consumed: Some(record.fragment_bits_consumed),
+        emitted_fragment_bits_consumed: Some(emitted_fragment_bits_consumed),
     })
 }
 
@@ -2891,6 +2903,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                             bits_removed,
                             bytes_inserted: byte_apply.bytes_inserted,
                             bytes_removed,
+                            ..CreatureAppearanceExtraRewrite::default()
                         });
                     }
                 } else if fragment_spans::verified_appearance_following_creature_update_span_offset_for_ee(
@@ -2917,6 +2930,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
                             bits_removed,
                             bytes_inserted: byte_apply.bytes_inserted,
                             bytes_removed,
+                            ..CreatureAppearanceExtraRewrite::default()
                         });
                     }
                 }
@@ -2935,6 +2949,7 @@ pub(super) fn insert_ee_creature_appearance_extras_for_ee(
         bits_removed,
         bytes_inserted: byte_apply.bytes_inserted,
         bytes_removed,
+        ..CreatureAppearanceExtraRewrite::default()
     })
 }
 
@@ -3081,6 +3096,7 @@ pub(super) fn remove_ee_creature_appearance_zero_fragment_padding_if_possible(
                 bits_removed,
                 bytes_inserted: 0,
                 bytes_removed: 0,
+                ..CreatureAppearanceExtraRewrite::default()
             });
         }
     }
@@ -3274,6 +3290,7 @@ pub(super) fn repair_ee_creature_appearance_name_bits_if_possible(
                 bits_removed: nested_name_bit_delta.removed,
                 bytes_inserted: 0,
                 bytes_removed: 0,
+                ..CreatureAppearanceExtraRewrite::default()
             });
         }
     }
