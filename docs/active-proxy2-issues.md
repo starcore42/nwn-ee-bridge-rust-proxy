@@ -2936,6 +2936,16 @@ Current status:
   proof instead of parsing diagnostic strings. Packet bytes and cursor ownership
   remain unchanged; next proof still needs compact source capture or a
   source-side writer/handoff owner before any `U/6` cursor change.
+- 2026-06-11 follow-up `P/05/01` item cursor evidence propagation: production
+  rewrite failures now carry structured parser/gap evidence for the failing
+  item `U/6` row: focus parser stage/read cursor/bit cursor/orientation branch,
+  nearest validating unowned neighbor, emitted/source gap ranges, previous
+  ledger owner, and typed gap origin. The M-frame server dispatcher preserves
+  that same live-object failure object alongside the existing quarantine reason,
+  so harness/strict diagnostics can consume exact state instead of scraping
+  debug text. Packet bytes and cursor ownership remain unchanged; next proof
+  still needs compact source capture or a source-side writer/handoff owner
+  before changing `U/6` cursor handling.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

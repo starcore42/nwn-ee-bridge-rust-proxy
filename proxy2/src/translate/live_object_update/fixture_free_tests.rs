@@ -5788,10 +5788,44 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         attempt.summary.is_none(),
         "raw CEP no-map handoff must not skip two unowned bits before the following U/6"
     );
+    let failure = attempt
+        .failure
+        .expect("failed no-map handoff should preserve the typed U/6 cursor failure");
     assert_eq!(
-        attempt.failure.map(|failure| failure.reason),
-        Some("item-update-cursor-failed-before-valid-neighbor-unowned-gap"),
+        failure.reason, "item-update-cursor-failed-before-valid-neighbor-unowned-gap",
         "failed no-map handoff should classify the unowned +2 U/6 neighbor for quarantine"
+    );
+    assert_eq!(
+        failure.kind,
+        super::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
+    );
+    assert_eq!(
+        failure.item_update_neighbor_gap_origin,
+        Some(super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits)
+    );
+    let evidence = failure
+        .item_update_cursor_evidence
+        .expect("item cursor failure should carry parser/gap evidence");
+    assert_eq!(evidence.focus_failure_stage, "record-end");
+    assert!(
+        evidence.focus_failure_bit_cursor
+            >= failure.bit_cursor + super::LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+        "focus parser failure should retain the post-position cursor, not the default start cursor"
+    );
+    assert_eq!(evidence.focus_failure_orientation_vector, Some(true));
+    let neighbor = evidence
+        .unowned_neighbor
+        .expect("valid neighboring cursor should be preserved as structured evidence");
+    assert_eq!(neighbor.delta, 2);
+    assert_eq!(neighbor.bit_start, failure.bit_cursor + 2);
+    assert_eq!(neighbor.emitted_gap_bits, 2);
+    assert_eq!(neighbor.emitted_gap_bit_start, failure.bit_cursor);
+    assert_eq!(neighbor.emitted_gap_bit_end, failure.bit_cursor + 2);
+    assert_eq!(neighbor.source_gap_bits, 2);
+    assert_eq!(neighbor.previous_family, "item-create-rewrite");
+    assert_eq!(
+        neighbor.gap_origin,
+        super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
     );
     assert_eq!(
         payload, original,

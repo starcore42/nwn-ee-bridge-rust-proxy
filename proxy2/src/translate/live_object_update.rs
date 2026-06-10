@@ -1643,6 +1643,36 @@ pub struct LiveObjectUpdateRewriteFailure {
     pub record_end: usize,
     pub bit_cursor: usize,
     pub item_update_neighbor_gap_origin: Option<LiveObjectUpdateItemCursorGapOrigin>,
+    pub item_update_cursor_evidence: Option<LiveObjectUpdateItemCursorFailureEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemCursorFailureEvidence {
+    pub focus_failure_stage: &'static str,
+    pub focus_failure_read_cursor: usize,
+    pub focus_failure_bit_cursor: usize,
+    pub focus_failure_orientation_vector: Option<bool>,
+    pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
+    pub delta: isize,
+    pub bit_start: usize,
+    pub bit_end: usize,
+    pub read_end: usize,
+    pub translated_mask: u32,
+    pub orientation_vector: Option<bool>,
+    pub emitted_gap_bits: usize,
+    pub emitted_gap_bit_start: usize,
+    pub emitted_gap_bit_end: usize,
+    pub source_gap_bits: usize,
+    pub source_gap_bit_start: usize,
+    pub source_gap_bit_end: usize,
+    pub previous_offset: usize,
+    pub previous_record_end: usize,
+    pub previous_family: &'static str,
+    pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7874,16 +7904,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     bit_cursor,
                     unowned_neighbor,
                 };
-                *rewrite_failure = Some(LiveObjectUpdateRewriteFailure {
-                    reason: failure.kind.as_str(),
-                    kind: failure.kind,
-                    offset: failure.offset,
-                    record_end: failure.record_end,
-                    bit_cursor: failure.bit_cursor,
-                    item_update_neighbor_gap_origin: failure
-                        .unowned_neighbor
-                        .map(|neighbor| neighbor.gap_origin),
-                });
+                *rewrite_failure = Some(failure.into_rewrite_failure());
                 fatal_item_update_cursor_failure = Some(failure);
             }
             offset = record_end.max(offset + 1);
@@ -9047,6 +9068,62 @@ struct LiveObjectItemUpdateCursorFailure {
     record_end: usize,
     bit_cursor: usize,
     unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
+}
+
+impl LiveObjectItemUpdateCursorFailure {
+    fn into_rewrite_failure(self) -> LiveObjectUpdateRewriteFailure {
+        LiveObjectUpdateRewriteFailure {
+            reason: self.kind.as_str(),
+            kind: self.kind,
+            offset: self.offset,
+            record_end: self.record_end,
+            bit_cursor: self.bit_cursor,
+            item_update_neighbor_gap_origin: self
+                .unowned_neighbor
+                .map(|neighbor| neighbor.gap_origin),
+            item_update_cursor_evidence: Some(self.evidence()),
+        }
+    }
+
+    fn evidence(self) -> LiveObjectUpdateItemCursorFailureEvidence {
+        let focus = self
+            .unowned_neighbor
+            .map(|neighbor| {
+                (
+                    neighbor.focus_failure_stage,
+                    neighbor.focus_failure_read_cursor,
+                    neighbor.focus_failure_bit_cursor,
+                    neighbor.focus_failure_orientation_vector,
+                )
+            })
+            .unwrap_or(("none", self.offset, self.bit_cursor, None));
+        LiveObjectUpdateItemCursorFailureEvidence {
+            focus_failure_stage: focus.0,
+            focus_failure_read_cursor: focus.1,
+            focus_failure_bit_cursor: focus.2,
+            focus_failure_orientation_vector: focus.3,
+            unowned_neighbor: self.unowned_neighbor.map(|neighbor| {
+                LiveObjectUpdateItemUnownedNeighborEvidence {
+                    delta: neighbor.delta,
+                    bit_start: neighbor.bit_start,
+                    bit_end: neighbor.bit_end,
+                    read_end: neighbor.read_end,
+                    translated_mask: neighbor.translated_mask,
+                    orientation_vector: neighbor.orientation_vector,
+                    emitted_gap_bits: neighbor.emitted_gap_bits,
+                    emitted_gap_bit_start: neighbor.emitted_gap_bit_start,
+                    emitted_gap_bit_end: neighbor.emitted_gap_bit_end,
+                    source_gap_bits: neighbor.source_gap_bits,
+                    source_gap_bit_start: neighbor.source_gap_bit_start,
+                    source_gap_bit_end: neighbor.source_gap_bit_end,
+                    previous_offset: neighbor.previous_offset,
+                    previous_record_end: neighbor.previous_record_end,
+                    previous_family: neighbor.previous_family,
+                    gap_origin: neighbor.gap_origin,
+                }
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

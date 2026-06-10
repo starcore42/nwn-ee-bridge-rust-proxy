@@ -38,6 +38,7 @@ pub(super) struct InflatedPayloadRewrite {
     pub(super) area_rewrite: Option<area::AreaRewriteSummary>,
     pub(super) module_info_candidate_offset: Option<usize>,
     pub(super) quarantine_reason: Option<&'static str>,
+    pub(super) live_object_update_failure: Option<live_update::RewriteFailure>,
 }
 
 impl InflatedPayloadRewrite {
@@ -101,7 +102,10 @@ struct ServerTranslatorClaim {
 enum ServerTranslatorOutcome {
     None,
     TransportOnly,
-    Rejected { reason: &'static str },
+    Rejected {
+        reason: &'static str,
+        live_object_update_failure: Option<live_update::RewriteFailure>,
+    },
     Claim(ServerTranslatorClaim),
 }
 
@@ -507,8 +511,14 @@ fn rewrite_single_inflated_payload_for_ee(
                 // later semantic translator can see it, but they never count as
                 // ownership. This preserves the strict no-raw-passthrough rule.
             }
-            ServerTranslatorOutcome::Rejected { reason } => {
+            ServerTranslatorOutcome::Rejected {
+                reason,
+                live_object_update_failure,
+            } => {
                 rewrite.quarantine_reason.get_or_insert(reason);
+                if let Some(failure) = live_object_update_failure {
+                    rewrite.live_object_update_failure.get_or_insert(failure);
+                }
             }
             ServerTranslatorOutcome::Claim(claim) => {
                 let Some(family) = translator.verified_family else {
@@ -617,8 +627,14 @@ fn rewrite_live_object_high_level_payload_for_ee(
         };
         match outcome {
             ServerTranslatorOutcome::None | ServerTranslatorOutcome::TransportOnly => {}
-            ServerTranslatorOutcome::Rejected { reason } => {
+            ServerTranslatorOutcome::Rejected {
+                reason,
+                live_object_update_failure,
+            } => {
                 rewrite.quarantine_reason.get_or_insert(reason);
+                if let Some(failure) = live_object_update_failure {
+                    rewrite.live_object_update_failure.get_or_insert(failure);
+                }
             }
             ServerTranslatorOutcome::Claim(claim) => {
                 if !finalize_server_translator_claim(
@@ -794,12 +810,81 @@ fn claimed() -> ServerTranslatorOutcome {
 
 fn note_update_attempt_failure(
     rejection_reason: &mut Option<&'static str>,
+    rejection_failure: &mut Option<live_update::RewriteFailure>,
     attempt: live_update::RewriteAttempt,
 ) -> Option<live_update::RewriteSummary> {
     if let Some(failure) = attempt.failure {
         rejection_reason.get_or_insert(failure.reason);
+        rejection_failure.get_or_insert(failure);
     }
     attempt.summary
+}
+
+fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::RewriteFailure) {
+    let gap_origin = failure
+        .item_update_neighbor_gap_origin
+        .map(|origin| origin.as_str())
+        .unwrap_or("none");
+    let Some(evidence) = failure.item_update_cursor_evidence else {
+        tracing::debug!(
+            source,
+            reason = failure.reason,
+            kind = failure.kind.as_str(),
+            offset = failure.offset,
+            record_end = failure.record_end,
+            bit_cursor = failure.bit_cursor,
+            gap_origin,
+            "server live-object update rewrite retained cursor failure without item evidence"
+        );
+        return;
+    };
+    let Some(neighbor) = evidence.unowned_neighbor else {
+        tracing::debug!(
+            source,
+            reason = failure.reason,
+            kind = failure.kind.as_str(),
+            offset = failure.offset,
+            record_end = failure.record_end,
+            bit_cursor = failure.bit_cursor,
+            gap_origin,
+            focus_failure_stage = evidence.focus_failure_stage,
+            focus_failure_read_cursor = evidence.focus_failure_read_cursor,
+            focus_failure_bit_cursor = evidence.focus_failure_bit_cursor,
+            focus_failure_orientation_vector = ?evidence.focus_failure_orientation_vector,
+            "server live-object update rewrite retained cursor failure without unowned neighbor"
+        );
+        return;
+    };
+    tracing::debug!(
+        source,
+        reason = failure.reason,
+        kind = failure.kind.as_str(),
+        offset = failure.offset,
+        record_end = failure.record_end,
+        bit_cursor = failure.bit_cursor,
+        gap_origin,
+        focus_failure_stage = evidence.focus_failure_stage,
+        focus_failure_read_cursor = evidence.focus_failure_read_cursor,
+        focus_failure_bit_cursor = evidence.focus_failure_bit_cursor,
+        focus_failure_orientation_vector = ?evidence.focus_failure_orientation_vector,
+        neighbor_delta = neighbor.delta,
+        neighbor_bit_start = neighbor.bit_start,
+        neighbor_bit_end = neighbor.bit_end,
+        neighbor_read_end = neighbor.read_end,
+        neighbor_translated_mask = format_args!("0x{:08X}", neighbor.translated_mask),
+        neighbor_orientation_vector = ?neighbor.orientation_vector,
+        emitted_gap_bits = neighbor.emitted_gap_bits,
+        emitted_gap_start = neighbor.emitted_gap_bit_start,
+        emitted_gap_end = neighbor.emitted_gap_bit_end,
+        source_gap_bits = neighbor.source_gap_bits,
+        source_gap_start = neighbor.source_gap_bit_start,
+        source_gap_end = neighbor.source_gap_bit_end,
+        previous_offset = neighbor.previous_offset,
+        previous_record_end = neighbor.previous_record_end,
+        previous_family = neighbor.previous_family,
+        neighbor_gap_origin = neighbor.gap_origin.as_str(),
+        "server live-object update rewrite retained structured cursor failure evidence"
+    );
 }
 
 fn translate_custom_token(
@@ -1563,6 +1648,7 @@ fn translate_live_object_records_if_verified(
 
     dump_live_object_probe_if_enabled(payload, source);
     let mut rejection_reason = None;
+    let mut rejection_failure = None;
 
     let mut candidate = payload.clone();
     if let Some(summary) =
@@ -1601,6 +1687,7 @@ fn translate_live_object_records_if_verified(
         );
     let update_pre_summary = note_update_attempt_failure(
         &mut rejection_reason,
+        &mut rejection_failure,
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
@@ -1613,6 +1700,7 @@ fn translate_live_object_records_if_verified(
         );
     let update_post_summary = note_update_attempt_failure(
         &mut rejection_reason,
+        &mut rejection_failure,
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
@@ -1627,6 +1715,7 @@ fn translate_live_object_records_if_verified(
         );
     let update_after_add_name_summary = note_update_attempt_failure(
         &mut rejection_reason,
+        &mut rejection_failure,
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
@@ -1639,6 +1728,7 @@ fn translate_live_object_records_if_verified(
         );
     let update_after_final_add_summary = note_update_attempt_failure(
         &mut rejection_reason,
+        &mut rejection_failure,
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
@@ -1651,6 +1741,7 @@ fn translate_live_object_records_if_verified(
         );
     let update_after_second_final_add_summary = note_update_attempt_failure(
         &mut rejection_reason,
+        &mut rejection_failure,
         live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
@@ -1675,8 +1766,14 @@ fn translate_live_object_records_if_verified(
         crate::translate::live_object_update::dump_live_object_fixture_candidate(
             &candidate, source,
         );
+        if let Some(failure) = rejection_failure {
+            trace_live_object_update_rewrite_failure(source, failure);
+        }
         return rejection_reason
-            .map(|reason| ServerTranslatorOutcome::Rejected { reason })
+            .map(|reason| ServerTranslatorOutcome::Rejected {
+                reason,
+                live_object_update_failure: rejection_failure,
+            })
             .unwrap_or(ServerTranslatorOutcome::None);
     }
 
@@ -1768,8 +1865,14 @@ fn translate_live_object_records_if_verified(
             update_bytes_removed,
             "live-object semantic candidate did not claim: exact record-boundary validator rejected this intermediate rewrite"
         );
+        if let Some(failure) = rejection_failure {
+            trace_live_object_update_rewrite_failure(source, failure);
+        }
         rejection_reason
-            .map(|reason| ServerTranslatorOutcome::Rejected { reason })
+            .map(|reason| ServerTranslatorOutcome::Rejected {
+                reason,
+                live_object_update_failure: rejection_failure,
+            })
             .unwrap_or(ServerTranslatorOutcome::None)
     }
 }
@@ -3529,6 +3632,24 @@ mod tests {
             rewrite.quarantine_reason,
             Some("item-update-cursor-failed-before-valid-neighbor-unowned-gap"),
             "dispatcher should preserve the bounded U/6 ledger failure reason"
+        );
+        let failure = rewrite
+            .live_object_update_failure
+            .expect("dispatcher should retain the bounded live-object U/6 failure evidence");
+        assert_eq!(
+            failure.kind,
+            crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
+        );
+        let evidence = failure
+            .item_update_cursor_evidence
+            .expect("dispatcher failure should include item cursor evidence");
+        let neighbor = evidence
+            .unowned_neighbor
+            .expect("dispatcher failure should include the validating unowned neighbor");
+        assert_eq!(neighbor.delta, 2);
+        assert_eq!(
+            neighbor.gap_origin,
+            crate::translate::live_object_update::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
         );
         assert_eq!(
             payload, original,

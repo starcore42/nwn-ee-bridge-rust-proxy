@@ -10,6 +10,7 @@ use crate::translate::{area, live_object, live_object_update};
 
 pub type RewriteSummary = live_object_update::LiveObjectUpdateRewriteSummary;
 pub type RewriteAttempt = live_object_update::LiveObjectUpdateRewriteAttempt;
+pub type RewriteFailure = live_object_update::LiveObjectUpdateRewriteFailure;
 pub type ClaimSummary = live_object_update::LiveObjectUpdateClaimSummary;
 pub type AddNameBitRewriteSummary = live_object_update::LiveObjectAddNameBitRewriteSummary;
 pub type ExternalObjectIdCanonicalizeSummary =
