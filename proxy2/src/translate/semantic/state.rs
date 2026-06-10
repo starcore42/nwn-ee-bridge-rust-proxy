@@ -143,6 +143,8 @@ impl ObjectRegistry {
         self.live_object_packets = self.live_object_packets.saturating_add(1);
         for mention in mentions {
             let inventory_owner_without_type = mention.opcode == b'I' && mention.object_type == 0;
+            let registry_object_id =
+                self.registry_object_id_for_live_object(mention.object_type, mention.object_id);
             if (mention.object_id & 0xFFFF_FF00) == 0xFFFF_FF00 {
                 tracing::debug!(
                     opcode = %char::from(mention.opcode),
@@ -153,12 +155,21 @@ impl ObjectRegistry {
             }
             let entry = self
                 .known
-                .entry(mention.object_id)
+                .entry(registry_object_id)
                 .or_insert_with(|| KnownObjectState {
-                    object_id: mention.object_id,
+                    object_id: registry_object_id,
                     object_type: mention.object_type,
                     ..KnownObjectState::default()
                 });
+            if registry_object_id != mention.object_id {
+                tracing::debug!(
+                    opcode = %char::from(mention.opcode),
+                    object_type = mention.object_type,
+                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
+                    registry_object_id = format_args!("0x{registry_object_id:08X}"),
+                    "live-object registry merged compact/external placeable alias"
+                );
+            }
             if entry.mentions != 0 && entry.object_type != mention.object_type {
                 if inventory_owner_without_type {
                     // Live-object inventory `I` records carry an owner
@@ -291,14 +302,16 @@ impl ObjectRegistry {
     ) {
         let mut seen_object_ids = BTreeSet::new();
         for mention in mentions {
+            let registry_object_id =
+                self.registry_object_id_for_live_object(mention.object_type, mention.object_id);
             if mention.object_type != 0x09
                 || mention.placeable_state.is_none()
-                || !seen_object_ids.insert(mention.object_id)
+                || !seen_object_ids.insert(registry_object_id)
             {
                 continue;
             }
 
-            let Some(known) = self.known.get(&mention.object_id) else {
+            let Some(known) = self.known.get(&registry_object_id) else {
                 continue;
             };
             let Some(placeable_state) = known.placeable_state else {
@@ -333,7 +346,7 @@ impl ObjectRegistry {
                 .unwrap_or_else(|| "none".to_string());
             let resolved_prior_conflict = prior_unresolved_conflict.is_some() && !conflict.any();
 
-            if let Some(known) = self.known.get_mut(&mention.object_id) {
+            if let Some(known) = self.known.get_mut(&registry_object_id) {
                 known.area_placeable_context_overlaps =
                     known.area_placeable_context_overlaps.saturating_add(1);
                 known.latest_area_static_state_conflict = Some(conflict);
@@ -350,7 +363,8 @@ impl ObjectRegistry {
 
             if conflict.any() {
                 tracing::info!(
-                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    object_id = format_args!("0x{registry_object_id:08X}"),
+                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -366,7 +380,8 @@ impl ObjectRegistry {
                 );
             } else if resolved_prior_conflict {
                 tracing::info!(
-                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    object_id = format_args!("0x{registry_object_id:08X}"),
+                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -382,7 +397,8 @@ impl ObjectRegistry {
                 );
             } else {
                 tracing::debug!(
-                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    object_id = format_args!("0x{registry_object_id:08X}"),
+                    mention_object_id = format_args!("0x{:08X}", mention.object_id),
                     area_resref = area_context.area_resref.as_str(),
                     active = known_active,
                     last_opcode = %char::from(last_opcode),
@@ -395,6 +411,27 @@ impl ObjectRegistry {
                 );
             }
         }
+    }
+
+    fn registry_object_id_for_live_object(&self, object_type: u8, object_id: u32) -> u32 {
+        if object_type != PLACEABLE_OBJECT_TYPE {
+            return object_id;
+        }
+        if self.known.contains_key(&object_id) {
+            return object_id;
+        }
+
+        self.known
+            .values()
+            .find(|object| {
+                object.object_type == PLACEABLE_OBJECT_TYPE
+                    && object_ids::equivalent_legacy_external_object_ids(
+                        object.object_id,
+                        object_id,
+                    )
+            })
+            .map(|object| object.object_id)
+            .unwrap_or(object_id)
     }
 
     pub(crate) fn get(&self, object_type: u8, object_id: u32) -> Option<&KnownObjectState> {
@@ -875,6 +912,108 @@ mod tests {
             registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
             None,
             "delete rows clear unresolved mismatch state before id reuse"
+        );
+    }
+
+    #[test]
+    fn placeable_area_conflicts_resolve_across_compact_external_aliases() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                appearance: 0x1234,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    useable: true,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+
+        let conflicting_add = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(false),
+                locked: Some(true),
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&conflicting_add));
+        registry
+            .observe_placeable_area_context(&area_context, std::slice::from_ref(&conflicting_add));
+
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, compact_object_id),
+            Some(AreaPlaceableContextStateConflict {
+                lockable: true,
+                locked: true,
+                ..AreaPlaceableContextStateConflict::default()
+            }),
+            "future compact U/09 rows should see the external A/09 conflict"
+        );
+
+        let resolving_compact_update = LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id: compact_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&resolving_compact_update));
+        registry.observe_placeable_area_context(
+            &area_context,
+            std::slice::from_ref(&resolving_compact_update),
+        );
+
+        assert!(
+            !registry.known.contains_key(&compact_object_id),
+            "compact/external aliases should not create parallel placeable registry entries"
+        );
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("compact update should merge into the external add entry");
+        assert_eq!(object.area_static_state_conflicts, 1);
+        assert_eq!(object.area_static_state_conflict_resolutions, 1);
+        assert_eq!(object.unresolved_area_static_state_conflict, None);
+        assert_eq!(
+            object.placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            })
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
+            None
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, compact_object_id),
+            None
         );
     }
 

@@ -720,6 +720,20 @@ Current status:
   --check`. Next local visual replay should focus on any remaining
   static/live drift outside unique lock state: non-unique area identity,
   add-only use/trap bits, appearance/model, or orientation.
+- 2026-06-10 follow-up `P/04/01` -> `P/05/01` placeable state-registry alias
+  audit: semantic object registry conflict tracking now merges verified
+  placeable live-object mentions by the same compact-vs-EE-external id
+  equivalence used by the translator. An external `A/09` conflict and later
+  compact `U/09` resolution now update the same active placeable state instead
+  of creating parallel registry entries, so unresolved static/live diagnostics
+  reflect the decompile-backed `AddExternalObject` identity rule. Verified with
+  isolated-target `cargo test -q -p hgbridge-proxy2
+  placeable_area_conflicts_resolve_across_compact_external_aliases --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  area_context_conflicts_use_merged_verified_placeable_state -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, and `cargo fmt --all --check`. Next
+  local visual replay should use this alias-coherent unresolved/resolved signal
+  before adding any more add/update state synthesis.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
