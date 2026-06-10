@@ -498,11 +498,12 @@ fn observe_verified_server_m_packet(
     let Some(payload) = parse_window::primary_payload(packet, &view) else {
         return;
     };
-    crate::translate::semantic::observe_verified_payload(
+    crate::translate::semantic::observe_verified_payload_with_area_context(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
         proof,
         payload,
+        Some(&state.area_context.latest_area_placeables),
     );
 }
 
@@ -538,11 +539,12 @@ fn observe_verified_synthetic_server_m_packet(
         return;
     };
     let proof = VerifiedProof::family(family);
-    crate::translate::semantic::observe_verified_payload(
+    crate::translate::semantic::observe_verified_payload_with_area_context(
         &mut state.semantic,
         crate::packet::Direction::ServerToClientSynthetic,
         &proof,
         payload,
+        Some(&state.area_context.latest_area_placeables),
     );
 }
 
@@ -2243,11 +2245,12 @@ fn emit_completed_server_deflated_reassembly(state: &mut SessionState) -> anyhow
         &reassembly,
         &verified_proof,
     );
-    crate::translate::semantic::observe_verified_payload(
+    crate::translate::semantic::observe_verified_payload_with_area_context(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
         &verified_proof,
         &bytes,
+        Some(&state.area_context.latest_area_placeables),
     );
     if verified_proof.primary_family() == Some(VerifiedFamily::ModuleInfo) {
         if let (Some(first_frame), Some(last_frame)) =

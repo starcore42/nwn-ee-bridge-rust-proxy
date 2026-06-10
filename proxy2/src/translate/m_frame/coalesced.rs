@@ -744,11 +744,12 @@ fn rewrite_coalesced_record_for_ee(
             record_sequence,
             record_ack_sequence,
         )?;
-        crate::translate::semantic::observe_verified_payload(
+        crate::translate::semantic::observe_verified_payload_with_area_context(
             &mut state.semantic,
             crate::packet::Direction::ServerToClient,
             &verified_proof,
             &payload,
+            Some(&state.area_context.latest_area_placeables),
         );
         queue_module_resources_after_coalesced_module_info_if_ready(
             state,
@@ -949,11 +950,12 @@ fn rewrite_coalesced_record_for_ee(
 
     let verified_family = semantic_rewrite_summary.verified_family();
     let verified_proof = semantic_rewrite_summary.verified_proof();
-    crate::translate::semantic::observe_verified_payload(
+    crate::translate::semantic::observe_verified_payload_with_area_context(
         &mut state.semantic,
         crate::packet::Direction::ServerToClient,
         &verified_proof,
         &inflated,
+        Some(&state.area_context.latest_area_placeables),
     );
     queue_module_resources_after_coalesced_module_info_if_ready(
         state,

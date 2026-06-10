@@ -660,6 +660,20 @@ Current status:
   verification remains local visual replay comparing semantic add/update state
   against area static context before choosing add synthesis or update
   translation changes.
+- 2026-06-10 `P/04/01` -> `P/05/01` semantic static/live placeable conflict
+  audit: no emitted packet bytes changed. Server M-frame semantic observation
+  now passes the latest `AreaPlaceableContext` into the verified live-object
+  reducer, and `ObjectRegistry` records per-placeable area/static overlaps,
+  latest module-backed state conflict fields, and conflict counts after exact
+  `A/09`/`U/09` state facts are merged. The match uses the shared compact vs
+  EE external object-id equivalence rule, so a compact area static row and the
+  corresponding EE `0x800000NN` live object are treated as the same protocol
+  identity. Verified with isolated-target `cargo test -q -p hgbridge-proxy2
+  area_context_conflicts_use_merged_verified_placeable_state -- --nocapture`
+  and `cargo check -q -p hgbridge-proxy2`. Next verification remains local
+  visual replay/harness logging to determine whether observed static/live drift
+  is an `A/09` add-state synthesis problem or a later `U/09` update-state
+  translation problem.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

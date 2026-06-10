@@ -11,7 +11,12 @@ use std::{
     time::Instant,
 };
 
-use crate::translate::{VerifiedFamily, player_list::PlayerListObjectIds};
+use crate::translate::{
+    VerifiedFamily,
+    area::{AreaPlaceableContext, AreaPlaceableContextStateConflict, AreaPlaceableObservedState},
+    live_object_update::object_ids,
+    player_list::PlayerListObjectIds,
+};
 
 use super::event::{
     LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState,
@@ -252,6 +257,7 @@ impl ObjectRegistry {
                     }
                     entry.active = false;
                     entry.placeable_state = None;
+                    entry.latest_area_static_state_conflict = None;
                     entry.delete_mentions = entry.delete_mentions.saturating_add(1);
                 }
                 b'U' | b'P' | b'I' | b'G' | b'W' => {
@@ -272,6 +278,93 @@ impl ObjectRegistry {
                     entry.update_mentions = entry.update_mentions.saturating_add(1);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn observe_placeable_area_context(
+        &mut self,
+        area_context: &AreaPlaceableContext,
+        mentions: &[LiveObjectMention],
+    ) {
+        let mut seen_object_ids = BTreeSet::new();
+        for mention in mentions {
+            if mention.object_type != 0x09
+                || mention.placeable_state.is_none()
+                || !seen_object_ids.insert(mention.object_id)
+            {
+                continue;
+            }
+
+            let Some(known) = self.known.get(&mention.object_id) else {
+                continue;
+            };
+            let Some(placeable_state) = known.placeable_state else {
+                continue;
+            };
+            let overlap = area_context.placeable_overlap_by(|row_object_id| {
+                object_ids::equivalent_legacy_external_object_ids(row_object_id, mention.object_id)
+            });
+            if overlap.is_empty() {
+                continue;
+            }
+
+            let observed = AreaPlaceableObservedState {
+                useable: placeable_state.useable,
+                trap_disarmable: placeable_state.trap_disarmable,
+                lockable: placeable_state.lockable,
+                locked: placeable_state.locked,
+            };
+            let conflict = overlap.static_module_state_conflict(observed);
+            let conflict_fields = conflict.formatted_fields();
+            let area_rows = overlap.formatted_rows();
+            let area_light_duplicate = overlap.has_light_row();
+            let area_static_duplicate = overlap.has_static_row();
+            let known_active = known.active;
+            let known_mentions = known.mentions;
+            let add_mentions = known.add_mentions;
+            let update_mentions = known.update_mentions;
+            let last_opcode = known.last_opcode;
+
+            if let Some(known) = self.known.get_mut(&mention.object_id) {
+                known.area_placeable_context_overlaps =
+                    known.area_placeable_context_overlaps.saturating_add(1);
+                known.latest_area_static_state_conflict = Some(conflict);
+                if conflict.any() {
+                    known.area_static_state_conflicts =
+                        known.area_static_state_conflicts.saturating_add(1);
+                }
+            }
+
+            if conflict.any() {
+                tracing::info!(
+                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    area_resref = area_context.area_resref.as_str(),
+                    active = known_active,
+                    last_opcode = %char::from(last_opcode),
+                    mentions = known_mentions,
+                    add_mentions,
+                    update_mentions,
+                    area_light_duplicate,
+                    area_static_duplicate,
+                    merged_placeable_state = ?placeable_state,
+                    area_module_state_mismatch_fields = %conflict_fields,
+                    area_rows = %area_rows,
+                    "semantic live-object placeable state conflicts with module-backed area/static context"
+                );
+            } else {
+                tracing::debug!(
+                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    area_resref = area_context.area_resref.as_str(),
+                    active = known_active,
+                    last_opcode = %char::from(last_opcode),
+                    mentions = known_mentions,
+                    area_light_duplicate,
+                    area_static_duplicate,
+                    merged_placeable_state = ?placeable_state,
+                    area_rows = %area_rows,
+                    "semantic live-object placeable state overlaps area/static context"
+                );
             }
         }
     }
@@ -368,6 +461,9 @@ pub(crate) struct KnownObjectState {
     pub(crate) duplicate_add_mentions: u64,
     pub(crate) update_before_add_mentions: u64,
     pub(crate) delete_before_add_mentions: u64,
+    pub(crate) area_placeable_context_overlaps: u64,
+    pub(crate) area_static_state_conflicts: u64,
+    pub(crate) latest_area_static_state_conflict: Option<AreaPlaceableContextStateConflict>,
 }
 
 impl KnownObjectState {
@@ -403,6 +499,11 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
+    use crate::translate::area::{
+        AreaPlaceableContext, AreaPlaceableContextObjectIdConfidence, AreaPlaceableContextRow,
+        AreaPlaceableContextState, AreaPlaceableContextStateConflict,
+    };
+
     use super::{
         LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState, ObjectRegistry,
         PlayerListObjectIds,
@@ -525,6 +626,120 @@ mod tests {
                 .and_then(|object| object.placeable_state),
             None,
             "delete rows clear stale placeable state before any future id reuse"
+        );
+    }
+
+    #[test]
+    fn area_context_conflicts_use_merged_verified_placeable_state() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                appearance: 0x1234,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    useable: true,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let add_mention = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+        };
+
+        registry.observe_mentions(std::slice::from_ref(&add_mention));
+        registry.observe_placeable_area_context(&area_context, std::slice::from_ref(&add_mention));
+
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("placeable should be registered after verified add");
+        assert_eq!(object.area_placeable_context_overlaps, 1);
+        assert_eq!(object.area_static_state_conflicts, 0);
+        assert_eq!(
+            object.latest_area_static_state_conflict,
+            Some(AreaPlaceableContextStateConflict::default())
+        );
+
+        let update_mention = LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            }),
+        };
+
+        registry.observe_mentions(std::slice::from_ref(&update_mention));
+        registry
+            .observe_placeable_area_context(&area_context, std::slice::from_ref(&update_mention));
+
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("placeable should remain registered after verified update");
+        assert_eq!(object.area_placeable_context_overlaps, 2);
+        assert_eq!(object.area_static_state_conflicts, 1);
+        assert_eq!(
+            object.latest_area_static_state_conflict,
+            Some(AreaPlaceableContextStateConflict {
+                locked: true,
+                ..AreaPlaceableContextStateConflict::default()
+            })
+        );
+        assert_eq!(
+            object.placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(true),
+            })
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: None,
+        }]);
+        assert_eq!(
+            registry
+                .known
+                .get(&external_object_id)
+                .and_then(|object| object.latest_area_static_state_conflict),
+            None,
+            "delete rows clear stale area/static mismatch state before id reuse"
         );
     }
 

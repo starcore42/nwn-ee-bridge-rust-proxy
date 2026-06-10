@@ -7,7 +7,9 @@
 
 use crate::{
     packet::{Direction, m::HighLevel},
-    translate::{VerifiedFamily, VerifiedProof, gameplay_stream, live_object_update, player_list},
+    translate::{
+        VerifiedFamily, VerifiedProof, area, gameplay_stream, live_object_update, player_list,
+    },
 };
 
 use super::{
@@ -23,14 +25,26 @@ pub(crate) fn observe_verified_payload(
     proof: &VerifiedProof,
     payload: &[u8],
 ) {
+    observe_verified_payload_with_area_context(state, direction, proof, payload, None);
+}
+
+pub(crate) fn observe_verified_payload_with_area_context(
+    state: &mut SemanticSessionState,
+    direction: Direction,
+    proof: &VerifiedProof,
+    payload: &[u8],
+    area_context: Option<&area::AreaPlaceableContext>,
+) {
     match proof {
-        VerifiedProof::Family(family) => observe_family_payload(state, direction, *family, payload),
+        VerifiedProof::Family(family) => {
+            observe_family_payload(state, direction, *family, payload, area_context)
+        }
         VerifiedProof::GameplayStream(families) => {
-            observe_gameplay_stream_payload(state, direction, families, payload);
+            observe_gameplay_stream_payload(state, direction, families, payload, area_context);
         }
         VerifiedProof::CoalescedWindow(_) => {
             let observed = observed_high_level(direction, VerifiedFamily::CoalescedWindow, payload);
-            apply_event(state, ProtocolEvent::Other(observed));
+            apply_event(state, ProtocolEvent::Other(observed), area_context);
         }
     }
 }
@@ -40,6 +54,7 @@ fn observe_gameplay_stream_payload(
     direction: Direction,
     families: &[VerifiedFamily],
     payload: &[u8],
+    area_context: Option<&area::AreaPlaceableContext>,
 ) {
     let split = gameplay_stream::split_inflated_gameplay(payload);
     let mut family_iter = families.iter().copied();
@@ -48,13 +63,13 @@ fn observe_gameplay_stream_payload(
             let family = family_iter
                 .next()
                 .unwrap_or(VerifiedFamily::SemanticDeflated);
-            observe_family_payload(state, direction, family, message.payload);
+            observe_family_payload(state, direction, family, message.payload, area_context);
         }
     }
 
     for family in family_iter {
         let observed = observed_high_level(direction, family, payload);
-        apply_event(state, ProtocolEvent::Other(observed));
+        apply_event(state, ProtocolEvent::Other(observed), area_context);
     }
 }
 
@@ -63,6 +78,7 @@ fn observe_family_payload(
     direction: Direction,
     family: VerifiedFamily,
     payload: &[u8],
+    area_context: Option<&area::AreaPlaceableContext>,
 ) {
     let observed = observed_high_level(direction, family, payload);
     let event = match family {
@@ -128,10 +144,14 @@ fn observe_family_payload(
         | VerifiedFamily::SemanticDeflated => ProtocolEvent::Other(observed),
         _ => ProtocolEvent::Other(observed),
     };
-    apply_event(state, event);
+    apply_event(state, event, area_context);
 }
 
-fn apply_event(state: &mut SemanticSessionState, event: ProtocolEvent) {
+fn apply_event(
+    state: &mut SemanticSessionState,
+    event: ProtocolEvent,
+    area_context: Option<&area::AreaPlaceableContext>,
+) {
     match &event {
         ProtocolEvent::ModuleInfo(event) => {
             state.resources.module_info_seen = true;
@@ -163,6 +183,11 @@ fn apply_event(state: &mut SemanticSessionState, event: ProtocolEvent) {
         }
         ProtocolEvent::LiveObject(event) => {
             state.objects.observe_mentions(&event.mentions);
+            if let Some(area_context) = area_context {
+                state
+                    .objects
+                    .observe_placeable_area_context(area_context, &event.mentions);
+            }
             state
                 .objects
                 .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
