@@ -607,6 +607,121 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn rewrite_bit_ledger_rejects_source_span_past_snapshot() {
+        let mut live = vec![0; 8];
+        live[0] = b'A';
+        live[1] = ITEM_OBJECT_TYPE;
+        let source_bits = vec![false; CNW_FRAGMENT_HEADER_BITS + 2];
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+
+        assert!(!ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 3,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+        assert_eq!(
+            ledger.source_bit_cursor(),
+            CNW_FRAGMENT_HEADER_BITS,
+            "an impossible source claim must not advance the ledger cursor"
+        );
+        assert!(ledger.entries().is_empty());
+
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 2,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+        assert_eq!(ledger.source_bit_cursor(), source_bits.len());
+    }
+
+    #[test]
+    fn source_window_initial_cursor_uses_ledger_anchor_for_midstream_rows() {
+        let mut live = vec![0; 40];
+        live[16] = b'A';
+        live[17] = ITEM_OBJECT_TYPE;
+        live[28] = b'U';
+        live[29] = ITEM_OBJECT_TYPE;
+        let first_row = LiveObjectSourceWindowRow {
+            offset: 16,
+            record_end: 28,
+            opcode: b'A',
+            marker: ITEM_OBJECT_TYPE,
+            object_id: None,
+            update_mask: None,
+        };
+        let focus_row = LiveObjectSourceWindowRow {
+            offset: 28,
+            record_end: 40,
+            opcode: b'U',
+            marker: ITEM_OBJECT_TYPE,
+            object_id: None,
+            update_mask: None,
+        };
+        let rows = [first_row, focus_row];
+        let source_bits = vec![false; CNW_FRAGMENT_HEADER_BITS + 16];
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: first_row.offset,
+                record_end: first_row.record_end,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 14,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 20,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        assert_eq!(
+            live_object_source_window_initial_bit_cursor(
+                &rows,
+                CNW_FRAGMENT_HEADER_BITS + 25,
+                &ledger,
+            ),
+            CNW_FRAGMENT_HEADER_BITS + 14,
+            "mid-stream source windows should replay from the ledgered row cursor, not the failed focus cursor"
+        );
+
+        let empty_ledger = LiveObjectRewriteBitLedger::new();
+        assert_eq!(
+            live_object_source_window_initial_bit_cursor(
+                &rows,
+                CNW_FRAGMENT_HEADER_BITS + 25,
+                &empty_ledger,
+            ),
+            CNW_FRAGMENT_HEADER_BITS + 25,
+            "without a ledger anchor, a mid-stream diagnostic must keep the focus cursor fallback"
+        );
+
+        let mut rows_from_start = rows;
+        rows_from_start[0].offset = 0;
+        assert_eq!(
+            live_object_source_window_initial_bit_cursor(
+                &rows_from_start,
+                CNW_FRAGMENT_HEADER_BITS + 25,
+                &empty_ledger,
+            ),
+            CNW_FRAGMENT_HEADER_BITS,
+            "windows beginning at the live-object stream start still use the CNW payload cursor"
+        );
+    }
+
+    #[test]
     fn rewrite_bit_ledger_classifies_unowned_emitted_cursor_gap() {
         let mut live = vec![0; 32];
         live[0] = b'A';
@@ -8386,6 +8501,9 @@ impl LiveObjectRewriteBitLedger {
         let Some(source_bit_end) = source_bit_start.checked_add(source_delta) else {
             return false;
         };
+        if !self.source_bits.is_empty() && source_bit_end > self.source_bits.len() {
+            return false;
+        }
 
         self.source_bit_cursor = source_bit_end;
         self.entries.push(LiveObjectRewriteBitLedgerEntry {
@@ -8420,6 +8538,14 @@ impl LiveObjectRewriteBitLedger {
     #[cfg(test)]
     fn source_bit_cursor(&self) -> usize {
         self.source_bit_cursor
+    }
+
+    fn emitted_bit_start_for_row(&self, offset: usize, record_end: usize) -> Option<usize> {
+        self.entries
+            .iter()
+            .find(|entry| entry.offset == offset && entry.record_end == record_end)
+            .or_else(|| self.entries.iter().find(|entry| entry.offset == offset))
+            .map(|entry| entry.emitted_bit_start)
     }
 
     fn gap_before_cursor(&self, cursor: usize) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
@@ -8895,6 +9021,28 @@ fn live_object_source_window_row_bit_claims(
         .collect()
 }
 
+fn live_object_source_window_initial_bit_cursor(
+    rows: &[LiveObjectSourceWindowRow],
+    focus_bit_cursor: usize,
+    rewrite_bit_ledger: &LiveObjectRewriteBitLedger,
+) -> usize {
+    let Some(first_row) = rows.first() else {
+        return focus_bit_cursor;
+    };
+
+    if let Some(cursor) =
+        rewrite_bit_ledger.emitted_bit_start_for_row(first_row.offset, first_row.record_end)
+    {
+        return cursor;
+    }
+
+    if first_row.offset == 0 {
+        CNW_FRAGMENT_HEADER_BITS
+    } else {
+        focus_bit_cursor
+    }
+}
+
 fn live_object_source_window_row_bit_claim(
     live_bytes: &[u8],
     row: &LiveObjectSourceWindowRow,
@@ -9325,11 +9473,8 @@ fn trace_item_update_source_window(
     }
 
     let rows = live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3);
-    let initial_bit_cursor = if rows.first().is_some_and(|row| row.offset == 0) {
-        CNW_FRAGMENT_HEADER_BITS
-    } else {
-        bit_cursor
-    };
+    let initial_bit_cursor =
+        live_object_source_window_initial_bit_cursor(&rows, bit_cursor, rewrite_bit_ledger);
     let row_claims = live_object_source_window_row_bit_claims(
         live_bytes,
         &rows,

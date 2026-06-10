@@ -2880,6 +2880,15 @@ Current status:
   post-rewrite vector slice look like source proof. Packet bytes and cursor
   ownership are unchanged; continue with compact source capture or a
   source-side writer/handoff owner before assigning the two pre-`U/6` bits.
+- 2026-06-11 follow-up `P/05/01` ledger source-bound/anchor audit: production
+  rewrite state now rejects ledger commits whose source span would run past the
+  captured source bitstream, and item `U/6` source-window diagnostics replay
+  mid-stream row claims from the first ledgered row cursor instead of the failed
+  focus cursor. Packet bytes and cursor ownership are unchanged; this keeps the
+  compact `U/10 -> A/6 -> U/6` handoff evidence tied to exact source/emitted
+  ownership while the active proof still needs compact source capture or a
+  source-side writer/handoff owner. Verified with focused ledger/source-window
+  tests and `cargo check -q -p hgbridge-proxy2`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
