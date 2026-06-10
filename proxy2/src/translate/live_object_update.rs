@@ -1577,6 +1577,20 @@ pub struct LiveObjectUpdateRewriteSummary {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct LiveObjectUpdateRewriteAttempt {
+    pub summary: Option<LiveObjectUpdateRewriteSummary>,
+    pub failure: Option<LiveObjectUpdateRewriteFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateRewriteFailure {
+    pub reason: &'static str,
+    pub offset: usize,
+    pub record_end: usize,
+    pub bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateClaimSummary {
     pub declared: usize,
     pub live_bytes_length: usize,
@@ -4617,6 +4631,24 @@ pub fn rewrite_update_records_payload_if_possible(
 pub fn rewrite_update_records_payload_with_area_context_if_possible(
     payload: &mut Vec<u8>,
     area_context: Option<&AreaPlaceableContext>,
+) -> Option<LiveObjectUpdateRewriteSummary> {
+    rewrite_update_records_payload_with_area_context_attempt(payload, area_context).summary
+}
+
+pub fn rewrite_update_records_payload_with_area_context_attempt(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+) -> LiveObjectUpdateRewriteAttempt {
+    let mut failure = None;
+    let summary =
+        rewrite_update_records_payload_with_area_context_inner(payload, area_context, &mut failure);
+    LiveObjectUpdateRewriteAttempt { summary, failure }
+}
+
+fn rewrite_update_records_payload_with_area_context_inner(
+    payload: &mut Vec<u8>,
+    area_context: Option<&AreaPlaceableContext>,
+    rewrite_failure: &mut Option<LiveObjectUpdateRewriteFailure>,
 ) -> Option<LiveObjectUpdateRewriteSummary> {
     if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
         eprintln!(
@@ -7719,13 +7751,20 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                     bit_cursor,
                     &rewrite_bit_ledger,
                 );
-                fatal_item_update_cursor_failure = Some(LiveObjectItemUpdateCursorFailure {
+                let failure = LiveObjectItemUpdateCursorFailure {
                     reason,
                     offset,
                     record_end,
                     bit_cursor,
                     unowned_neighbor,
+                };
+                *rewrite_failure = Some(LiveObjectUpdateRewriteFailure {
+                    reason: failure.reason,
+                    offset: failure.offset,
+                    record_end: failure.record_end,
+                    bit_cursor: failure.bit_cursor,
                 });
+                fatal_item_update_cursor_failure = Some(failure);
             }
             offset = record_end.max(offset + 1);
             continue;

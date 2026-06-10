@@ -101,6 +101,7 @@ struct ServerTranslatorClaim {
 enum ServerTranslatorOutcome {
     None,
     TransportOnly,
+    Rejected { reason: &'static str },
     Claim(ServerTranslatorClaim),
 }
 
@@ -506,6 +507,9 @@ fn rewrite_single_inflated_payload_for_ee(
                 // later semantic translator can see it, but they never count as
                 // ownership. This preserves the strict no-raw-passthrough rule.
             }
+            ServerTranslatorOutcome::Rejected { reason } => {
+                rewrite.quarantine_reason.get_or_insert(reason);
+            }
             ServerTranslatorOutcome::Claim(claim) => {
                 let Some(family) = translator.verified_family else {
                     rewrite.quarantine_reason = Some("claimed-semantic-missing-verified-family");
@@ -613,6 +617,9 @@ fn rewrite_live_object_high_level_payload_for_ee(
         };
         match outcome {
             ServerTranslatorOutcome::None | ServerTranslatorOutcome::TransportOnly => {}
+            ServerTranslatorOutcome::Rejected { reason } => {
+                rewrite.quarantine_reason.get_or_insert(reason);
+            }
             ServerTranslatorOutcome::Claim(claim) => {
                 if !finalize_server_translator_claim(
                     payload,
@@ -629,10 +636,13 @@ fn rewrite_live_object_high_level_payload_for_ee(
         }
     }
 
-    rewrite.quarantine_reason = Some("live-object-unclaimed-strict-family");
-    let dump_path =
-        dump_unrewritten_semantic_payload(payload, "live-object-unclaimed-strict-family");
+    let reason = rewrite
+        .quarantine_reason
+        .unwrap_or("live-object-unclaimed-strict-family");
+    rewrite.quarantine_reason = Some(reason);
+    let dump_path = dump_unrewritten_semantic_payload(payload, reason);
     tracing::warn!(
+        reason,
         payload_length = payload.len(),
         dump_path = dump_path.as_deref().unwrap_or(""),
         "server live-object payload quarantined: no focused live-object translator produced an exact EE reader shape"
@@ -780,6 +790,16 @@ fn trace_unresolved_area_static_placeable_conflicts(
 
 fn claimed() -> ServerTranslatorOutcome {
     ServerTranslatorOutcome::Claim(ServerTranslatorClaim::default())
+}
+
+fn note_update_attempt_failure(
+    rejection_reason: &mut Option<&'static str>,
+    attempt: live_update::RewriteAttempt,
+) -> Option<live_update::RewriteSummary> {
+    if let Some(failure) = attempt.failure {
+        rejection_reason.get_or_insert(failure.reason);
+    }
+    attempt.summary
 }
 
 fn translate_custom_token(
@@ -1542,6 +1562,7 @@ fn translate_live_object_records_if_verified(
     }
 
     dump_live_object_probe_if_enabled(payload, source);
+    let mut rejection_reason = None;
 
     let mut candidate = payload.clone();
     if let Some(summary) =
@@ -1578,18 +1599,24 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_pre_summary = live_update::rewrite_payload_if_needed_with_area_context(
-        &mut candidate,
-        latest_area_placeables,
+    let update_pre_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        live_update::rewrite_payload_if_needed_with_area_context_attempt(
+            &mut candidate,
+            latest_area_placeables,
+        ),
     );
     let add_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_post_summary = live_update::rewrite_payload_if_needed_with_area_context(
-        &mut candidate,
-        latest_area_placeables,
+    let update_post_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        live_update::rewrite_payload_if_needed_with_area_context_attempt(
+            &mut candidate,
+            latest_area_placeables,
+        ),
     );
     let add_name_bit_summary =
         live_update::rewrite_add_name_fragment_bits_payload_if_possible(&mut candidate);
@@ -1598,29 +1625,37 @@ fn translate_live_object_records_if_verified(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_add_name_summary = live_update::rewrite_payload_if_needed_with_area_context(
-        &mut candidate,
-        latest_area_placeables,
+    let update_after_add_name_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        live_update::rewrite_payload_if_needed_with_area_context_attempt(
+            &mut candidate,
+            latest_area_placeables,
+        ),
     );
     let add_after_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_final_add_summary = live_update::rewrite_payload_if_needed_with_area_context(
-        &mut candidate,
-        latest_area_placeables,
+    let update_after_final_add_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        live_update::rewrite_payload_if_needed_with_area_context_attempt(
+            &mut candidate,
+            latest_area_placeables,
+        ),
     );
     let add_after_final_update_summary =
         live_object::rewrite_creature_add_visual_transform_maps_after_update_if_possible(
             &mut candidate,
             latest_area_placeables,
         );
-    let update_after_second_final_add_summary =
-        live_update::rewrite_payload_if_needed_with_area_context(
+    let update_after_second_final_add_summary = note_update_attempt_failure(
+        &mut rejection_reason,
+        live_update::rewrite_payload_if_needed_with_area_context_attempt(
             &mut candidate,
             latest_area_placeables,
-        );
+        ),
+    );
     let external_object_id_summary =
         live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
 
@@ -1640,7 +1675,9 @@ fn translate_live_object_records_if_verified(
         crate::translate::live_object_update::dump_live_object_fixture_candidate(
             &candidate, source,
         );
-        return ServerTranslatorOutcome::None;
+        return rejection_reason
+            .map(|reason| ServerTranslatorOutcome::Rejected { reason })
+            .unwrap_or(ServerTranslatorOutcome::None);
     }
 
     if live_update::claim_payload_if_verified(&candidate).is_some() {
@@ -1731,7 +1768,9 @@ fn translate_live_object_records_if_verified(
             update_bytes_removed,
             "live-object semantic candidate did not claim: exact record-boundary validator rejected this intermediate rewrite"
         );
-        ServerTranslatorOutcome::None
+        rejection_reason
+            .map(|reason| ServerTranslatorOutcome::Rejected { reason })
+            .unwrap_or(ServerTranslatorOutcome::None)
     }
 }
 
@@ -3485,6 +3524,11 @@ mod tests {
         assert!(
             !rewrite.any_rewrite(),
             "dispatcher must not claim CEP v2.3 starter live-object without exact boundary proof"
+        );
+        assert_eq!(
+            rewrite.quarantine_reason,
+            Some("item-update-cursor-failed-before-valid-neighbor-unowned-gap"),
+            "dispatcher should preserve the bounded U/6 ledger failure reason"
         );
         assert_eq!(
             payload, original,

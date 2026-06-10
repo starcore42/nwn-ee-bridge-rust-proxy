@@ -2899,6 +2899,19 @@ Current status:
   two-bit unowned source/emitted gap. Packet bytes and cursor ownership are
   unchanged; continue with compact source capture or source-side writer/handoff
   proof before assigning those two bits.
+- 2026-06-11 follow-up `P/05/01` item cursor quarantine classification:
+  production live-object update rewrites now expose a bounded attempt result
+  carrying the fatal item `U/6` ledger cursor reason, and the strict M-frame
+  live-object dispatcher preserves that reason as the quarantine classification
+  when no later translator proves exact ownership. The compact no-map
+  `U/10 -> A/6 -> U/6` fixture-free shape now asserts
+  `item-update-cursor-failed-before-valid-neighbor-unowned-gap` while still
+  rolling back packet bytes and fragment bits unchanged. This is classification
+  only, not cursor ownership; the two active pre-`U/6` bits still need compact
+  source capture or source-side writer/handoff proof before translation changes.
+  Verified with focused `cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair`,
+  `item_update_cursor_failure_reason_uses_ledger_gap_shape`, `cargo fmt
+  --all --check`, `cargo check -q -p hgbridge-proxy2`, and `git diff --check`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

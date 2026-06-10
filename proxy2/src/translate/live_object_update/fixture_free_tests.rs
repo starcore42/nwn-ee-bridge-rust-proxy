@@ -5782,9 +5782,16 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     let mut payload = live_object_payload_with_bits(&live, bits);
     let original = payload.clone();
 
+    let attempt =
+        super::rewrite_update_records_payload_with_area_context_attempt(&mut payload, None);
     assert!(
-        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        attempt.summary.is_none(),
         "raw CEP no-map handoff must not skip two unowned bits before the following U/6"
+    );
+    assert_eq!(
+        attempt.failure.map(|failure| failure.reason),
+        Some("item-update-cursor-failed-before-valid-neighbor-unowned-gap"),
+        "failed no-map handoff should classify the unowned +2 U/6 neighbor for quarantine"
     );
     assert_eq!(
         payload, original,

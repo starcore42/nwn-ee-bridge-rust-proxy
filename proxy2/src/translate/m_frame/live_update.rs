@@ -9,6 +9,7 @@
 use crate::translate::{area, live_object, live_object_update};
 
 pub type RewriteSummary = live_object_update::LiveObjectUpdateRewriteSummary;
+pub type RewriteAttempt = live_object_update::LiveObjectUpdateRewriteAttempt;
 pub type ClaimSummary = live_object_update::LiveObjectUpdateClaimSummary;
 pub type AddNameBitRewriteSummary = live_object_update::LiveObjectAddNameBitRewriteSummary;
 pub type ExternalObjectIdCanonicalizeSummary =
@@ -53,6 +54,16 @@ pub fn rewrite_payload_if_needed_with_area_context(
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
 ) -> Option<RewriteSummary> {
     live_object_update::rewrite_update_records_payload_with_area_context_if_possible(
+        payload,
+        latest_area_placeables,
+    )
+}
+
+pub fn rewrite_payload_if_needed_with_area_context_attempt(
+    payload: &mut Vec<u8>,
+    latest_area_placeables: Option<&area::AreaPlaceableContext>,
+) -> RewriteAttempt {
+    live_object_update::rewrite_update_records_payload_with_area_context_attempt(
         payload,
         latest_area_placeables,
     )
