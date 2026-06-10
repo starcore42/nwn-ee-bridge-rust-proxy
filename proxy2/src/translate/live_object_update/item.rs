@@ -502,12 +502,17 @@ pub(super) fn parse_ee_item_update_cursor_claim(
     )?;
 
     if claim.read_end != record_end {
-        return Err(ItemUpdateCursorFailure::new(
+        let failure = ItemUpdateCursorFailure::new(
             ItemUpdateCursorStage::RecordEnd,
             claim.read_end,
             claim.next_bit_cursor,
             Some(mask),
-        ));
+        );
+        return Err(if let Some(orientation_vector) = claim.orientation_vector {
+            failure.with_orientation(orientation_vector)
+        } else {
+            failure
+        });
     }
 
     Ok(claim)

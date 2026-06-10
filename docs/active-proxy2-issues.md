@@ -2889,6 +2889,16 @@ Current status:
   ownership while the active proof still needs compact source capture or a
   source-side writer/handoff owner. Verified with focused ledger/source-window
   tests and `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-11 follow-up `P/05/01` item-neighbor failure-state audit:
+  production item `U/6` cursor diagnostics now preserve the inherited-cursor
+  parser failure stage/read cursor/bit cursor/orientation branch when a later
+  neighboring cursor validates only after an unowned ledger gap. The item parser
+  also carries the orientation branch through final record-end mismatches, so the
+  compact no-map `A/6 -> U/6` trace can report both facts on one failure: the
+  real cursor selected the wrong branch, while the +2 scalar fit remains after a
+  two-bit unowned source/emitted gap. Packet bytes and cursor ownership are
+  unchanged; continue with compact source capture or source-side writer/handoff
+  proof before assigning those two bits.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

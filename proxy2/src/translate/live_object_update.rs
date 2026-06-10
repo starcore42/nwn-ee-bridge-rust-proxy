@@ -475,6 +475,71 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn item_unowned_neighbor_retains_focus_cursor_failure() {
+        let mut live = diagnostic_model_type2_typed_item_create_record();
+        let item_offset = live.len();
+        live.extend_from_slice(&diagnostic_full_item_update_live_bytes());
+
+        let add_start_bit_cursor = CNW_FRAGMENT_HEADER_BITS;
+        let add_source_bits = [false, false, true, false, false];
+        let add_emitted_bits = [false, false, false, true, false, false];
+        let mut shifted_item_bits = vec![false, true];
+        shifted_item_bits.extend_from_slice(&[
+            true, true, // position residuals if an external owner consumed the gap.
+            false, true, false, true, true, // scalar orientation branch plus residuals.
+            false, false, false, false, false, // item state bits.
+            false, // direct CExoString item name.
+        ]);
+
+        let mut source_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        source_bits.extend_from_slice(&add_source_bits);
+        source_bits.extend_from_slice(&shifted_item_bits);
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend_from_slice(&add_emitted_bits);
+        fragment_bits.extend_from_slice(&shifted_item_bits);
+
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        let item_bit_cursor = add_start_bit_cursor + add_emitted_bits.len();
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: item_offset,
+                emitted_bit_start: add_start_bit_cursor,
+                emitted_bit_end: item_bit_cursor,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let neighbor = nearest_unowned_item_update_neighbor_cursor(
+            &live,
+            item_offset,
+            live.len(),
+            &fragment_bits,
+            item_bit_cursor,
+            &ledger,
+        )
+        .expect("the scalar-shaped item row should validate only after a two-bit gap");
+
+        assert_eq!(neighbor.delta, 2);
+        assert_eq!(neighbor.emitted_gap_bits, 2);
+        assert_eq!(neighbor.source_gap_bits, 2);
+        assert_eq!(neighbor.previous_family, "item-create-rewrite");
+        assert_ne!(
+            neighbor.focus_failure_stage, "none",
+            "the valid neighbor must retain the inherited-cursor parse failure"
+        );
+        assert_eq!(
+            neighbor.focus_failure_orientation_vector,
+            Some(true),
+            "the real cursor selects the vector branch before the scalar-shaped neighbor fits"
+        );
+        assert!(neighbor.focus_failure_bit_cursor >= item_bit_cursor);
+    }
+
+    #[test]
     fn item_failure_source_window_neighbor_fit_reports_focus_row_start() {
         let mut live = Vec::new();
         live.extend_from_slice(&[b'D', ITEM_OBJECT_TYPE, 0x20, 0, 0, 0]);
@@ -1299,6 +1364,10 @@ mod diagnostic_tests {
             previous_offset: 0,
             previous_record_end: live.len(),
             previous_family: "item-create-rewrite",
+            focus_failure_stage: "orientation-vector-read-bytes",
+            focus_failure_read_cursor: 12,
+            focus_failure_bit_cursor: cursor_after_row + 2,
+            focus_failure_orientation_vector: Some(true),
         };
         assert_eq!(
             ledger.item_update_cursor_failure_reason_with_unowned_neighbor(
@@ -7953,11 +8022,18 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{}",
+                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{}",
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
                 failure.reason,
+                neighbor.focus_failure_stage,
+                neighbor.focus_failure_read_cursor,
+                neighbor.focus_failure_bit_cursor,
+                neighbor
+                    .focus_failure_orientation_vector
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
                 neighbor.delta,
                 neighbor.bit_start,
                 neighbor.bit_end,
@@ -8788,6 +8864,10 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     previous_offset: usize,
     previous_record_end: usize,
     previous_family: &'static str,
+    focus_failure_stage: &'static str,
+    focus_failure_read_cursor: usize,
+    focus_failure_bit_cursor: usize,
+    focus_failure_orientation_vector: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9352,6 +9432,13 @@ fn nearest_unowned_item_update_neighbor_cursor(
     let start = bit_cursor.saturating_sub(4);
     let end = bit_cursor.saturating_add(4).min(fragment_bits.len());
     let mut best: Option<LiveObjectItemUpdateUnownedNeighbor> = None;
+    let focus_failure = item::translated_ee_item_update_cursor_failure(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    );
     for candidate_cursor in start..=end {
         if candidate_cursor <= bit_cursor {
             continue;
@@ -9388,6 +9475,17 @@ fn nearest_unowned_item_update_neighbor_cursor(
             previous_offset: gap.previous_offset,
             previous_record_end: gap.previous_record_end,
             previous_family: gap.previous_family,
+            focus_failure_stage: focus_failure
+                .map(|failure| failure.stage.as_str())
+                .unwrap_or("none"),
+            focus_failure_read_cursor: focus_failure
+                .map(|failure| failure.read_cursor)
+                .unwrap_or(offset),
+            focus_failure_bit_cursor: focus_failure
+                .map(|failure| failure.bit_cursor)
+                .unwrap_or(bit_cursor),
+            focus_failure_orientation_vector: focus_failure
+                .and_then(|failure| failure.orientation_vector),
         };
         if best.is_none_or(|current| {
             candidate.bit_start.saturating_sub(bit_cursor)
