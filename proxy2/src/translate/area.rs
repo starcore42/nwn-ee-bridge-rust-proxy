@@ -349,6 +349,23 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         formatted
     }
 
+    pub fn unique_module_backed_static_state(&self) -> Option<AreaPlaceableContextState> {
+        let mut state = None;
+        for matched in &self.rows {
+            if matched.kind != AreaPlaceableContextRowKind::Static {
+                return None;
+            }
+            if !matched.row.object_id_confidence.is_unique() {
+                return None;
+            }
+            let module_state = matched.row.module_state?;
+            if state.replace(module_state).is_some() {
+                return None;
+            }
+        }
+        state
+    }
+
     pub fn static_module_state_conflict(
         &self,
         observed: AreaPlaceableObservedState,

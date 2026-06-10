@@ -687,6 +687,22 @@ Current status:
   --check`. Next production path remains local visual replay using these
   unresolved-vs-resolved signals to decide whether a generalized fix belongs in
   `A/09` add-state synthesis or `U/09` update-state translation.
+- 2026-06-10 follow-up `P/04/01` -> `P/05/01` initial placeable add-state
+  synthesis: emitted `A/09` state bits can now be reconciled with a uniquely
+  matched, module-backed static area row when the source add conflicts on
+  useable, trap-disarmable, lockable, or locked state. The override is limited
+  to the existing decompile-backed add-state BOOL writer, requires a static row
+  with unique object-id confidence, refuses light/static aliases or duplicate
+  static ids, and leaves `U/09` runtime update state diagnostic-only. Exact EE
+  add validation still owns the final cursor. Verified with isolated-target
+  `cargo test -q -p hgbridge-proxy2 placeable_add_rewrite_ -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 placeable_context_ -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  placeable_update_area_context_helpers_keep_identity_and_lock_proof --
+  --nocapture`, `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all
+  --check`, and `git diff --check`. Next verification should run local visual
+  replay against a confirmed bad static/live placeable to decide whether any
+  remaining unresolved state belongs to later `U/09` update-state translation.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

@@ -30,7 +30,10 @@
 //! exactly where EE will begin reading the map, or for verified door/placeable
 //! add records at the EE decompile-backed cursor.
 
-use crate::translate::area::{AreaPlaceableContext, AreaPlaceableObservedState};
+use crate::translate::area::{
+    AreaPlaceableContext, AreaPlaceableContextState, AreaPlaceableObservedState,
+    format_area_placeable_module_state,
+};
 #[cfg(test)]
 use crate::translate::area::{
     AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
@@ -3673,6 +3676,9 @@ fn rewrite_legacy_placeable_add_record_for_ee(
     let area_static_duplicate = area_overlap
         .as_ref()
         .is_some_and(|overlap| overlap.has_static_row());
+    let area_module_state_override = area_overlap
+        .as_ref()
+        .and_then(|overlap| overlap.unique_module_backed_static_state());
     let legacy_user_defined_static = is_legacy_user_defined_placeable_appearance(appearance);
     if area_placeable_overlap || legacy_user_defined_static {
         let area_rows = area_overlap
@@ -3887,10 +3893,18 @@ fn rewrite_legacy_placeable_add_record_for_ee(
         let legacy_state = source_state_bits.unwrap_or_else(|| {
             legacy_placeable_add_state_bits(&before_bits, *bit_cursor, source_name_inner_bits)
         });
+        let emitted_state = placeable_add_state_with_area_module_override(
+            legacy_state,
+            area_module_state_override,
+            object_id,
+            appearance,
+            record_offset,
+            *record_end,
+        );
         summary.fragment_bits_changed |= write_ee_placeable_add_state_bits(
             bits,
             post_name_bit,
-            legacy_state,
+            emitted_state,
             legacy_optional_object_bytes_present,
         )?;
         summary.bits_inserted = summary.bits_inserted.saturating_add(1);
@@ -3964,6 +3978,49 @@ impl PlaceableAddStateBits {
             self.locked,
         )
     }
+
+    fn with_module_static_state(self, module_state: AreaPlaceableContextState) -> Self {
+        Self {
+            useable: module_state.useable,
+            trap_disarmable: module_state.trap_disarmable,
+            lockable: module_state.lockable,
+            locked: module_state.locked,
+            ..self
+        }
+    }
+}
+
+fn placeable_add_state_with_area_module_override(
+    state: PlaceableAddStateBits,
+    module_state: Option<AreaPlaceableContextState>,
+    object_id: u32,
+    appearance: u16,
+    record_offset: usize,
+    record_end: usize,
+) -> PlaceableAddStateBits {
+    let Some(module_state) = module_state else {
+        return state;
+    };
+    let conflict = state
+        .observed_area_state()
+        .conflict_with_module_state(module_state);
+    if !conflict.any() {
+        return state;
+    }
+
+    let rewritten = state.with_module_static_state(module_state);
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        appearance,
+        record_offset,
+        record_end,
+        source_placeable_state = ?state,
+        emitted_placeable_state = ?rewritten,
+        area_module_state = %format_area_placeable_module_state(module_state),
+        area_module_state_mismatch_fields = %conflict.formatted_fields(),
+        "server->client live-object placeable add state reconciled with unique module-backed area/static row"
+    );
+    rewritten
 }
 
 fn legacy_placeable_add_state_bits(
@@ -5011,6 +5068,50 @@ mod placeable_add_semantic_tests {
         (bytes, record_end)
     }
 
+    fn area_context_with_static_module_state(
+        object_id_confidence: crate::translate::area::AreaPlaceableContextObjectIdConfidence,
+        include_light_alias: bool,
+    ) -> AreaPlaceableContext {
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let light_rows = if include_light_alias {
+            vec![AreaPlaceableContextRow {
+                object_id: 0x8000_0085,
+                appearance: 0x000E,
+                x: 1.0,
+                y: 2.0,
+                z: 0.0,
+                ..AreaPlaceableContextRow::default()
+            }]
+        } else {
+            Vec::new()
+        };
+
+        AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            light_rows,
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: 0x8000_0085,
+                appearance: 0x000E,
+                x: 1.0,
+                y: 2.0,
+                z: 0.0,
+                dir_x: 0.0,
+                dir_y: 1.0,
+                dir_z: 0.0,
+                has_direction: true,
+                object_id_confidence,
+                module_state: Some(module_state),
+            }],
+        }
+    }
+
     fn assert_ee_placeable_add_state_bits(
         bits: &[bool],
         post_name_bit: usize,
@@ -5141,6 +5242,108 @@ mod placeable_add_semantic_tests {
             )
         );
         assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn placeable_add_rewrite_uses_unique_module_static_state_for_initial_overlap() {
+        let (mut bytes, mut record_end) = inline_placeable_add_record();
+        let mut bits = vec![
+            false, // direct CExoString name branch.
+            true,  // legacy reputation/visual selector.
+            false, // optional target absent.
+            false, // static/plot is preserved because it is not a proven module-state field.
+            false, // useable conflicts with the unique module static row.
+            true,  // trap disarmable conflicts with the unique module static row.
+            false, // lockable conflicts with the unique module static row.
+            true,  // locked conflicts with the unique module static row.
+            true,  // unknown 0x1AC sibling.
+            true,  // name-valid.
+        ];
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let expected =
+            legacy_placeable_add_state_bits(&bits, 0, 0).with_module_static_state(module_state);
+        let area_context = area_context_with_static_module_state(
+            crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+            false,
+        );
+        let mut bit_cursor = 0usize;
+
+        rewrite_legacy_placeable_add_record_for_ee(
+            &mut bytes,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            0,
+            Some(&area_context),
+        )
+        .expect("unique module-backed static overlap should rewrite through add state mapper");
+
+        assert_eq!(bit_cursor, 11);
+        assert_ee_placeable_add_state_bits(&bits, 1, expected, false);
+        assert!(has_ee_identity_visual_transform_map_at(
+            &bytes, 19, record_end
+        ));
+
+        let mut verified_cursor = 0usize;
+        assert!(
+            crate::translate::live_object_update::advance_verified_add_fragment_cursor_for_ee(
+                &bytes,
+                0,
+                record_end,
+                &bits,
+                &mut verified_cursor,
+            )
+        );
+        assert_eq!(verified_cursor, bit_cursor);
+    }
+
+    #[test]
+    fn placeable_add_rewrite_keeps_ambiguous_area_static_overlap_diagnostic_only() {
+        let cases = [
+            (
+                "duplicate static id",
+                area_context_with_static_module_state(
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    false,
+                ),
+            ),
+            (
+                "light/static alias",
+                area_context_with_static_module_state(
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    true,
+                ),
+            ),
+        ];
+
+        for (label, area_context) in cases {
+            let (mut bytes, mut record_end) = inline_placeable_add_record();
+            let mut bits = vec![
+                false, true, false, false, false, true, false, true, true, true,
+            ];
+            let expected = legacy_placeable_add_state_bits(&bits, 0, 0);
+            let mut bit_cursor = 0usize;
+
+            rewrite_legacy_placeable_add_record_for_ee(
+                &mut bytes,
+                &mut record_end,
+                &mut bits,
+                &mut bit_cursor,
+                0,
+                Some(&area_context),
+            )
+            .unwrap_or_else(|| panic!("{label} should still rewrite the normal add shape"));
+
+            assert_eq!(bit_cursor, 11, "{label}");
+            assert_ee_placeable_add_state_bits(&bits, 1, expected, false);
+        }
     }
 
     #[test]
