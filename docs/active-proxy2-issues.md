@@ -2455,6 +2455,16 @@ Current status:
   successful_item_update_rewrite_reports_accepted_claim -- --nocapture`,
   `item_update_rewrite_claim`, `item_failure_source_window`, and
   `raw_neighbor_u6`.
+- 2026-06-11 `P/05/01` item `U/6` failure evidence propagation: packet bytes
+  and cursor ownership remain unchanged. A retained item-update cursor failure
+  now carries a bounded structured snapshot of the contiguous rewrite ledger
+  tail, including the preceding row families, source/emitted bit spans, and
+  insertion/removal deltas. Strict dispatch logs that typed tail evidence with
+  the existing focus failure and unowned-neighbor gap data, so a local Diamond
+  capture or compact writer trace can compare the exact `A/10 -> U/10 -> A/6`
+  handoff without depending on debug-only stderr text. Next proof target is
+  still a source capture or source-side writer/list-handoff owner before the
+  `U/10`/`A/6`/`U/6` sequence; do not add cursor skip/retry behavior.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls

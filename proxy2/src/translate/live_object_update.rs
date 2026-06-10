@@ -1440,6 +1440,104 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn item_update_cursor_failure_evidence_keeps_contiguous_tail_chain() {
+        let mut live = vec![0; 32];
+        live[0] = b'A';
+        live[1] = DOOR_OBJECT_TYPE;
+        live[6] = b'U';
+        live[7] = DOOR_OBJECT_TYPE;
+        live[16] = b'A';
+        live[17] = ITEM_OBJECT_TYPE;
+
+        let mut ledger = LiveObjectRewriteBitLedger::new();
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: 6,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 5,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "door-add-rewrite",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 6,
+                record_end: 16,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 5,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 13,
+                bits_inserted: 0,
+                bits_removed: 0,
+                family: "door-update-tail9-rewrite",
+            },
+        ));
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 16,
+                record_end: 22,
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS + 13,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 19,
+                bits_inserted: 1,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let bit_cursor = CNW_FRAGMENT_HEADER_BITS + 19;
+        let failure = LiveObjectItemUpdateCursorFailure {
+            kind: ledger.item_update_cursor_failure_kind(bit_cursor),
+            offset: 22,
+            record_end: 32,
+            bit_cursor,
+            unowned_neighbor: None,
+            contiguous_tail: ledger.contiguous_tail_evidence(bit_cursor),
+        }
+        .into_rewrite_failure();
+
+        assert_eq!(
+            failure.kind,
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterLedgerHandoff
+        );
+        let evidence = failure
+            .item_update_cursor_evidence
+            .expect("item cursor failure should carry evidence");
+        let tail = evidence
+            .contiguous_tail
+            .expect("failure evidence should preserve the contiguous ledger tail");
+        assert_eq!(tail.entry_count, 3);
+        assert_eq!(tail.entries_retained, 3);
+        assert_eq!(tail.source_bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(tail.source_bit_end, CNW_FRAGMENT_HEADER_BITS + 18);
+        assert_eq!(tail.emitted_bit_start, CNW_FRAGMENT_HEADER_BITS);
+        assert_eq!(tail.emitted_bit_end, bit_cursor);
+        assert_eq!(tail.emitted_gap_to_cursor, 0);
+        assert_eq!(tail.source_gap_to_cursor, 0);
+
+        let families = tail
+            .entries
+            .iter()
+            .flatten()
+            .map(|entry| entry.family)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            families,
+            vec![
+                "door-add-rewrite",
+                "door-update-tail9-rewrite",
+                "item-create-rewrite"
+            ]
+        );
+        assert_eq!(
+            tail.entries[2].map(|entry| (entry.offset, entry.record_end, entry.bits_inserted)),
+            Some((16, 22, 1))
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_and_update_mentions_expose_state_bits() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
@@ -1653,6 +1751,7 @@ pub struct LiveObjectUpdateItemCursorFailureEvidence {
     pub focus_failure_bit_cursor: usize,
     pub focus_failure_orientation_vector: Option<bool>,
     pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
+    pub contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1673,6 +1772,37 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
     pub previous_record_end: usize,
     pub previous_family: &'static str,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+}
+
+pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateRewriteTailEvidence {
+    pub entry_count: usize,
+    pub entries_retained: usize,
+    pub source_bit_start: usize,
+    pub source_bit_end: usize,
+    pub emitted_bit_start: usize,
+    pub emitted_bit_end: usize,
+    pub emitted_gap_to_cursor: usize,
+    pub source_gap_to_cursor: usize,
+    pub entries: [Option<LiveObjectUpdateRewriteTailEntryEvidence>;
+        LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateRewriteTailEntryEvidence {
+    pub offset: usize,
+    pub record_end: usize,
+    pub opcode: u8,
+    pub marker: u8,
+    pub source_bit_start: usize,
+    pub source_bit_end: usize,
+    pub emitted_bit_start: usize,
+    pub emitted_bit_end: usize,
+    pub bits_inserted: usize,
+    pub bits_removed: usize,
+    pub family: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7903,6 +8033,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     record_end,
                     bit_cursor,
                     unowned_neighbor,
+                    contiguous_tail: rewrite_bit_ledger.contiguous_tail_evidence(bit_cursor),
                 };
                 *rewrite_failure = Some(failure.into_rewrite_failure());
                 fatal_item_update_cursor_failure = Some(failure);
@@ -9044,6 +9175,45 @@ impl LiveObjectRewriteBitLedger {
             .get(tail.start_index..=tail.end_index)
             .unwrap_or(&[])
     }
+
+    fn contiguous_tail_evidence(
+        &self,
+        cursor: usize,
+    ) -> Option<LiveObjectUpdateRewriteTailEvidence> {
+        let tail = self.contiguous_tail_before_cursor(cursor)?;
+        let tail_entries = self.contiguous_tail_entries(tail);
+        let retain_start = tail_entries
+            .len()
+            .saturating_sub(LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT);
+        let retained_entries = &tail_entries[retain_start..];
+        let mut entries = [None; LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT];
+        for (slot, entry) in entries.iter_mut().zip(retained_entries.iter()) {
+            *slot = Some(LiveObjectUpdateRewriteTailEntryEvidence {
+                offset: entry.offset,
+                record_end: entry.record_end,
+                opcode: entry.opcode,
+                marker: entry.marker,
+                source_bit_start: entry.source_bit_start,
+                source_bit_end: entry.source_bit_end,
+                emitted_bit_start: entry.emitted_bit_start,
+                emitted_bit_end: entry.emitted_bit_end,
+                bits_inserted: entry.bits_inserted,
+                bits_removed: entry.bits_removed,
+                family: entry.family,
+            });
+        }
+        Some(LiveObjectUpdateRewriteTailEvidence {
+            entry_count: tail.entry_count,
+            entries_retained: retained_entries.len(),
+            source_bit_start: tail.source_bit_start,
+            source_bit_end: tail.source_bit_end,
+            emitted_bit_start: tail.emitted_bit_start,
+            emitted_bit_end: tail.emitted_bit_end,
+            emitted_gap_to_cursor: tail.emitted_gap_to_cursor,
+            source_gap_to_cursor: tail.source_gap_to_cursor,
+            entries,
+        })
+    }
 }
 
 fn format_bit_values_preview(bits: &[bool]) -> String {
@@ -9068,6 +9238,7 @@ struct LiveObjectItemUpdateCursorFailure {
     record_end: usize,
     bit_cursor: usize,
     unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
+    contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
 }
 
 impl LiveObjectItemUpdateCursorFailure {
@@ -9122,6 +9293,7 @@ impl LiveObjectItemUpdateCursorFailure {
                     gap_origin: neighbor.gap_origin,
                 }
             }),
+            contiguous_tail: self.contiguous_tail,
         }
     }
 }
