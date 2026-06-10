@@ -527,6 +527,10 @@ mod diagnostic_tests {
         assert_eq!(neighbor.emitted_gap_bits, 2);
         assert_eq!(neighbor.source_gap_bits, 2);
         assert_eq!(neighbor.previous_family, "item-create-rewrite");
+        assert_eq!(
+            neighbor.gap_origin, "focus-position-bits",
+            "the +2 scalar neighbor starts only after the inherited cursor's item position bits"
+        );
         assert_ne!(
             neighbor.focus_failure_stage, "none",
             "the valid neighbor must retain the inherited-cursor parse failure"
@@ -1411,6 +1415,7 @@ mod diagnostic_tests {
             previous_offset: 0,
             previous_record_end: live.len(),
             previous_family: "item-create-rewrite",
+            gap_origin: "focus-position-bits",
             focus_failure_stage: "orientation-vector-read-bytes",
             focus_failure_read_cursor: 12,
             focus_failure_bit_cursor: cursor_after_row + 2,
@@ -8108,7 +8113,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{}",
+                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={}",
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
@@ -8135,6 +8140,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 neighbor.previous_offset,
                 neighbor.previous_record_end,
                 neighbor.previous_family,
+                neighbor.gap_origin,
             );
         }
         trace_update_rewrite_cursor_unreliable(
@@ -8625,6 +8631,7 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     translated_mask: u32,
     orientation_vector: Option<bool>,
     relation: &'static str,
+    gap_origin: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -8990,6 +8997,7 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     previous_offset: usize,
     previous_record_end: usize,
     previous_family: &'static str,
+    gap_origin: &'static str,
     focus_failure_stage: &'static str,
     focus_failure_read_cursor: usize,
     focus_failure_bit_cursor: usize,
@@ -9516,6 +9524,11 @@ fn live_object_source_window_item_neighbor_cursor_claims(
                 expected_bit_cursor,
                 preceding_claim_bit_end,
             ),
+            gap_origin: live_object_item_update_focus_gap_origin(
+                claim.translated_mask,
+                expected_bit_cursor,
+                cursor,
+            ),
         });
     }
     claims
@@ -9539,6 +9552,63 @@ fn live_object_source_window_neighbor_relation(
     } else {
         "inside-focus-row"
     }
+}
+
+fn live_object_item_update_focus_gap_origin(
+    translated_mask: u32,
+    focus_bit_cursor: usize,
+    candidate_bit_start: usize,
+) -> &'static str {
+    if candidate_bit_start <= focus_bit_cursor {
+        return "not-after-focus-cursor";
+    }
+
+    let mut cursor = focus_bit_cursor;
+    if (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        let position_end = cursor.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+        if candidate_bit_start <= position_end {
+            return if candidate_bit_start == position_end {
+                "focus-position-bits"
+            } else {
+                "partial-focus-position-bits"
+            };
+        }
+        cursor = position_end;
+    }
+
+    if (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let orientation_selector_end = cursor.saturating_add(1);
+        if candidate_bit_start <= orientation_selector_end {
+            return if candidate_bit_start == orientation_selector_end {
+                "focus-orientation-selector"
+            } else {
+                "partial-focus-orientation-selector"
+            };
+        }
+        if candidate_bit_start
+            <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS)
+        {
+            return "focus-orientation-vector-prefix-bits";
+        }
+        if candidate_bit_start
+            <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS)
+        {
+            return "focus-orientation-scalar-prefix-bits";
+        }
+    }
+
+    if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        let state_end = cursor.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
+        if candidate_bit_start <= state_end {
+            return "focus-state-prefix-bits";
+        }
+    }
+
+    if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+        return "focus-name-or-locstring-prefix-bits";
+    }
+
+    "inside-focus-row-unclassified"
 }
 
 fn nearest_unowned_item_update_neighbor_cursor(
@@ -9601,6 +9671,11 @@ fn nearest_unowned_item_update_neighbor_cursor(
             previous_offset: gap.previous_offset,
             previous_record_end: gap.previous_record_end,
             previous_family: gap.previous_family,
+            gap_origin: live_object_item_update_focus_gap_origin(
+                claim.translated_mask,
+                bit_cursor,
+                candidate_cursor,
+            ),
             focus_failure_stage: focus_failure
                 .map(|failure| failure.stage.as_str())
                 .unwrap_or("none"),
@@ -9886,7 +9961,7 @@ fn trace_item_update_source_window(
             let ledger_tail =
                 format_rewrite_bit_ledger_contiguous_tail(rewrite_bit_ledger, neighbor.bit_start);
             eprintln!(
-                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} ledger_relation={} ledger_emitted_gap_bits={} ledger_emitted_gap={} ledger_emitted_gap_values={} ledger_source_relation={} ledger_source_gap_bits={} ledger_source_gap={} ledger_source_gap_values={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={} ledger_contiguous_tail={}",
+                "live-object item update source window neighboring cursor: focus_offset={focus_offset} expected_bit_cursor={expected_bit_cursor} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} gap_origin={} ledger_relation={} ledger_emitted_gap_bits={} ledger_emitted_gap={} ledger_emitted_gap_values={} ledger_source_relation={} ledger_source_gap_bits={} ledger_source_gap={} ledger_source_gap_values={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={} ledger_contiguous_tail={}",
                 neighbor.delta,
                 neighbor.bit_start,
                 neighbor.bit_end,
@@ -9894,6 +9969,7 @@ fn trace_item_update_source_window(
                 neighbor.translated_mask,
                 orientation,
                 neighbor.relation,
+                neighbor.gap_origin,
                 ledger_relation,
                 ledger_emitted_gap_bits,
                 ledger_emitted_gap_range,

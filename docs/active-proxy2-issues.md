@@ -2920,6 +2920,13 @@ Current status:
   exactly which original bits each prior row consumed before the remaining
   two-bit gap. Packet bytes and cursor ownership are unchanged; next proof
   remains compact source capture or source-side writer/handoff evidence.
+- 2026-06-11 follow-up `P/05/01` item-neighbor gap-origin diagnostic:
+  production item `U/6` cursor failure state now classifies where a validating
+  neighboring cursor begins inside the failed focus row. The compact no-map
+  `A/6 -> U/6` shape reports `gap_origin=focus-position-bits`, meaning the
+  +2 scalar-looking neighbor starts only after the inherited cursor's two
+  decompile-owned item position bits. Packet bytes and cursor ownership remain
+  unchanged; this tightens the next compact source-writer/capture proof target.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
