@@ -997,6 +997,53 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn rewrite_bit_ledger_entry_values_use_source_snapshot() {
+        let mut live = vec![0; 16];
+        live[0] = b'A';
+        live[1] = ITEM_OBJECT_TYPE;
+        let source_bits = vec![
+            false, false, false, // CNW header
+            true, false, true, true, // item-create source bits
+            true, false, // following unowned source bits
+        ];
+        let mut rewritten_bits = source_bits.clone();
+        rewritten_bits.splice(5..5, [false, false, false]);
+
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        assert!(ledger.commit_record(
+            &live,
+            LiveObjectRewriteBitLedgerCommit {
+                offset: 0,
+                record_end: live.len(),
+                emitted_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                emitted_bit_end: CNW_FRAGMENT_HEADER_BITS + 7,
+                bits_inserted: 3,
+                bits_removed: 0,
+                family: "item-create-rewrite",
+            },
+        ));
+
+        let entry = ledger.entries().last().expect("ledger row should exist");
+        assert_eq!(
+            ledger.source_values_for_entry(&rewritten_bits, entry),
+            &[true, false, true, true],
+            "row source diagnostics must use immutable source coordinates"
+        );
+        assert_eq!(
+            rewritten_bits
+                .get(entry.source_bit_start..entry.source_bit_end)
+                .unwrap_or(&[]),
+            &[true, false, false, false],
+            "reading source spans from the rewritten bitstream would report EE insertion bits"
+        );
+        assert_eq!(
+            ledger.emitted_values_for_entry(&rewritten_bits, entry),
+            &[true, false, false, false, false, true, true],
+            "row emitted diagnostics still describe the current EE-facing bitstream"
+        );
+    }
+
+    #[test]
     fn rewrite_bit_ledger_contiguous_tail_stops_at_emitted_gap() {
         let mut live = vec![0; 24];
         live[0] = b'A';
@@ -8749,6 +8796,31 @@ impl LiveObjectRewriteBitLedger {
             .unwrap_or(&[])
     }
 
+    fn emitted_values_for_entry<'a>(
+        &self,
+        fragment_bits: &'a [bool],
+        entry: &LiveObjectRewriteBitLedgerEntry,
+    ) -> &'a [bool] {
+        fragment_bits
+            .get(entry.emitted_bit_start..entry.emitted_bit_end)
+            .unwrap_or(&[])
+    }
+
+    fn source_values_for_entry<'a>(
+        &'a self,
+        fragment_bits: &'a [bool],
+        entry: &LiveObjectRewriteBitLedgerEntry,
+    ) -> &'a [bool] {
+        let source_bits = if self.source_bits.is_empty() {
+            fragment_bits
+        } else {
+            &self.source_bits
+        };
+        source_bits
+            .get(entry.source_bit_start..entry.source_bit_end)
+            .unwrap_or(&[])
+    }
+
     fn item_update_cursor_failure_reason(&self, cursor: usize) -> &'static str {
         let Some(gap) = self.gap_before_cursor(cursor) else {
             return "item-update-cursor-failed-without-ledger";
@@ -8875,6 +8947,21 @@ impl LiveObjectRewriteBitLedger {
             .get(tail.start_index..=tail.end_index)
             .unwrap_or(&[])
     }
+}
+
+fn format_bit_values_preview(bits: &[bool]) -> String {
+    const MAX_PREVIEW_BITS: usize = 32;
+    let preview_end = bits.len().min(MAX_PREVIEW_BITS);
+    let suffix = if bits.len() > preview_end {
+        format!("...+{}", bits.len() - preview_end)
+    } else {
+        String::new()
+    };
+    format!(
+        "len={} values={:?}{suffix}",
+        bits.len(),
+        &bits[..preview_end]
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9560,8 +9647,14 @@ fn trace_item_update_source_window(
         fragment_bits.len()
     );
     for entry in rewrite_bit_ledger.recent_entries(8) {
+        let source_values = format_bit_values_preview(
+            rewrite_bit_ledger.source_values_for_entry(fragment_bits, entry),
+        );
+        let emitted_values = format_bit_values_preview(
+            rewrite_bit_ledger.emitted_values_for_entry(fragment_bits, entry),
+        );
         eprintln!(
-            "live-object rewrite bit ledger row: offset={} record_end={} opcode=0x{:02X} marker=0x{:02X} family={} source_bits={}..{} source_delta={} emitted_bits={}..{} emitted_delta={} bits_inserted={} bits_removed={}",
+            "live-object rewrite bit ledger row: offset={} record_end={} opcode=0x{:02X} marker=0x{:02X} family={} source_bits={}..{} source_delta={} source_values={} emitted_bits={}..{} emitted_delta={} emitted_values={} bits_inserted={} bits_removed={}",
             entry.offset,
             entry.record_end,
             entry.opcode,
@@ -9570,11 +9663,13 @@ fn trace_item_update_source_window(
             entry.source_bit_start,
             entry.source_bit_end,
             entry.source_bit_end.saturating_sub(entry.source_bit_start),
+            source_values,
             entry.emitted_bit_start,
             entry.emitted_bit_end,
             entry
                 .emitted_bit_end
                 .saturating_sub(entry.emitted_bit_start),
+            emitted_values,
             entry.bits_inserted,
             entry.bits_removed
         );

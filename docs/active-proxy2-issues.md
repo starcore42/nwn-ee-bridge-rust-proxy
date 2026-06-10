@@ -2912,6 +2912,14 @@ Current status:
   Verified with focused `cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair`,
   `item_update_cursor_failure_reason_uses_ledger_gap_shape`, `cargo fmt
   --all --check`, `cargo check -q -p hgbridge-proxy2`, and `git diff --check`.
+- 2026-06-11 follow-up `P/05/01` ledger row bit-value diagnostic: production
+  source-window tracing now prints bounded source and emitted bit previews for
+  each recent committed ledger row. Source previews come from the immutable
+  source fragment snapshot while emitted previews come from the current
+  EE-facing bitstream, so the next compact `U/10 -> A/6 -> U/6` rerun can see
+  exactly which original bits each prior row consumed before the remaining
+  two-bit gap. Packet bytes and cursor ownership are unchanged; next proof
+  remains compact source capture or source-side writer/handoff evidence.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
