@@ -528,7 +528,8 @@ mod diagnostic_tests {
         assert_eq!(neighbor.source_gap_bits, 2);
         assert_eq!(neighbor.previous_family, "item-create-rewrite");
         assert_eq!(
-            neighbor.gap_origin, "focus-position-bits",
+            neighbor.gap_origin,
+            LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             "the +2 scalar neighbor starts only after the inherited cursor's item position bits"
         );
         assert_ne!(
@@ -1358,15 +1359,15 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn item_update_cursor_failure_reason_uses_ledger_gap_shape() {
+    fn item_update_cursor_failure_kind_uses_ledger_gap_shape() {
         let mut live = vec![0; 16];
         live[0] = b'A';
         live[1] = ITEM_OBJECT_TYPE;
 
         let mut ledger = LiveObjectRewriteBitLedger::new();
         assert_eq!(
-            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS),
-            "item-update-cursor-failed-without-ledger"
+            ledger.item_update_cursor_failure_kind(CNW_FRAGMENT_HEADER_BITS),
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorWithoutLedger
         );
 
         assert!(ledger.commit_record(
@@ -1383,21 +1384,21 @@ mod diagnostic_tests {
         ));
 
         assert_eq!(
-            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 2),
-            "item-update-cursor-failed-before-ledger-row"
+            ledger.item_update_cursor_failure_kind(CNW_FRAGMENT_HEADER_BITS + 2),
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeLedgerRow
         );
         assert_eq!(
-            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 6),
-            "item-update-cursor-failed-inside-ledger-row"
+            ledger.item_update_cursor_failure_kind(CNW_FRAGMENT_HEADER_BITS + 6),
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorInsideLedgerRow
         );
         let cursor_after_row = CNW_FRAGMENT_HEADER_BITS + 8;
         assert_eq!(
-            ledger.item_update_cursor_failure_reason(cursor_after_row),
-            "item-update-cursor-failed-after-ledger-handoff"
+            ledger.item_update_cursor_failure_kind(cursor_after_row),
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterLedgerHandoff
         );
         assert_eq!(
-            ledger.item_update_cursor_failure_reason(CNW_FRAGMENT_HEADER_BITS + 10),
-            "item-update-cursor-failed-after-unowned-ledger-gap"
+            ledger.item_update_cursor_failure_kind(CNW_FRAGMENT_HEADER_BITS + 10),
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterUnownedLedgerGap
         );
         let unowned_neighbor = LiveObjectItemUpdateUnownedNeighbor {
             delta: 2,
@@ -1415,25 +1416,25 @@ mod diagnostic_tests {
             previous_offset: 0,
             previous_record_end: live.len(),
             previous_family: "item-create-rewrite",
-            gap_origin: "focus-position-bits",
+            gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             focus_failure_stage: "orientation-vector-read-bytes",
             focus_failure_read_cursor: 12,
             focus_failure_bit_cursor: cursor_after_row + 2,
             focus_failure_orientation_vector: Some(true),
         };
         assert_eq!(
-            ledger.item_update_cursor_failure_reason_with_unowned_neighbor(
+            ledger.item_update_cursor_failure_kind_with_unowned_neighbor(
                 cursor_after_row,
                 Some(unowned_neighbor),
             ),
-            "item-update-cursor-failed-before-valid-neighbor-unowned-gap"
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
         );
         assert_eq!(
-            ledger.item_update_cursor_failure_reason_with_unowned_neighbor(
+            ledger.item_update_cursor_failure_kind_with_unowned_neighbor(
                 CNW_FRAGMENT_HEADER_BITS + 6,
                 Some(unowned_neighbor),
             ),
-            "item-update-cursor-failed-inside-ledger-row",
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorInsideLedgerRow,
             "a validating neighbor must not hide that the inherited cursor overlaps the prior row"
         );
     }
@@ -1637,9 +1638,71 @@ pub struct LiveObjectUpdateRewriteAttempt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateRewriteFailure {
     pub reason: &'static str,
+    pub kind: LiveObjectUpdateRewriteFailureKind,
     pub offset: usize,
     pub record_end: usize,
     pub bit_cursor: usize,
+    pub item_update_neighbor_gap_origin: Option<LiveObjectUpdateItemCursorGapOrigin>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateRewriteFailureKind {
+    ItemUpdateCursorWithoutLedger,
+    ItemUpdateCursorBeforeLedgerRow,
+    ItemUpdateCursorInsideLedgerRow,
+    ItemUpdateCursorAfterLedgerHandoff,
+    ItemUpdateCursorAfterUnownedLedgerGap,
+    ItemUpdateCursorBeforeValidNeighborUnownedGap,
+}
+
+impl LiveObjectUpdateRewriteFailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ItemUpdateCursorWithoutLedger => "item-update-cursor-failed-without-ledger",
+            Self::ItemUpdateCursorBeforeLedgerRow => "item-update-cursor-failed-before-ledger-row",
+            Self::ItemUpdateCursorInsideLedgerRow => "item-update-cursor-failed-inside-ledger-row",
+            Self::ItemUpdateCursorAfterLedgerHandoff => {
+                "item-update-cursor-failed-after-ledger-handoff"
+            }
+            Self::ItemUpdateCursorAfterUnownedLedgerGap => {
+                "item-update-cursor-failed-after-unowned-ledger-gap"
+            }
+            Self::ItemUpdateCursorBeforeValidNeighborUnownedGap => {
+                "item-update-cursor-failed-before-valid-neighbor-unowned-gap"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemCursorGapOrigin {
+    NotAfterFocusCursor,
+    FocusPositionBits,
+    PartialFocusPositionBits,
+    FocusOrientationSelector,
+    PartialFocusOrientationSelector,
+    FocusOrientationVectorPrefixBits,
+    FocusOrientationScalarPrefixBits,
+    FocusStatePrefixBits,
+    FocusNameOrLocstringPrefixBits,
+    InsideFocusRowUnclassified,
+}
+
+impl LiveObjectUpdateItemCursorGapOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAfterFocusCursor => "not-after-focus-cursor",
+            Self::FocusPositionBits => "focus-position-bits",
+            Self::PartialFocusPositionBits => "partial-focus-position-bits",
+            Self::FocusOrientationSelector => "focus-orientation-selector",
+            Self::PartialFocusOrientationSelector => "partial-focus-orientation-selector",
+            Self::FocusOrientationVectorPrefixBits => "focus-orientation-vector-prefix-bits",
+            Self::FocusOrientationScalarPrefixBits => "focus-orientation-scalar-prefix-bits",
+            Self::FocusStatePrefixBits => "focus-state-prefix-bits",
+            Self::FocusNameOrLocstringPrefixBits => "focus-name-or-locstring-prefix-bits",
+            Self::InsideFocusRowUnclassified => "inside-focus-row-unclassified",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7789,11 +7852,12 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     bit_cursor,
                     &rewrite_bit_ledger,
                 );
-                let reason = rewrite_bit_ledger
-                    .item_update_cursor_failure_reason_with_unowned_neighbor(
+                let kind = rewrite_bit_ledger
+                    .item_update_cursor_failure_kind_with_unowned_neighbor(
                         bit_cursor,
                         unowned_neighbor,
                     );
+                let reason = kind.as_str();
                 trace_item_update_source_window(
                     reason,
                     &live_bytes,
@@ -7804,17 +7868,21 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     &rewrite_bit_ledger,
                 );
                 let failure = LiveObjectItemUpdateCursorFailure {
-                    reason,
+                    kind,
                     offset,
                     record_end,
                     bit_cursor,
                     unowned_neighbor,
                 };
                 *rewrite_failure = Some(LiveObjectUpdateRewriteFailure {
-                    reason: failure.reason,
+                    reason: failure.kind.as_str(),
+                    kind: failure.kind,
                     offset: failure.offset,
                     record_end: failure.record_end,
                     bit_cursor: failure.bit_cursor,
+                    item_update_neighbor_gap_origin: failure
+                        .unowned_neighbor
+                        .map(|neighbor| neighbor.gap_origin),
                 });
                 fatal_item_update_cursor_failure = Some(failure);
             }
@@ -8117,7 +8185,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
-                failure.reason,
+                failure.kind.as_str(),
                 neighbor.focus_failure_stage,
                 neighbor.focus_failure_read_cursor,
                 neighbor.focus_failure_bit_cursor,
@@ -8140,11 +8208,11 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 neighbor.previous_offset,
                 neighbor.previous_record_end,
                 neighbor.previous_family,
-                neighbor.gap_origin,
+                neighbor.gap_origin.as_str(),
             );
         }
         trace_update_rewrite_cursor_unreliable(
-            failure.reason,
+            failure.kind.as_str(),
             &live_bytes,
             failure.offset.min(live_bytes.len()),
             failure.record_end.min(live_bytes.len()),
@@ -8631,7 +8699,7 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     translated_mask: u32,
     orientation_vector: Option<bool>,
     relation: &'static str,
-    gap_origin: &'static str,
+    gap_origin: LiveObjectUpdateItemCursorGapOrigin,
 }
 
 #[derive(Debug, Clone)]
@@ -8828,36 +8896,37 @@ impl LiveObjectRewriteBitLedger {
             .unwrap_or(&[])
     }
 
-    fn item_update_cursor_failure_reason(&self, cursor: usize) -> &'static str {
+    fn item_update_cursor_failure_kind(&self, cursor: usize) -> LiveObjectUpdateRewriteFailureKind {
         let Some(gap) = self.gap_before_cursor(cursor) else {
-            return "item-update-cursor-failed-without-ledger";
+            return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorWithoutLedger;
         };
         if gap.relation == "unowned-emitted-gap" || gap.source_relation == "unowned-source-gap" {
-            return "item-update-cursor-failed-after-unowned-ledger-gap";
+            return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterUnownedLedgerGap;
         }
         if gap.relation == "inside-previous-emitted-row"
             || gap.source_relation == "inside-previous-source-row"
         {
-            return "item-update-cursor-failed-inside-ledger-row";
+            return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorInsideLedgerRow;
         }
         if gap.relation == "before-ledger-row" || gap.source_relation == "before-ledger-source-row"
         {
-            return "item-update-cursor-failed-before-ledger-row";
+            return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeLedgerRow;
         }
-        "item-update-cursor-failed-after-ledger-handoff"
+        LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterLedgerHandoff
     }
 
-    fn item_update_cursor_failure_reason_with_unowned_neighbor(
+    fn item_update_cursor_failure_kind_with_unowned_neighbor(
         &self,
         cursor: usize,
         unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
-    ) -> &'static str {
-        let reason = self.item_update_cursor_failure_reason(cursor);
-        if unowned_neighbor.is_some() && reason == "item-update-cursor-failed-after-ledger-handoff"
+    ) -> LiveObjectUpdateRewriteFailureKind {
+        let kind = self.item_update_cursor_failure_kind(cursor);
+        if unowned_neighbor.is_some()
+            && kind == LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterLedgerHandoff
         {
-            "item-update-cursor-failed-before-valid-neighbor-unowned-gap"
+            LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
         } else {
-            reason
+            kind
         }
     }
 
@@ -8973,7 +9042,7 @@ fn format_bit_values_preview(bits: &[bool]) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LiveObjectItemUpdateCursorFailure {
-    reason: &'static str,
+    kind: LiveObjectUpdateRewriteFailureKind,
     offset: usize,
     record_end: usize,
     bit_cursor: usize,
@@ -8997,7 +9066,7 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     previous_offset: usize,
     previous_record_end: usize,
     previous_family: &'static str,
-    gap_origin: &'static str,
+    gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     focus_failure_stage: &'static str,
     focus_failure_read_cursor: usize,
     focus_failure_bit_cursor: usize,
@@ -9558,9 +9627,9 @@ fn live_object_item_update_focus_gap_origin(
     translated_mask: u32,
     focus_bit_cursor: usize,
     candidate_bit_start: usize,
-) -> &'static str {
+) -> LiveObjectUpdateItemCursorGapOrigin {
     if candidate_bit_start <= focus_bit_cursor {
-        return "not-after-focus-cursor";
+        return LiveObjectUpdateItemCursorGapOrigin::NotAfterFocusCursor;
     }
 
     let mut cursor = focus_bit_cursor;
@@ -9568,9 +9637,9 @@ fn live_object_item_update_focus_gap_origin(
         let position_end = cursor.saturating_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
         if candidate_bit_start <= position_end {
             return if candidate_bit_start == position_end {
-                "focus-position-bits"
+                LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
             } else {
-                "partial-focus-position-bits"
+                LiveObjectUpdateItemCursorGapOrigin::PartialFocusPositionBits
             };
         }
         cursor = position_end;
@@ -9580,35 +9649,35 @@ fn live_object_item_update_focus_gap_origin(
         let orientation_selector_end = cursor.saturating_add(1);
         if candidate_bit_start <= orientation_selector_end {
             return if candidate_bit_start == orientation_selector_end {
-                "focus-orientation-selector"
+                LiveObjectUpdateItemCursorGapOrigin::FocusOrientationSelector
             } else {
-                "partial-focus-orientation-selector"
+                LiveObjectUpdateItemCursorGapOrigin::PartialFocusOrientationSelector
             };
         }
         if candidate_bit_start
             <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS)
         {
-            return "focus-orientation-vector-prefix-bits";
+            return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationVectorPrefixBits;
         }
         if candidate_bit_start
             <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS)
         {
-            return "focus-orientation-scalar-prefix-bits";
+            return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationScalarPrefixBits;
         }
     }
 
     if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0 {
         let state_end = cursor.saturating_add(LEGACY_UPDATE_STATE_FRAGMENT_BITS);
         if candidate_bit_start <= state_end {
-            return "focus-state-prefix-bits";
+            return LiveObjectUpdateItemCursorGapOrigin::FocusStatePrefixBits;
         }
     }
 
     if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
-        return "focus-name-or-locstring-prefix-bits";
+        return LiveObjectUpdateItemCursorGapOrigin::FocusNameOrLocstringPrefixBits;
     }
 
-    "inside-focus-row-unclassified"
+    LiveObjectUpdateItemCursorGapOrigin::InsideFocusRowUnclassified
 }
 
 fn nearest_unowned_item_update_neighbor_cursor(
@@ -9969,7 +10038,7 @@ fn trace_item_update_source_window(
                 neighbor.translated_mask,
                 orientation,
                 neighbor.relation,
-                neighbor.gap_origin,
+                neighbor.gap_origin.as_str(),
                 ledger_relation,
                 ledger_emitted_gap_bits,
                 ledger_emitted_gap_range,

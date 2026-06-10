@@ -2927,6 +2927,15 @@ Current status:
   +2 scalar-looking neighbor starts only after the inherited cursor's two
   decompile-owned item position bits. Packet bytes and cursor ownership remain
   unchanged; this tightens the next compact source-writer/capture proof target.
+- 2026-06-11 follow-up `P/05/01` item cursor typed-failure audit: production
+  rewrite attempts now carry a `LiveObjectUpdateRewriteFailureKind` plus typed
+  item-neighbor gap origin while preserving the existing quarantine reason text.
+  The compact no-map `A/6 -> U/6` shape is now structured as
+  `ItemUpdateCursorBeforeValidNeighborUnownedGap` with `FocusPositionBits`, so
+  future source-owner policy can branch on the decompile-owned item position-bit
+  proof instead of parsing diagnostic strings. Packet bytes and cursor ownership
+  remain unchanged; next proof still needs compact source capture or a
+  source-side writer/handoff owner before any `U/6` cursor change.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
