@@ -703,6 +703,23 @@ Current status:
   --check`, and `git diff --check`. Next verification should run local visual
   replay against a confirmed bad static/live placeable to decide whether any
   remaining unresolved state belongs to later `U/09` update-state translation.
+- 2026-06-10 follow-up `P/04/01` -> `P/05/01` placeable update-lock synthesis:
+  emitted `U/09` lockable/locked state bits can now be reconciled with a
+  uniquely matched, module-backed static area row. The override is limited to
+  the decompile-backed EE door/placeable update state block (`position`,
+  optional orientation, five Diamond state BOOLs, then EE's neutral sixth
+  BOOL), changes only same-width lock BOOLs after exact cursor proof, applies
+  both to already exact `U/09` rows and to rows that just passed the legacy
+  update writer/validator path, and refuses light/static aliases or duplicate
+  static ids. `U/09` still cannot synthesize useable or trap-disarmable state
+  because those bits are not owned by the update record. Verified with
+  isolated-target `cargo test -q -p hgbridge-proxy2 exact_placeable_update_
+  -- --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_update_area_context_helpers_keep_identity_and_lock_proof --
+  --nocapture`, `cargo check -q -p hgbridge-proxy2`, and `cargo fmt --all
+  --check`. Next local visual replay should focus on any remaining
+  static/live drift outside unique lock state: non-unique area identity,
+  add-only use/trap bits, appearance/model, or orientation.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

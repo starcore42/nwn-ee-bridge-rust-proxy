@@ -742,6 +742,109 @@ mod diagnostic_tests {
             })
         );
     }
+
+    #[test]
+    fn exact_placeable_update_reconciles_unique_area_static_lock_bits() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked in the live update.
+            false, // lockable in the live update.
+            false, // visual payload.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
+        let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact claim");
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(false),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact U/09 lock bits");
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact claim");
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_keeps_non_unique_area_static_lock_bits_diagnostic_only() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([false, false, true, false, false, false]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
+        let original = payload.clone();
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        assert!(
+            rewrite_update_records_payload_with_area_context_if_possible(
+                &mut payload,
+                Some(&area_context),
+            )
+            .is_none(),
+            "non-unique area/static identity must not rewrite U/09 lock bits"
+        );
+        assert_eq!(payload, original);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3834,11 +3937,17 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
     // mixed add/update records can expose one another, but once a payload is
     // already accepted by the exact EE-shape validator, running the legacy
     // update rewriter again would be byte surgery against a proven packet.
-    // Diamond and EE both route GUI inventory item-create rows through the
-    // same item-create helper after the `G I/i A` prefix; the first successful
-    // legacy rewrite therefore owns the semantic transform, and later passes
-    // must treat the packet as already translated.
+    // The only exact-payload exception is the area/static placeable state
+    // reconciliation below: it reuses verified record boundaries and changes
+    // only same-width `U/09` lock BOOLs when a unique module-backed static row
+    // proves the EE-facing state.
     if claim_payload_if_verified(payload).is_some() {
+        if let Some(area_context) = area_context {
+            return rewrite_verified_placeable_update_states_with_area_context_if_possible(
+                payload,
+                area_context,
+            );
+        }
         return None;
     }
 
@@ -7078,6 +7187,60 @@ pub fn rewrite_update_records_payload_with_area_context_if_possible(
     summary.new_fragment_bytes = fragment_bytes.len();
     *payload = rewritten;
     Some(summary)
+}
+
+fn rewrite_verified_placeable_update_states_with_area_context_if_possible(
+    payload: &mut Vec<u8>,
+    area_context: &AreaPlaceableContext,
+) -> Option<LiveObjectUpdateRewriteSummary> {
+    let claim = claim_payload_if_verified(payload)?;
+    let old_payload_length = payload.len();
+    let old_declared = u32::try_from(claim.declared).ok()?;
+    let live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared].to_vec();
+    let old_fragment_bytes = payload.len().saturating_sub(claim.declared);
+    let mut fragment_bits =
+        bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)?;
+
+    let mut update_records_rewritten = 0u32;
+    for mention in &claim.mentions {
+        if mention.opcode != b'U' || mention.object_type != PLACEABLE_OBJECT_TYPE {
+            continue;
+        }
+        if record::reconcile_verified_placeable_update_state_with_area_context(
+            area_context,
+            &live_bytes,
+            mention.record_offset,
+            mention.record_end,
+            &mut fragment_bits,
+            mention.fragment_bit_start,
+        )? {
+            update_records_rewritten = update_records_rewritten.saturating_add(1);
+        }
+    }
+    if update_records_rewritten == 0 {
+        return None;
+    }
+
+    let rewritten = live_object_payload_from_parts(&live_bytes, &fragment_bits)?;
+    claim_payload_if_verified(&rewritten)?;
+    let new_payload_length = rewritten.len();
+    let new_fragment_bytes = new_payload_length.saturating_sub(claim.declared);
+
+    *payload = rewritten;
+    Some(LiveObjectUpdateRewriteSummary {
+        old_declared,
+        new_declared: old_declared,
+        old_payload_length,
+        new_payload_length,
+        old_live_bytes_length: live_bytes.len(),
+        new_live_bytes_length: live_bytes.len(),
+        old_fragment_bytes,
+        new_fragment_bytes,
+        records_examined: claim.records_examined,
+        update_records_examined: update_records_rewritten,
+        update_records_rewritten,
+        ..LiveObjectUpdateRewriteSummary::default()
+    })
 }
 
 fn record_trailing_fragment_prefix_promotion(

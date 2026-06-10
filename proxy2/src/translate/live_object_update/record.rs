@@ -16,7 +16,10 @@ use super::{
     TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, object_ids, placeable,
     read_f32_le, read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
 };
-use crate::translate::area::{AreaPlaceableContext, AreaPlaceableObservedState};
+use crate::translate::area::{
+    AreaPlaceableContext, AreaPlaceableContextState, AreaPlaceableObservedState,
+    format_area_placeable_module_state,
+};
 #[cfg(test)]
 use crate::translate::area::{
     AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
@@ -90,6 +93,14 @@ struct PlaceableUpdateStateBits {
 impl PlaceableUpdateStateBits {
     fn observed_area_state(self) -> AreaPlaceableObservedState {
         AreaPlaceableObservedState::from_update_lock_state(self.lockable, self.locked)
+    }
+
+    fn with_module_static_lock_state(self, module_state: AreaPlaceableContextState) -> Self {
+        Self {
+            locked: module_state.locked,
+            lockable: module_state.lockable,
+            ..self
+        }
     }
 }
 
@@ -240,8 +251,25 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             bits,
             *bit_cursor,
         ) {
+            let state_changed = if object_type == PLACEABLE_OBJECT_TYPE {
+                reconcile_placeable_update_state_with_area_context(
+                    area_context,
+                    object_id,
+                    bits,
+                    *bit_cursor,
+                    raw_mask,
+                    record_offset,
+                    *record_end,
+                )?
+            } else {
+                false
+            };
             *bit_cursor = claim.next_bit_cursor;
-            return Some(RecordRewrite::default());
+            return Some(RecordRewrite {
+                rewritten: state_changed,
+                bits_changed: state_changed,
+                ..RecordRewrite::default()
+            });
         }
     }
 
@@ -1436,6 +1464,19 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         // later terminal fragment bit.
         && !repaired_stale_absent_appearance_gap
         && translated_mask != LEGACY_UPDATE_STATE_MASK;
+    if object_type == PLACEABLE_OBJECT_TYPE
+        && reconcile_placeable_update_state_with_area_context(
+            area_context,
+            object_id,
+            bits,
+            original_bit_cursor,
+            translated_mask,
+            record_offset,
+            *record_end,
+        )?
+    {
+        rewrite.bits_changed = true;
+    }
     let ee_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
         .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, translated_mask))
         .flatten();
@@ -1526,6 +1567,97 @@ fn trace_placeable_update_area_context(
     );
 }
 
+pub(super) fn reconcile_verified_placeable_update_state_with_area_context(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    bits: &mut [bool],
+    bit_cursor: usize,
+) -> Option<bool> {
+    if record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end || record_end > live_bytes.len() {
+        return None;
+    }
+    if live_bytes.get(record_offset).copied()? != b'U'
+        || live_bytes.get(record_offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return Some(false);
+    }
+    let mask = read_u32_le(live_bytes, record_offset + 6)?;
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        record_offset,
+        record_end,
+        bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
+        return None;
+    }
+    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    reconcile_placeable_update_state_with_area_context(
+        Some(area_context),
+        object_id,
+        bits,
+        bit_cursor,
+        mask,
+        record_offset,
+        record_end,
+    )
+}
+
+fn reconcile_placeable_update_state_with_area_context(
+    area_context: Option<&AreaPlaceableContext>,
+    object_id: u32,
+    bits: &mut [bool],
+    bit_cursor: usize,
+    mask: u32,
+    record_offset: usize,
+    record_end: usize,
+) -> Option<bool> {
+    if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
+        return Some(false);
+    }
+    let Some(context) = area_context else {
+        return Some(false);
+    };
+    let overlap = context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(module_state) = overlap.unique_module_backed_static_state() else {
+        return Some(false);
+    };
+
+    let source_state = placeable_update_state_bits_at(bits, bit_cursor, mask)?;
+    let conflict = source_state
+        .observed_area_state()
+        .conflict_with_module_state(module_state);
+    if !conflict.any() {
+        return Some(false);
+    }
+
+    let state_cursor = placeable_update_state_bit_cursor(bits, bit_cursor, mask)?;
+    let rewritten_state = source_state.with_module_static_lock_state(module_state);
+    let mut changed = false;
+    changed |= set_bool_bit(bits, state_cursor + 2, rewritten_state.locked)?;
+    changed |= set_bool_bit(bits, state_cursor + 3, rewritten_state.lockable)?;
+    let emitted_state = placeable_update_state_bits_at(bits, bit_cursor, mask)?;
+
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_placeable_state = ?source_state,
+        emitted_placeable_state = ?emitted_state,
+        area_module_state = %format_area_placeable_module_state(module_state),
+        area_module_state_mismatch_fields = %conflict.formatted_fields(),
+        "server->client live-object placeable update lock state reconciled with unique module-backed area/static row"
+    );
+
+    Some(changed)
+}
+
 fn parse_compact_door_placeable_tail9_update_claim(
     bytes: &[u8],
     record_offset: usize,
@@ -1588,6 +1720,18 @@ fn placeable_update_state_bits_at(
     bit_cursor: usize,
     mask: u32,
 ) -> Option<PlaceableUpdateStateBits> {
+    let cursor = placeable_update_state_bit_cursor(bits, bit_cursor, mask)?;
+
+    Some(PlaceableUpdateStateBits {
+        visual_selector: bits.get(cursor).copied()?,
+        visual_state_active: bits.get(cursor + 1).copied()?,
+        locked: bits.get(cursor + 2).copied()?,
+        lockable: bits.get(cursor + 3).copied()?,
+        visual_payload: bits.get(cursor + 4).copied()?,
+    })
+}
+
+fn placeable_update_state_bit_cursor(bits: &[bool], bit_cursor: usize, mask: u32) -> Option<usize> {
     if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
         return None;
     }
@@ -1604,14 +1748,14 @@ fn placeable_update_state_bits_at(
             EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
         })?;
     }
+    Some(cursor)
+}
 
-    Some(PlaceableUpdateStateBits {
-        visual_selector: bits.get(cursor).copied()?,
-        visual_state_active: bits.get(cursor + 1).copied()?,
-        locked: bits.get(cursor + 2).copied()?,
-        lockable: bits.get(cursor + 3).copied()?,
-        visual_payload: bits.get(cursor + 4).copied()?,
-    })
+fn set_bool_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {
+    let slot = bits.get_mut(bit_index)?;
+    let changed = *slot != value;
+    *slot = value;
+    Some(changed)
 }
 
 fn placeable_update_source_state_bits_at(
