@@ -16,7 +16,7 @@ use super::{
     TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, object_ids, placeable,
     read_f32_le, read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
 };
-use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
+use crate::translate::area::{AreaPlaceableContext, AreaPlaceableObservedState};
 #[cfg(test)]
 use crate::translate::area::{
     AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
@@ -85,6 +85,12 @@ struct PlaceableUpdateStateBits {
     locked: bool,
     lockable: bool,
     visual_payload: bool,
+}
+
+impl PlaceableUpdateStateBits {
+    fn observed_area_state(self) -> AreaPlaceableObservedState {
+        AreaPlaceableObservedState::from_update_lock_state(self.lockable, self.locked)
+    }
 }
 
 pub(super) fn rewrite_update_record_for_ee(
@@ -1483,16 +1489,19 @@ fn trace_placeable_update_area_context(
     }
 
     let area_rows = overlap.formatted_rows();
-    let source_area_module_lock_mismatch = source_state_bits.is_some_and(|source_state| {
-        overlap.any_static_module_state_conflict(|module_state| {
-            placeable_update_lock_state_conflicts_with_area_module_state(source_state, module_state)
+    let source_area_module_state_conflict = source_state_bits
+        .map(|source_state| {
+            overlap.static_module_state_conflict(source_state.observed_area_state())
         })
-    });
-    let ee_area_module_lock_mismatch = ee_state_bits.is_some_and(|ee_state| {
-        overlap.any_static_module_state_conflict(|module_state| {
-            placeable_update_lock_state_conflicts_with_area_module_state(ee_state, module_state)
-        })
-    });
+        .unwrap_or_default();
+    let ee_area_module_state_conflict = ee_state_bits
+        .map(|ee_state| overlap.static_module_state_conflict(ee_state.observed_area_state()))
+        .unwrap_or_default();
+    let source_area_module_lock_mismatch = source_area_module_state_conflict.any();
+    let ee_area_module_lock_mismatch = ee_area_module_state_conflict.any();
+    let source_area_module_state_mismatch_fields =
+        source_area_module_state_conflict.formatted_fields();
+    let ee_area_module_state_mismatch_fields = ee_area_module_state_conflict.formatted_fields();
     let area_light_duplicate = overlap.has_light_row();
     let area_static_duplicate = overlap.has_static_row();
 
@@ -1510,16 +1519,11 @@ fn trace_placeable_update_area_context(
         ee_placeable_state = ?ee_state_bits,
         source_area_module_lock_mismatch,
         ee_area_module_lock_mismatch,
+        source_area_module_state_mismatch_fields = %source_area_module_state_mismatch_fields,
+        ee_area_module_state_mismatch_fields = %ee_area_module_state_mismatch_fields,
         area_rows = %area_rows,
         "server->client live-object placeable update overlaps area/static context"
     );
-}
-
-fn placeable_update_lock_state_conflicts_with_area_module_state(
-    state: PlaceableUpdateStateBits,
-    module_state: AreaPlaceableContextState,
-) -> bool {
-    state.lockable != module_state.lockable || state.locked != module_state.locked
 }
 
 fn parse_compact_door_placeable_tail9_update_claim(
@@ -2269,7 +2273,7 @@ mod tests {
             has_direction: true,
             object_id_confidence:
                 crate::translate::area::AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
-            module_state: Some(AreaPlaceableContextState {
+            module_state: Some(crate::translate::area::AreaPlaceableContextState {
                 static_object: true,
                 useable: true,
                 trap_flag: false,
@@ -2283,20 +2287,28 @@ mod tests {
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &row),
             "static:id=area-alias;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
+
+        let context = AreaPlaceableContext {
+            static_rows: vec![row],
+            ..AreaPlaceableContext::default()
+        };
+        let overlap = context.placeable_overlap_for_object_id(0x8000_0042);
+        let conflict = overlap.static_module_state_conflict(
+            state(false, true, true, true, true).observed_area_state(),
+        );
         assert!(
-            placeable_update_lock_state_conflicts_with_area_module_state(
-                state(false, true, true, true, true),
-                row.module_state.expect("test row has module state"),
-            ),
+            conflict.any(),
             "locked=true conflicts with the proven module static row"
         );
+        assert_eq!(conflict.formatted_fields(), "locked");
+        let matching = overlap.static_module_state_conflict(
+            state(false, true, false, true, true).observed_area_state(),
+        );
         assert!(
-            !placeable_update_lock_state_conflicts_with_area_module_state(
-                state(false, true, false, true, true),
-                row.module_state.expect("test row has module state"),
-            ),
+            !matching.any(),
             "matching lockable/locked bits should not report a module mismatch"
         );
+        assert_eq!(matching.formatted_fields(), "none");
     }
 
     fn compact_tail9_update_bytes(raw_mask: u32) -> Vec<u8> {

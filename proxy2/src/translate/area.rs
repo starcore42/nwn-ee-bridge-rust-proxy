@@ -349,19 +349,20 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         formatted
     }
 
-    pub fn any_static_module_state_conflict<F>(&self, mut conflicts: F) -> bool
-    where
-        F: FnMut(AreaPlaceableContextState) -> bool,
-    {
-        self.rows.iter().any(|matched| {
+    pub fn static_module_state_conflict(
+        &self,
+        observed: AreaPlaceableObservedState,
+    ) -> AreaPlaceableContextStateConflict {
+        let mut combined = AreaPlaceableContextStateConflict::default();
+        for matched in &self.rows {
             if matched.kind != AreaPlaceableContextRowKind::Static {
-                return false;
+                continue;
             }
-            match matched.row.module_state {
-                Some(module_state) => conflicts(module_state),
-                None => false,
+            if let Some(module_state) = matched.row.module_state {
+                combined.merge(observed.conflict_with_module_state(module_state));
             }
-        })
+        }
+        combined
     }
 }
 
@@ -414,6 +415,100 @@ pub struct AreaPlaceableContextState {
     pub trap_disarmable: bool,
     pub lockable: bool,
     pub locked: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AreaPlaceableObservedState {
+    pub useable: Option<bool>,
+    pub trap_disarmable: Option<bool>,
+    pub lockable: Option<bool>,
+    pub locked: Option<bool>,
+}
+
+impl AreaPlaceableObservedState {
+    pub fn from_add_record_state(
+        useable: bool,
+        trap_disarmable: bool,
+        lockable: bool,
+        locked: bool,
+    ) -> Self {
+        Self {
+            useable: Some(useable),
+            trap_disarmable: Some(trap_disarmable),
+            lockable: Some(lockable),
+            locked: Some(locked),
+        }
+    }
+
+    pub fn from_update_lock_state(lockable: bool, locked: bool) -> Self {
+        Self {
+            lockable: Some(lockable),
+            locked: Some(locked),
+            ..Self::default()
+        }
+    }
+
+    pub fn conflict_with_module_state(
+        self,
+        module_state: AreaPlaceableContextState,
+    ) -> AreaPlaceableContextStateConflict {
+        AreaPlaceableContextStateConflict {
+            useable: self
+                .useable
+                .is_some_and(|useable| useable != module_state.useable),
+            trap_disarmable: self
+                .trap_disarmable
+                .is_some_and(|trap_disarmable| trap_disarmable != module_state.trap_disarmable),
+            lockable: self
+                .lockable
+                .is_some_and(|lockable| lockable != module_state.lockable),
+            locked: self
+                .locked
+                .is_some_and(|locked| locked != module_state.locked),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AreaPlaceableContextStateConflict {
+    pub useable: bool,
+    pub trap_disarmable: bool,
+    pub lockable: bool,
+    pub locked: bool,
+}
+
+impl AreaPlaceableContextStateConflict {
+    pub fn any(self) -> bool {
+        self.useable || self.trap_disarmable || self.lockable || self.locked
+    }
+
+    pub fn formatted_fields(self) -> String {
+        let mut fields = Vec::new();
+        if self.useable {
+            fields.push("useable");
+        }
+        if self.trap_disarmable {
+            fields.push("trap_disarmable");
+        }
+        if self.lockable {
+            fields.push("lockable");
+        }
+        if self.locked {
+            fields.push("locked");
+        }
+        if fields.is_empty() {
+            "none".to_string()
+        } else {
+            fields.join(",")
+        }
+    }
+
+    fn merge(&mut self, other: AreaPlaceableContextStateConflict) {
+        self.useable |= other.useable;
+        self.trap_disarmable |= other.trap_disarmable;
+        self.lockable |= other.lockable;
+        self.locked |= other.locked;
+    }
 }
 
 pub fn format_area_placeable_context_row(
@@ -9187,14 +9282,26 @@ mod public_static_direction_tests {
             overlap.formatted_rows(),
             "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
-        assert!(
-            overlap.any_static_module_state_conflict(|state| state.lockable && !state.locked),
-            "static module state should be visible to add/update overlap diagnostics"
+        let add_conflict = overlap.static_module_state_conflict(
+            AreaPlaceableObservedState::from_add_record_state(false, true, false, true),
         );
-        assert!(
-            !overlap.any_static_module_state_conflict(|state| state.lockable && state.locked),
-            "non-conflicting module state closure should not report a mismatch"
+        assert!(add_conflict.any());
+        assert_eq!(
+            add_conflict.formatted_fields(),
+            "useable,trap_disarmable,lockable,locked"
         );
+
+        let matching_update = overlap.static_module_state_conflict(
+            AreaPlaceableObservedState::from_update_lock_state(true, false),
+        );
+        assert!(!matching_update.any());
+        assert_eq!(matching_update.formatted_fields(), "none");
+
+        let update_conflict = overlap.static_module_state_conflict(
+            AreaPlaceableObservedState::from_update_lock_state(false, true),
+        );
+        assert!(update_conflict.any());
+        assert_eq!(update_conflict.formatted_fields(), "lockable,locked");
     }
 
     #[test]

@@ -30,7 +30,7 @@
 //! exactly where EE will begin reading the map, or for verified door/placeable
 //! add records at the EE decompile-backed cursor.
 
-use crate::translate::area::{AreaPlaceableContext, AreaPlaceableContextState};
+use crate::translate::area::{AreaPlaceableContext, AreaPlaceableObservedState};
 #[cfg(test)]
 use crate::translate::area::{
     AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
@@ -3679,18 +3679,15 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             .as_ref()
             .map(|overlap| overlap.formatted_rows())
             .unwrap_or_default();
-        let area_module_state_mismatch =
-            area_overlap
-                .as_ref()
-                .zip(source_state_bits)
-                .is_some_and(|(overlap, source_state)| {
-                    overlap.any_static_module_state_conflict(|module_state| {
-                        placeable_add_state_conflicts_with_area_module_state(
-                            source_state,
-                            module_state,
-                        )
-                    })
-                });
+        let area_module_state_conflict = area_overlap
+            .as_ref()
+            .zip(source_state_bits)
+            .map(|(overlap, source_state)| {
+                overlap.static_module_state_conflict(source_state.observed_area_state())
+            })
+            .unwrap_or_default();
+        let area_module_state_mismatch = area_module_state_conflict.any();
+        let area_module_state_mismatch_fields = area_module_state_conflict.formatted_fields();
         tracing::info!(
             object_id = format_args!("0x{object_id:08X}"),
             appearance,
@@ -3699,6 +3696,7 @@ fn rewrite_legacy_placeable_add_record_for_ee(
             area_static_duplicate,
             legacy_user_defined_static,
             area_module_state_mismatch,
+            area_module_state_mismatch_fields = %area_module_state_mismatch_fields,
             source_bits = required_source_bits,
             area_rows = %area_rows,
             "server->client live-object placeable add overlaps area/static context; retaining add so later updates have an active EE object"
@@ -3957,6 +3955,17 @@ struct PlaceableAddStateBits {
     name_valid: bool,
 }
 
+impl PlaceableAddStateBits {
+    fn observed_area_state(self) -> AreaPlaceableObservedState {
+        AreaPlaceableObservedState::from_add_record_state(
+            self.useable,
+            self.trap_disarmable,
+            self.lockable,
+            self.locked,
+        )
+    }
+}
+
 fn legacy_placeable_add_state_bits(
     bits: &[bool],
     bit_cursor: usize,
@@ -3977,16 +3986,6 @@ fn legacy_placeable_add_state_bits(
         unknown_1ac: bit(8),
         name_valid: bit(9),
     }
-}
-
-fn placeable_add_state_conflicts_with_area_module_state(
-    state: PlaceableAddStateBits,
-    module_state: AreaPlaceableContextState,
-) -> bool {
-    state.useable != module_state.useable
-        || state.trap_disarmable != module_state.trap_disarmable
-        || state.lockable != module_state.lockable
-        || state.locked != module_state.locked
 }
 
 fn write_ee_placeable_add_state_bits(
@@ -5058,7 +5057,7 @@ mod placeable_add_semantic_tests {
             has_direction: true,
             object_id_confidence:
                 crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
-            module_state: Some(AreaPlaceableContextState {
+            module_state: Some(crate::translate::area::AreaPlaceableContextState {
                 static_object: true,
                 useable: true,
                 trap_flag: false,
@@ -5070,6 +5069,29 @@ mod placeable_add_semantic_tests {
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &static_row),
             "static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+        );
+
+        let conflict = static_row
+            .module_state
+            .map(|module_state| {
+                PlaceableAddStateBits {
+                    reputation_visual: false,
+                    static_plot: true,
+                    useable: false,
+                    trap_disarmable: true,
+                    lockable: false,
+                    locked: true,
+                    unknown_1ac: false,
+                    name_valid: true,
+                }
+                .observed_area_state()
+                .conflict_with_module_state(module_state)
+            })
+            .unwrap_or_default();
+        assert!(conflict.any());
+        assert_eq!(
+            conflict.formatted_fields(),
+            "useable,trap_disarmable,lockable,locked"
         );
     }
 
