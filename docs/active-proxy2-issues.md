@@ -2829,6 +2829,13 @@ Current status:
   than bits donated by the item-create row. Packet bytes are unchanged; the
   remaining owner still needs compact source-writer/capture proof or another
   source-side handoff before changing `U/6` cursor ownership.
+- 2026-06-10 follow-up `P/05/01` item source-gap range diagnostic: production
+  source-window tracing now prints the exact emitted/source gap ranges and bit
+  values for ledger focus, expected, and neighboring `U/6` cursors. This keeps
+  the compact `U/10 -> A/6 -> U/6` replay focused on the concrete two active
+  pre-`U/6` bits instead of only reporting aggregate gap counts. Packet bytes
+  are unchanged; continue with compact source-writer/capture proof before
+  assigning those bits.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
