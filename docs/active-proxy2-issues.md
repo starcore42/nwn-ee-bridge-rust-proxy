@@ -2845,6 +2845,14 @@ Current status:
   still owns this cursor". Packet bytes are unchanged; next proof remains a
   compact source capture or decompile-backed source owner before changing
   `U/6` cursor ownership.
+- 2026-06-10 follow-up `P/05/01` row-level handoff ledger diagnostic:
+  production source-window tracing now includes the contiguous tail's exact
+  row spans in the single-line focus/neighbor summary:
+  `offset..record_end:family[src=start..end,emit=start..end,+inserted,-removed]`.
+  This makes compact `U/10 tail9` and no-map `A/6` provenance visible on the
+  same line as the remaining `U/6` cursor gap. Packet bytes are unchanged; the
+  two pre-`U/6` bits still need compact source-writer/capture proof or another
+  source-side handoff before any cursor ownership change.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

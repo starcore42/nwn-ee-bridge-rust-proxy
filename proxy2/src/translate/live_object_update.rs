@@ -743,6 +743,16 @@ mod diagnostic_tests {
             "add-exact->update-rewrite->add-rewrite"
         );
         assert_eq!(
+            ledger.contiguous_tail_row_chain(tail),
+            "0..6:add-exact[src=3..9,emit=3..9,+0,-0]->6..16:update-rewrite[src=9..17,emit=9..22,+6,-1]->16..32:add-rewrite[src=17..22,emit=22..28,+1,-0]",
+            "the diagnostic chain must preserve per-row source/emitted spans"
+        );
+        assert_eq!(
+            format_rewrite_bit_ledger_contiguous_tail(&ledger, CNW_FRAGMENT_HEADER_BITS + 27),
+            "entries=3 families=add-exact->update-rewrite->add-rewrite rows=0..6:add-exact[src=3..9,emit=3..9,+0,-0]->6..16:update-rewrite[src=9..17,emit=9..22,+6,-1]->16..32:add-rewrite[src=17..22,emit=22..28,+1,-0] source=3..22 emitted=3..28 emitted_gap_to_cursor=2 source_gap_to_cursor=2",
+            "single-line failure diagnostics need the same row-level provenance"
+        );
+        assert_eq!(
             (tail.source_bit_start, tail.source_bit_end),
             (CNW_FRAGMENT_HEADER_BITS, CNW_FRAGMENT_HEADER_BITS + 19)
         );
@@ -8341,13 +8351,46 @@ impl LiveObjectRewriteBitLedger {
         &self,
         tail: LiveObjectRewriteBitLedgerContiguousTail,
     ) -> String {
-        self.entries
-            .get(tail.start_index..=tail.end_index)
-            .unwrap_or(&[])
+        self.contiguous_tail_entries(tail)
             .iter()
             .map(|entry| entry.family)
             .collect::<Vec<_>>()
             .join("->")
+    }
+
+    fn contiguous_tail_row_chain(&self, tail: LiveObjectRewriteBitLedgerContiguousTail) -> String {
+        let rows = self
+            .contiguous_tail_entries(tail)
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}..{}:{}[src={}..{},emit={}..{},+{},-{}]",
+                    entry.offset,
+                    entry.record_end,
+                    entry.family,
+                    entry.source_bit_start,
+                    entry.source_bit_end,
+                    entry.emitted_bit_start,
+                    entry.emitted_bit_end,
+                    entry.bits_inserted,
+                    entry.bits_removed
+                )
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            "none".to_string()
+        } else {
+            rows.join("->")
+        }
+    }
+
+    fn contiguous_tail_entries(
+        &self,
+        tail: LiveObjectRewriteBitLedgerContiguousTail,
+    ) -> &[LiveObjectRewriteBitLedgerEntry] {
+        self.entries
+            .get(tail.start_index..=tail.end_index)
+            .unwrap_or(&[])
     }
 }
 
@@ -9176,9 +9219,10 @@ fn format_rewrite_bit_ledger_contiguous_tail(
         return "none".to_string();
     };
     format!(
-        "entries={} families={} source={}..{} emitted={}..{} emitted_gap_to_cursor={} source_gap_to_cursor={}",
+        "entries={} families={} rows={} source={}..{} emitted={}..{} emitted_gap_to_cursor={} source_gap_to_cursor={}",
         tail.entry_count,
         rewrite_bit_ledger.contiguous_tail_family_chain(tail),
+        rewrite_bit_ledger.contiguous_tail_row_chain(tail),
         tail.source_bit_start,
         tail.source_bit_end,
         tail.emitted_bit_start,
