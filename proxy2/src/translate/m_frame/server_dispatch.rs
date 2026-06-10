@@ -19,6 +19,7 @@ use crate::{
 
 use super::{deferred_module_resources, live_update, parse_window};
 use std::{
+    collections::BTreeSet,
     fs,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -731,11 +732,50 @@ fn finalize_server_translator_claim(
         return false;
     }
 
+    if family == VerifiedFamily::GameObjUpdateLiveObject {
+        trace_unresolved_area_static_placeable_conflicts(payload, family_name, object_registry);
+    }
+
     rewrite.note_rewrite(family_name, family);
     if let Some(area_rewrite) = claim.area_rewrite {
         rewrite.area_rewrite = Some(area_rewrite);
     }
     true
+}
+
+fn trace_unresolved_area_static_placeable_conflicts(
+    payload: &[u8],
+    family_name: &'static str,
+    object_registry: Option<&semantic::ObjectRegistry>,
+) {
+    let Some(registry) = object_registry else {
+        return;
+    };
+    let Some(claim) = live_update::claim_payload_if_verified(payload) else {
+        return;
+    };
+
+    let mut seen = BTreeSet::new();
+    for mention in claim.mentions {
+        if !seen.insert((mention.object_type, mention.object_id)) {
+            continue;
+        }
+        let Some(conflict) = registry.unresolved_area_static_placeable_conflict_for_record(
+            mention.object_type,
+            mention.object_id,
+        ) else {
+            continue;
+        };
+        let conflict_fields = conflict.formatted_fields();
+        tracing::debug!(
+            family = family_name,
+            opcode = %char::from(mention.opcode),
+            object_type = mention.object_type,
+            object_id = format_args!("0x{:08X}", mention.object_id),
+            unresolved_area_module_state_mismatch_fields = %conflict_fields,
+            "server live-object record translated while prior area/static placeable conflict remains unresolved"
+        );
+    }
 }
 
 fn claimed() -> ServerTranslatorOutcome {

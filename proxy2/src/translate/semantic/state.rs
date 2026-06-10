@@ -24,6 +24,7 @@ use super::event::{
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
+const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
 
 #[derive(Debug, Default)]
 pub(crate) struct SemanticSessionState {
@@ -258,6 +259,7 @@ impl ObjectRegistry {
                     entry.active = false;
                     entry.placeable_state = None;
                     entry.latest_area_static_state_conflict = None;
+                    entry.unresolved_area_static_state_conflict = None;
                     entry.delete_mentions = entry.delete_mentions.saturating_add(1);
                 }
                 b'U' | b'P' | b'I' | b'G' | b'W' => {
@@ -325,6 +327,11 @@ impl ObjectRegistry {
             let add_mentions = known.add_mentions;
             let update_mentions = known.update_mentions;
             let last_opcode = known.last_opcode;
+            let prior_unresolved_conflict = known.unresolved_area_static_state_conflict;
+            let prior_unresolved_conflict_fields = prior_unresolved_conflict
+                .map(AreaPlaceableContextStateConflict::formatted_fields)
+                .unwrap_or_else(|| "none".to_string());
+            let resolved_prior_conflict = prior_unresolved_conflict.is_some() && !conflict.any();
 
             if let Some(known) = self.known.get_mut(&mention.object_id) {
                 known.area_placeable_context_overlaps =
@@ -333,6 +340,11 @@ impl ObjectRegistry {
                 if conflict.any() {
                     known.area_static_state_conflicts =
                         known.area_static_state_conflicts.saturating_add(1);
+                    known.unresolved_area_static_state_conflict = Some(conflict);
+                } else if known.unresolved_area_static_state_conflict.take().is_some() {
+                    known.area_static_state_conflict_resolutions = known
+                        .area_static_state_conflict_resolutions
+                        .saturating_add(1);
                 }
             }
 
@@ -351,6 +363,22 @@ impl ObjectRegistry {
                     area_module_state_mismatch_fields = %conflict_fields,
                     area_rows = %area_rows,
                     "semantic live-object placeable state conflicts with module-backed area/static context"
+                );
+            } else if resolved_prior_conflict {
+                tracing::info!(
+                    object_id = format_args!("0x{:08X}", mention.object_id),
+                    area_resref = area_context.area_resref.as_str(),
+                    active = known_active,
+                    last_opcode = %char::from(last_opcode),
+                    mentions = known_mentions,
+                    add_mentions,
+                    update_mentions,
+                    area_light_duplicate,
+                    area_static_duplicate,
+                    merged_placeable_state = ?placeable_state,
+                    previous_area_module_state_mismatch_fields = %prior_unresolved_conflict_fields,
+                    area_rows = %area_rows,
+                    "semantic live-object placeable state resolved prior module-backed area/static conflict"
                 );
             } else {
                 tracing::debug!(
@@ -425,11 +453,47 @@ impl ObjectRegistry {
         active
     }
 
+    pub(crate) fn unresolved_area_static_placeable_conflict_for_record(
+        &self,
+        object_type: u8,
+        object_id: u32,
+    ) -> Option<AreaPlaceableContextStateConflict> {
+        if object_type != PLACEABLE_OBJECT_TYPE {
+            return None;
+        }
+
+        self.known
+            .get(&object_id)
+            .and_then(unresolved_area_static_placeable_conflict)
+            .or_else(|| {
+                self.known
+                    .values()
+                    .find(|object| {
+                        object.object_type == PLACEABLE_OBJECT_TYPE
+                            && object_ids::equivalent_legacy_external_object_ids(
+                                object.object_id,
+                                object_id,
+                            )
+                            && unresolved_area_static_placeable_conflict(object).is_some()
+                    })
+                    .and_then(unresolved_area_static_placeable_conflict)
+            })
+    }
+
     pub(crate) fn session_creature_id_for_compact(&self, compact_id: u32) -> Option<u32> {
         self.session_creature_ids_by_compact
             .get(&compact_id)
             .copied()
     }
+}
+
+fn unresolved_area_static_placeable_conflict(
+    object: &KnownObjectState,
+) -> Option<AreaPlaceableContextStateConflict> {
+    object
+        .active
+        .then_some(object.unresolved_area_static_state_conflict)
+        .flatten()
 }
 
 fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
@@ -464,6 +528,8 @@ pub(crate) struct KnownObjectState {
     pub(crate) area_placeable_context_overlaps: u64,
     pub(crate) area_static_state_conflicts: u64,
     pub(crate) latest_area_static_state_conflict: Option<AreaPlaceableContextStateConflict>,
+    pub(crate) unresolved_area_static_state_conflict: Option<AreaPlaceableContextStateConflict>,
+    pub(crate) area_static_state_conflict_resolutions: u64,
 }
 
 impl KnownObjectState {
@@ -680,6 +746,11 @@ mod tests {
             object.latest_area_static_state_conflict,
             Some(AreaPlaceableContextStateConflict::default())
         );
+        assert_eq!(object.unresolved_area_static_state_conflict, None);
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
+            None
+        );
 
         let update_mention = LiveObjectMention {
             opcode: b'U',
@@ -714,6 +785,22 @@ mod tests {
             })
         );
         assert_eq!(
+            object.unresolved_area_static_state_conflict,
+            Some(AreaPlaceableContextStateConflict {
+                locked: true,
+                ..AreaPlaceableContextStateConflict::default()
+            })
+        );
+        assert_eq!(object.area_static_state_conflict_resolutions, 0);
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, compact_object_id),
+            Some(AreaPlaceableContextStateConflict {
+                locked: true,
+                ..AreaPlaceableContextStateConflict::default()
+            }),
+            "future translators may see either compact Diamond ids or canonical EE external ids"
+        );
+        assert_eq!(
             object.placeable_state,
             Some(LiveObjectPlaceableState {
                 useable: Some(true),
@@ -721,6 +808,49 @@ mod tests {
                 lockable: Some(true),
                 locked: Some(true),
             })
+        );
+
+        let resolving_update_mention = LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+        };
+
+        registry.observe_mentions(std::slice::from_ref(&resolving_update_mention));
+        registry.observe_placeable_area_context(
+            &area_context,
+            std::slice::from_ref(&resolving_update_mention),
+        );
+
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("placeable should remain registered after resolving update");
+        assert_eq!(object.area_placeable_context_overlaps, 3);
+        assert_eq!(object.area_static_state_conflicts, 1);
+        assert_eq!(object.area_static_state_conflict_resolutions, 1);
+        assert_eq!(
+            object.latest_area_static_state_conflict,
+            Some(AreaPlaceableContextStateConflict::default())
+        );
+        assert_eq!(object.unresolved_area_static_state_conflict, None);
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
+            None
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x05, external_object_id),
+            None,
+            "static placeable conflict state must not leak to other live-object types"
         );
 
         registry.observe_mentions(&[LiveObjectMention {
@@ -740,6 +870,11 @@ mod tests {
                 .and_then(|object| object.latest_area_static_state_conflict),
             None,
             "delete rows clear stale area/static mismatch state before id reuse"
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
+            None,
+            "delete rows clear unresolved mismatch state before id reuse"
         );
     }
 

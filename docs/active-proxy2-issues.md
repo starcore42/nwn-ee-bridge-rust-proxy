@@ -674,6 +674,19 @@ Current status:
   visual replay/harness logging to determine whether observed static/live drift
   is an `A/09` add-state synthesis problem or a later `U/09` update-state
   translation problem.
+- 2026-06-10 follow-up `P/04/01` -> `P/05/01` unresolved static/live
+  placeable state audit: no emitted packet bytes changed. `ObjectRegistry` now
+  separates historical area/static conflict observations from currently
+  unresolved conflicts, clears unresolved state on delete or a later verified
+  matching `A/09`/`U/09` state, and exposes a compact-vs-EE-external-id aware
+  lookup for future add/update rewrite policy. The live-object M-frame claim
+  path now logs when a translated record still intersects an unresolved
+  module-backed static conflict. Verified with isolated-target `cargo test -q
+  -p hgbridge-proxy2 area_context_conflicts_use_merged_verified_placeable_state
+  -- --nocapture`, `cargo check -q -p hgbridge-proxy2`, and `cargo fmt --all
+  --check`. Next production path remains local visual replay using these
+  unresolved-vs-resolved signals to decide whether a generalized fix belongs in
+  `A/09` add-state synthesis or `U/09` update-state translation.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
