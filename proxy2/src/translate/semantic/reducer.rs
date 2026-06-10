@@ -12,8 +12,9 @@ use crate::{
 
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent, LiveObjectMention,
-    LiveObjectOrientation, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    PlayerListEvent, ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
+    LiveObjectOrientation, LiveObjectPlaceableState, LiveObjectPosition, LoginEvent,
+    ModuleInfoEvent, ObservedHighLevel, PlayerListEvent, ProtocolEvent, QuickbarEvent,
+    SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -253,6 +254,14 @@ fn live_object_observations_from_payload(payload: &[u8]) -> (Vec<LiveObjectMenti
                 max_y: bounds.max_y,
                 max_z: bounds.max_z,
             }),
+            placeable_state: mention
+                .placeable_state
+                .map(|state| LiveObjectPlaceableState {
+                    useable: state.useable,
+                    trap_disarmable: state.trap_disarmable,
+                    lockable: state.lockable,
+                    locked: state.locked,
+                }),
         })
         .collect();
     (mentions, materialized_item_object_ids)

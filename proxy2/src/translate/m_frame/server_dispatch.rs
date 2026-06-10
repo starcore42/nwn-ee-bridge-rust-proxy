@@ -3918,6 +3918,7 @@ mod tests {
                         position: None,
                         orientation: None,
                         bounds: None,
+                        placeable_state: None,
                     }]);
             }
 

@@ -595,6 +595,71 @@ Current status:
   placeable_overlap_context_format_keeps_light_static_provenance --
   --nocapture`, and `cargo fmt --all --check`. Keep the broader issue open
   pending visual replay against a confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` -> `P/05/01` placeable update-context audit: no emitted
+  packet bytes changed. The M-frame live-object update passes now thread the
+  latest area placeable context into the `U/09` translator, and successful
+  placeable update rewrites log light/static overlap rows, object-id confidence,
+  source/EE state bits, and module-backed lockable/locked mismatches where a
+  unique static row proves module state. This makes the next visual replay
+  distinguish add-state drift from later update-state drift without treating
+  GIT state as a rewrite authority. Verified with non-incremental isolated
+  target `cargo test -q -p hgbridge-proxy2
+  placeable_update_area_context_helpers_keep_identity_and_lock_proof --
+  --nocapture` and `cargo test -q -p hgbridge-proxy2 placeable_update --
+  --nocapture`. Keep the broader issue open pending visual replay against a
+  confirmed bad static/live placeable capture.
+- 2026-06-10 `P/04/01` -> `P/05/01` shared placeable overlap audit: no emitted
+  packet bytes changed. `AreaPlaceableContext` now owns the shared overlap
+  result, row formatting, and static module-state conflict helper used by both
+  `A/09` add diagnostics and `U/09` update diagnostics. Exact object-id matching
+  and legacy/external-id equivalence remain caller-selected, but light/static
+  row provenance and module trap/use/lock mismatch formatting now follow one
+  generalized state path. Verified with non-incremental isolated-target `cargo
+  check -q -p hgbridge-proxy2`, `cargo test -q -p hgbridge-proxy2
+  placeable_context_overlap_formats_rows_and_checks_static_module_state --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 placeable_context_ --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_overlap_context_format_keeps_light_static_provenance --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_update_area_context_helpers_keep_identity_and_lock_proof --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2 placeable_update --
+  --nocapture`, `cargo fmt --all --check`, and `git diff --check`. Next
+  verification remains visual replay/local harness evidence to decide whether
+  the remaining drift belongs to `A/09` add-state synthesis or `U/09` update
+  translation.
+- 2026-06-10 `P/04/01` -> `P/05/01` shared placeable observed-state audit: no
+  emitted packet bytes changed. `AreaPlaceableContext` now owns the observed
+  live-state model and static module-state conflict field reporting for
+  placeable add/update diagnostics; `A/09` maps useable/trap-disarmable/
+  lockable/locked bits into that model, while `U/09` maps only the
+  decompile-backed lockable/locked update bits. The old per-family mismatch
+  helpers were removed so future rewrite policy has one static/live state
+  comparison path, and logs now include exact conflicting field names instead
+  of only a boolean. Verified with non-incremental isolated-target `cargo
+  check -q -p hgbridge-proxy2`, `cargo test -q -p hgbridge-proxy2
+  placeable_context_overlap_formats_rows_and_checks_static_module_state --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_overlap_context_format_keeps_light_static_provenance --
+  --nocapture`, `cargo test -q -p hgbridge-proxy2
+  placeable_update_area_context_helpers_keep_identity_and_lock_proof --
+  --nocapture`, `cargo fmt --all --check`, and `git diff --check`. Next
+  verification remains local visual replay with these conflict-field labels to
+  decide whether a generalized state rewrite is warranted for add synthesis or
+  later update translation.
+- 2026-06-10 `P/04/01` -> `P/05/01` verified placeable state-registry audit:
+  production state machinery now exposes exact `A/09` useable/trap/lock state
+  and exact `U/09` lock-state facts through `LiveObjectRecordMention`,
+  semantic live-object events, and `ObjectRegistry` merge state. The `U/09`
+  extractor requires the decompile-backed neutral sixth EE door/placeable state
+  BOOL before publishing those facts. No emitted packet bytes changed. Verified
+  with isolated-target `cargo test -q -p hgbridge-proxy2
+  exact_placeable_add_and_update_mentions_expose_state_bits -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2
+  verified_placeable_state_merges_add_and_update_facts -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, and `cargo fmt --all --check`. Next
+  verification remains local visual replay comparing semantic add/update state
+  against area static context before choosing add synthesis or update
+  translation changes.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

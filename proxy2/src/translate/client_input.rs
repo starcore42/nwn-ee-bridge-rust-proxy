@@ -1636,6 +1636,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
             LiveObjectMention {
                 opcode: b'U',
@@ -1649,6 +1650,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
             LiveObjectMention {
                 opcode: b'A',
@@ -1658,6 +1660,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
             LiveObjectMention {
                 opcode: b'U',
@@ -1671,6 +1674,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
         ]);
 
@@ -1712,6 +1716,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
             LiveObjectMention {
                 opcode: b'U',
@@ -1725,6 +1730,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_state: None,
             },
         ]);
 

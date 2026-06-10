@@ -14,7 +14,8 @@ use std::{
 use crate::translate::{VerifiedFamily, player_list::PlayerListObjectIds};
 
 use super::event::{
-    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPosition, ProtocolEvent,
+    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState,
+    LiveObjectPosition, ProtocolEvent,
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
@@ -204,6 +205,9 @@ impl ObjectRegistry {
             if let Some(bounds) = mention.bounds {
                 entry.bounds = Some(bounds);
             }
+            if let Some(placeable_state) = mention.placeable_state {
+                entry.merge_placeable_state(placeable_state);
+            }
             entry.mentions = entry.mentions.saturating_add(1);
             match mention.opcode {
                 b'A' => {
@@ -247,6 +251,7 @@ impl ObjectRegistry {
                         );
                     }
                     entry.active = false;
+                    entry.placeable_state = None;
                     entry.delete_mentions = entry.delete_mentions.saturating_add(1);
                 }
                 b'U' | b'P' | b'I' | b'G' | b'W' => {
@@ -355,6 +360,7 @@ pub(crate) struct KnownObjectState {
     pub(crate) position: Option<LiveObjectPosition>,
     pub(crate) orientation: Option<LiveObjectOrientation>,
     pub(crate) bounds: Option<LiveObjectBounds>,
+    pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
     pub(crate) mentions: u64,
     pub(crate) add_mentions: u64,
     pub(crate) update_mentions: u64,
@@ -362,6 +368,24 @@ pub(crate) struct KnownObjectState {
     pub(crate) duplicate_add_mentions: u64,
     pub(crate) update_before_add_mentions: u64,
     pub(crate) delete_before_add_mentions: u64,
+}
+
+impl KnownObjectState {
+    fn merge_placeable_state(&mut self, observed: LiveObjectPlaceableState) {
+        let state = self.placeable_state.get_or_insert_with(Default::default);
+        if observed.useable.is_some() {
+            state.useable = observed.useable;
+        }
+        if observed.trap_disarmable.is_some() {
+            state.trap_disarmable = observed.trap_disarmable;
+        }
+        if observed.lockable.is_some() {
+            state.lockable = observed.lockable;
+        }
+        if observed.locked.is_some() {
+            state.locked = observed.locked;
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -379,7 +403,10 @@ pub(crate) struct SyntheticState {
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveObjectMention, LiveObjectOrientation, ObjectRegistry, PlayerListObjectIds};
+    use super::{
+        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState, ObjectRegistry,
+        PlayerListObjectIds,
+    };
 
     #[test]
     fn duplicate_same_type_add_is_idempotent_protocol_state() {
@@ -392,6 +419,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         };
 
         registry.observe_mentions(&[mention.clone()]);
@@ -420,6 +448,7 @@ mod tests {
                 scalar_tenths_degrees: 900,
             }),
             bounds: None,
+            placeable_state: None,
         };
 
         registry.observe_mentions(&[mention.clone()]);
@@ -429,6 +458,74 @@ mod tests {
             .get(&mention.object_id)
             .expect("object should stay registered");
         assert_eq!(object.orientation, mention.orientation);
+    }
+
+    #[test]
+    fn verified_placeable_state_merges_add_and_update_facts() {
+        let mut registry = ObjectRegistry::default();
+        let object_id = 0x8000_34D8;
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+        }]);
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            }),
+        }]);
+
+        let object = registry
+            .known
+            .get(&object_id)
+            .expect("placeable should stay registered");
+        assert_eq!(
+            object.placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(true),
+            })
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_state: None,
+        }]);
+        assert_eq!(
+            registry
+                .known
+                .get(&object_id)
+                .and_then(|object| object.placeable_state),
+            None,
+            "delete rows clear stale placeable state before any future id reuse"
+        );
     }
 
     #[test]
@@ -486,6 +583,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         }]);
 
         assert!(registry.has_active_live_object_for_record(0, creature_id));
@@ -504,6 +602,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         }]);
         registry.observe_mentions(&[LiveObjectMention {
             opcode: b'I',
@@ -513,6 +612,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         }]);
 
         let object = registry
@@ -539,6 +639,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         }]);
         registry.observe_mentions(&[LiveObjectMention {
             opcode: b'A',
@@ -548,6 +649,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_state: None,
         }]);
 
         let object = registry

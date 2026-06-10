@@ -684,6 +684,64 @@ mod diagnostic_tests {
         );
         assert!(ledger.entries().is_empty());
     }
+
+    #[test]
+    fn exact_placeable_add_and_update_mentions_expose_state_bits() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            true,  // static/plot state.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+            false, // update visual selector.
+            false, // update visual state active.
+            true,  // update locked.
+            true,  // update lockable.
+            false, // update visual payload.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("live-object payload");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact live-object claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            })
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -751,6 +809,33 @@ pub struct LiveObjectRecordOrientation {
     pub scalar_tenths_degrees: u16,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveObjectPlaceableState {
+    pub useable: Option<bool>,
+    pub trap_disarmable: Option<bool>,
+    pub lockable: Option<bool>,
+    pub locked: Option<bool>,
+}
+
+impl LiveObjectPlaceableState {
+    fn from_add_record(useable: bool, trap_disarmable: bool, lockable: bool, locked: bool) -> Self {
+        Self {
+            useable: Some(useable),
+            trap_disarmable: Some(trap_disarmable),
+            lockable: Some(lockable),
+            locked: Some(locked),
+        }
+    }
+
+    fn from_update_lock_state(lockable: bool, locked: bool) -> Self {
+        Self {
+            lockable: Some(lockable),
+            locked: Some(locked),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveObjectRecordBounds {
     pub min_x: f32,
@@ -775,6 +860,7 @@ pub struct LiveObjectRecordMention {
     pub position: Option<LiveObjectRecordPosition>,
     pub orientation: Option<LiveObjectRecordOrientation>,
     pub bounds: Option<LiveObjectRecordBounds>,
+    pub placeable_state: Option<LiveObjectPlaceableState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2369,6 +2455,15 @@ fn verified_record_mention(
             object_type,
         ),
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
+        placeable_state: verified_record_placeable_state(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+            opcode,
+            object_type,
+        ),
     })
 }
 
@@ -2920,6 +3015,122 @@ fn verified_record_orientation(
     Some(LiveObjectRecordOrientation {
         scalar_tenths_degrees: (high << 4) | low,
     })
+}
+
+fn verified_record_placeable_state(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    opcode: u8,
+    object_type: u8,
+) -> Option<LiveObjectPlaceableState> {
+    if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
+        return None;
+    }
+
+    match opcode {
+        b'A' => {
+            verified_placeable_add_state(live_bytes, offset, record_end, fragment_bits, bit_cursor)
+        }
+        b'U' => verified_placeable_update_state(live_bytes, offset, fragment_bits, bit_cursor),
+        _ => None,
+    }
+}
+
+fn verified_placeable_add_state(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveObjectPlaceableState> {
+    let name_offset = offset.checked_add(6)?;
+    if name_offset > record_end || bit_cursor >= fragment_bits.len() {
+        return None;
+    }
+
+    let outer_locstring = fragment_bits.get(bit_cursor).copied()?;
+    let destination_name_inner_bits = if outer_locstring {
+        let inner_client_tlk = fragment_bits.get(bit_cursor + 1).copied()?;
+        if inner_client_tlk {
+            return None;
+        }
+        1
+    } else {
+        0
+    };
+    let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
+    if fragment_bits.len() <= post_name_bit + 9 || fragment_bits.get(post_name_bit + 9).copied()? {
+        return None;
+    }
+
+    let tail_offset =
+        locstring::inline_cexo_string_end(live_bytes, name_offset).unwrap_or(name_offset + 4);
+    let base_tail_end = tail_offset.checked_add(1 + 2 + 2)?;
+    if base_tail_end > record_end {
+        return None;
+    }
+    let optional_object_id = fragment_bits.get(post_name_bit + 1).copied()?;
+    let map_offset = if optional_object_id {
+        read_u32_le(live_bytes, base_tail_end)?;
+        base_tail_end.checked_add(4)?
+    } else {
+        base_tail_end
+    };
+    if map_offset + visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN != record_end
+        || !creature::has_ee_identity_visual_transform_map_at(live_bytes, map_offset, record_end)
+    {
+        return None;
+    }
+
+    Some(LiveObjectPlaceableState::from_add_record(
+        fragment_bits.get(post_name_bit + 3).copied()?,
+        fragment_bits.get(post_name_bit + 4).copied()?,
+        fragment_bits.get(post_name_bit + 5).copied()?,
+        fragment_bits.get(post_name_bit + 6).copied()?,
+    ))
+}
+
+fn verified_placeable_update_state(
+    live_bytes: &[u8],
+    offset: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveObjectPlaceableState> {
+    let mask = read_u32_le(live_bytes, offset.checked_add(6)?)?;
+    if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
+        return None;
+    }
+
+    let mut cursor = bit_cursor;
+    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS)?;
+    }
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        let vector_orientation = fragment_bits.get(cursor).copied()?;
+        cursor = cursor.checked_add(if vector_orientation {
+            EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+        } else {
+            EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+        })?;
+    }
+    let ee_placeable_state_fragment_bits = LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1;
+    if fragment_bits.len().saturating_sub(cursor) < ee_placeable_state_fragment_bits {
+        return None;
+    }
+    if fragment_bits
+        .get(cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS)
+        .copied()?
+    {
+        return None;
+    }
+
+    Some(LiveObjectPlaceableState::from_update_lock_state(
+        fragment_bits.get(cursor + 3).copied()?,
+        fragment_bits.get(cursor + 2).copied()?,
+    ))
 }
 
 fn verified_record_bounds(

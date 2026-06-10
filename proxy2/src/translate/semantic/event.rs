@@ -82,6 +82,7 @@ pub(crate) struct LiveObjectMention {
     pub(crate) position: Option<LiveObjectPosition>,
     pub(crate) orientation: Option<LiveObjectOrientation>,
     pub(crate) bounds: Option<LiveObjectBounds>,
+    pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,6 +105,14 @@ pub(crate) struct LiveObjectBounds {
     pub(crate) max_x: f32,
     pub(crate) max_y: f32,
     pub(crate) max_z: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LiveObjectPlaceableState {
+    pub(crate) useable: Option<bool>,
+    pub(crate) trap_disarmable: Option<bool>,
+    pub(crate) lockable: Option<bool>,
+    pub(crate) locked: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
