@@ -244,17 +244,141 @@ mod diagnostic_tests {
 
     #[test]
     fn item_update_failure_evidence_report_keeps_payload_and_gap_summary() {
-        let payload = vec![
+        let mut payload = vec![0; 110];
+        payload[0..3].copy_from_slice(&[
             HIGH_LEVEL_ENVELOPE,
             GAME_OBJECT_UPDATE_MAJOR,
             LIVE_OBJECT_MINOR,
-            0x0A,
-            0,
-            0,
-            0,
-            b'U',
-            ITEM_OBJECT_TYPE,
-        ];
+        ]);
+        payload[3..7].copy_from_slice(&0x0000_000Au32.to_le_bytes());
+        payload[7] = b'U';
+        payload[8] = ITEM_OBJECT_TYPE;
+        payload[51] = b'U';
+        payload[52] = ITEM_OBJECT_TYPE;
+        payload[53..57].copy_from_slice(&0x0000_0020u32.to_le_bytes());
+        payload[57..61].copy_from_slice(&0xFFFF_FFF3u32.to_le_bytes());
+        let mut tail_entries = [None; LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT];
+        tail_entries[0] = Some(LiveObjectUpdateRewriteTailEntryEvidence {
+            offset: 16,
+            record_end: 51,
+            opcode: b'A',
+            marker: ITEM_OBJECT_TYPE,
+            source_bit_start: 17,
+            source_bit_end: 22,
+            emitted_bit_start: 22,
+            emitted_bit_end: 28,
+            bits_inserted: 1,
+            bits_removed: 0,
+            family: "item-create-rewrite",
+            source_bits: live_object_rewrite_bit_slice_evidence(
+                17,
+                22,
+                &[false, false, true, false, false],
+            ),
+            emitted_bits: live_object_rewrite_bit_slice_evidence(
+                22,
+                28,
+                &[false, false, true, false, false, false],
+            ),
+        });
+        let contiguous_tail = LiveObjectUpdateRewriteTailEvidence {
+            entry_count: 1,
+            entries_retained: 1,
+            source_bit_start: 17,
+            source_bit_end: 22,
+            emitted_bit_start: 22,
+            emitted_bit_end: 28,
+            emitted_cursor: 28,
+            source_cursor: 22,
+            emitted_source_delta: 6,
+            emitted_gap_to_cursor: 0,
+            source_gap_to_cursor: 0,
+            entries: tail_entries,
+        };
+        let mut source_entries = [None; LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT];
+        source_entries[0] = Some(LiveObjectUpdateSourceWindowEntryEvidence {
+            offset: 16,
+            record_end: 51,
+            opcode: b'A',
+            marker: ITEM_OBJECT_TYPE,
+            object_id: Some(0x0000_0020),
+            update_mask: None,
+            bit_start: 22,
+            bit_end: Some(28),
+            bit_delta: Some(6),
+            source_bits: live_object_rewrite_bit_slice_evidence(
+                17,
+                22,
+                &[false, false, true, false, false],
+            ),
+            claim_family: "item-create",
+        });
+        source_entries[1] = Some(LiveObjectUpdateSourceWindowEntryEvidence {
+            offset: 51,
+            record_end: 104,
+            opcode: b'U',
+            marker: ITEM_OBJECT_TYPE,
+            object_id: Some(0x0000_0020),
+            update_mask: Some(0xFFFF_FFF3),
+            bit_start: 28,
+            bit_end: None,
+            bit_delta: None,
+            source_bits: live_object_rewrite_bit_slice_evidence(
+                22,
+                38,
+                &[false, true, true, true, false, true],
+            ),
+            claim_family: "unclaimed",
+        });
+        let mut source_neighbors = [None; LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT];
+        source_neighbors[0] = Some(LiveObjectUpdateSourceWindowNeighborEvidence {
+            delta: 2,
+            bit_start: 30,
+            bit_end: 42,
+            read_end: 104,
+            translated_mask: 0x0008_0033,
+            orientation_vector: Some(false),
+            relation: "inside-focus-row",
+            gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
+            ledger_relation: "unowned-emitted-gap",
+            ledger_source_relation: "unowned-source-gap",
+            ledger_emitted_gap_bits: Some(2),
+            ledger_emitted_gap_bit_start: Some(28),
+            ledger_emitted_gap_bit_end: Some(30),
+            ledger_emitted_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                28,
+                30,
+                &[false, true],
+            )),
+            ledger_source_gap_bits: Some(2),
+            ledger_source_gap_bit_start: Some(22),
+            ledger_source_gap_bit_end: Some(24),
+            ledger_source_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                22,
+                24,
+                &[false, true],
+            )),
+            ledger_implied_source_cursor: Some(24),
+            ledger_cumulative_emitted_source_delta: Some(6),
+            ledger_source_emitted_delta_after_previous: Some(6),
+            ledger_previous_offset: Some(16),
+            ledger_previous_record_end: Some(51),
+            ledger_previous_family: Some("item-create-rewrite"),
+        });
+        let source_window = LiveObjectUpdateSourceWindowEvidence {
+            focus_offset: 51,
+            focus_record_end: 104,
+            focus_row_index: Some(1),
+            initial_bit_cursor: 22,
+            expected_bit_cursor: 28,
+            fragment_bit_count: 42,
+            entry_count: 2,
+            entries_retained: 2,
+            entries: source_entries,
+            neighbor_count: 1,
+            neighbors_retained: 1,
+            neighbors: source_neighbors,
+        };
         let failure = LiveObjectUpdateRewriteFailure {
             reason: "item-update-cursor-failed-before-valid-neighbor-unowned-gap",
             kind: LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap,
@@ -307,8 +431,8 @@ mod diagnostic_tests {
                         &[false, true],
                     ),
                 }),
-                contiguous_tail: None,
-                source_window: None,
+                contiguous_tail: Some(contiguous_tail),
+                source_window: Some(source_window),
             }),
         };
 
@@ -332,6 +456,21 @@ mod diagnostic_tests {
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
         assert!(report.contains("focus_failure_stage=orientation-scalar-read-bytes"));
+        assert!(report.contains(
+            "contiguous_tail_summary=entries=1 retained=1 source=17..22 emitted=22..28 cursor=28 source_cursor=22 emitted_source_delta=6 emitted_gap=0 source_gap=0"
+        ));
+        assert!(report.contains(
+            "contiguous_tail_entry[0]=16..51 opcode=0x41 marker=0x06 family=item-create-rewrite source=17..22 source_bits=17..22:00100 emitted=22..28 emitted_bits=22..28:001000 inserted=1 removed=0"
+        ));
+        assert!(report.contains(
+            "source_window_summary=focus=51..104 focus_row_index=1 initial_bit_cursor=22 expected_bit_cursor=28 fragment_bits=42 entries=2 retained=2 neighbors=1 retained=1"
+        ));
+        assert!(report.contains(
+            "source_window_entry[1]=51..104 opcode=0x55 marker=0x06 object_id=0x00000020 update_mask=0xFFFFFFF3 bits=28..unclaimed bit_delta=none claim=unclaimed source_bits=22..38:011101...+10 bytes=51..104:55 06 20 00 00 00 F3 FF FF FF"
+        ));
+        assert!(report.contains(
+            "source_window_neighbor[0]=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false relation=inside-focus-row gap_origin=focus-position-bits ledger_relation=unowned-emitted-gap ledger_source_relation=unowned-source-gap ledger_emitted_gap=bits=2 range=28..30 values=28..30:01 ledger_source_gap=bits=2 range=22..24 values=22..24:01 ledger_implied_source_cursor=24 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
+        ));
     }
 
     #[test]
@@ -11327,13 +11466,231 @@ fn format_live_object_update_rewrite_failure_evidence(
         } else {
             let _ = writeln!(&mut out, "item_handoff=none");
         }
-        let _ = writeln!(&mut out, "contiguous_tail={:#?}", evidence.contiguous_tail);
-        let _ = writeln!(&mut out, "source_window={:#?}", evidence.source_window);
+        write_rewrite_tail_evidence(&mut out, evidence.contiguous_tail);
+        write_source_window_evidence(&mut out, payload, evidence.source_window);
     } else {
         let _ = writeln!(&mut out, "item_update_cursor_evidence=none");
     }
 
     out
+}
+
+fn write_rewrite_tail_evidence(
+    out: &mut String,
+    tail: Option<LiveObjectUpdateRewriteTailEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(tail) = tail else {
+        let _ = writeln!(out, "contiguous_tail=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "contiguous_tail_summary=entries={} retained={} source={}..{} emitted={}..{} cursor={} source_cursor={} emitted_source_delta={} emitted_gap={} source_gap={}",
+        tail.entry_count,
+        tail.entries_retained,
+        tail.source_bit_start,
+        tail.source_bit_end,
+        tail.emitted_bit_start,
+        tail.emitted_bit_end,
+        tail.emitted_cursor,
+        tail.source_cursor,
+        tail.emitted_source_delta,
+        tail.emitted_gap_to_cursor,
+        tail.source_gap_to_cursor
+    );
+
+    for (index, entry) in tail.entries.iter().flatten().enumerate() {
+        let _ = writeln!(
+            out,
+            "contiguous_tail_entry[{index}]={}..{} opcode={} marker={} family={} source={}..{} source_bits={} emitted={}..{} emitted_bits={} inserted={} removed={}",
+            entry.offset,
+            entry.record_end,
+            format_live_object_byte(entry.opcode),
+            format_live_object_byte(entry.marker),
+            entry.family,
+            entry.source_bit_start,
+            entry.source_bit_end,
+            format_rewrite_bit_slice_evidence(entry.source_bits),
+            entry.emitted_bit_start,
+            entry.emitted_bit_end,
+            format_rewrite_bit_slice_evidence(entry.emitted_bits),
+            entry.bits_inserted,
+            entry.bits_removed
+        );
+    }
+}
+
+fn write_source_window_evidence(
+    out: &mut String,
+    payload: &[u8],
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(source_window) = source_window else {
+        let _ = writeln!(out, "source_window=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "source_window_summary=focus={}..{} focus_row_index={} initial_bit_cursor={} expected_bit_cursor={} fragment_bits={} entries={} retained={} neighbors={} retained={}",
+        source_window.focus_offset,
+        source_window.focus_record_end,
+        format_optional_usize(source_window.focus_row_index),
+        source_window.initial_bit_cursor,
+        source_window.expected_bit_cursor,
+        source_window.fragment_bit_count,
+        source_window.entry_count,
+        source_window.entries_retained,
+        source_window.neighbor_count,
+        source_window.neighbors_retained
+    );
+
+    for (index, entry) in source_window.entries.iter().flatten().enumerate() {
+        let bits = entry
+            .bit_end
+            .map(|bit_end| format!("{}..{bit_end}", entry.bit_start))
+            .unwrap_or_else(|| format!("{}..unclaimed", entry.bit_start));
+        let _ = writeln!(
+            out,
+            "source_window_entry[{index}]={}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} bytes={}",
+            entry.offset,
+            entry.record_end,
+            format_live_object_byte(entry.opcode),
+            format_live_object_byte(entry.marker),
+            format_optional_u32_hex(entry.object_id),
+            format_optional_u32_hex(entry.update_mask),
+            bits,
+            format_optional_usize(entry.bit_delta),
+            entry.claim_family,
+            format_rewrite_bit_slice_evidence(entry.source_bits),
+            format_payload_byte_range(payload, entry.offset, entry.record_end, 48)
+        );
+    }
+
+    for (index, neighbor) in source_window.neighbors.iter().flatten().enumerate() {
+        let _ = writeln!(
+            out,
+            "source_window_neighbor[{index}]=delta={} bits={}..{} read_end={} translated_mask=0x{:08X} orientation_vector={} relation={} gap_origin={} ledger_relation={} ledger_source_relation={} ledger_emitted_gap={} ledger_source_gap={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
+            neighbor.delta,
+            neighbor.bit_start,
+            neighbor.bit_end,
+            neighbor.read_end,
+            neighbor.translated_mask,
+            format_optional_bool(neighbor.orientation_vector),
+            neighbor.relation,
+            neighbor.gap_origin.as_str(),
+            neighbor.ledger_relation,
+            neighbor.ledger_source_relation,
+            format_optional_gap(
+                neighbor.ledger_emitted_gap_bits,
+                neighbor.ledger_emitted_gap_bit_start,
+                neighbor.ledger_emitted_gap_bit_end,
+                neighbor.ledger_emitted_gap_values,
+            ),
+            format_optional_gap(
+                neighbor.ledger_source_gap_bits,
+                neighbor.ledger_source_gap_bit_start,
+                neighbor.ledger_source_gap_bit_end,
+                neighbor.ledger_source_gap_values,
+            ),
+            format_optional_usize(neighbor.ledger_implied_source_cursor),
+            format_optional_isize(neighbor.ledger_cumulative_emitted_source_delta),
+            format_optional_isize(neighbor.ledger_source_emitted_delta_after_previous),
+            format_optional_previous_row(
+                neighbor.ledger_previous_offset,
+                neighbor.ledger_previous_record_end,
+                neighbor.ledger_previous_family,
+            )
+        );
+    }
+}
+
+fn format_live_object_byte(value: u8) -> String {
+    format!("0x{value:02X}")
+}
+
+fn format_optional_bool(value: Option<bool>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_isize(value: Option<isize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_u32_hex(value: Option<u32>) -> String {
+    value
+        .map(|value| format!("0x{value:08X}"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_gap(
+    bits: Option<usize>,
+    bit_start: Option<usize>,
+    bit_end: Option<usize>,
+    values: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+) -> String {
+    match (bits, bit_start, bit_end, values) {
+        (Some(bits), Some(bit_start), Some(bit_end), Some(values)) => format!(
+            "bits={bits} range={bit_start}..{bit_end} values={}",
+            format_rewrite_bit_slice_evidence(values)
+        ),
+        (Some(bits), Some(bit_start), Some(bit_end), None) => {
+            format!("bits={bits} range={bit_start}..{bit_end} values=none")
+        }
+        _ => "none".to_string(),
+    }
+}
+
+fn format_optional_previous_row(
+    offset: Option<usize>,
+    record_end: Option<usize>,
+    family: Option<&'static str>,
+) -> String {
+    match (offset, record_end, family) {
+        (Some(offset), Some(record_end), Some(family)) => {
+            format!("{offset}..{record_end}:{family}")
+        }
+        _ => "none".to_string(),
+    }
+}
+
+fn format_payload_byte_range(payload: &[u8], start: usize, end: usize, limit: usize) -> String {
+    use std::fmt::Write as _;
+
+    let start = start.min(payload.len());
+    let end = end.min(payload.len()).max(start);
+    let bytes = &payload[start..end];
+    let retained = bytes.len().min(limit);
+    let mut hex = String::new();
+    for (index, byte) in bytes.iter().take(retained).enumerate() {
+        if index != 0 {
+            hex.push(' ');
+        }
+        let _ = write!(&mut hex, "{byte:02X}");
+    }
+    if bytes.len() > retained {
+        let omitted = bytes.len().saturating_sub(retained);
+        if !hex.is_empty() {
+            hex.push(' ');
+        }
+        let _ = write!(&mut hex, "...+{omitted}");
+    }
+    format!("{start}..{end}:{hex}")
 }
 
 fn format_rewrite_bit_slice_evidence(evidence: LiveObjectUpdateRewriteBitSliceEvidence) -> String {

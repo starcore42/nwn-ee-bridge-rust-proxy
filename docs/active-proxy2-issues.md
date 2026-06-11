@@ -2499,6 +2499,16 @@ Current status:
   into one structured object, and the quarantine evidence report emits stable
   `item_handoff_*` lines. The next proof target remains a local compact source
   capture or source-side writer/list-handoff owner before assigning those bits.
+- 2026-06-11 follow-up `P/05/01` item `U/6` neighbor-origin classifier:
+  packet bytes and cursor ownership remain unchanged. The item handoff
+  diagnostic now classifies a validating neighboring cursor by the parsed
+  scalar/vector orientation branch before deciding whether the gap falls in
+  orientation, state, or name bits. This follows the Diamond
+  `sub_459700 -> sub_467AE0 -> sub_451AF0` and EE
+  `sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0` branch order and keeps
+  source-capture comparisons from labeling post-orientation state/name gaps as
+  generic inside-row evidence. The active two pre-`U/6` bits remain unassigned
+  pending compact source capture or source-side writer/list-handoff proof.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
@@ -3010,6 +3020,16 @@ Current status:
   capture/local harness run compare normal artifacts rather than reconstructing
   the handoff from logs. The two pre-`U/6` bits still need source-writer or
   capture proof before assignment.
+- 2026-06-11 follow-up `P/05/01` item failure artifact row report:
+  production failure-artifact text now emits stable, one-line contiguous-tail,
+  source-window row, and nearby-neighbor records with source/emitted bit
+  previews and bounded row bytes. This replaces relying on Rust debug dumps for
+  the compact `U/10 -> A/6 -> U/6` handoff comparison; packet bytes and cursor
+  ownership remain unchanged. Verified focused report/source-window/raw-neighbor
+  tests, `cargo check`, `cargo fmt --all --check`, and `git diff --check`.
+  A broader `live_object_update` filter still has existing rewrite-test
+  failures unrelated to this formatter-only path and should be handled as a
+  separate packet-behavior task.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
