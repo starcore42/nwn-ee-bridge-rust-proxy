@@ -793,6 +793,18 @@ Current status:
   `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
   hgbridge-proxy2`; next production path remains local visual replay for
   remaining placeable orientation/model drift.
+- 2026-06-12 follow-up exact static/live placeable appearance synthesis:
+  emitted exact `A/09` add and `U/09` update appearance WORDs can now be
+  reconciled with the uniquely matched, module-backed static area row that
+  already authorizes state synthesis. The rewrite is same-width only, uses the
+  verified add layout or EE update parser-owned appearance offset, refuses
+  non-unique/light-static aliases and dynamic `0xFFFE+`/CResRef update rows, and
+  reclaims the final exact payload after mutation. Verified with focused
+  `exact_placeable_`, `placeable_context_`, and `placeable_update` regressions,
+  `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`; next local replay should focus on any remaining static/live
+  drift outside same-width appearance and proven state bits, especially
+  orientation.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

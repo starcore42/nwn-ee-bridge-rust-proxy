@@ -2114,6 +2114,178 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_reconciles_unique_area_static_appearance_word() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact A/09 payload");
+        claim_payload_if_verified(&payload).expect("pre-rewrite exact A/09 claim");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0022,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact A/09 appearance");
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+            "appearance reconciliation must not disturb add-state bits"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_reconciles_unique_area_static_appearance_word() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0022,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact U/09 appearance");
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_keeps_resref_appearance_diagnostic_only() {
+        let object_id = 0x8000_34D8u32;
+        let resref = *b"plc_visual_test\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&resref);
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact resref U/09");
+        let original = payload.clone();
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0022,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        assert!(
+            rewrite_update_records_payload_with_area_context_if_possible(
+                &mut payload,
+                Some(&area_context),
+            )
+            .is_none(),
+            "custom/resref appearance rows are not same-width static appearance rewrites"
+        );
+        assert_eq!(payload, original);
+    }
+
+    #[test]
     fn exact_placeable_update_mentions_use_verified_vector_state_cursor() {
         let object_id = 0x8000_34D8u32;
         let mask =
@@ -2190,6 +2362,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
+                appearance: 0x0011,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -2264,6 +2437,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
+                appearance: 0x0011,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -2346,6 +2520,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
+                appearance: 0x0011,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -5999,10 +6174,10 @@ fn rewrite_update_records_payload_with_area_context_inner(
     // mixed add/update records can expose one another, but once a payload is
     // already accepted by the exact EE-shape validator, running the legacy
     // update rewriter again would be byte surgery against a proven packet.
-    // The only exact-payload exception is the area/static placeable state
+    // The only exact-payload exception is the area/static placeable
     // reconciliation below: it reuses verified record boundaries and changes
-    // only same-width `A/09` add-state or `U/09` lock BOOLs when a unique
-    // module-backed static row proves the EE-facing state.
+    // only same-width `A/09`/`U/09` placeable appearance WORDs and state BOOLs
+    // when a unique module-backed static row proves the EE-facing state.
     if claim_payload_if_verified(payload).is_some() {
         if let Some(area_context) = area_context {
             return rewrite_verified_placeable_states_with_area_context_if_possible(
@@ -9512,7 +9687,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     let claim = claim_payload_if_verified(payload)?;
     let old_payload_length = payload.len();
     let old_declared = u32::try_from(claim.declared).ok()?;
-    let live_bytes = payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared].to_vec();
+    let mut live_bytes =
+        payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared].to_vec();
     let old_fragment_bytes = payload.len().saturating_sub(claim.declared);
     let mut fragment_bits =
         bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)?;
@@ -9525,26 +9701,47 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         }
         match mention.opcode {
             b'A' => {
-                if reconcile_verified_placeable_add_state_with_area_context(
+                let appearance_rewritten =
+                    reconcile_verified_placeable_add_appearance_with_area_context(
+                        area_context,
+                        &mut live_bytes,
+                        mention.record_offset,
+                        mention.record_end,
+                        &fragment_bits,
+                        mention.fragment_bit_start,
+                    )?;
+                let state_rewritten = reconcile_verified_placeable_add_state_with_area_context(
                     area_context,
                     &live_bytes,
                     mention.record_offset,
                     mention.record_end,
                     &mut fragment_bits,
                     mention.fragment_bit_start,
-                )? {
+                )?;
+                if appearance_rewritten || state_rewritten {
                     add_records_rewritten = add_records_rewritten.saturating_add(1);
                 }
             }
             b'U' => {
-                if record::reconcile_verified_placeable_update_state_with_area_context(
-                    area_context,
-                    &live_bytes,
-                    mention.record_offset,
-                    mention.record_end,
-                    &mut fragment_bits,
-                    mention.fragment_bit_start,
-                )? {
+                let appearance_rewritten =
+                    reconcile_verified_placeable_update_appearance_with_area_context(
+                        area_context,
+                        &mut live_bytes,
+                        mention.record_offset,
+                        mention.record_end,
+                        &fragment_bits,
+                        mention.fragment_bit_start,
+                    )?;
+                let state_rewritten =
+                    record::reconcile_verified_placeable_update_state_with_area_context(
+                        area_context,
+                        &live_bytes,
+                        mention.record_offset,
+                        mention.record_end,
+                        &mut fragment_bits,
+                        mention.fragment_bit_start,
+                    )?;
+                if appearance_rewritten || state_rewritten {
                     update_records_rewritten = update_records_rewritten.saturating_add(1);
                 }
             }
@@ -9576,6 +9773,129 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         update_records_rewritten,
         ..LiveObjectUpdateRewriteSummary::default()
     })
+}
+
+fn reconcile_verified_placeable_add_appearance_with_area_context(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+    bits: &[bool],
+    bit_cursor: usize,
+) -> Option<bool> {
+    if record_offset + 6 > record_end
+        || record_end > live_bytes.len()
+        || live_bytes.get(record_offset).copied()? != b'A'
+        || live_bytes.get(record_offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return Some(false);
+    }
+
+    let layout = add::verified_ee_placeable_add_fragment_layout(
+        live_bytes,
+        record_offset,
+        record_end,
+        bits,
+        bit_cursor,
+    )?;
+    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+        return Some(false);
+    };
+    let area_appearance = area_row.appearance;
+    let source_appearance_offset = layout.byte_layout.tail_offset + 1;
+    let source_appearance = read_u16_le(live_bytes, source_appearance_offset)?;
+    if source_appearance == area_appearance {
+        return Some(false);
+    }
+    if source_appearance >= 0xFFFE || area_appearance >= 0xFFFE {
+        return Some(false);
+    }
+
+    write_u16_le(live_bytes, source_appearance_offset, area_appearance)?;
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        source_appearance = format_args!("0x{source_appearance:04X}"),
+        emitted_appearance = format_args!("0x{area_appearance:04X}"),
+        state_bit_cursor = layout.post_name_bit,
+        next_bit_cursor = layout.next_bit_cursor,
+        optional_object_id = layout.byte_layout.optional_object_id,
+        visual_map_offset = layout.byte_layout.map_offset,
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %overlap.formatted_rows(),
+        "server->client exact live-object placeable add appearance reconciled with unique module-backed area/static row"
+    );
+    Some(true)
+}
+
+fn reconcile_verified_placeable_update_appearance_with_area_context(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+    bits: &[bool],
+    bit_cursor: usize,
+) -> Option<bool> {
+    if record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end
+        || record_end > live_bytes.len()
+        || live_bytes.get(record_offset).copied()? != b'U'
+        || live_bytes.get(record_offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return Some(false);
+    }
+
+    let mask = read_u32_le(live_bytes, record_offset + 6)?;
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        record_offset,
+        record_end,
+        bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
+        return None;
+    }
+    let Some(appearance_offset) = claim.appearance_offset else {
+        return Some(false);
+    };
+
+    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+        return Some(false);
+    };
+    let area_appearance = area_row.appearance;
+    let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
+    if source_appearance == area_appearance {
+        return Some(false);
+    }
+    if source_appearance >= 0xFFFE || area_appearance >= 0xFFFE {
+        return Some(false);
+    }
+
+    write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_appearance = format_args!("0x{source_appearance:04X}"),
+        emitted_appearance = format_args!("0x{area_appearance:04X}"),
+        appearance_offset,
+        state_bit_cursor = ?claim.state_bit_cursor,
+        next_bit_cursor = claim.next_bit_cursor,
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %overlap.formatted_rows(),
+        "server->client exact live-object placeable update appearance reconciled with unique module-backed area/static row"
+    );
+    Some(true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12225,6 +12545,13 @@ fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
 fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
     bytes
         .get_mut(offset..offset + 4)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+fn write_u16_le(bytes: &mut [u8], offset: usize, value: u16) -> Option<()> {
+    bytes
+        .get_mut(offset..offset + 2)?
         .copy_from_slice(&value.to_le_bytes());
     Some(())
 }
