@@ -2518,6 +2518,15 @@ Current status:
   compare the parser stop with the existing source-window/handoff rows without
   relying on debug stderr. The two active pre-`U/6` bits remain unassigned
   pending compact source capture or source-side writer/list-handoff proof.
+- 2026-06-11 follow-up `P/05/01` item `U/6` handoff-verdict classifier:
+  packet bytes and cursor ownership remain unchanged. The rewrite bit ledger
+  now produces a typed handoff verdict with `source_owner`,
+  `claimable_handoff`, and `handoff_blocker`, and retained failure/source-window
+  evidence emits that verdict for the focus cursor and nearby validating
+  neighbors. Inside-row cursors are classified before contiguous-tail gaps, so a
+  shifted `U/6` neighbor cannot become claimable through saturated gap math. The
+  active two pre-`U/6` bits remain unassigned pending compact source capture or
+  source-side writer/list-handoff proof.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
