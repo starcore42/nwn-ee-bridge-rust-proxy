@@ -5854,6 +5854,10 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         neighbor.gap_origin,
         super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
     );
+    assert_eq!(
+        neighbor.source_owner,
+        super::LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap
+    );
     let source_window = evidence
         .source_window
         .expect("item cursor failure should retain the bounded source-window row claims");
@@ -5913,6 +5917,10 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(
         window_neighbor.gap_origin,
         super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
+    );
+    assert_eq!(
+        window_neighbor.source_owner,
+        super::LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap
     );
     assert_eq!(window_neighbor.ledger_relation, "unowned-emitted-gap");
     assert_eq!(window_neighbor.ledger_source_relation, "unowned-source-gap");

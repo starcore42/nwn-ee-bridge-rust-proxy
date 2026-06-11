@@ -903,6 +903,7 @@ fn trace_live_object_update_rewrite_failure(
         previous_record_end = neighbor.previous_record_end,
         previous_family = neighbor.previous_family,
         neighbor_gap_origin = neighbor.gap_origin.as_str(),
+        neighbor_source_owner = neighbor.source_owner.as_str(),
         rewrite_tail = ?rewrite_tail,
         source_window_neighbor_count,
         source_window_first_neighbor = ?source_window_first_neighbor,
