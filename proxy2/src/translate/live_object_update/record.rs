@@ -13,8 +13,9 @@ use super::{
     LEGACY_UPDATE_NAME_MASK, LEGACY_UPDATE_ORIENTATION_MASK, LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
     LEGACY_UPDATE_POSITION_MASK, LEGACY_UPDATE_POSITION_READ_BYTES, LEGACY_UPDATE_SCALE_STATE_MASK,
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
-    TRIGGER_OBJECT_TYPE, bits, boundary, door, effects, item, locstring, object_ids, placeable,
-    read_f32_le, read_u16_le, read_u32_le, reader, trigger, world_status, write_u32_le, writer,
+    TRIGGER_OBJECT_TYPE, area_static_row_scalar_orientation, bits, boundary, door, effects, item,
+    locstring, object_ids, placeable, read_f32_le, read_u16_le, read_u32_le, reader, trigger,
+    world_status, write_u32_le, write_verified_scalar_orientation, writer,
 };
 use crate::translate::area::{
     AreaPlaceableContext, AreaPlaceableContextState, AreaPlaceableObservedState,
@@ -251,6 +252,21 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             bits,
             *bit_cursor,
         ) {
+            let (orientation_changed, orientation_bits_changed) =
+                if object_type == PLACEABLE_OBJECT_TYPE {
+                    reconcile_placeable_update_orientation_with_area_context(
+                        area_context,
+                        object_id,
+                        live_bytes,
+                        bits,
+                        claim.scalar_orientation,
+                        raw_mask,
+                        record_offset,
+                        *record_end,
+                    )?
+                } else {
+                    (false, false)
+                };
             let state_changed = if object_type == PLACEABLE_OBJECT_TYPE {
                 reconcile_placeable_update_state_with_area_context(
                     area_context,
@@ -266,8 +282,8 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             };
             *bit_cursor = claim.next_bit_cursor;
             return Some(RecordRewrite {
-                rewritten: state_changed,
-                bits_changed: state_changed,
+                rewritten: orientation_changed || state_changed,
+                bits_changed: orientation_bits_changed || state_changed,
                 ..RecordRewrite::default()
             });
         }
@@ -1472,7 +1488,19 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             bits,
             original_bit_cursor,
         )
-        && reconcile_placeable_update_state_with_area_context(
+    {
+        let (orientation_changed, orientation_bits_changed) =
+            reconcile_placeable_update_orientation_with_area_context(
+                area_context,
+                object_id,
+                live_bytes,
+                bits,
+                claim.scalar_orientation,
+                translated_mask,
+                record_offset,
+                *record_end,
+            )?;
+        let state_changed = reconcile_placeable_update_state_with_area_context(
             area_context,
             object_id,
             bits,
@@ -1480,9 +1508,11 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             translated_mask,
             record_offset,
             *record_end,
-        )?
-    {
-        rewrite.bits_changed = true;
+        )?;
+        if orientation_changed || state_changed {
+            rewrite.rewritten = true;
+            rewrite.bits_changed |= orientation_bits_changed || state_changed;
+        }
     }
     let ee_placeable_state_bits = if object_type == PLACEABLE_OBJECT_TYPE {
         reader::parse_verified_ee_door_placeable_update_record(
@@ -1624,6 +1654,56 @@ pub(super) fn reconcile_verified_placeable_update_state_with_area_context(
         record_offset,
         record_end,
     )
+}
+
+fn reconcile_placeable_update_orientation_with_area_context(
+    area_context: Option<&AreaPlaceableContext>,
+    object_id: u32,
+    live_bytes: &mut [u8],
+    bits: &mut [bool],
+    scalar_orientation: Option<reader::VerifiedEeDoorPlaceableScalarOrientation>,
+    mask: u32,
+    record_offset: usize,
+    record_end: usize,
+) -> Option<(bool, bool)> {
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) == 0 {
+        return Some((false, false));
+    }
+    let Some(source_orientation) = scalar_orientation else {
+        return Some((false, false));
+    };
+    let Some(context) = area_context else {
+        return Some((false, false));
+    };
+    let overlap = context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+        return Some((false, false));
+    };
+    let Some(area_orientation) = area_static_row_scalar_orientation(area_row) else {
+        return Some((false, false));
+    };
+    if source_orientation.scalar_tenths_degrees == area_orientation {
+        return Some((false, false));
+    }
+
+    let (changed, bits_changed) =
+        write_verified_scalar_orientation(live_bytes, bits, source_orientation, area_orientation)?;
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_orientation = source_orientation.scalar_tenths_degrees,
+        emitted_orientation = area_orientation,
+        orientation_read_offset = source_orientation.read_offset,
+        orientation_bit_cursor = source_orientation.bit_cursor,
+        area_resref = context.area_resref.as_str(),
+        area_rows = %overlap.formatted_rows(),
+        "server->client live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
+    );
+    Some((changed, bits_changed))
 }
 
 fn reconcile_placeable_update_state_with_area_context(

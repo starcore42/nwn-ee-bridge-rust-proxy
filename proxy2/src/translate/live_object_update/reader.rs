@@ -25,9 +25,17 @@ pub(super) struct LegacyNamedUpdateTail {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) read_end: usize,
+    pub(super) scalar_orientation: Option<VerifiedEeDoorPlaceableScalarOrientation>,
     pub(super) appearance_offset: Option<usize>,
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEeDoorPlaceableScalarOrientation {
+    pub(super) read_offset: usize,
+    pub(super) bit_cursor: usize,
+    pub(super) scalar_tenths_degrees: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -376,6 +384,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut fragment_cursor = bit_cursor;
+    let mut scalar_orientation = None;
     let mut appearance_offset = None;
     let mut state_bit_cursor = None;
     let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
@@ -398,6 +407,8 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         // selects the three-component vector branch. Diamond's generic reader
         // uses the same branch contract, so exact validation preserves either
         // shape instead of canonicalizing everything to scalar.
+        let orientation_read_offset = read_cursor;
+        let orientation_bit_cursor = fragment_cursor;
         let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
         if vector_branch {
             read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
@@ -407,6 +418,23 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
                 EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS,
             )?;
         } else {
+            let high = u16::from(*bytes.get(read_cursor)?);
+            let mut low = 0_u16;
+            for bit_index in 0..4 {
+                low <<= 1;
+                if fragment_bits
+                    .get(fragment_cursor + 1 + bit_index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    low |= 1;
+                }
+            }
+            scalar_orientation = Some(VerifiedEeDoorPlaceableScalarOrientation {
+                read_offset: orientation_read_offset,
+                bit_cursor: orientation_bit_cursor,
+                scalar_tenths_degrees: (high << 4) | low,
+            });
             read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES)?;
             fragment_cursor = advance_bits(
                 fragment_bits,
@@ -491,6 +519,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     Some(VerifiedEeDoorPlaceableUpdateRecord {
         read_end: read_cursor,
+        scalar_orientation,
         appearance_offset,
         state_bit_cursor,
         next_bit_cursor: fragment_cursor,

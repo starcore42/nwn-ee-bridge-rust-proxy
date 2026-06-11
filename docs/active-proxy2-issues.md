@@ -805,6 +805,17 @@ Current status:
   hgbridge-proxy2`; next local replay should focus on any remaining static/live
   drift outside same-width appearance and proven state bits, especially
   orientation.
+- 2026-06-12 follow-up exact static/live placeable scalar-orientation
+  synthesis: the verified EE door/placeable update parser now retains the
+  parser-owned scalar orientation byte/bit cursor. Exact scalar `U/09` rows can
+  reconcile that same-width 12-bit scalar with the uniquely matched,
+  module-backed static row's decompiled direction bearing; vector-orientation
+  rows remain diagnostic-only because they do not expose the same-width scalar
+  field. Verified with focused `exact_placeable_` and orientation encoder
+  regressions plus `cargo fmt --all --check`, `git diff --check`, and `cargo
+  check -q -p hgbridge-proxy2`; next local replay should focus on any remaining
+  placeable drift outside exact scalar orientation, same-width appearance, and
+  proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

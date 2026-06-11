@@ -2246,6 +2246,157 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_reconciles_unique_area_static_scalar_orientation() {
+        let object_id = 0x8000_34D8u32;
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.push(0x70);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, true, // position fragment bits.
+            false, true, false, true, false, // scalar orientation 0x70A.
+            false, true, false, true, false, // lockable=true, locked=false.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
+        let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact scalar U/09");
+        assert_eq!(
+            claim.mentions[0].orientation,
+            Some(LiveObjectRecordOrientation {
+                scalar_tenths_degrees: 0x70A,
+            })
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0011,
+                dir_x: -1.0,
+                dir_y: 0.0,
+                dir_z: 0.0,
+                has_direction: true,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact U/09 scalar orientation");
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 claim");
+        assert_eq!(
+            claim.mentions[0].orientation,
+            Some(LiveObjectRecordOrientation {
+                scalar_tenths_degrees: 900,
+            }),
+            "static direction bearing pi/2 should emit EE scalar orientation 900"
+        );
+        let rewritten_live = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared];
+        assert_eq!(
+            rewritten_live[LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES],
+            0x38,
+            "the scalar orientation high byte is same-width rewritten"
+        );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact U/09 fragment bits");
+        assert_eq!(
+            &rewritten_bits[CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                ..CNW_FRAGMENT_HEADER_BITS
+                    + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS],
+            &[false, false, true, false, false],
+            "the scalar selector plus four low bits should encode 0x384"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "orientation reconciliation must not disturb the parser-owned state block"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_keeps_vector_orientation_diagnostic_only() {
+        let object_id = 0x8000_34D8u32;
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.extend_from_slice(&[0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, true, // position fragment bits.
+            true, // vector-orientation selector; no scalar low bits follow.
+            false, true, false, true, false, // lockable=true, locked=false.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
+        let original = payload.clone();
+        claim_payload_if_verified(&payload).expect("pre-rewrite exact vector U/09");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                dir_x: -1.0,
+                dir_y: 0.0,
+                dir_z: 0.0,
+                has_direction: true,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        assert!(
+            rewrite_update_records_payload_with_area_context_if_possible(
+                &mut payload,
+                Some(&area_context),
+            )
+            .is_none(),
+            "vector orientation has no same-width scalar field to rewrite"
+        );
+        assert_eq!(payload, original);
+    }
+
+    #[test]
     fn exact_placeable_update_keeps_resref_appearance_diagnostic_only() {
         let object_id = 0x8000_34D8u32;
         let resref = *b"plc_visual_test\0";
@@ -5256,48 +5407,26 @@ fn verified_record_orientation(
         return None;
     }
 
-    let mask = read_u32_le(live_bytes, offset + 6)?;
-    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) == 0 {
-        return None;
-    }
-
-    let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
-    let mut fragment_cursor = bit_cursor;
-    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
-        fragment_cursor = fragment_cursor.checked_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS)?;
-    }
-    if read_cursor + EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES > record_end
-        || fragment_bits.len().saturating_sub(fragment_cursor)
-            < EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-    {
-        return None;
-    }
-
     // EE `sub_14079C050` and Diamond `sub_467AE0` both read the generic
     // door/placeable orientation as a BOOL branch followed by the compact
     // scalar `ReadFLOAT(10.0,12)` path when the branch is false. The bridge
     // writer emits only that scalar branch for translated legacy records, so a
     // registry orientation is recorded only after the exact EE-shaped branch
-    // bit is present and false.
-    if fragment_bits.get(fragment_cursor).copied()? {
+    // bit is present and false. Reuse the exact parser's cursor claim so
+    // orientation diagnostics and static/live reconciliation cannot diverge
+    // from the validator on position-owned bits or vector branches.
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
         return None;
     }
-    let high = u16::from(*live_bytes.get(read_cursor)?);
-    let mut low = 0_u16;
-    for bit_index in 0..4 {
-        low <<= 1;
-        if fragment_bits
-            .get(fragment_cursor + 1 + bit_index)
-            .copied()
-            .unwrap_or(false)
-        {
-            low |= 1;
-        }
-    }
-
     Some(LiveObjectRecordOrientation {
-        scalar_tenths_degrees: (high << 4) | low,
+        scalar_tenths_degrees: claim.scalar_orientation?.scalar_tenths_degrees,
     })
 }
 
@@ -6176,8 +6305,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
     // update rewriter again would be byte surgery against a proven packet.
     // The only exact-payload exception is the area/static placeable
     // reconciliation below: it reuses verified record boundaries and changes
-    // only same-width `A/09`/`U/09` placeable appearance WORDs and state BOOLs
-    // when a unique module-backed static row proves the EE-facing state.
+    // only same-width `A/09`/`U/09` placeable appearance WORDs, scalar
+    // orientation fields, and state BOOLs when a unique module-backed static
+    // row proves the EE-facing state.
     if claim_payload_if_verified(payload).is_some() {
         if let Some(area_context) = area_context {
             return rewrite_verified_placeable_states_with_area_context_if_possible(
@@ -9732,6 +9862,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         &fragment_bits,
                         mention.fragment_bit_start,
                     )?;
+                let orientation_rewritten =
+                    reconcile_verified_placeable_update_orientation_with_area_context(
+                        area_context,
+                        &mut live_bytes,
+                        mention.record_offset,
+                        mention.record_end,
+                        &mut fragment_bits,
+                        mention.fragment_bit_start,
+                    )?;
                 let state_rewritten =
                     record::reconcile_verified_placeable_update_state_with_area_context(
                         area_context,
@@ -9741,7 +9880,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         &mut fragment_bits,
                         mention.fragment_bit_start,
                     )?;
-                if appearance_rewritten || state_rewritten {
+                if appearance_rewritten || orientation_rewritten || state_rewritten {
                     update_records_rewritten = update_records_rewritten.saturating_add(1);
                 }
             }
@@ -9896,6 +10035,116 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         "server->client exact live-object placeable update appearance reconciled with unique module-backed area/static row"
     );
     Some(true)
+}
+
+fn reconcile_verified_placeable_update_orientation_with_area_context(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+    bits: &mut [bool],
+    bit_cursor: usize,
+) -> Option<bool> {
+    if record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end
+        || record_end > live_bytes.len()
+        || live_bytes.get(record_offset).copied()? != b'U'
+        || live_bytes.get(record_offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return Some(false);
+    }
+
+    let mask = read_u32_le(live_bytes, record_offset + 6)?;
+    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) == 0 {
+        return Some(false);
+    }
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        record_offset,
+        record_end,
+        bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
+        return None;
+    }
+    let Some(source_orientation) = claim.scalar_orientation else {
+        return Some(false);
+    };
+
+    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+        return Some(false);
+    };
+    let Some(area_orientation) = area_static_row_scalar_orientation(area_row) else {
+        return Some(false);
+    };
+    if source_orientation.scalar_tenths_degrees == area_orientation {
+        return Some(false);
+    }
+
+    let (changed, _bits_changed) =
+        write_verified_scalar_orientation(live_bytes, bits, source_orientation, area_orientation)?;
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_orientation = source_orientation.scalar_tenths_degrees,
+        emitted_orientation = area_orientation,
+        orientation_read_offset = source_orientation.read_offset,
+        orientation_bit_cursor = source_orientation.bit_cursor,
+        state_bit_cursor = ?claim.state_bit_cursor,
+        next_bit_cursor = claim.next_bit_cursor,
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %overlap.formatted_rows(),
+        "server->client exact live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
+    );
+    Some(changed)
+}
+
+fn area_static_row_scalar_orientation(
+    row: &crate::translate::area::AreaPlaceableContextRow,
+) -> Option<u16> {
+    if !row.has_direction || !row.dir_x.is_finite() || !row.dir_y.is_finite() {
+        return None;
+    }
+    let len_sq = row.dir_x.mul_add(row.dir_x, row.dir_y * row.dir_y);
+    if !len_sq.is_finite() || len_sq <= 1.0e-12 {
+        return None;
+    }
+    let bearing = (-row.dir_x).atan2(row.dir_y);
+    writer::encode_ee_scalar_orientation_from_bearing_radians(bearing)
+}
+
+fn write_verified_scalar_orientation(
+    live_bytes: &mut [u8],
+    bits: &mut [bool],
+    source: reader::VerifiedEeDoorPlaceableScalarOrientation,
+    scalar_tenths_degrees: u16,
+) -> Option<(bool, bool)> {
+    let scalar = scalar_tenths_degrees & 0x0FFF;
+    let mut changed = false;
+    let mut bits_changed = false;
+    let high = ((scalar >> 4) & 0xFF) as u8;
+    let byte = live_bytes.get_mut(source.read_offset)?;
+    if *byte != high {
+        *byte = high;
+        changed = true;
+    }
+    let selector_changed = set_fragment_bit(bits, source.bit_cursor, false)?;
+    changed |= selector_changed;
+    bits_changed |= selector_changed;
+    for bit_index in 0..4 {
+        let shift = 3 - bit_index;
+        let value = ((scalar >> shift) & 1) != 0;
+        let bit_changed = set_fragment_bit(bits, source.bit_cursor + 1 + bit_index, value)?;
+        changed |= bit_changed;
+        bits_changed |= bit_changed;
+    }
+    Some((changed, bits_changed))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

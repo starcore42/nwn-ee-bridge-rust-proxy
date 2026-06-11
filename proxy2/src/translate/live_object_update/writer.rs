@@ -46,9 +46,22 @@ pub(super) fn encode_ee_scalar_orientation_from_legacy_facing(facing: u16) -> u1
     raw.min(0x0FFF) as u16
 }
 
+pub(super) fn encode_ee_scalar_orientation_from_bearing_radians(bearing: f32) -> Option<u16> {
+    if !bearing.is_finite() {
+        return None;
+    }
+    const FULL_TURN_TENTHS: i64 = 3600;
+    let normalized = f64::from(bearing).rem_euclid(std::f64::consts::TAU);
+    let raw = (normalized * FULL_TURN_TENTHS as f64 / std::f64::consts::TAU).round() as i64;
+    Some(raw.rem_euclid(FULL_TURN_TENTHS).min(0x0FFF) as u16)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode_ee_scalar_orientation_from_legacy_facing;
+    use super::{
+        encode_ee_scalar_orientation_from_bearing_radians,
+        encode_ee_scalar_orientation_from_legacy_facing,
+    };
 
     #[test]
     fn ee_scalar_orientation_preserves_shared_diamond_ee_packet_basis_for_cardinals() {
@@ -61,6 +74,26 @@ mod tests {
         assert_eq!(
             encode_ee_scalar_orientation_from_legacy_facing(0xC000),
             2700
+        );
+    }
+
+    #[test]
+    fn ee_scalar_orientation_preserves_static_area_bearing_basis() {
+        assert_eq!(
+            encode_ee_scalar_orientation_from_bearing_radians(0.0),
+            Some(0)
+        );
+        assert_eq!(
+            encode_ee_scalar_orientation_from_bearing_radians(std::f32::consts::FRAC_PI_2),
+            Some(900)
+        );
+        assert_eq!(
+            encode_ee_scalar_orientation_from_bearing_radians(std::f32::consts::PI),
+            Some(1800)
+        );
+        assert_eq!(
+            encode_ee_scalar_orientation_from_bearing_radians(-std::f32::consts::FRAC_PI_2),
+            Some(2700)
         );
     }
 }
