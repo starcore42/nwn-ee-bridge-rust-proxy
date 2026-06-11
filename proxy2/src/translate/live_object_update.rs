@@ -1878,6 +1878,7 @@ pub struct LiveObjectUpdateSourceWindowEntryEvidence {
     pub bit_start: usize,
     pub bit_end: Option<usize>,
     pub bit_delta: Option<usize>,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
 }
 
@@ -9133,6 +9134,34 @@ impl LiveObjectRewriteBitLedger {
             .unwrap_or(&[])
     }
 
+    fn source_values_for_range<'a>(
+        &'a self,
+        fragment_bits: &'a [bool],
+        bit_start: usize,
+        bit_end: usize,
+    ) -> &'a [bool] {
+        let source_bits = if self.source_bits.is_empty() {
+            fragment_bits
+        } else {
+            &self.source_bits
+        };
+        source_bits.get(bit_start..bit_end).unwrap_or(&[])
+    }
+
+    fn source_bit_len(&self, fragment_bits: &[bool]) -> usize {
+        if self.source_bits.is_empty() {
+            fragment_bits.len()
+        } else {
+            self.source_bits.len()
+        }
+    }
+
+    fn source_cursor_for_emitted_cursor(&self, cursor: usize) -> usize {
+        self.gap_before_cursor(cursor)
+            .map(|gap| gap.implied_source_cursor)
+            .unwrap_or(cursor)
+    }
+
     fn item_update_cursor_failure_kind(&self, cursor: usize) -> LiveObjectUpdateRewriteFailureKind {
         let Some(gap) = self.gap_before_cursor(cursor) else {
             return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorWithoutLedger;
@@ -9739,6 +9768,23 @@ fn live_object_source_window_evidence(
             .iter()
             .zip(row_claims[retain_start..].iter()),
     ) {
+        let source_bit_len = rewrite_bit_ledger.source_bit_len(fragment_bits);
+        let source_preview_start = rewrite_bit_ledger
+            .source_cursor_for_emitted_cursor(claim.bit_start)
+            .min(source_bit_len);
+        let source_preview_end = claim
+            .bit_end
+            .map(|bit_end| rewrite_bit_ledger.source_cursor_for_emitted_cursor(bit_end))
+            .unwrap_or_else(|| {
+                source_preview_start.saturating_add(LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT)
+            })
+            .min(source_bit_len)
+            .max(source_preview_start);
+        let source_values = rewrite_bit_ledger.source_values_for_range(
+            fragment_bits,
+            source_preview_start,
+            source_preview_end,
+        );
         *slot = Some(LiveObjectUpdateSourceWindowEntryEvidence {
             offset: row.offset,
             record_end: row.record_end,
@@ -9751,6 +9797,11 @@ fn live_object_source_window_evidence(
             bit_delta: claim
                 .bit_end
                 .map(|bit_end| bit_end.saturating_sub(claim.bit_start)),
+            source_bits: live_object_rewrite_bit_slice_evidence(
+                source_preview_start,
+                source_preview_end,
+                source_values,
+            ),
             claim_family: claim.family,
         });
     }

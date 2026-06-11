@@ -5850,6 +5850,19 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(focus_entry.bit_end, None);
     assert_eq!(focus_entry.claim_family, "unclaimed");
     assert!(
+        focus_entry.source_bits.bit_start <= failure.bit_cursor,
+        "source preview cursor should be source-coordinate, not forced to match the emitted cursor after rewrites"
+    );
+    assert!(
+        focus_entry.source_bits.bits_retained >= 4,
+        "source-window evidence should retain the unowned lead bits plus the item position bits"
+    );
+    assert_eq!(
+        &focus_entry.source_bits.bits[..4],
+        &[Some(false), Some(true), Some(true), Some(true)],
+        "source-window evidence should preserve the exact source bits around the failed U/6 handoff"
+    );
+    assert!(
         window_entries.iter().any(|entry| {
             entry.opcode == b'A'
                 && entry.marker == super::ITEM_OBJECT_TYPE

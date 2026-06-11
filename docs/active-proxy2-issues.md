@@ -2485,6 +2485,13 @@ Current status:
   following `U/6 mask=0xFFFF_FFF3` remains unclaimed unless a separate source
   owner consumes its first two position bits. Next proof target remains compact
   source capture or a source-side writer/list-handoff owner before this row.
+- 2026-06-11 follow-up `P/05/01` item `U/6` source-window bit previews:
+  packet bytes and cursor ownership remain unchanged. Retained source-window
+  evidence now includes bounded source-coordinate bit previews per row, so the
+  compact `U/10 -> A/6 -> U/6` handoff can compare the exact two unowned lead
+  bits and following item position bits from the normal failure object rather
+  than from debug stderr. The two active pre-`U/6` bits still require compact
+  source capture or source-side writer/list-handoff proof before assignment.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
