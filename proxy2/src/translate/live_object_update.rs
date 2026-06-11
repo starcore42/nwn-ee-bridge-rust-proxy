@@ -395,6 +395,33 @@ mod diagnostic_tests {
                 focus_failure_read_cursor: 68,
                 focus_failure_bit_cursor: 29,
                 focus_failure_orientation_vector: Some(true),
+                focus_cursor_ledger: Some(LiveObjectUpdateItemCursorLedgerEvidence {
+                    source_owner: LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+                    ledger_relation: "after-previous-emitted-end",
+                    ledger_source_relation: "after-previous-source-end",
+                    ledger_emitted_gap_bits: Some(0),
+                    ledger_emitted_gap_bit_start: Some(28),
+                    ledger_emitted_gap_bit_end: Some(28),
+                    ledger_emitted_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                        28,
+                        28,
+                        &[],
+                    )),
+                    ledger_source_gap_bits: Some(0),
+                    ledger_source_gap_bit_start: Some(22),
+                    ledger_source_gap_bit_end: Some(22),
+                    ledger_source_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                        22,
+                        22,
+                        &[],
+                    )),
+                    ledger_implied_source_cursor: Some(22),
+                    ledger_cumulative_emitted_source_delta: Some(6),
+                    ledger_source_emitted_delta_after_previous: Some(6),
+                    ledger_previous_offset: Some(16),
+                    ledger_previous_record_end: Some(51),
+                    ledger_previous_family: Some("item-create-rewrite"),
+                }),
                 focus_failure_read_window: Some(live_object_rewrite_byte_slice_evidence(
                     68,
                     84,
@@ -474,6 +501,9 @@ mod diagnostic_tests {
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
         assert!(report.contains("focus_failure_stage=orientation-scalar-read-bytes"));
         assert!(report.contains("focus_failure_mask=0x00080033"));
+        assert!(report.contains(
+            "focus_cursor_ledger=source_owner=contiguous-tail ledger_relation=after-previous-emitted-end ledger_source_relation=after-previous-source-end ledger_emitted_gap=bits=0 range=28..28 values=28..28: ledger_source_gap=bits=0 range=22..22 values=22..22: ledger_implied_source_cursor=22 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
+        ));
         assert!(report.contains(
             "focus_failure_read_window=68..84:00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
         ));
@@ -1851,6 +1881,11 @@ mod diagnostic_tests {
             record_end: 32,
             bit_cursor,
             focus_failure: None,
+            focus_cursor_ledger: live_object_item_cursor_ledger_evidence(
+                &ledger,
+                &emitted_bits,
+                bit_cursor,
+            ),
             focus_failure_read_window: None,
             focus_failure_bit_window: None,
             unowned_neighbor: None,
@@ -1866,6 +1901,25 @@ mod diagnostic_tests {
         let evidence = failure
             .item_update_cursor_evidence
             .expect("item cursor failure should carry evidence");
+        let focus_cursor = evidence
+            .focus_cursor_ledger
+            .expect("failure evidence should preserve the focus cursor ledger verdict");
+        assert_eq!(
+            focus_cursor.source_owner,
+            LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+            "the inherited cursor is source-owned even when the item parser rejects"
+        );
+        assert_eq!(focus_cursor.ledger_relation, "after-previous-emitted-end");
+        assert_eq!(
+            focus_cursor.ledger_source_relation,
+            "after-previous-source-end"
+        );
+        assert_eq!(focus_cursor.ledger_emitted_gap_bits, Some(0));
+        assert_eq!(focus_cursor.ledger_source_gap_bits, Some(0));
+        assert_eq!(
+            focus_cursor.ledger_previous_family,
+            Some("item-create-rewrite")
+        );
         let tail = evidence
             .contiguous_tail
             .expect("failure evidence should preserve the contiguous ledger tail");
@@ -2128,6 +2182,7 @@ pub struct LiveObjectUpdateItemCursorFailureEvidence {
     pub focus_failure_read_cursor: usize,
     pub focus_failure_bit_cursor: usize,
     pub focus_failure_orientation_vector: Option<bool>,
+    pub focus_cursor_ledger: Option<LiveObjectUpdateItemCursorLedgerEvidence>,
     pub focus_failure_read_window: Option<LiveObjectUpdateRewriteByteSliceEvidence>,
     pub focus_failure_bit_window: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
@@ -2157,6 +2212,27 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
     pub previous_family: &'static str,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemCursorLedgerEvidence {
+    pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
+    pub ledger_relation: &'static str,
+    pub ledger_source_relation: &'static str,
+    pub ledger_emitted_gap_bits: Option<usize>,
+    pub ledger_emitted_gap_bit_start: Option<usize>,
+    pub ledger_emitted_gap_bit_end: Option<usize>,
+    pub ledger_emitted_gap_values: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_source_gap_bits: Option<usize>,
+    pub ledger_source_gap_bit_start: Option<usize>,
+    pub ledger_source_gap_bit_end: Option<usize>,
+    pub ledger_source_gap_values: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_implied_source_cursor: Option<usize>,
+    pub ledger_cumulative_emitted_source_delta: Option<isize>,
+    pub ledger_source_emitted_delta_after_previous: Option<isize>,
+    pub ledger_previous_offset: Option<usize>,
+    pub ledger_previous_record_end: Option<usize>,
+    pub ledger_previous_family: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8567,6 +8643,11 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     record_end,
                     bit_cursor,
                     focus_failure,
+                    focus_cursor_ledger: live_object_item_cursor_ledger_evidence(
+                        &rewrite_bit_ledger,
+                        &fragment_bits,
+                        bit_cursor,
+                    ),
                     focus_failure_read_window: focus_failure.map(|failure| {
                         live_object_item_focus_failure_read_window(
                             &live_bytes,
@@ -9927,6 +10008,7 @@ struct LiveObjectItemUpdateCursorFailure {
     record_end: usize,
     bit_cursor: usize,
     focus_failure: Option<item::ItemUpdateCursorFailure>,
+    focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence,
     focus_failure_read_window: Option<LiveObjectUpdateRewriteByteSliceEvidence>,
     focus_failure_bit_window: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
@@ -9982,6 +10064,7 @@ impl LiveObjectItemUpdateCursorFailure {
             focus_failure_read_cursor: focus.2,
             focus_failure_bit_cursor: focus.3,
             focus_failure_orientation_vector: focus.4,
+            focus_cursor_ledger: Some(self.focus_cursor_ledger),
             focus_failure_read_window: self.focus_failure_read_window,
             focus_failure_bit_window: self.focus_failure_bit_window,
             unowned_neighbor: self.unowned_neighbor.map(|neighbor| {
@@ -10216,6 +10299,53 @@ fn live_object_item_update_cursor_source_owner(
         (true, false) => LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedGap,
         (false, true) => LiveObjectUpdateItemCursorSourceOwner::UnownedSourceGap,
         (false, false) => LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+    }
+}
+
+fn live_object_item_cursor_ledger_evidence(
+    rewrite_bit_ledger: &LiveObjectRewriteBitLedger,
+    fragment_bits: &[bool],
+    cursor: usize,
+) -> LiveObjectUpdateItemCursorLedgerEvidence {
+    let source_owner = live_object_item_update_cursor_source_owner(rewrite_bit_ledger, cursor);
+    let ledger_gap = rewrite_bit_ledger.gap_before_cursor(cursor);
+    let emitted_gap_values = ledger_gap.map(|gap| {
+        live_object_rewrite_bit_slice_evidence(
+            gap.emitted_gap_bit_start,
+            gap.emitted_gap_bit_end,
+            rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap),
+        )
+    });
+    let source_gap_values = ledger_gap.map(|gap| {
+        live_object_rewrite_bit_slice_evidence(
+            gap.source_gap_bit_start,
+            gap.source_gap_bit_end,
+            rewrite_bit_ledger.source_gap_values(fragment_bits, &gap),
+        )
+    });
+
+    LiveObjectUpdateItemCursorLedgerEvidence {
+        source_owner,
+        ledger_relation: ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger"),
+        ledger_source_relation: ledger_gap
+            .map(|gap| gap.source_relation)
+            .unwrap_or("no-ledger"),
+        ledger_emitted_gap_bits: ledger_gap.map(|gap| gap.emitted_gap_bits),
+        ledger_emitted_gap_bit_start: ledger_gap.map(|gap| gap.emitted_gap_bit_start),
+        ledger_emitted_gap_bit_end: ledger_gap.map(|gap| gap.emitted_gap_bit_end),
+        ledger_emitted_gap_values: emitted_gap_values,
+        ledger_source_gap_bits: ledger_gap.map(|gap| gap.source_gap_bits),
+        ledger_source_gap_bit_start: ledger_gap.map(|gap| gap.source_gap_bit_start),
+        ledger_source_gap_bit_end: ledger_gap.map(|gap| gap.source_gap_bit_end),
+        ledger_source_gap_values: source_gap_values,
+        ledger_implied_source_cursor: ledger_gap.map(|gap| gap.implied_source_cursor),
+        ledger_cumulative_emitted_source_delta: ledger_gap
+            .map(|gap| gap.cumulative_emitted_source_delta),
+        ledger_source_emitted_delta_after_previous: ledger_gap
+            .map(|gap| gap.source_emitted_delta_after_previous),
+        ledger_previous_offset: ledger_gap.map(|gap| gap.previous_offset),
+        ledger_previous_record_end: ledger_gap.map(|gap| gap.previous_record_end),
+        ledger_previous_family: ledger_gap.map(|gap| gap.previous_family),
     }
 }
 
@@ -11629,6 +11759,11 @@ fn format_live_object_update_rewrite_failure_evidence(
             "focus_failure_orientation_vector={:?}",
             evidence.focus_failure_orientation_vector
         );
+        write_item_cursor_ledger_evidence(
+            &mut out,
+            "focus_cursor_ledger",
+            evidence.focus_cursor_ledger,
+        );
         if let Some(read_window) = evidence.focus_failure_read_window {
             let _ = writeln!(
                 &mut out,
@@ -11861,6 +11996,47 @@ fn write_source_window_evidence(
             )
         );
     }
+}
+
+fn write_item_cursor_ledger_evidence(
+    out: &mut String,
+    label: &str,
+    ledger: Option<LiveObjectUpdateItemCursorLedgerEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(ledger) = ledger else {
+        let _ = writeln!(out, "{label}=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "{label}=source_owner={} ledger_relation={} ledger_source_relation={} ledger_emitted_gap={} ledger_source_gap={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
+        ledger.source_owner.as_str(),
+        ledger.ledger_relation,
+        ledger.ledger_source_relation,
+        format_optional_gap(
+            ledger.ledger_emitted_gap_bits,
+            ledger.ledger_emitted_gap_bit_start,
+            ledger.ledger_emitted_gap_bit_end,
+            ledger.ledger_emitted_gap_values,
+        ),
+        format_optional_gap(
+            ledger.ledger_source_gap_bits,
+            ledger.ledger_source_gap_bit_start,
+            ledger.ledger_source_gap_bit_end,
+            ledger.ledger_source_gap_values,
+        ),
+        format_optional_usize(ledger.ledger_implied_source_cursor),
+        format_optional_isize(ledger.ledger_cumulative_emitted_source_delta),
+        format_optional_isize(ledger.ledger_source_emitted_delta_after_previous),
+        format_optional_previous_row(
+            ledger.ledger_previous_offset,
+            ledger.ledger_previous_record_end,
+            ledger.ledger_previous_family,
+        )
+    );
 }
 
 fn format_live_object_byte(value: u8) -> String {

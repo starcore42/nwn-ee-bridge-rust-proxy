@@ -3050,6 +3050,19 @@ Current status:
   coordinates. Next production path remains compact Diamond/source capture or
   source-side writer/list-handoff proof before any item cursor ownership change
   can key off a contiguous-tail verdict.
+- 2026-06-11 follow-up `P/05/01` item `U/6` focus-cursor ledger evidence:
+  production failure evidence now records the inherited focus cursor's ledger
+  verdict separately from any validating shifted neighbor. Failure artifacts
+  emit `focus_cursor_ledger=...` with source owner, source/emitted gap ranges,
+  implied source cursor, cumulative source/emitted delta, and previous ledger
+  row. Packet bytes and cursor ownership remain unchanged; this makes the
+  active compact `U/10 -> A/6 -> U/6` proof compare the source-owned true
+  cursor (`contiguous-tail`) against the `+2` scalar-looking unowned neighbor
+  without parsing Rust debug dumps. Next proof remains compact source capture or
+  source-side writer/list-handoff evidence before assigning the two pre-`U/6`
+  bits. Verified with focused failure-report, contiguous-tail, unowned-neighbor,
+  and source-window tests plus `cargo fmt --all --check`, `git diff --check`,
+  and `cargo check -q -p hgbridge-proxy2`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
