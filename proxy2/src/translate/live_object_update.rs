@@ -5098,20 +5098,14 @@ fn verified_placeable_add_state(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<LiveObjectPlaceableState> {
-    let post_name_bit = verified_placeable_add_state_bit_cursor(
+    let claim = verified_placeable_add_state_claim(
         live_bytes,
         offset,
         record_end,
         fragment_bits,
         bit_cursor,
     )?;
-
-    Some(LiveObjectPlaceableState::from_add_record(
-        fragment_bits.get(post_name_bit + 3).copied()?,
-        fragment_bits.get(post_name_bit + 4).copied()?,
-        fragment_bits.get(post_name_bit + 5).copied()?,
-        fragment_bits.get(post_name_bit + 6).copied()?,
-    ))
+    Some(claim.live_object_state())
 }
 
 fn verified_placeable_update_state(
@@ -9465,6 +9459,23 @@ impl VerifiedPlaceableAddStateBits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedPlaceableAddStateClaim {
+    layout: add::VerifiedEePlaceableAddFragmentLayout,
+    state: VerifiedPlaceableAddStateBits,
+}
+
+impl VerifiedPlaceableAddStateClaim {
+    fn live_object_state(self) -> LiveObjectPlaceableState {
+        LiveObjectPlaceableState::from_add_record(
+            self.state.useable,
+            self.state.trap_disarmable,
+            self.state.lockable,
+            self.state.locked,
+        )
+    }
+}
+
 fn reconcile_verified_placeable_add_state_with_area_context(
     area_context: &AreaPlaceableContext,
     live_bytes: &[u8],
@@ -9480,7 +9491,7 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     {
         return Some(false);
     }
-    let post_name_bit = verified_placeable_add_state_bit_cursor(
+    let claim = verified_placeable_add_state_claim(
         live_bytes,
         record_offset,
         record_end,
@@ -9495,12 +9506,7 @@ fn reconcile_verified_placeable_add_state_with_area_context(
         return Some(false);
     };
 
-    let source_state = VerifiedPlaceableAddStateBits {
-        useable: bits.get(post_name_bit + 3).copied()?,
-        trap_disarmable: bits.get(post_name_bit + 4).copied()?,
-        lockable: bits.get(post_name_bit + 5).copied()?,
-        locked: bits.get(post_name_bit + 6).copied()?,
-    };
+    let source_state = claim.state;
     let conflict = source_state
         .observed_area_state()
         .conflict_with_module_state(module_state);
@@ -9510,6 +9516,7 @@ fn reconcile_verified_placeable_add_state_with_area_context(
 
     let rewritten_state = source_state.with_module_static_state(module_state);
     let mut changed = false;
+    let post_name_bit = claim.layout.post_name_bit;
     changed |= set_fragment_bit(bits, post_name_bit + 3, rewritten_state.useable)?;
     changed |= set_fragment_bit(bits, post_name_bit + 4, rewritten_state.trap_disarmable)?;
     changed |= set_fragment_bit(bits, post_name_bit + 5, rewritten_state.lockable)?;
@@ -9519,6 +9526,10 @@ fn reconcile_verified_placeable_add_state_with_area_context(
         object_id = format_args!("0x{object_id:08X}"),
         record_offset,
         record_end,
+        state_bit_cursor = post_name_bit,
+        next_bit_cursor = claim.layout.next_bit_cursor,
+        optional_object_id = claim.layout.byte_layout.optional_object_id,
+        visual_map_offset = claim.layout.byte_layout.map_offset,
         source_placeable_state = ?source_state,
         emitted_placeable_state = ?rewritten_state,
         area_module_state = %format_area_placeable_module_state(module_state),
@@ -9529,21 +9540,28 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     Some(changed)
 }
 
-fn verified_placeable_add_state_bit_cursor(
+fn verified_placeable_add_state_claim(
     live_bytes: &[u8],
     offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-) -> Option<usize> {
-    add::verified_ee_placeable_add_fragment_layout(
+) -> Option<VerifiedPlaceableAddStateClaim> {
+    let layout = add::verified_ee_placeable_add_fragment_layout(
         live_bytes,
         offset,
         record_end,
         fragment_bits,
         bit_cursor,
-    )
-    .map(|layout| layout.post_name_bit)
+    )?;
+    let post_name_bit = layout.post_name_bit;
+    let state = VerifiedPlaceableAddStateBits {
+        useable: fragment_bits.get(post_name_bit + 3).copied()?,
+        trap_disarmable: fragment_bits.get(post_name_bit + 4).copied()?,
+        lockable: fragment_bits.get(post_name_bit + 5).copied()?,
+        locked: fragment_bits.get(post_name_bit + 6).copied()?,
+    };
+    Some(VerifiedPlaceableAddStateClaim { layout, state })
 }
 
 fn set_fragment_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {

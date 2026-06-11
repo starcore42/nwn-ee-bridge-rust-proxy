@@ -762,6 +762,15 @@ Current status:
   focused `exact_placeable_update` and `placeable_update` regressions; next
   visual replay should still compare any remaining static/live drift outside
   unique add-state and update-lock bits.
+- 2026-06-12 follow-up exact `A/09` add-state claim: packet bytes and cursor
+  ownership are unchanged. Add-state mention extraction and unique
+  module-backed static reconciliation now share a typed exact-layout claim
+  carrying the verified post-name state cursor, optional-OBJECTID guard,
+  next cursor, and visual-transform map offset, so later diagnostics cannot
+  drift back to a bare cursor rewalk. Verified with focused `exact_placeable`
+  add/update and `placeable_add_rewrite_`/`placeable_update` regressions; next
+  production path remains local visual replay for remaining placeable
+  appearance/orientation/model drift.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
