@@ -245,20 +245,37 @@ fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -
     name_offset + 6 == record_end && read_u16_le(bytes, name_offset + 4).is_some()
 }
 
-fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VerifiedEePlaceableAddLayout {
+    pub(super) tail_offset: usize,
+    pub(super) base_tail_end: usize,
+    pub(super) optional_object_id: bool,
+    pub(super) map_offset: usize,
+}
+
+pub(super) fn verified_ee_placeable_add_layout(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+) -> Option<VerifiedEePlaceableAddLayout> {
+    if offset + 6 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'A'
+        || bytes.get(offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return None;
+    }
     let name_offset = offset + 6;
     let tail_offset =
         locstring::inline_cexo_string_end(bytes, name_offset).unwrap_or(name_offset + 4);
-    let Some(tail_end) = tail_offset.checked_add(1 + 2 + 2) else {
-        return false;
-    };
-    if tail_end > record_end || tail_end > bytes.len() {
-        return false;
+    let base_tail_end = tail_offset.checked_add(1 + 2 + 2)?;
+    if base_tail_end > record_end || base_tail_end > bytes.len() {
+        return None;
     }
     if read_u16_le(bytes, tail_offset + 1).is_none()
         || read_u16_le(bytes, tail_offset + 3).is_none()
     {
-        return false;
+        return None;
     }
 
     // EE `AddPlaceableAppearanceToMessage` reads the name/type/appearance/static
@@ -268,20 +285,37 @@ fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usi
     // validator therefore accepts either exact cursor: no guarded object id, or
     // a four-byte guarded OBJECTID immediately before the EE visual map. The
     // fragment cursor validator ties the chosen byte cursor back to the BOOL.
-    if creature::has_ee_identity_visual_transform_map_at(bytes, tail_end, record_end)
-        && tail_end + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
+    if creature::has_ee_identity_visual_transform_map_at(bytes, base_tail_end, record_end)
+        && base_tail_end + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
             == record_end
     {
-        return true;
+        return Some(VerifiedEePlaceableAddLayout {
+            tail_offset,
+            base_tail_end,
+            optional_object_id: false,
+            map_offset: base_tail_end,
+        });
     }
 
-    let Some(optional_object_end) = tail_end.checked_add(4) else {
-        return false;
-    };
-    optional_object_end <= record_end
-        && read_u32_le(bytes, tail_end).is_some()
+    let optional_object_end = base_tail_end.checked_add(4)?;
+    if optional_object_end <= record_end
+        && read_u32_le(bytes, base_tail_end).is_some()
         && creature::has_ee_identity_visual_transform_map_at(bytes, optional_object_end, record_end)
         && optional_object_end
             + super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES_LEN
             == record_end
+    {
+        return Some(VerifiedEePlaceableAddLayout {
+            tail_offset,
+            base_tail_end,
+            optional_object_id: true,
+            map_offset: optional_object_end,
+        });
+    }
+
+    None
+}
+
+fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
+    verified_ee_placeable_add_layout(bytes, offset, record_end).is_some()
 }
