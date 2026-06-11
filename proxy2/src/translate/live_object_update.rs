@@ -715,6 +715,75 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn item_neighbor_gap_origin_advances_through_orientation_branch_before_state() {
+        let mask = LEGACY_UPDATE_POSITION_MASK
+            | LEGACY_UPDATE_ORIENTATION_MASK
+            | LEGACY_UPDATE_STATE_MASK
+            | LEGACY_UPDATE_NAME_MASK;
+        let focus = 20usize;
+        let scalar_orientation_end = focus
+            + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+            + 1
+            + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
+        let vector_orientation_end = focus
+            + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+            + 1
+            + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS;
+
+        assert_eq!(
+            live_object_item_update_focus_gap_origin(
+                mask,
+                Some(false),
+                focus,
+                scalar_orientation_end
+            ),
+            LiveObjectUpdateItemCursorGapOrigin::FocusOrientationScalarPrefixBits,
+            "a scalar branch fit at the orientation end is still orientation-owned"
+        );
+        assert_eq!(
+            live_object_item_update_focus_gap_origin(
+                mask,
+                Some(false),
+                focus,
+                scalar_orientation_end + 1
+            ),
+            LiveObjectUpdateItemCursorGapOrigin::FocusStatePrefixBits,
+            "state attribution must start after the scalar orientation payload"
+        );
+        assert_eq!(
+            live_object_item_update_focus_gap_origin(
+                mask,
+                Some(false),
+                focus,
+                scalar_orientation_end + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1
+            ),
+            LiveObjectUpdateItemCursorGapOrigin::FocusNameOrLocstringPrefixBits,
+            "name attribution must start only after scalar orientation and state bits"
+        );
+
+        assert_eq!(
+            live_object_item_update_focus_gap_origin(
+                mask,
+                Some(true),
+                focus,
+                vector_orientation_end
+            ),
+            LiveObjectUpdateItemCursorGapOrigin::FocusOrientationVectorPrefixBits,
+            "a vector branch fit at the orientation end is still orientation-owned"
+        );
+        assert_eq!(
+            live_object_item_update_focus_gap_origin(
+                mask,
+                Some(true),
+                focus,
+                vector_orientation_end + 1
+            ),
+            LiveObjectUpdateItemCursorGapOrigin::FocusStatePrefixBits,
+            "state attribution must start after the vector orientation payload"
+        );
+    }
+
+    #[test]
     fn rewrite_bit_ledger_tracks_source_and_emitted_cursors() {
         let mut live = vec![0; 32];
         live[0] = b'A';
@@ -10378,6 +10447,7 @@ fn live_object_source_window_item_neighbor_cursor_claims(
             ),
             gap_origin: live_object_item_update_focus_gap_origin(
                 claim.translated_mask,
+                claim.cursor.orientation_vector,
                 expected_bit_cursor,
                 cursor,
             ),
@@ -10408,6 +10478,7 @@ fn live_object_source_window_neighbor_relation(
 
 fn live_object_item_update_focus_gap_origin(
     translated_mask: u32,
+    orientation_vector: Option<bool>,
     focus_bit_cursor: usize,
     candidate_bit_start: usize,
 ) -> LiveObjectUpdateItemCursorGapOrigin {
@@ -10437,15 +10508,25 @@ fn live_object_item_update_focus_gap_origin(
                 LiveObjectUpdateItemCursorGapOrigin::PartialFocusOrientationSelector
             };
         }
-        if candidate_bit_start
-            <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS)
-        {
-            return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationVectorPrefixBits;
-        }
-        if candidate_bit_start
-            <= orientation_selector_end.saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS)
-        {
-            return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationScalarPrefixBits;
+        cursor = orientation_selector_end;
+        match orientation_vector {
+            Some(true) => {
+                let orientation_end =
+                    cursor.saturating_add(EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS);
+                if candidate_bit_start <= orientation_end {
+                    return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationVectorPrefixBits;
+                }
+                cursor = orientation_end;
+            }
+            Some(false) => {
+                let orientation_end =
+                    cursor.saturating_add(EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS);
+                if candidate_bit_start <= orientation_end {
+                    return LiveObjectUpdateItemCursorGapOrigin::FocusOrientationScalarPrefixBits;
+                }
+                cursor = orientation_end;
+            }
+            None => {}
         }
     }
 
@@ -10537,6 +10618,7 @@ fn nearest_unowned_item_update_neighbor_cursor(
             previous_family: gap.previous_family,
             gap_origin: live_object_item_update_focus_gap_origin(
                 claim.translated_mask,
+                claim.cursor.orientation_vector,
                 bit_cursor,
                 candidate_cursor,
             ),
