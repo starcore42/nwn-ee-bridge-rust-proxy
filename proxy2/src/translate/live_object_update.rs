@@ -1507,6 +1507,7 @@ mod diagnostic_tests {
             bit_cursor,
             unowned_neighbor: None,
             contiguous_tail: ledger.contiguous_tail_evidence(&emitted_bits, bit_cursor),
+            source_window: None,
         }
         .into_rewrite_failure();
 
@@ -1780,6 +1781,7 @@ pub struct LiveObjectUpdateItemCursorFailureEvidence {
     pub focus_failure_orientation_vector: Option<bool>,
     pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
     pub contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
+    pub source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1806,6 +1808,7 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
 pub const LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT: usize = 16;
+pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateRewriteBitSliceEvidence {
@@ -1848,6 +1851,34 @@ pub struct LiveObjectUpdateRewriteTailEntryEvidence {
     pub family: &'static str,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub emitted_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateSourceWindowEvidence {
+    pub focus_offset: usize,
+    pub focus_record_end: usize,
+    pub focus_row_index: Option<usize>,
+    pub initial_bit_cursor: usize,
+    pub expected_bit_cursor: usize,
+    pub fragment_bit_count: usize,
+    pub entry_count: usize,
+    pub entries_retained: usize,
+    pub entries: [Option<LiveObjectUpdateSourceWindowEntryEvidence>;
+        LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateSourceWindowEntryEvidence {
+    pub offset: usize,
+    pub record_end: usize,
+    pub opcode: u8,
+    pub marker: u8,
+    pub object_id: Option<u32>,
+    pub update_mask: Option<u32>,
+    pub bit_start: usize,
+    pub bit_end: Option<usize>,
+    pub bit_delta: Option<usize>,
+    pub claim_family: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8080,6 +8111,14 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     unowned_neighbor,
                     contiguous_tail: rewrite_bit_ledger
                         .contiguous_tail_evidence(&fragment_bits, bit_cursor),
+                    source_window: live_object_source_window_evidence(
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        &fragment_bits,
+                        bit_cursor,
+                        &rewrite_bit_ledger,
+                    ),
                 };
                 *rewrite_failure = Some(failure.into_rewrite_failure());
                 fatal_item_update_cursor_failure = Some(failure);
@@ -9324,6 +9363,7 @@ struct LiveObjectItemUpdateCursorFailure {
     bit_cursor: usize,
     unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
     contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
 }
 
 impl LiveObjectItemUpdateCursorFailure {
@@ -9381,6 +9421,7 @@ impl LiveObjectItemUpdateCursorFailure {
                 }
             }),
             contiguous_tail: self.contiguous_tail,
+            source_window: self.source_window,
         }
     }
 }
@@ -9662,6 +9703,69 @@ fn live_object_source_window_initial_bit_cursor(
     } else {
         focus_bit_cursor
     }
+}
+
+fn live_object_source_window_evidence(
+    live_bytes: &[u8],
+    focus_offset: usize,
+    focus_record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    rewrite_bit_ledger: &LiveObjectRewriteBitLedger,
+) -> Option<LiveObjectUpdateSourceWindowEvidence> {
+    let rows = live_object_source_window_rows(live_bytes, focus_offset, focus_record_end, 6, 3);
+    if rows.is_empty() {
+        return None;
+    }
+    let initial_bit_cursor =
+        live_object_source_window_initial_bit_cursor(&rows, bit_cursor, rewrite_bit_ledger);
+    let row_claims = live_object_source_window_row_bit_claims(
+        live_bytes,
+        &rows,
+        fragment_bits,
+        initial_bit_cursor,
+    );
+    let focus_row_index = rows.iter().position(|row| row.offset == focus_offset);
+    let expected_bit_cursor = focus_row_index
+        .and_then(|index| row_claims.get(index))
+        .map(|claim| claim.bit_start)
+        .unwrap_or(bit_cursor);
+    let retain_start = rows
+        .len()
+        .saturating_sub(LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT);
+    let mut entries = [None; LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT];
+    for (slot, (row, claim)) in entries.iter_mut().zip(
+        rows[retain_start..]
+            .iter()
+            .zip(row_claims[retain_start..].iter()),
+    ) {
+        *slot = Some(LiveObjectUpdateSourceWindowEntryEvidence {
+            offset: row.offset,
+            record_end: row.record_end,
+            opcode: row.opcode,
+            marker: row.marker,
+            object_id: row.object_id,
+            update_mask: row.update_mask,
+            bit_start: claim.bit_start,
+            bit_end: claim.bit_end,
+            bit_delta: claim
+                .bit_end
+                .map(|bit_end| bit_end.saturating_sub(claim.bit_start)),
+            claim_family: claim.family,
+        });
+    }
+
+    Some(LiveObjectUpdateSourceWindowEvidence {
+        focus_offset,
+        focus_record_end,
+        focus_row_index,
+        initial_bit_cursor,
+        expected_bit_cursor,
+        fragment_bit_count: fragment_bits.len(),
+        entry_count: rows.len(),
+        entries_retained: rows.len().saturating_sub(retain_start),
+        entries,
+    })
 }
 
 fn live_object_source_window_row_bit_claim(

@@ -2475,6 +2475,16 @@ Current status:
   without scraping lower-level debug-only source-window text. The two active
   pre-`U/6` bits remain unowned pending compact source capture or a
   source-side writer/list-handoff proof.
+- 2026-06-11 follow-up `P/05/01` item `U/6` source-window evidence: packet
+  bytes and cursor ownership remain unchanged. Retained item-update cursor
+  failures now carry the bounded source-window row replay as structured bridge
+  evidence: row offsets, opcodes, object ids, masks, bit starts/ends, and parser
+  claim families around the failed full item `U/6`. The raw CEP-style
+  `A/10 -> U/10 -> A/6 -> U/6` handoff now proves in the failure object that the
+  preceding item add/create claim ends exactly at the failed cursor while the
+  following `U/6 mask=0xFFFF_FFF3` remains unclaimed unless a separate source
+  owner consumes its first two position bits. Next proof target remains compact
+  source capture or a source-side writer/list-handoff owner before this row.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls

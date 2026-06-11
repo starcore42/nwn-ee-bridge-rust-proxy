@@ -5827,6 +5827,37 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         neighbor.gap_origin,
         super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
     );
+    let source_window = evidence
+        .source_window
+        .expect("item cursor failure should retain the bounded source-window row claims");
+    assert_eq!(source_window.focus_offset, failure.offset);
+    assert_eq!(source_window.focus_record_end, failure.record_end);
+    assert_eq!(source_window.expected_bit_cursor, failure.bit_cursor);
+    assert!(
+        source_window.entry_count >= 4,
+        "source-window evidence should retain the handoff rows around the failed U/6"
+    );
+    let window_entries = source_window.entries.iter().flatten().collect::<Vec<_>>();
+    assert_eq!(source_window.entries_retained, window_entries.len());
+    let focus_entry = window_entries
+        .iter()
+        .find(|entry| entry.offset == failure.offset)
+        .expect("source-window evidence should include the failed U/6 row");
+    assert_eq!(focus_entry.opcode, b'U');
+    assert_eq!(focus_entry.marker, super::ITEM_OBJECT_TYPE);
+    assert_eq!(focus_entry.update_mask, Some(0xFFFF_FFF3));
+    assert_eq!(focus_entry.bit_start, failure.bit_cursor);
+    assert_eq!(focus_entry.bit_end, None);
+    assert_eq!(focus_entry.claim_family, "unclaimed");
+    assert!(
+        window_entries.iter().any(|entry| {
+            entry.opcode == b'A'
+                && entry.marker == super::ITEM_OBJECT_TYPE
+                && entry.bit_end == Some(failure.bit_cursor)
+                && matches!(entry.claim_family, "item-create" | "item-add")
+        }),
+        "source-window evidence should show the preceding item add/create claim ending exactly at the failed U/6 cursor"
+    );
     assert_eq!(
         payload, original,
         "failed raw CEP handoff proof must leave the source stream untouched"
