@@ -391,9 +391,23 @@ mod diagnostic_tests {
             ),
             item_update_cursor_evidence: Some(LiveObjectUpdateItemCursorFailureEvidence {
                 focus_failure_stage: "orientation-scalar-read-bytes",
+                focus_failure_mask: Some(0x0008_0033),
                 focus_failure_read_cursor: 68,
                 focus_failure_bit_cursor: 29,
                 focus_failure_orientation_vector: Some(true),
+                focus_failure_read_window: Some(live_object_rewrite_byte_slice_evidence(
+                    68,
+                    84,
+                    payload.get(68..84).unwrap_or(&[]),
+                )),
+                focus_failure_bit_window: Some(live_object_rewrite_bit_slice_evidence(
+                    29,
+                    42,
+                    &[
+                        true, false, true, true, false, false, false, false, false, false, false,
+                        true, true,
+                    ],
+                )),
                 unowned_neighbor: None,
                 item_handoff: Some(LiveObjectUpdateItemHandoffEvidence {
                     previous_offset: 16,
@@ -459,6 +473,11 @@ mod diagnostic_tests {
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
         assert!(report.contains("focus_failure_stage=orientation-scalar-read-bytes"));
+        assert!(report.contains("focus_failure_mask=0x00080033"));
+        assert!(report.contains(
+            "focus_failure_read_window=68..84:00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+        ));
+        assert!(report.contains("focus_failure_bit_window=29..42:1011000000011"));
         assert!(report.contains(
             "contiguous_tail_summary=entries=1 retained=1 source=17..22 emitted=22..28 cursor=28 source_cursor=22 emitted_source_delta=6 emitted_gap=0 source_gap=0"
         ));
@@ -1753,6 +1772,7 @@ mod diagnostic_tests {
             gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             source_owner: LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
             focus_failure_stage: "orientation-vector-read-bytes",
+            focus_failure_mask: Some(0x0008_0033),
             focus_failure_read_cursor: 12,
             focus_failure_bit_cursor: cursor_after_row + 2,
             focus_failure_orientation_vector: Some(true),
@@ -1830,6 +1850,9 @@ mod diagnostic_tests {
             offset: 22,
             record_end: 32,
             bit_cursor,
+            focus_failure: None,
+            focus_failure_read_window: None,
+            focus_failure_bit_window: None,
             unowned_neighbor: None,
             contiguous_tail: ledger.contiguous_tail_evidence(&emitted_bits, bit_cursor),
             source_window: None,
@@ -2101,9 +2124,12 @@ pub struct LiveObjectUpdateRewriteFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateItemCursorFailureEvidence {
     pub focus_failure_stage: &'static str,
+    pub focus_failure_mask: Option<u32>,
     pub focus_failure_read_cursor: usize,
     pub focus_failure_bit_cursor: usize,
     pub focus_failure_orientation_vector: Option<bool>,
+    pub focus_failure_read_window: Option<LiveObjectUpdateRewriteByteSliceEvidence>,
+    pub focus_failure_bit_window: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
     pub item_handoff: Option<LiveObjectUpdateItemHandoffEvidence>,
     pub contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
@@ -2163,6 +2189,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
 pub const LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT: usize = 16;
+pub const LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT: usize = 16;
 pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT: usize = 10;
 pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT: usize = 8;
 
@@ -2173,6 +2200,15 @@ pub struct LiveObjectUpdateRewriteBitSliceEvidence {
     pub bit_count: usize,
     pub bits_retained: usize,
     pub bits: [Option<bool>; LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateRewriteByteSliceEvidence {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub byte_count: usize,
+    pub bytes_retained: usize,
+    pub bytes: [Option<u8>; LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8495,6 +8531,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 );
             }
             if object_type == ITEM_OBJECT_TYPE && bit_cursor_was_reliable && !bit_cursor_reliable {
+                let focus_failure = item::translated_ee_item_update_cursor_failure(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                );
                 let unowned_neighbor = nearest_unowned_item_update_neighbor_cursor(
                     &live_bytes,
                     offset,
@@ -8523,6 +8566,21 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     offset,
                     record_end,
                     bit_cursor,
+                    focus_failure,
+                    focus_failure_read_window: focus_failure.map(|failure| {
+                        live_object_item_focus_failure_read_window(
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            failure.read_cursor,
+                        )
+                    }),
+                    focus_failure_bit_window: focus_failure.map(|failure| {
+                        live_object_item_focus_failure_bit_window(
+                            &fragment_bits,
+                            failure.bit_cursor,
+                        )
+                    }),
                     unowned_neighbor,
                     contiguous_tail: rewrite_bit_ledger
                         .contiguous_tail_evidence(&fragment_bits, bit_cursor),
@@ -8833,12 +8891,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={}",
+                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_mask={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={}",
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
                 failure.kind.as_str(),
                 neighbor.focus_failure_stage,
+                format_optional_u32_hex(neighbor.focus_failure_mask),
                 neighbor.focus_failure_read_cursor,
                 neighbor.focus_failure_bit_cursor,
                 neighbor
@@ -9800,12 +9859,76 @@ fn live_object_rewrite_bit_slice_evidence(
     }
 }
 
+fn live_object_rewrite_byte_slice_evidence(
+    byte_start: usize,
+    byte_end: usize,
+    values: &[u8],
+) -> LiveObjectUpdateRewriteByteSliceEvidence {
+    let mut bytes = [None; LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT];
+    for (slot, value) in bytes.iter_mut().zip(values.iter().copied()) {
+        *slot = Some(value);
+    }
+    LiveObjectUpdateRewriteByteSliceEvidence {
+        byte_start,
+        byte_end,
+        byte_count: byte_end.saturating_sub(byte_start),
+        bytes_retained: values
+            .len()
+            .min(LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT),
+        bytes,
+    }
+}
+
+fn live_object_item_focus_failure_read_window(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    read_cursor: usize,
+) -> LiveObjectUpdateRewriteByteSliceEvidence {
+    let row_start = offset.min(live_bytes.len());
+    let row_end = record_end.min(live_bytes.len()).max(row_start);
+    let clamped = read_cursor.min(row_end).max(row_start);
+    let mut byte_start = clamped;
+    let mut byte_end = clamped
+        .saturating_add(LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT)
+        .min(row_end);
+    if byte_start == byte_end && row_end > row_start {
+        byte_start = row_end
+            .saturating_sub(LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT)
+            .max(row_start);
+        byte_end = row_end;
+    }
+    live_object_rewrite_byte_slice_evidence(
+        byte_start,
+        byte_end,
+        live_bytes.get(byte_start..byte_end).unwrap_or(&[]),
+    )
+}
+
+fn live_object_item_focus_failure_bit_window(
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> LiveObjectUpdateRewriteBitSliceEvidence {
+    let bit_start = bit_cursor.min(fragment_bits.len());
+    let bit_end = bit_start
+        .saturating_add(LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT)
+        .min(fragment_bits.len());
+    live_object_rewrite_bit_slice_evidence(
+        bit_start,
+        bit_end,
+        fragment_bits.get(bit_start..bit_end).unwrap_or(&[]),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LiveObjectItemUpdateCursorFailure {
     kind: LiveObjectUpdateRewriteFailureKind,
     offset: usize,
     record_end: usize,
     bit_cursor: usize,
+    focus_failure: Option<item::ItemUpdateCursorFailure>,
+    focus_failure_read_window: Option<LiveObjectUpdateRewriteByteSliceEvidence>,
+    focus_failure_bit_window: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
     contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
     source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
@@ -9828,24 +9951,39 @@ impl LiveObjectItemUpdateCursorFailure {
 
     fn evidence(self) -> LiveObjectUpdateItemCursorFailureEvidence {
         let focus = self
-            .unowned_neighbor
-            .map(|neighbor| {
+            .focus_failure
+            .map(|failure| {
                 (
-                    neighbor.focus_failure_stage,
-                    neighbor.focus_failure_read_cursor,
-                    neighbor.focus_failure_bit_cursor,
-                    neighbor.focus_failure_orientation_vector,
+                    failure.stage.as_str(),
+                    failure.mask,
+                    failure.read_cursor,
+                    failure.bit_cursor,
+                    failure.orientation_vector,
                 )
             })
-            .unwrap_or(("none", self.offset, self.bit_cursor, None));
+            .or_else(|| {
+                self.unowned_neighbor.map(|neighbor| {
+                    (
+                        neighbor.focus_failure_stage,
+                        neighbor.focus_failure_mask,
+                        neighbor.focus_failure_read_cursor,
+                        neighbor.focus_failure_bit_cursor,
+                        neighbor.focus_failure_orientation_vector,
+                    )
+                })
+            })
+            .unwrap_or(("none", None, self.offset, self.bit_cursor, None));
         let item_handoff = self
             .unowned_neighbor
             .map(|neighbor| self.item_handoff_evidence(neighbor));
         LiveObjectUpdateItemCursorFailureEvidence {
             focus_failure_stage: focus.0,
-            focus_failure_read_cursor: focus.1,
-            focus_failure_bit_cursor: focus.2,
-            focus_failure_orientation_vector: focus.3,
+            focus_failure_mask: focus.1,
+            focus_failure_read_cursor: focus.2,
+            focus_failure_bit_cursor: focus.3,
+            focus_failure_orientation_vector: focus.4,
+            focus_failure_read_window: self.focus_failure_read_window,
+            focus_failure_bit_window: self.focus_failure_bit_window,
             unowned_neighbor: self.unowned_neighbor.map(|neighbor| {
                 LiveObjectUpdateItemUnownedNeighborEvidence {
                     delta: neighbor.delta,
@@ -9944,6 +10082,7 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     source_owner: LiveObjectUpdateItemCursorSourceOwner,
     focus_failure_stage: &'static str,
+    focus_failure_mask: Option<u32>,
     focus_failure_read_cursor: usize,
     focus_failure_bit_cursor: usize,
     focus_failure_orientation_vector: Option<bool>,
@@ -10846,6 +10985,7 @@ fn nearest_unowned_item_update_neighbor_cursor(
             focus_failure_stage: focus_failure
                 .map(|failure| failure.stage.as_str())
                 .unwrap_or("none"),
+            focus_failure_mask: focus_failure.and_then(|failure| failure.mask),
             focus_failure_read_cursor: focus_failure
                 .map(|failure| failure.read_cursor)
                 .unwrap_or(offset),
@@ -11471,6 +11611,11 @@ fn format_live_object_update_rewrite_failure_evidence(
         );
         let _ = writeln!(
             &mut out,
+            "focus_failure_mask={}",
+            format_optional_u32_hex(evidence.focus_failure_mask)
+        );
+        let _ = writeln!(
+            &mut out,
             "focus_failure_read_cursor={}",
             evidence.focus_failure_read_cursor
         );
@@ -11484,6 +11629,24 @@ fn format_live_object_update_rewrite_failure_evidence(
             "focus_failure_orientation_vector={:?}",
             evidence.focus_failure_orientation_vector
         );
+        if let Some(read_window) = evidence.focus_failure_read_window {
+            let _ = writeln!(
+                &mut out,
+                "focus_failure_read_window={}",
+                format_rewrite_byte_slice_evidence(read_window)
+            );
+        } else {
+            let _ = writeln!(&mut out, "focus_failure_read_window=none");
+        }
+        if let Some(bit_window) = evidence.focus_failure_bit_window {
+            let _ = writeln!(
+                &mut out,
+                "focus_failure_bit_window={}",
+                format_rewrite_bit_slice_evidence(bit_window)
+            );
+        } else {
+            let _ = writeln!(&mut out, "focus_failure_bit_window=none");
+        }
         let _ = writeln!(
             &mut out,
             "unowned_neighbor={:#?}",
@@ -11803,6 +11966,38 @@ fn format_rewrite_bit_slice_evidence(evidence: LiveObjectUpdateRewriteBitSliceEv
     } else {
         format!("{}..{}:{}", evidence.bit_start, evidence.bit_end, bits)
     }
+}
+
+fn format_rewrite_byte_slice_evidence(
+    evidence: LiveObjectUpdateRewriteByteSliceEvidence,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut hex = String::new();
+    for (index, value) in evidence
+        .bytes
+        .iter()
+        .take(evidence.bytes_retained)
+        .enumerate()
+    {
+        if index != 0 {
+            hex.push(' ');
+        }
+        match value {
+            Some(byte) => {
+                let _ = write!(&mut hex, "{byte:02X}");
+            }
+            None => hex.push_str("??"),
+        }
+    }
+    if evidence.bytes_retained < evidence.byte_count {
+        let omitted = evidence.byte_count.saturating_sub(evidence.bytes_retained);
+        if !hex.is_empty() {
+            hex.push(' ');
+        }
+        let _ = write!(&mut hex, "...+{omitted}");
+    }
+    format!("{}..{}:{}", evidence.byte_start, evidence.byte_end, hex)
 }
 
 /// Return true when a live-object payload contains door/placeable add or update

@@ -2509,6 +2509,15 @@ Current status:
   source-capture comparisons from labeling post-orientation state/name gaps as
   generic inside-row evidence. The active two pre-`U/6` bits remain unassigned
   pending compact source capture or source-side writer/list-handoff proof.
+- 2026-06-11 follow-up `P/05/01` item `U/6` focus-failure windows: packet
+  bytes and cursor ownership remain unchanged. Retained item cursor failures now
+  carry the translated focus failure mask plus bounded read-buffer and fragment
+  bit windows at the exact typed parser stop point. Failure artifacts emit
+  stable `focus_failure_mask`, `focus_failure_read_window`, and
+  `focus_failure_bit_window` lines so a compact Diamond/source capture can
+  compare the parser stop with the existing source-window/handoff rows without
+  relying on debug stderr. The two active pre-`U/6` bits remain unassigned
+  pending compact source capture or source-side writer/list-handoff proof.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
@@ -3030,6 +3039,17 @@ Current status:
   A broader `live_object_update` filter still has existing rewrite-test
   failures unrelated to this formatter-only path and should be handled as a
   separate packet-behavior task.
+- 2026-06-11 follow-up `P/05/01` item `U/6` source-owner verdict:
+  production failure evidence now carries a typed
+  `LiveObjectUpdateItemCursorSourceOwner` for unowned neighbors, handoff
+  summaries, and source-window neighboring cursor fits. Bridge traces and
+  failure artifacts emit the verdict as `source_owner`, distinguishing a real
+  `contiguous-tail` handoff from `unowned-emitted-source-gap`. Packet bytes and
+  cursor ownership remain unchanged; the active raw no-map `U/6` regression
+  pins the `+2` scalar-shaped fit as unowned in both emitted and source
+  coordinates. Next production path remains compact Diamond/source capture or
+  source-side writer/list-handoff proof before any item cursor ownership change
+  can key off a contiguous-tail verdict.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
