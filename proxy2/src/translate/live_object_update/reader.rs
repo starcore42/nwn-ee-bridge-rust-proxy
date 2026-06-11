@@ -26,6 +26,7 @@ pub(super) struct LegacyNamedUpdateTail {
 pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) read_end: usize,
     pub(super) scalar_orientation: Option<VerifiedEeDoorPlaceableScalarOrientation>,
+    pub(super) vector_orientation: Option<VerifiedEeDoorPlaceableVectorOrientation>,
     pub(super) appearance_offset: Option<usize>,
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
@@ -36,6 +37,15 @@ pub(super) struct VerifiedEeDoorPlaceableScalarOrientation {
     pub(super) read_offset: usize,
     pub(super) bit_cursor: usize,
     pub(super) scalar_tenths_degrees: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEeDoorPlaceableVectorOrientation {
+    pub(super) read_offset: usize,
+    pub(super) bit_cursor: usize,
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) z: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -385,6 +395,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut fragment_cursor = bit_cursor;
     let mut scalar_orientation = None;
+    let mut vector_orientation = None;
     let mut appearance_offset = None;
     let mut state_bit_cursor = None;
     let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
@@ -411,6 +422,13 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         let orientation_bit_cursor = fragment_cursor;
         let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
         if vector_branch {
+            vector_orientation = Some(VerifiedEeDoorPlaceableVectorOrientation {
+                read_offset: orientation_read_offset,
+                bit_cursor: orientation_bit_cursor,
+                x: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor)?),
+                y: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor + 2)?),
+                z: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor + 4)?),
+            });
             read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
             fragment_cursor = advance_bits(
                 fragment_bits,
@@ -520,10 +538,17 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     Some(VerifiedEeDoorPlaceableUpdateRecord {
         read_end: read_cursor,
         scalar_orientation,
+        vector_orientation,
         appearance_offset,
         state_bit_cursor,
         next_bit_cursor: fragment_cursor,
     })
+}
+
+fn decode_ee_vector_orientation_component(raw: u16) -> f32 {
+    // EE `sub_14079C050` and Diamond `sub_467AE0` both use
+    // `ReadFLOAT(-2.0, 2.0, 16)` for vector-orientation components.
+    -2.0 + (f32::from(raw) * 4.0 / f32::from(u16::MAX))
 }
 
 fn inline_cexo_string_end(bytes: &[u8], offset: usize) -> Option<usize> {

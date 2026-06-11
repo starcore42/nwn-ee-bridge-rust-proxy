@@ -14,9 +14,9 @@ use crate::{
 
 use super::{
     AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent, LiveObjectMention,
-    LiveObjectOrientation, LiveObjectPlaceableState, LiveObjectPosition, LoginEvent,
-    ModuleInfoEvent, ObservedHighLevel, PlayerListEvent, ProtocolEvent, QuickbarEvent,
-    SemanticSessionState, ServerStatusEvent,
+    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectPlaceableState,
+    LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
+    ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -269,6 +269,14 @@ fn live_object_observations_from_payload(payload: &[u8]) -> (Vec<LiveObjectMenti
             orientation: mention
                 .orientation
                 .map(|orientation| LiveObjectOrientation {
+                    source: match orientation.source {
+                        live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                            LiveObjectOrientationSource::Scalar
+                        }
+                        live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                            LiveObjectOrientationSource::Vector
+                        }
+                    },
                     scalar_tenths_degrees: orientation.scalar_tenths_degrees,
                 }),
             bounds: mention.bounds.map(|bounds| super::LiveObjectBounds {

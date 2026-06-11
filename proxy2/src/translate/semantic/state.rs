@@ -741,6 +741,7 @@ mod tests {
         AreaPlaceableContextOrientationConflict, AreaPlaceableContextRow,
         AreaPlaceableContextState, AreaPlaceableContextStateConflict,
     };
+    use crate::translate::semantic::LiveObjectOrientationSource;
 
     use super::{
         LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
@@ -785,6 +786,7 @@ mod tests {
             name: None,
             position: None,
             orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
             }),
             bounds: None,
@@ -912,6 +914,7 @@ mod tests {
             name: None,
             position: None,
             orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Vector,
                 scalar_tenths_degrees: 900,
             }),
             bounds: None,
@@ -943,6 +946,14 @@ mod tests {
             Some(expected_conflict)
         );
         assert_eq!(
+            object.orientation,
+            Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Vector,
+                scalar_tenths_degrees: 900,
+            }),
+            "vector-sourced exact U/09 orientation should remain visible to replay diagnostics"
+        );
+        assert_eq!(
             registry.unresolved_area_static_placeable_orientation_conflict_for_record(
                 0x09,
                 compact_object_id
@@ -958,6 +969,7 @@ mod tests {
             name: None,
             position: None,
             orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
                 scalar_tenths_degrees: 0,
             }),
             bounds: None,

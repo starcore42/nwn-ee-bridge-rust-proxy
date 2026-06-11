@@ -846,6 +846,16 @@ Current status:
   hgbridge-proxy2`; next local replay should use the combined state/orientation
   diagnostic to identify any remaining drift outside same-width scalar
   orientation, appearance, and proven state bits.
+- 2026-06-12 follow-up exact vector orientation diagnostics: packet bytes and
+  reconciliation behavior are unchanged. The verified EE door/placeable update
+  parser now retains vector-branch read offset, bit cursor, and decoded
+  `ReadFLOAT(-2,2,16)` components; exact `U/09` mentions expose a vector-sourced
+  scalar-equivalent yaw to the semantic registry, so static/live orientation
+  conflicts can be tracked or resolved for vector rows without pretending the
+  row has a same-width scalar rewrite field. Verified with isolated-target
+  focused exact-vector update and semantic orientation-conflict regressions plus
+  `cargo check -q -p hgbridge-proxy2`; next local replay should compare any
+  remaining placeable drift against scalar-vs-vector orientation source labels.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

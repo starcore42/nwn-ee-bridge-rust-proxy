@@ -2146,6 +2146,7 @@ mod diagnostic_tests {
         assert_eq!(
             claim.mentions[0].orientation,
             Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 0x70A,
             })
         );
@@ -2331,6 +2332,7 @@ mod diagnostic_tests {
         assert_eq!(
             claim.mentions[0].orientation,
             Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 0x70A,
             })
         );
@@ -2372,6 +2374,7 @@ mod diagnostic_tests {
         assert_eq!(
             claim.mentions[0].orientation,
             Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
             }),
             "static direction bearing pi/2 should emit EE scalar orientation 900"
@@ -2473,6 +2476,7 @@ mod diagnostic_tests {
         assert_eq!(
             claim.mentions[0].orientation,
             Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
             })
         );
@@ -2543,7 +2547,15 @@ mod diagnostic_tests {
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
         let original = payload.clone();
-        claim_payload_if_verified(&payload).expect("pre-rewrite exact vector U/09");
+        let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact vector U/09");
+        assert_eq!(
+            claim.mentions[0].orientation,
+            Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Vector,
+                scalar_tenths_degrees: 1350,
+            }),
+            "vector orientation remains diagnostic-only, but exact mention extraction should expose its parser-owned yaw"
+        );
 
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
@@ -3405,7 +3417,14 @@ pub struct LiveObjectRecordPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveObjectRecordOrientation {
+    pub source: LiveObjectRecordOrientationSource,
     pub scalar_tenths_degrees: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectRecordOrientationSource {
+    Scalar,
+    Vector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5618,9 +5637,32 @@ fn verified_record_orientation(
     // orientation diagnostics and static/live reconciliation cannot diverge
     // from the validator on position-owned bits or vector branches.
     let claim = door_placeable_update_claim?;
+    if let Some(scalar) = claim.scalar_orientation {
+        return Some(LiveObjectRecordOrientation {
+            source: LiveObjectRecordOrientationSource::Scalar,
+            scalar_tenths_degrees: scalar.scalar_tenths_degrees,
+        });
+    }
+    let vector = claim.vector_orientation?;
     Some(LiveObjectRecordOrientation {
-        scalar_tenths_degrees: claim.scalar_orientation?.scalar_tenths_degrees,
+        source: LiveObjectRecordOrientationSource::Vector,
+        scalar_tenths_degrees: vector_orientation_scalar_tenths_degrees(vector)?,
     })
+}
+
+fn vector_orientation_scalar_tenths_degrees(
+    vector: reader::VerifiedEeDoorPlaceableVectorOrientation,
+) -> Option<u16> {
+    let _parser_owned_location = (vector.read_offset, vector.bit_cursor);
+    if !vector.x.is_finite() || !vector.y.is_finite() || !vector.z.is_finite() {
+        return None;
+    }
+    let horizontal_len_sq = vector.x.mul_add(vector.x, vector.y * vector.y);
+    if !horizontal_len_sq.is_finite() || horizontal_len_sq <= 1.0e-12 {
+        return None;
+    }
+    let bearing = (-vector.x).atan2(vector.y);
+    writer::encode_ee_scalar_orientation_from_bearing_radians(bearing)
 }
 
 fn verified_record_placeable_appearance(
