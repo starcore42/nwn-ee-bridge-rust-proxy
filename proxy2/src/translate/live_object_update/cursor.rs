@@ -455,61 +455,23 @@ fn advance_placeable_add_bit_cursor(
     if record_offset + LEGACY_UPDATE_HEADER_BYTES > record_end || record_end > bytes.len() {
         return false;
     }
-    if *bit_cursor >= bits.len() {
-        return false;
-    }
-    let outer_locstring = bits[*bit_cursor];
-    let dest_inner_bits = if outer_locstring {
-        let Some(inner_client_tlk) = bits.get(*bit_cursor + 1).copied() else {
-            return false;
-        };
-        if inner_client_tlk {
-            // EE `sub_1407A7800` routes outer=true into the locstring helper.
-            // The bridge currently emits only the decompile-confirmed inline
-            // CExoString/empty-name form: outer=true, inner=false. A true inner
-            // bit would select the TLK/object-table branch and requires a
-            // different typed byte parser, so exact validation must reject it.
-            return false;
-        }
-        1
-    } else {
-        0
-    };
-    let post_name_bit = bit_cursor.saturating_add(1 + dest_inner_bits);
-    if bits.len() <= post_name_bit + 9 {
-        return false;
-    }
-    let optional_object_id = bits.get(post_name_bit + 1).copied().unwrap_or(true);
-    if bits.get(post_name_bit + 9).copied().unwrap_or(true) {
-        // EE adds one more trailing BOOL before its visual-transform map. The
-        // bridge emits false until a captured/decompiled non-default field is
-        // modeled explicitly.
-        return false;
-    }
-    let Some(layout) = add::verified_ee_placeable_add_layout(bytes, record_offset, record_end)
-    else {
+
+    let Some(layout) = add::verified_ee_placeable_add_fragment_layout(
+        bytes,
+        record_offset,
+        record_end,
+        bits,
+        *bit_cursor,
+    ) else {
         if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
             eprintln!(
-                "placeable-add cursor reject record_offset={record_offset} record_end={record_end} bit_cursor={} post_name_bit={post_name_bit} optional_object_id={optional_object_id}",
+                "placeable-add cursor reject record_offset={record_offset} record_end={record_end} bit_cursor={}",
                 *bit_cursor
             );
         }
         return false;
     };
-    if optional_object_id != layout.optional_object_id {
-        if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_PLACEABLE_ADD").is_some() {
-            eprintln!(
-                "placeable-add cursor reject record_offset={record_offset} record_end={record_end} bit_cursor={} post_name_bit={post_name_bit} optional_object_id={optional_object_id} layout_optional_object_id={} tail_offset={} base_tail_end={} map_offset={}",
-                layout.optional_object_id,
-                layout.tail_offset,
-                layout.base_tail_end,
-                layout.map_offset,
-                *bit_cursor
-            );
-        }
-        return false;
-    }
-    *bit_cursor = post_name_bit.saturating_add(10);
+    *bit_cursor = layout.next_bit_cursor;
     *bit_cursor <= bits.len()
 }
 

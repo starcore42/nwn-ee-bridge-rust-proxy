@@ -2067,6 +2067,52 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_mentions_use_verified_vector_state_cursor() {
+        let object_id = 0x8000_34D8u32;
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.extend_from_slice(&[0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, true,  // position fragment bits.
+            true,  // vector-orientation selector; no scalar residual bits follow.
+            false, // visual selector.
+            true,  // visual state active.
+            true,  // locked.
+            false, // lockable.
+            true,  // visual payload.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact vector U/09 should claim");
+        assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(false),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "semantic placeable state must come from the verified parser-owned state cursor"
+        );
+        assert_eq!(
+            claim.mentions[0].fragment_bit_end,
+            CNW_FRAGMENT_HEADER_BITS
+                + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                + 1
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_reconciles_unique_area_static_lock_bits() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
@@ -5034,7 +5080,13 @@ fn verified_record_placeable_state(
         b'A' => {
             verified_placeable_add_state(live_bytes, offset, record_end, fragment_bits, bit_cursor)
         }
-        b'U' => verified_placeable_update_state(live_bytes, offset, fragment_bits, bit_cursor),
+        b'U' => verified_placeable_update_state(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        ),
         _ => None,
     }
 }
@@ -5065,36 +5117,21 @@ fn verified_placeable_add_state(
 fn verified_placeable_update_state(
     live_bytes: &[u8],
     offset: usize,
+    record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<LiveObjectPlaceableState> {
-    let mask = read_u32_le(live_bytes, offset.checked_add(6)?)?;
-    if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
         return None;
     }
-
-    let mut cursor = bit_cursor;
-    if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
-        cursor = cursor.checked_add(LEGACY_UPDATE_POSITION_FRAGMENT_BITS)?;
-    }
-    if (mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
-        let vector_orientation = fragment_bits.get(cursor).copied()?;
-        cursor = cursor.checked_add(if vector_orientation {
-            EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
-        } else {
-            EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
-        })?;
-    }
-    let ee_placeable_state_fragment_bits = LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1;
-    if fragment_bits.len().saturating_sub(cursor) < ee_placeable_state_fragment_bits {
-        return None;
-    }
-    if fragment_bits
-        .get(cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS)
-        .copied()?
-    {
-        return None;
-    }
+    let cursor = claim.state_bit_cursor?;
 
     Some(LiveObjectPlaceableState::from_update_lock_state(
         fragment_bits.get(cursor + 3).copied()?,
@@ -9499,33 +9536,14 @@ fn verified_placeable_add_state_bit_cursor(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<usize> {
-    let name_offset = offset.checked_add(6)?;
-    if name_offset > record_end || bit_cursor >= fragment_bits.len() {
-        return None;
-    }
-
-    let outer_locstring = fragment_bits.get(bit_cursor).copied()?;
-    let destination_name_inner_bits = if outer_locstring {
-        let inner_client_tlk = fragment_bits.get(bit_cursor + 1).copied()?;
-        if inner_client_tlk {
-            return None;
-        }
-        1
-    } else {
-        0
-    };
-    let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
-    if fragment_bits.len() <= post_name_bit + 9 || fragment_bits.get(post_name_bit + 9).copied()? {
-        return None;
-    }
-
-    let layout = add::verified_ee_placeable_add_layout(live_bytes, offset, record_end)?;
-    let optional_object_id = fragment_bits.get(post_name_bit + 1).copied()?;
-    if optional_object_id != layout.optional_object_id {
-        return None;
-    }
-
-    Some(post_name_bit)
+    add::verified_ee_placeable_add_fragment_layout(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )
+    .map(|layout| layout.post_name_bit)
 }
 
 fn set_fragment_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {

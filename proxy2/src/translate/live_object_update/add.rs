@@ -211,6 +211,82 @@ mod tests {
             "rewriting the item-create row must preserve the following record bits"
         );
     }
+
+    fn ee_placeable_add(optional_object_id: Option<u32>) -> Vec<u8> {
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        if let Some(object_id) = optional_object_id {
+            live.extend_from_slice(&object_id.to_le_bytes());
+        }
+        live.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        live
+    }
+
+    #[test]
+    fn placeable_add_fragment_layout_ties_state_cursor_to_optional_branch() {
+        let live = ee_placeable_add(Some(0x8000_1234));
+        let bits = vec![
+            true, false, // inline locstring helper branch: outer=true, inner=false.
+            false, // reputation/visual selector.
+            true,  // optional OBJECTID branch; bytes are present before the map.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap-disarmable.
+            true,  // lockable.
+            false, // locked.
+            true,  // unknown sibling.
+            true,  // name-valid.
+            false, // EE-only visual-transform guard.
+        ];
+
+        let layout = verified_ee_placeable_add_fragment_layout(&live, 0, live.len(), &bits, 0)
+            .expect("exact A/09 helper should own the optional-object fragment layout");
+        assert_eq!(layout.post_name_bit, 2);
+        assert_eq!(layout.next_bit_cursor, bits.len());
+        assert!(layout.byte_layout.optional_object_id);
+
+        let mut mismatched_optional = bits.clone();
+        mismatched_optional[layout.post_name_bit + 1] = false;
+        assert!(
+            verified_ee_placeable_add_fragment_layout(
+                &live,
+                0,
+                live.len(),
+                &mismatched_optional,
+                0,
+            )
+            .is_none(),
+            "optional-object BOOL must match the guarded byte branch"
+        );
+
+        let mut tlk_inner_branch = bits.clone();
+        tlk_inner_branch[1] = true;
+        assert!(
+            verified_ee_placeable_add_fragment_layout(&live, 0, live.len(), &tlk_inner_branch, 0,)
+                .is_none(),
+            "unimplemented inner locstring branch must not shift the state cursor"
+        );
+
+        let mut nonneutral_final_guard = bits;
+        nonneutral_final_guard[layout.post_name_bit + 9] = true;
+        assert!(
+            verified_ee_placeable_add_fragment_layout(
+                &live,
+                0,
+                live.len(),
+                &nonneutral_final_guard,
+                0,
+            )
+            .is_none(),
+            "EE-only visual-transform guard must stay neutral until modeled"
+        );
+    }
 }
 
 fn verified_ee_door_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
@@ -251,6 +327,13 @@ pub(super) struct VerifiedEePlaceableAddLayout {
     pub(super) base_tail_end: usize,
     pub(super) optional_object_id: bool,
     pub(super) map_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VerifiedEePlaceableAddFragmentLayout {
+    pub(super) byte_layout: VerifiedEePlaceableAddLayout,
+    pub(super) post_name_bit: usize,
+    pub(super) next_bit_cursor: usize,
 }
 
 pub(super) fn verified_ee_placeable_add_layout(
@@ -314,6 +397,56 @@ pub(super) fn verified_ee_placeable_add_layout(
     }
 
     None
+}
+
+pub(super) fn verified_ee_placeable_add_fragment_layout(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<VerifiedEePlaceableAddFragmentLayout> {
+    if bit_cursor >= fragment_bits.len() {
+        return None;
+    }
+
+    let outer_locstring = fragment_bits.get(bit_cursor).copied()?;
+    let destination_name_inner_bits = if outer_locstring {
+        let inner_client_tlk = fragment_bits.get(bit_cursor + 1).copied()?;
+        if inner_client_tlk {
+            // EE `sub_1407A7800` routes outer=true into the locstring helper.
+            // The bridge currently emits only the decompile-confirmed inline
+            // CExoString/empty-name form: outer=true, inner=false. A true
+            // inner bit would select the TLK/object-table branch and requires
+            // a different typed byte parser, so exact validation must reject it.
+            return None;
+        }
+        1
+    } else {
+        0
+    };
+    let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
+    if fragment_bits.len() <= post_name_bit + 9 {
+        return None;
+    }
+
+    let byte_layout = verified_ee_placeable_add_layout(bytes, offset, record_end)?;
+    let optional_object_id = fragment_bits.get(post_name_bit + 1).copied()?;
+    if optional_object_id != byte_layout.optional_object_id {
+        return None;
+    }
+    if fragment_bits.get(post_name_bit + 9).copied()? {
+        // EE adds one more trailing BOOL before its visual-transform map. The
+        // bridge emits false until a captured/decompiled non-default field is
+        // modeled explicitly.
+        return None;
+    }
+
+    Some(VerifiedEePlaceableAddFragmentLayout {
+        byte_layout,
+        post_name_bit,
+        next_bit_cursor: post_name_bit.saturating_add(10),
+    })
 }
 
 fn verified_ee_placeable_add_record(bytes: &[u8], offset: usize, record_end: usize) -> bool {
