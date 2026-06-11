@@ -2983,6 +2983,16 @@ Current status:
   debug text. Packet bytes and cursor ownership remain unchanged; next proof
   still needs compact source capture or a source-side writer/handoff owner
   before changing `U/6` cursor handling.
+- 2026-06-11 follow-up `P/05/01` source-window neighbor evidence: production
+  failure state now retains bounded nearby item `U/6` cursor fits inside
+  `LiveObjectUpdateSourceWindowEvidence`, including focus-row relation, typed
+  gap origin, ledger source/emitted gap ranges, gap bit previews, and previous
+  ledger owner. Strict dispatch logs the retained neighbor count and first fit.
+  Packet bytes and cursor ownership are unchanged; next proof still needs
+  compact source capture or a source-side writer/handoff owner before assigning
+  the two pre-`U/6` bits. Verified with focused source-window/item-cursor
+  regressions, the CEP-like no-map handoff regression, `cargo check`, and
+  `git diff --check`.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

@@ -1809,6 +1809,7 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
 pub const LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT: usize = 16;
 pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT: usize = 10;
+pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateRewriteBitSliceEvidence {
@@ -1865,6 +1866,10 @@ pub struct LiveObjectUpdateSourceWindowEvidence {
     pub entries_retained: usize,
     pub entries: [Option<LiveObjectUpdateSourceWindowEntryEvidence>;
         LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT],
+    pub neighbor_count: usize,
+    pub neighbors_retained: usize,
+    pub neighbors: [Option<LiveObjectUpdateSourceWindowNeighborEvidence>;
+        LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1880,6 +1885,34 @@ pub struct LiveObjectUpdateSourceWindowEntryEvidence {
     pub bit_delta: Option<usize>,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateSourceWindowNeighborEvidence {
+    pub delta: isize,
+    pub bit_start: usize,
+    pub bit_end: usize,
+    pub read_end: usize,
+    pub translated_mask: u32,
+    pub orientation_vector: Option<bool>,
+    pub relation: &'static str,
+    pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+    pub ledger_relation: &'static str,
+    pub ledger_source_relation: &'static str,
+    pub ledger_emitted_gap_bits: Option<usize>,
+    pub ledger_emitted_gap_bit_start: Option<usize>,
+    pub ledger_emitted_gap_bit_end: Option<usize>,
+    pub ledger_emitted_gap_values: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_source_gap_bits: Option<usize>,
+    pub ledger_source_gap_bit_start: Option<usize>,
+    pub ledger_source_gap_bit_end: Option<usize>,
+    pub ledger_source_gap_values: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_implied_source_cursor: Option<usize>,
+    pub ledger_cumulative_emitted_source_delta: Option<isize>,
+    pub ledger_source_emitted_delta_after_previous: Option<isize>,
+    pub ledger_previous_offset: Option<usize>,
+    pub ledger_previous_record_end: Option<usize>,
+    pub ledger_previous_family: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9759,6 +9792,22 @@ fn live_object_source_window_evidence(
         .and_then(|index| row_claims.get(index))
         .map(|claim| claim.bit_start)
         .unwrap_or(bit_cursor);
+    let neighbor_claims = focus_row_index
+        .and_then(|index| {
+            let focus_row = rows.get(index)?;
+            let preceding_claim_bit_end = index
+                .checked_sub(1)
+                .and_then(|previous| row_claims.get(previous))
+                .and_then(|claim| claim.bit_end);
+            Some(live_object_source_window_item_neighbor_cursor_claims(
+                live_bytes,
+                focus_row,
+                fragment_bits,
+                expected_bit_cursor,
+                preceding_claim_bit_end,
+            ))
+        })
+        .unwrap_or_default();
     let retain_start = rows
         .len()
         .saturating_sub(LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT);
@@ -9805,6 +9854,60 @@ fn live_object_source_window_evidence(
             claim_family: claim.family,
         });
     }
+    let neighbor_retain_start = neighbor_claims
+        .len()
+        .saturating_sub(LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT);
+    let mut neighbors = [None; LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT];
+    for (slot, neighbor) in neighbors
+        .iter_mut()
+        .zip(neighbor_claims[neighbor_retain_start..].iter())
+    {
+        let ledger_gap = rewrite_bit_ledger.gap_before_cursor(neighbor.bit_start);
+        let emitted_gap_values = ledger_gap.map(|gap| {
+            live_object_rewrite_bit_slice_evidence(
+                gap.emitted_gap_bit_start,
+                gap.emitted_gap_bit_end,
+                rewrite_bit_ledger.emitted_gap_values(fragment_bits, &gap),
+            )
+        });
+        let source_gap_values = ledger_gap.map(|gap| {
+            live_object_rewrite_bit_slice_evidence(
+                gap.source_gap_bit_start,
+                gap.source_gap_bit_end,
+                rewrite_bit_ledger.source_gap_values(fragment_bits, &gap),
+            )
+        });
+        *slot = Some(LiveObjectUpdateSourceWindowNeighborEvidence {
+            delta: neighbor.delta,
+            bit_start: neighbor.bit_start,
+            bit_end: neighbor.bit_end,
+            read_end: neighbor.read_end,
+            translated_mask: neighbor.translated_mask,
+            orientation_vector: neighbor.orientation_vector,
+            relation: neighbor.relation,
+            gap_origin: neighbor.gap_origin,
+            ledger_relation: ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger"),
+            ledger_source_relation: ledger_gap
+                .map(|gap| gap.source_relation)
+                .unwrap_or("no-ledger"),
+            ledger_emitted_gap_bits: ledger_gap.map(|gap| gap.emitted_gap_bits),
+            ledger_emitted_gap_bit_start: ledger_gap.map(|gap| gap.emitted_gap_bit_start),
+            ledger_emitted_gap_bit_end: ledger_gap.map(|gap| gap.emitted_gap_bit_end),
+            ledger_emitted_gap_values: emitted_gap_values,
+            ledger_source_gap_bits: ledger_gap.map(|gap| gap.source_gap_bits),
+            ledger_source_gap_bit_start: ledger_gap.map(|gap| gap.source_gap_bit_start),
+            ledger_source_gap_bit_end: ledger_gap.map(|gap| gap.source_gap_bit_end),
+            ledger_source_gap_values: source_gap_values,
+            ledger_implied_source_cursor: ledger_gap.map(|gap| gap.implied_source_cursor),
+            ledger_cumulative_emitted_source_delta: ledger_gap
+                .map(|gap| gap.cumulative_emitted_source_delta),
+            ledger_source_emitted_delta_after_previous: ledger_gap
+                .map(|gap| gap.source_emitted_delta_after_previous),
+            ledger_previous_offset: ledger_gap.map(|gap| gap.previous_offset),
+            ledger_previous_record_end: ledger_gap.map(|gap| gap.previous_record_end),
+            ledger_previous_family: ledger_gap.map(|gap| gap.previous_family),
+        });
+    }
 
     Some(LiveObjectUpdateSourceWindowEvidence {
         focus_offset,
@@ -9816,6 +9919,9 @@ fn live_object_source_window_evidence(
         entry_count: rows.len(),
         entries_retained: rows.len().saturating_sub(retain_start),
         entries,
+        neighbor_count: neighbor_claims.len(),
+        neighbors_retained: neighbor_claims.len().saturating_sub(neighbor_retain_start),
+        neighbors,
     })
 }
 

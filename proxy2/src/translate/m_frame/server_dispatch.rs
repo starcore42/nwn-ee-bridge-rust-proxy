@@ -840,6 +840,11 @@ fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::
     };
     let rewrite_tail = evidence.contiguous_tail;
     let source_window = evidence.source_window;
+    let source_window_neighbor_count = source_window
+        .map(|window| window.neighbor_count)
+        .unwrap_or_default();
+    let source_window_first_neighbor =
+        source_window.and_then(|window| window.neighbors.iter().flatten().next().copied());
     let Some(neighbor) = evidence.unowned_neighbor else {
         tracing::debug!(
             source,
@@ -854,6 +859,8 @@ fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::
             focus_failure_bit_cursor = evidence.focus_failure_bit_cursor,
             focus_failure_orientation_vector = ?evidence.focus_failure_orientation_vector,
             rewrite_tail = ?rewrite_tail,
+            source_window_neighbor_count,
+            source_window_first_neighbor = ?source_window_first_neighbor,
             source_window = ?source_window,
             "server live-object update rewrite retained cursor failure without unowned neighbor"
         );
@@ -890,6 +897,8 @@ fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::
         previous_family = neighbor.previous_family,
         neighbor_gap_origin = neighbor.gap_origin.as_str(),
         rewrite_tail = ?rewrite_tail,
+        source_window_neighbor_count,
+        source_window_first_neighbor = ?source_window_first_neighbor,
         source_window = ?source_window,
         "server live-object update rewrite retained structured cursor failure evidence"
     );

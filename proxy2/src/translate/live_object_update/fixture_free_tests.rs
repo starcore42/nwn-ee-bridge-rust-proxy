@@ -5871,6 +5871,39 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         }),
         "source-window evidence should show the preceding item add/create claim ending exactly at the failed U/6 cursor"
     );
+    assert!(
+        source_window.neighbor_count >= 1,
+        "source-window evidence should retain nearby U/6 cursor fits for source-capture comparison"
+    );
+    let window_neighbor = source_window
+        .neighbors
+        .iter()
+        .flatten()
+        .find(|neighbor| neighbor.delta == 2)
+        .expect("source-window evidence should retain the +2 scalar-shaped U/6 fit");
+    assert_eq!(window_neighbor.bit_start, failure.bit_cursor + 2);
+    assert_eq!(window_neighbor.relation, "inside-focus-row");
+    assert_eq!(
+        window_neighbor.gap_origin,
+        super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
+    );
+    assert_eq!(window_neighbor.ledger_relation, "unowned-emitted-gap");
+    assert_eq!(window_neighbor.ledger_source_relation, "unowned-source-gap");
+    assert_eq!(window_neighbor.ledger_emitted_gap_bits, Some(2));
+    assert_eq!(window_neighbor.ledger_source_gap_bits, Some(2));
+    assert_eq!(
+        window_neighbor.ledger_previous_family,
+        Some("item-create-rewrite")
+    );
+    let source_gap_values = window_neighbor
+        .ledger_source_gap_values
+        .expect("retained source-window neighbor should include source gap bits");
+    assert_eq!(source_gap_values.bits_retained, 2);
+    assert_eq!(
+        &source_gap_values.bits[..2],
+        &[Some(false), Some(true)],
+        "retained source-window neighbor should expose the exact two unowned source bits"
+    );
     assert_eq!(
         payload, original,
         "failed raw CEP handoff proof must leave the source stream untouched"
