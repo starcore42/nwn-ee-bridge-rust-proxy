@@ -256,7 +256,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                     area_context,
                     object_id,
                     bits,
-                    *bit_cursor,
+                    claim.state_bit_cursor,
                     raw_mask,
                     record_offset,
                     *record_end,
@@ -1465,11 +1465,18 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         && !repaired_stale_absent_appearance_gap
         && translated_mask != LEGACY_UPDATE_STATE_MASK;
     if object_type == PLACEABLE_OBJECT_TYPE
+        && let Some(claim) = reader::parse_verified_ee_door_placeable_update_record(
+            live_bytes,
+            record_offset,
+            *record_end,
+            bits,
+            original_bit_cursor,
+        )
         && reconcile_placeable_update_state_with_area_context(
             area_context,
             object_id,
             bits,
-            original_bit_cursor,
+            claim.state_bit_cursor,
             translated_mask,
             record_offset,
             *record_end,
@@ -1477,9 +1484,22 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
     {
         rewrite.bits_changed = true;
     }
-    let ee_placeable_state_bits = (object_type == PLACEABLE_OBJECT_TYPE)
-        .then(|| placeable_update_state_bits_at(bits, original_bit_cursor, translated_mask))
-        .flatten();
+    let ee_placeable_state_bits = if object_type == PLACEABLE_OBJECT_TYPE {
+        reader::parse_verified_ee_door_placeable_update_record(
+            live_bytes,
+            record_offset,
+            *record_end,
+            bits,
+            original_bit_cursor,
+        )
+        .and_then(|claim| {
+            claim
+                .state_bit_cursor
+                .and_then(|state_cursor| placeable_update_state_bits_at_cursor(bits, state_cursor))
+        })
+    } else {
+        None
+    };
     trace_placeable_update_area_context(
         area_context,
         object_id,
@@ -1599,7 +1619,7 @@ pub(super) fn reconcile_verified_placeable_update_state_with_area_context(
         Some(area_context),
         object_id,
         bits,
-        bit_cursor,
+        claim.state_bit_cursor,
         mask,
         record_offset,
         record_end,
@@ -1610,7 +1630,7 @@ fn reconcile_placeable_update_state_with_area_context(
     area_context: Option<&AreaPlaceableContext>,
     object_id: u32,
     bits: &mut [bool],
-    bit_cursor: usize,
+    state_bit_cursor: Option<usize>,
     mask: u32,
     record_offset: usize,
     record_end: usize,
@@ -1618,6 +1638,9 @@ fn reconcile_placeable_update_state_with_area_context(
     if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
         return Some(false);
     }
+    let Some(state_cursor) = state_bit_cursor else {
+        return Some(false);
+    };
     let Some(context) = area_context else {
         return Some(false);
     };
@@ -1628,7 +1651,7 @@ fn reconcile_placeable_update_state_with_area_context(
         return Some(false);
     };
 
-    let source_state = placeable_update_state_bits_at(bits, bit_cursor, mask)?;
+    let source_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
     let conflict = source_state
         .observed_area_state()
         .conflict_with_module_state(module_state);
@@ -1636,12 +1659,11 @@ fn reconcile_placeable_update_state_with_area_context(
         return Some(false);
     }
 
-    let state_cursor = placeable_update_state_bit_cursor(bits, bit_cursor, mask)?;
     let rewritten_state = source_state.with_module_static_lock_state(module_state);
     let mut changed = false;
     changed |= set_bool_bit(bits, state_cursor + 2, rewritten_state.locked)?;
     changed |= set_bool_bit(bits, state_cursor + 3, rewritten_state.lockable)?;
-    let emitted_state = placeable_update_state_bits_at(bits, bit_cursor, mask)?;
+    let emitted_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
 
     tracing::info!(
         object_id = format_args!("0x{object_id:08X}"),
@@ -1721,7 +1743,13 @@ fn placeable_update_state_bits_at(
     mask: u32,
 ) -> Option<PlaceableUpdateStateBits> {
     let cursor = placeable_update_state_bit_cursor(bits, bit_cursor, mask)?;
+    placeable_update_state_bits_at_cursor(bits, cursor)
+}
 
+fn placeable_update_state_bits_at_cursor(
+    bits: &[bool],
+    cursor: usize,
+) -> Option<PlaceableUpdateStateBits> {
     Some(PlaceableUpdateStateBits {
         visual_selector: bits.get(cursor).copied()?,
         visual_state_active: bits.get(cursor + 1).copied()?,
@@ -2453,6 +2481,88 @@ mod tests {
             "matching lockable/locked bits should not report a module mismatch"
         );
         assert_eq!(matching.formatted_fields(), "none");
+    }
+
+    #[test]
+    fn exact_placeable_update_reconciliation_uses_verified_vector_state_cursor() {
+        let object_id = 0x8000_0042u32;
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.extend_from_slice(&[0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+        let mut bits = vec![
+            false, true, // position fragment bits.
+            true, // vector-orientation selector; no scalar residual bits follow.
+            false, true, true, false, true,  // state bits: locked=true, lockable=false.
+            false, // EE's neutral door/placeable state suffix.
+            true, false, // unrelated following bits.
+        ];
+
+        let claim =
+            reader::parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+                .expect("exact vector-orientation U/09 should parse");
+        assert_eq!(
+            claim.state_bit_cursor,
+            Some(LEGACY_UPDATE_POSITION_FRAGMENT_BITS + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS),
+            "the state block starts immediately after the vector selector"
+        );
+        assert_eq!(
+            claim.next_bit_cursor,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                + 1
+        );
+
+        let context = AreaPlaceableContext {
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0052,
+                x: 10.0,
+                y: 20.0,
+                z: 0.0,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    static_object: true,
+                    useable: false,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+
+        assert!(
+            reconcile_verified_placeable_update_state_with_area_context(
+                &context,
+                &live,
+                0,
+                live.len(),
+                &mut bits,
+                0,
+            )
+            .expect("exact update reconciliation should prove the parser-owned cursor"),
+            "module-backed lock state should be rewritten"
+        );
+        assert_eq!(
+            placeable_update_state_bits_at_cursor(&bits, claim.state_bit_cursor.unwrap()),
+            Some(state(false, true, false, true, true)),
+            "only lockable/locked inside the parser-owned state block are changed"
+        );
+        assert_eq!(
+            bits,
+            vec![
+                false, true, true, false, true, false, true, true, false, true, false
+            ],
+            "the vector selector, visual payload, neutral suffix, and following bits remain owned by their original fields"
+        );
     }
 
     fn compact_tail9_update_bytes(raw_mask: u32) -> Vec<u8> {

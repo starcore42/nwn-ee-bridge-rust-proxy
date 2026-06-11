@@ -734,6 +734,34 @@ Current status:
   `cargo check -q -p hgbridge-proxy2`, and `cargo fmt --all --check`. Next
   local visual replay should use this alias-coherent unresolved/resolved signal
   before adding any more add/update state synthesis.
+- 2026-06-11 `P/04/01` -> `P/05/01` exact placeable add-state synthesis:
+  exact EE-shaped `A/09` rows now share the unique module-backed static state
+  reconciliation used by legacy add rewrites and exact `U/09` lock updates.
+  The rewrite changes only the same-width add-state BOOLs that the decompiled
+  placeable add reader owns (`useable`, `trap_disarmable`, `lockable`,
+  `locked`), preserves static/plot and unknown sibling bits, and refuses
+  duplicate or light/static-alias area identities. Verified with focused
+  `exact_placeable_add`, `exact_placeable_update`, and `placeable_add_rewrite_`
+  regressions plus `cargo fmt --all --check` and `git diff --check`.
+- 2026-06-11 follow-up exact `A/09` add-layout audit: the exact placeable add
+  byte layout is now a shared typed helper used by add validation, add cursor
+  advancement, and area/static state reconciliation. The optional OBJECTID
+  branch is tied to the same fragment BOOL that advances the cursor before the
+  EE visual-transform identity map, so static-state reconciliation cannot use a
+  different byte boundary than the exact validator. Verified with focused
+  `exact_placeable_add` and `exact_placeable_update` regressions; next visual
+  replay should still compare remaining static/live drift outside unique
+  add-state and update-lock bits.
+- 2026-06-11 follow-up exact `U/09` update state-cursor audit: the verified EE
+  door/placeable update parser now exposes the state-bit cursor it consumed,
+  and exact placeable update lock reconciliation uses that parser-owned cursor
+  instead of independently rewalking position/orientation bits from the mask.
+  Added vector-orientation coverage proving unique module-backed lock synthesis
+  changes only the verified state block and leaves the vector selector, visual
+  payload, neutral EE state suffix, and following bits untouched. Verified with
+  focused `exact_placeable_update` and `placeable_update` regressions; next
+  visual replay should still compare any remaining static/live drift outside
+  unique add-state and update-lock bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

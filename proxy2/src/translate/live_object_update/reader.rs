@@ -25,6 +25,7 @@ pub(super) struct LegacyNamedUpdateTail {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) read_end: usize,
+    pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
 }
 
@@ -374,6 +375,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut fragment_cursor = bit_cursor;
+    let mut state_bit_cursor = None;
     let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
@@ -457,6 +459,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
+        state_bit_cursor = Some(fragment_cursor);
         fragment_cursor = advance_bits(
             fragment_bits,
             fragment_cursor,
@@ -485,6 +488,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     Some(VerifiedEeDoorPlaceableUpdateRecord {
         read_end: read_cursor,
+        state_bit_cursor,
         next_bit_cursor: fragment_cursor,
     })
 }
