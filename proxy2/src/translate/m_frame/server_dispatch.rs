@@ -786,20 +786,29 @@ fn trace_unresolved_area_static_placeable_conflicts(
         if !seen.insert((mention.object_type, mention.object_id)) {
             continue;
         }
-        let Some(conflict) = registry.unresolved_area_static_placeable_conflict_for_record(
+        let state_conflict = registry.unresolved_area_static_placeable_conflict_for_record(
             mention.object_type,
             mention.object_id,
-        ) else {
+        );
+        let orientation_conflict = registry
+            .unresolved_area_static_placeable_orientation_conflict_for_record(
+                mention.object_type,
+                mention.object_id,
+            );
+        if state_conflict.is_none() && orientation_conflict.is_none() {
             continue;
-        };
-        let conflict_fields = conflict.formatted_fields();
+        }
+        let conflict_fields = state_conflict
+            .map(|conflict| conflict.formatted_fields())
+            .unwrap_or_else(|| "none".to_string());
         tracing::debug!(
             family = family_name,
             opcode = %char::from(mention.opcode),
             object_type = mention.object_type,
             object_id = format_args!("0x{:08X}", mention.object_id),
             unresolved_area_module_state_mismatch_fields = %conflict_fields,
-            "server live-object record translated while prior area/static placeable conflict remains unresolved"
+            unresolved_area_module_orientation_mismatch = ?orientation_conflict,
+            "server live-object record translated while prior area/static placeable state/orientation conflict remains unresolved"
         );
     }
 }

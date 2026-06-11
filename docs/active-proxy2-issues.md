@@ -834,6 +834,18 @@ Current status:
   `exact_placeable_update_` coverage; next local replay should still focus on
   remaining drift outside exact scalar orientation, same-width appearance, and
   proven state bits.
+- 2026-06-12 follow-up semantic orientation conflict state: packet bytes and
+  cursor ownership are unchanged. The semantic object registry now compares
+  verified scalar placeable orientation mentions against the uniquely matched,
+  module-backed static area row's decompile-backed scalar bearing, tracks
+  unresolved/resolved orientation conflicts separately from use/trap/lock state,
+  and includes the orientation mismatch in the server-dispatch unresolved
+  placeable-conflict diagnostic. Verified with focused `area_context_`,
+  `placeable_area_conflicts_resolve_across_compact_external_aliases`,
+  `exact_placeable_`, `placeable_update`, and `cargo check -q -p
+  hgbridge-proxy2`; next local replay should use the combined state/orientation
+  diagnostic to identify any remaining drift outside same-width scalar
+  orientation, appearance, and proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

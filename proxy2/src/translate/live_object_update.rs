@@ -10272,7 +10272,7 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
     Some(changed)
 }
 
-fn area_static_row_scalar_orientation(
+pub(crate) fn area_static_row_scalar_orientation(
     row: &crate::translate::area::AreaPlaceableContextRow,
 ) -> Option<u16> {
     if !row.has_direction || !row.dir_x.is_finite() || !row.dir_y.is_finite() {

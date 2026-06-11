@@ -532,6 +532,12 @@ impl AreaPlaceableContextStateConflict {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaPlaceableContextOrientationConflict {
+    pub observed_scalar_tenths_degrees: u16,
+    pub module_scalar_tenths_degrees: u16,
+}
+
 pub fn format_area_placeable_context_row(
     kind: AreaPlaceableContextRowKind,
     row: &AreaPlaceableContextRow,
