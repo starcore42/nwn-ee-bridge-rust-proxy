@@ -825,6 +825,15 @@ Current status:
   plus `exact_placeable_` and `placeable_update` regressions; next local replay
   should still focus on remaining drift outside exact scalar orientation,
   same-width appearance, and proven state bits.
+- 2026-06-12 follow-up exact `U/09` reconciliation-claim sharing: packet bytes
+  and cursor ownership are unchanged. The exact postpass for module-backed
+  placeable update reconciliation now parses one verified EE U/09 claim per row
+  and shares it across same-width appearance, scalar orientation, and lock-state
+  reconciliation instead of rewalking the row separately for each field.
+  Verified with a combined exact-placeable update regression plus focused
+  `exact_placeable_update_` coverage; next local replay should still focus on
+  remaining drift outside exact scalar orientation, same-width appearance, and
+  proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

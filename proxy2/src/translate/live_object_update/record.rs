@@ -1645,6 +1645,29 @@ pub(super) fn reconcile_verified_placeable_update_state_with_area_context(
         return None;
     }
     let object_id = read_u32_le(live_bytes, record_offset + 2)?;
+    reconcile_verified_placeable_update_state_claim_with_area_context(
+        area_context,
+        object_id,
+        mask,
+        claim,
+        bits,
+        record_offset,
+        record_end,
+    )
+}
+
+pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_context(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    mask: u32,
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    bits: &mut [bool],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<bool> {
+    if claim.read_end != record_end {
+        return None;
+    }
     reconcile_placeable_update_state_with_area_context(
         Some(area_context),
         object_id,
