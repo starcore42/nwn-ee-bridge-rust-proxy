@@ -820,7 +820,14 @@ fn note_update_attempt_failure(
     attempt.summary
 }
 
-fn trace_live_object_update_rewrite_failure(source: &str, failure: live_update::RewriteFailure) {
+fn trace_live_object_update_rewrite_failure(
+    source: &str,
+    payload: &[u8],
+    failure: live_update::RewriteFailure,
+) {
+    crate::translate::live_object_update::dump_live_object_update_rewrite_failure_evidence(
+        payload, source, failure,
+    );
     let gap_origin = failure
         .item_update_neighbor_gap_origin
         .map(|origin| origin.as_str())
@@ -1784,7 +1791,7 @@ fn translate_live_object_records_if_verified(
             &candidate, source,
         );
         if let Some(failure) = rejection_failure {
-            trace_live_object_update_rewrite_failure(source, failure);
+            trace_live_object_update_rewrite_failure(source, &candidate, failure);
         }
         return rejection_reason
             .map(|reason| ServerTranslatorOutcome::Rejected {
@@ -1883,7 +1890,7 @@ fn translate_live_object_records_if_verified(
             "live-object semantic candidate did not claim: exact record-boundary validator rejected this intermediate rewrite"
         );
         if let Some(failure) = rejection_failure {
-            trace_live_object_update_rewrite_failure(source, failure);
+            trace_live_object_update_rewrite_failure(source, &candidate, failure);
         }
         rejection_reason
             .map(|reason| ServerTranslatorOutcome::Rejected {

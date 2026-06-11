@@ -2993,6 +2993,16 @@ Current status:
   the two pre-`U/6` bits. Verified with focused source-window/item-cursor
   regressions, the CEP-like no-map handoff regression, `cargo check`, and
   `git diff --check`.
+- 2026-06-11 follow-up `P/05/01` item failure artifact capture: production
+  strict dispatch now writes paired `.bin`/`.txt` diagnostics for retained item
+  `U/6` rewrite failures when the quarantine diagnostics directory is enabled.
+  The binary keeps the exact rejected live-object candidate; the text report
+  includes the structured failure kind, focus parser stage, unowned neighbor,
+  contiguous rewrite tail, source-window rows, and nearby cursor fits. Packet
+  bytes and cursor ownership are unchanged; this makes the next compact source
+  capture/local harness run compare normal artifacts rather than reconstructing
+  the handoff from logs. The two pre-`U/6` bits still need source-writer or
+  capture proof before assignment.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text

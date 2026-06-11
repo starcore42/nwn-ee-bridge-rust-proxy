@@ -157,6 +157,8 @@ struct LiveObjectFixtureDumpKey {
 
 static LIVE_OBJECT_FIXTURE_DUMP_KEYS: OnceLock<Mutex<HashSet<LiveObjectFixtureDumpKey>>> =
     OnceLock::new();
+static LIVE_OBJECT_FAILURE_EVIDENCE_DUMP_KEYS: OnceLock<Mutex<HashSet<LiveObjectFixtureDumpKey>>> =
+    OnceLock::new();
 
 fn live_object_fixture_dump_signature(payload: &[u8], sanitized_reason: &str) -> Vec<u8> {
     let mut signature = payload.to_vec();
@@ -169,6 +171,19 @@ fn live_object_fixture_dump_signature(payload: &[u8], sanitized_reason: &str) ->
         signature[HIGH_LEVEL_HEADER_BYTES..HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES].fill(0);
     }
     signature
+}
+
+fn sanitize_live_object_dump_reason(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -225,6 +240,54 @@ mod diagnostic_tests {
             live_object_fixture_dump_signature(&first, "live-object-combined-records-len233"),
             live_object_fixture_dump_signature(&second, "live-object-combined-records-len233")
         );
+    }
+
+    #[test]
+    fn item_update_failure_evidence_report_keeps_payload_and_gap_summary() {
+        let payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            GAME_OBJECT_UPDATE_MAJOR,
+            LIVE_OBJECT_MINOR,
+            0x0A,
+            0,
+            0,
+            0,
+            b'U',
+            ITEM_OBJECT_TYPE,
+        ];
+        let failure = LiveObjectUpdateRewriteFailure {
+            reason: "item-update-cursor-failed-before-valid-neighbor-unowned-gap",
+            kind: LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap,
+            offset: 51,
+            record_end: 104,
+            bit_cursor: 28,
+            item_update_neighbor_gap_origin: Some(
+                LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
+            ),
+            item_update_cursor_evidence: Some(LiveObjectUpdateItemCursorFailureEvidence {
+                focus_failure_stage: "orientation-scalar-read-bytes",
+                focus_failure_read_cursor: 68,
+                focus_failure_bit_cursor: 29,
+                focus_failure_orientation_vector: Some(true),
+                unowned_neighbor: None,
+                contiguous_tail: None,
+                source_window: None,
+            }),
+        };
+
+        let report = format_live_object_update_rewrite_failure_evidence(
+            "live-object-update-records",
+            &payload,
+            failure,
+        );
+
+        assert!(report.contains("source=live-object-update-records"));
+        assert!(
+            report.contains("reason=item-update-cursor-failed-before-valid-neighbor-unowned-gap")
+        );
+        assert!(report.contains("gap_origin=focus-position-bits"));
+        assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
+        assert!(report.contains("focus_failure_stage=orientation-scalar-read-bytes"));
     }
 
     #[test]
@@ -10843,16 +10906,7 @@ pub fn dump_live_object_fixture_candidate(payload: &[u8], reason: &str) {
         return;
     };
 
-    let sanitized_reason: String = reason
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    let sanitized_reason = sanitize_live_object_dump_reason(reason);
     let key = LiveObjectFixtureDumpKey {
         reason: sanitized_reason.clone(),
         signature: live_object_fixture_dump_signature(payload, &sanitized_reason),
@@ -10895,6 +10949,127 @@ pub fn dump_live_object_fixture_candidate(payload: &[u8], reason: &str) {
         nanos
     ));
     let _ = std::fs::write(path, payload);
+}
+
+pub fn dump_live_object_update_rewrite_failure_evidence(
+    payload: &[u8],
+    source: &str,
+    failure: LiveObjectUpdateRewriteFailure,
+) {
+    if payload.len() > MAX_REASONABLE_LIVE_PAYLOAD_BYTES {
+        return;
+    }
+    let Some(mut dir) = crate::translate::diagnostics::probe_dump_dir() else {
+        return;
+    };
+
+    let dump_reason = format!(
+        "{}-{}-offset{}-bit{}",
+        source, failure.reason, failure.offset, failure.bit_cursor
+    );
+    let sanitized_reason = sanitize_live_object_dump_reason(&dump_reason);
+    let key = LiveObjectFixtureDumpKey {
+        reason: sanitized_reason.clone(),
+        signature: live_object_fixture_dump_signature(payload, &sanitized_reason),
+    };
+    let keys = LIVE_OBJECT_FAILURE_EVIDENCE_DUMP_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
+    match keys.lock() {
+        Ok(mut keys) => {
+            if !keys.insert(key) {
+                tracing::debug!(
+                    reason = sanitized_reason,
+                    payload_length = payload.len(),
+                    "duplicate live-object rewrite failure evidence dump suppressed"
+                );
+                return;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                reason = sanitized_reason,
+                payload_length = payload.len(),
+                "live-object rewrite failure evidence dedupe state poisoned; skipping diagnostic dump"
+            );
+            return;
+        }
+    }
+
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let base_name = format!("{}-len{}-{}", sanitized_reason, payload.len(), nanos);
+
+    dir.push(format!("{base_name}.bin"));
+    let _ = std::fs::write(&dir, payload);
+    dir.set_file_name(format!("{base_name}.txt"));
+    let report = format_live_object_update_rewrite_failure_evidence(source, payload, failure);
+    let _ = std::fs::write(dir, report);
+}
+
+fn format_live_object_update_rewrite_failure_evidence(
+    source: &str,
+    payload: &[u8],
+    failure: LiveObjectUpdateRewriteFailure,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let gap_origin = failure
+        .item_update_neighbor_gap_origin
+        .map(|origin| origin.as_str())
+        .unwrap_or("none");
+    let _ = writeln!(&mut out, "source={source}");
+    let _ = writeln!(&mut out, "payload_len={}", payload.len());
+    let _ = writeln!(
+        &mut out,
+        "payload_prefix={}",
+        crate::packet::hex_prefix(payload, 256)
+    );
+    let _ = writeln!(&mut out, "reason={}", failure.reason);
+    let _ = writeln!(&mut out, "kind={}", failure.kind.as_str());
+    let _ = writeln!(&mut out, "offset={}", failure.offset);
+    let _ = writeln!(&mut out, "record_end={}", failure.record_end);
+    let _ = writeln!(&mut out, "bit_cursor={}", failure.bit_cursor);
+    let _ = writeln!(&mut out, "gap_origin={gap_origin}");
+
+    if let Some(evidence) = failure.item_update_cursor_evidence {
+        let _ = writeln!(
+            &mut out,
+            "focus_failure_stage={}",
+            evidence.focus_failure_stage
+        );
+        let _ = writeln!(
+            &mut out,
+            "focus_failure_read_cursor={}",
+            evidence.focus_failure_read_cursor
+        );
+        let _ = writeln!(
+            &mut out,
+            "focus_failure_bit_cursor={}",
+            evidence.focus_failure_bit_cursor
+        );
+        let _ = writeln!(
+            &mut out,
+            "focus_failure_orientation_vector={:?}",
+            evidence.focus_failure_orientation_vector
+        );
+        let _ = writeln!(
+            &mut out,
+            "unowned_neighbor={:#?}",
+            evidence.unowned_neighbor
+        );
+        let _ = writeln!(&mut out, "contiguous_tail={:#?}", evidence.contiguous_tail);
+        let _ = writeln!(&mut out, "source_window={:#?}", evidence.source_window);
+    } else {
+        let _ = writeln!(&mut out, "item_update_cursor_evidence=none");
+    }
+
+    out
 }
 
 /// Return true when a live-object payload contains door/placeable add or update
