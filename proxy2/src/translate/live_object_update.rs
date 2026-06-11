@@ -2114,6 +2114,68 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_mentions_share_verified_scalar_claim() {
+        let object_id = 0x8000_34D8u32;
+        let mask = LEGACY_UPDATE_POSITION_MASK
+            | LEGACY_UPDATE_ORIENTATION_MASK
+            | LEGACY_UPDATE_APPEARANCE_MASK
+            | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.push(0x70);
+        live.extend_from_slice(&0x0022u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, true, // position fragment bits.
+            false, true, false, true, false, // scalar orientation 0x70A.
+            false, true, false, true, false, // lockable=true, locked=false.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact scalar U/09");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact scalar U/09 should claim");
+        assert_eq!(claim.mentions.len(), 1);
+        assert!(
+            claim.mentions[0].position.is_some(),
+            "position bits must be owned before the scalar orientation cursor"
+        );
+        assert_eq!(
+            claim.mentions[0].orientation,
+            Some(LiveObjectRecordOrientation {
+                scalar_tenths_degrees: 0x70A,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "orientation, appearance, and state must share the verified U/09 parser cursor"
+        );
+        assert_eq!(
+            claim.mentions[0].fragment_bit_end,
+            CNW_FRAGMENT_HEADER_BITS
+                + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                + 1
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_reconciles_unique_area_static_appearance_word() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
@@ -4853,6 +4915,15 @@ fn verified_record_mention(
     } else {
         update_requires_materialized_object(object_type)
     };
+    let door_placeable_update_claim = verified_door_placeable_update_mention_claim(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        opcode,
+        object_type,
+    );
     Some(LiveObjectRecordMention {
         opcode,
         object_type,
@@ -4871,15 +4942,7 @@ fn verified_record_mention(
             bit_cursor,
             opcode,
         ),
-        orientation: verified_record_orientation(
-            live_bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            bit_cursor,
-            opcode,
-            object_type,
-        ),
+        orientation: verified_record_orientation(opcode, object_type, door_placeable_update_claim),
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
         placeable_appearance: verified_record_placeable_appearance(
             live_bytes,
@@ -4889,6 +4952,7 @@ fn verified_record_mention(
             bit_cursor,
             opcode,
             object_type,
+            door_placeable_update_claim,
         ),
         placeable_state: verified_record_placeable_state(
             live_bytes,
@@ -4898,8 +4962,36 @@ fn verified_record_mention(
             bit_cursor,
             opcode,
             object_type,
+            door_placeable_update_claim,
         ),
     })
+}
+
+fn verified_door_placeable_update_mention_claim(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    opcode: u8,
+    object_type: u8,
+) -> Option<reader::VerifiedEeDoorPlaceableUpdateRecord> {
+    if opcode != b'U' || !matches!(object_type, DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) {
+        return None;
+    }
+
+    // One exact EE parser claim owns the U/09/U/0A mention layout. Keep
+    // orientation, appearance, and state extraction tied to that same
+    // decompile-backed cursor walk so a future field-order change cannot leave
+    // the semantic registry with mutually inconsistent facts.
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    (claim.read_end == record_end).then_some(claim)
 }
 
 fn push_verified_record_mention(
@@ -5391,19 +5483,11 @@ fn verified_record_position(
 }
 
 fn verified_record_orientation(
-    live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
     opcode: u8,
     object_type: u8,
+    door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectRecordOrientation> {
-    if opcode != b'U'
-        || !matches!(object_type, DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE)
-        || offset + LEGACY_UPDATE_HEADER_BYTES > record_end
-        || record_end > live_bytes.len()
-    {
+    if opcode != b'U' || !matches!(object_type, DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) {
         return None;
     }
 
@@ -5415,16 +5499,7 @@ fn verified_record_orientation(
     // bit is present and false. Reuse the exact parser's cursor claim so
     // orientation diagnostics and static/live reconciliation cannot diverge
     // from the validator on position-owned bits or vector branches.
-    let claim = reader::parse_verified_ee_door_placeable_update_record(
-        live_bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    )?;
-    if claim.read_end != record_end {
-        return None;
-    }
+    let claim = door_placeable_update_claim?;
     Some(LiveObjectRecordOrientation {
         scalar_tenths_degrees: claim.scalar_orientation?.scalar_tenths_degrees,
     })
@@ -5438,6 +5513,7 @@ fn verified_record_placeable_appearance(
     bit_cursor: usize,
     opcode: u8,
     object_type: u8,
+    door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectPlaceableAppearance> {
     if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
         return None;
@@ -5451,13 +5527,7 @@ fn verified_record_placeable_appearance(
             fragment_bits,
             bit_cursor,
         ),
-        b'U' => verified_placeable_update_appearance(
-            live_bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            bit_cursor,
-        ),
+        b'U' => verified_placeable_update_appearance(live_bytes, door_placeable_update_claim?),
         _ => None,
     }
 }
@@ -5485,21 +5555,8 @@ fn verified_placeable_add_appearance(
 
 fn verified_placeable_update_appearance(
     live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
 ) -> Option<LiveObjectPlaceableAppearance> {
-    let claim = reader::parse_verified_ee_door_placeable_update_record(
-        live_bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    )?;
-    if claim.read_end != record_end {
-        return None;
-    }
     let appearance_offset = claim.appearance_offset?;
     let appearance = read_u16_le(live_bytes, appearance_offset)?;
     let resref = if appearance >= 0xFFFE {
@@ -5522,6 +5579,7 @@ fn verified_record_placeable_state(
     bit_cursor: usize,
     opcode: u8,
     object_type: u8,
+    door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectPlaceableState> {
     if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
         return None;
@@ -5531,13 +5589,7 @@ fn verified_record_placeable_state(
         b'A' => {
             verified_placeable_add_state(live_bytes, offset, record_end, fragment_bits, bit_cursor)
         }
-        b'U' => verified_placeable_update_state(
-            live_bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            bit_cursor,
-        ),
+        b'U' => verified_placeable_update_state(fragment_bits, door_placeable_update_claim?),
         _ => None,
     }
 }
@@ -5560,22 +5612,9 @@ fn verified_placeable_add_state(
 }
 
 fn verified_placeable_update_state(
-    live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
     fragment_bits: &[bool],
-    bit_cursor: usize,
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
 ) -> Option<LiveObjectPlaceableState> {
-    let claim = reader::parse_verified_ee_door_placeable_update_record(
-        live_bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    )?;
-    if claim.read_end != record_end {
-        return None;
-    }
     let cursor = claim.state_bit_cursor?;
 
     Some(LiveObjectPlaceableState::from_update_lock_state(

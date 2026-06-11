@@ -816,6 +816,15 @@ Current status:
   check -q -p hgbridge-proxy2`; next local replay should focus on any remaining
   placeable drift outside exact scalar orientation, same-width appearance, and
   proven state bits.
+- 2026-06-12 follow-up exact `U/09` mention-claim sharing: packet bytes and
+  cursor ownership are unchanged. Verified door/placeable update mention
+  extraction now builds one exact EE parser claim per row and shares it across
+  scalar orientation, placeable appearance, and placeable state facts, so the
+  semantic registry cannot report those fields from three independent cursor
+  walks. Verified with focused exact scalar/placeable update mention coverage
+  plus `exact_placeable_` and `placeable_update` regressions; next local replay
+  should still focus on remaining drift outside exact scalar orientation,
+  same-width appearance, and proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
