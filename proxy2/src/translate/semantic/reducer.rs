@@ -279,6 +279,12 @@ fn live_object_observations_from_payload(payload: &[u8]) -> (Vec<LiveObjectMenti
                 max_y: bounds.max_y,
                 max_z: bounds.max_z,
             }),
+            placeable_appearance: mention.placeable_appearance.map(|appearance| {
+                super::LiveObjectPlaceableAppearance {
+                    appearance: appearance.appearance,
+                    resref: appearance.resref,
+                }
+            }),
             placeable_state: mention
                 .placeable_state
                 .map(|state| LiveObjectPlaceableState {

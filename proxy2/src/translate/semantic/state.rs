@@ -19,8 +19,8 @@ use crate::translate::{
 };
 
 use super::event::{
-    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState,
-    LiveObjectPosition, ProtocolEvent,
+    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+    LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
@@ -222,6 +222,9 @@ impl ObjectRegistry {
             if let Some(bounds) = mention.bounds {
                 entry.bounds = Some(bounds);
             }
+            if let Some(placeable_appearance) = mention.placeable_appearance {
+                entry.placeable_appearance = Some(placeable_appearance);
+            }
             if let Some(placeable_state) = mention.placeable_state {
                 entry.merge_placeable_state(placeable_state);
             }
@@ -268,6 +271,7 @@ impl ObjectRegistry {
                         );
                     }
                     entry.active = false;
+                    entry.placeable_appearance = None;
                     entry.placeable_state = None;
                     entry.latest_area_static_state_conflict = None;
                     entry.unresolved_area_static_state_conflict = None;
@@ -554,6 +558,7 @@ pub(crate) struct KnownObjectState {
     pub(crate) position: Option<LiveObjectPosition>,
     pub(crate) orientation: Option<LiveObjectOrientation>,
     pub(crate) bounds: Option<LiveObjectBounds>,
+    pub(crate) placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
     pub(crate) mentions: u64,
     pub(crate) add_mentions: u64,
@@ -608,8 +613,8 @@ mod tests {
     };
 
     use super::{
-        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableState, ObjectRegistry,
-        PlayerListObjectIds,
+        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableState, ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -623,6 +628,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         };
 
@@ -652,6 +658,7 @@ mod tests {
                 scalar_tenths_degrees: 900,
             }),
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         };
 
@@ -662,6 +669,79 @@ mod tests {
             .get(&mention.object_id)
             .expect("object should stay registered");
         assert_eq!(object.orientation, mention.orientation);
+    }
+
+    #[test]
+    fn verified_placeable_appearance_is_protocol_state() {
+        let mut registry = ObjectRegistry::default();
+        let object_id = 0x8000_34D8;
+        let add_appearance = LiveObjectPlaceableAppearance {
+            appearance: 0x0011,
+            resref: None,
+        };
+        let update_resref = *b"plc_visual_test\0";
+        let update_appearance = LiveObjectPlaceableAppearance {
+            appearance: 0xFFFE,
+            resref: Some(update_resref),
+        };
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: Some(add_appearance),
+            placeable_state: None,
+        }]);
+        assert_eq!(
+            registry
+                .known
+                .get(&object_id)
+                .and_then(|object| object.placeable_appearance),
+            Some(add_appearance)
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: Some(update_appearance),
+            placeable_state: None,
+        }]);
+        assert_eq!(
+            registry
+                .known
+                .get(&object_id)
+                .and_then(|object| object.placeable_appearance),
+            Some(update_appearance)
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+        assert_eq!(
+            registry
+                .known
+                .get(&object_id)
+                .and_then(|object| object.placeable_appearance),
+            None,
+            "delete rows clear stale placeable appearance before id reuse"
+        );
     }
 
     #[test]
@@ -676,6 +756,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 useable: Some(true),
                 trap_disarmable: Some(false),
@@ -691,6 +772,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 lockable: Some(true),
                 locked: Some(true),
@@ -720,6 +802,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
         assert_eq!(
@@ -762,6 +845,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 useable: Some(true),
                 trap_disarmable: Some(false),
@@ -797,6 +881,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 lockable: Some(true),
                 locked: Some(true),
@@ -855,6 +940,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 lockable: Some(true),
                 locked: Some(false),
@@ -898,6 +984,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
         assert_eq!(
@@ -946,6 +1033,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 useable: Some(true),
                 trap_disarmable: Some(false),
@@ -975,6 +1063,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: Some(LiveObjectPlaceableState {
                 lockable: Some(true),
                 locked: Some(false),
@@ -1072,6 +1161,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
 
@@ -1091,6 +1181,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
         registry.observe_mentions(&[LiveObjectMention {
@@ -1101,6 +1192,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
 
@@ -1128,6 +1220,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
         registry.observe_mentions(&[LiveObjectMention {
@@ -1138,6 +1231,7 @@ mod tests {
             position: None,
             orientation: None,
             bounds: None,
+            placeable_appearance: None,
             placeable_state: None,
         }]);
 

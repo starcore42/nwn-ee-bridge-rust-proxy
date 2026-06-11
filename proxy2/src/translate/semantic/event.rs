@@ -82,6 +82,7 @@ pub(crate) struct LiveObjectMention {
     pub(crate) position: Option<LiveObjectPosition>,
     pub(crate) orientation: Option<LiveObjectOrientation>,
     pub(crate) bounds: Option<LiveObjectBounds>,
+    pub(crate) placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
 }
 
@@ -105,6 +106,12 @@ pub(crate) struct LiveObjectBounds {
     pub(crate) max_x: f32,
     pub(crate) max_y: f32,
     pub(crate) max_z: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LiveObjectPlaceableAppearance {
+    pub(crate) appearance: u16,
+    pub(crate) resref: Option<[u8; 16]>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

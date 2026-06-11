@@ -762,6 +762,18 @@ Current status:
   focused `exact_placeable_update` and `placeable_update` regressions; next
   visual replay should still compare any remaining static/live drift outside
   unique add-state and update-lock bits.
+- 2026-06-12 follow-up exact `A/09`/`U/09` state-cursor sharing: packet bytes
+  and cursor ownership are unchanged. Exact placeable add validation,
+  add-cursor advancement, placeable state mentions, and add-state
+  reconciliation now share one typed fragment-layout helper that ties the
+  post-name state cursor to the optional-OBJECTID guard and the neutral EE
+  visual-transform guard. Exact placeable update mentions now reuse the
+  verified EE parser's state cursor instead of independently rewalking
+  position/orientation bits. Verified with focused add-layout/vector-update
+  mention tests, `exact_placeable`, `placeable_add`, `placeable_update`, `cargo
+  fmt --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`; next visual replay should still compare remaining
+  static/live drift outside unique add-state and update-lock bits.
 - 2026-06-12 follow-up exact `A/09` add-state claim: packet bytes and cursor
   ownership are unchanged. Add-state mention extraction and unique
   module-backed static reconciliation now share a typed exact-layout claim
@@ -771,6 +783,16 @@ Current status:
   add/update and `placeable_add_rewrite_`/`placeable_update` regressions; next
   production path remains local visual replay for remaining placeable
   appearance/orientation/model drift.
+- 2026-06-12 follow-up exact placeable appearance mention state: packet bytes
+  and cursor ownership are unchanged. Verified `A/09` mentions now expose the
+  parser-owned add-tail appearance WORD, and verified `U/09` mentions reuse the
+  EE update parser's appearance byte offset, including the optional CResRef
+  branch, before the semantic registry stores/clears that placeable appearance
+  fact with object lifecycle state. Verified with focused appearance/state
+  mention tests, the semantic registry appearance test, `exact_placeable`,
+  `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`; next production path remains local visual replay for
+  remaining placeable orientation/model drift.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

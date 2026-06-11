@@ -2048,6 +2048,14 @@ mod diagnostic_tests {
         let claim = claim_payload_if_verified(&payload).expect("exact live-object claim");
         assert_eq!(claim.mentions.len(), 2);
         assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            })
+        );
+        assert_eq!(claim.mentions[1].placeable_appearance, None);
+        assert_eq!(
             claim.mentions[0].placeable_state,
             Some(LiveObjectPlaceableState {
                 useable: Some(true),
@@ -2063,6 +2071,45 @@ mod diagnostic_tests {
                 locked: Some(true),
                 ..LiveObjectPlaceableState::default()
             })
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_mentions_expose_verified_appearance_cursor() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0022u16.to_le_bytes());
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("appearance U/09");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact appearance U/09");
+        assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+
+        let resref = *b"plc_visual_test\0";
+        live.truncate(10);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&resref);
+        fragment_bits.truncate(CNW_FRAGMENT_HEADER_BITS);
+        let payload = live_object_payload_from_parts(&live, &fragment_bits).expect("resref U/09");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact resref U/09");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(resref),
+            }),
+            "the update mention must use the parser-owned appearance offset before the resref branch"
         );
     }
 
@@ -2855,6 +2902,12 @@ pub struct LiveObjectRecordOrientation {
     pub scalar_tenths_degrees: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectPlaceableAppearance {
+    pub appearance: u16,
+    pub resref: Option<[u8; 16]>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveObjectPlaceableState {
     pub useable: Option<bool>,
@@ -2906,6 +2959,7 @@ pub struct LiveObjectRecordMention {
     pub position: Option<LiveObjectRecordPosition>,
     pub orientation: Option<LiveObjectRecordOrientation>,
     pub bounds: Option<LiveObjectRecordBounds>,
+    pub placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub placeable_state: Option<LiveObjectPlaceableState>,
 }
 
@@ -4501,6 +4555,15 @@ fn verified_record_mention(
             object_type,
         ),
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
+        placeable_appearance: verified_record_placeable_appearance(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+            opcode,
+            object_type,
+        ),
         placeable_state: verified_record_placeable_state(
             live_bytes,
             offset,
@@ -5061,6 +5124,90 @@ fn verified_record_orientation(
     Some(LiveObjectRecordOrientation {
         scalar_tenths_degrees: (high << 4) | low,
     })
+}
+
+fn verified_record_placeable_appearance(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    opcode: u8,
+    object_type: u8,
+) -> Option<LiveObjectPlaceableAppearance> {
+    if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
+        return None;
+    }
+
+    match opcode {
+        b'A' => verified_placeable_add_appearance(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        ),
+        b'U' => verified_placeable_update_appearance(
+            live_bytes,
+            offset,
+            record_end,
+            fragment_bits,
+            bit_cursor,
+        ),
+        _ => None,
+    }
+}
+
+fn verified_placeable_add_appearance(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveObjectPlaceableAppearance> {
+    let layout = add::verified_ee_placeable_add_fragment_layout(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    let appearance = read_u16_le(live_bytes, layout.byte_layout.tail_offset + 1)?;
+    Some(LiveObjectPlaceableAppearance {
+        appearance,
+        resref: None,
+    })
+}
+
+fn verified_placeable_update_appearance(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+) -> Option<LiveObjectPlaceableAppearance> {
+    let claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+    )?;
+    if claim.read_end != record_end {
+        return None;
+    }
+    let appearance_offset = claim.appearance_offset?;
+    let appearance = read_u16_le(live_bytes, appearance_offset)?;
+    let resref = if appearance >= 0xFFFE {
+        let start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        let bytes = live_bytes.get(start..start + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        let mut resref = [0_u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES];
+        resref.copy_from_slice(bytes);
+        Some(resref)
+    } else {
+        None
+    };
+    Some(LiveObjectPlaceableAppearance { appearance, resref })
 }
 
 fn verified_record_placeable_state(

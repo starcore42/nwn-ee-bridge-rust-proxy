@@ -1636,6 +1636,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
             LiveObjectMention {
@@ -1650,6 +1651,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
             LiveObjectMention {
@@ -1660,6 +1662,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
             LiveObjectMention {
@@ -1674,6 +1677,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
         ]);
@@ -1716,6 +1720,7 @@ mod tests {
                 position: None,
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
             LiveObjectMention {
@@ -1730,6 +1735,7 @@ mod tests {
                 }),
                 orientation: None,
                 bounds: None,
+                placeable_appearance: None,
                 placeable_state: None,
             },
         ]);
