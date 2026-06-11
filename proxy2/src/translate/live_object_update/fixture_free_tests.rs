@@ -5806,6 +5806,33 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     let evidence = failure
         .item_update_cursor_evidence
         .expect("item cursor failure should carry parser/gap evidence");
+    let handoff = evidence
+        .item_handoff
+        .expect("item cursor failure should retain a first-class handoff summary");
+    assert_eq!(handoff.previous_family, "item-create-rewrite");
+    assert_eq!(handoff.previous_record_end, failure.offset);
+    assert_eq!(handoff.focus_offset, failure.offset);
+    assert_eq!(handoff.focus_record_end, failure.record_end);
+    assert_eq!(handoff.focus_bit_cursor, failure.bit_cursor);
+    assert_eq!(handoff.focus_update_mask, Some(0xFFFF_FFF3));
+    assert_eq!(handoff.neighbor_delta, 2);
+    assert_eq!(handoff.neighbor_bit_start, failure.bit_cursor + 2);
+    assert_eq!(handoff.emitted_gap_bits, 2);
+    assert_eq!(handoff.source_gap_bits, 2);
+    assert_eq!(handoff.source_gap_values.bits_retained, 2);
+    assert_eq!(
+        &handoff.source_gap_values.bits[..2],
+        &[Some(false), Some(true)],
+        "handoff summary should preserve the disputed source gap bits"
+    );
+    let handoff_focus_bits = handoff
+        .focus_source_bits
+        .expect("handoff summary should retain focus-row source bit preview");
+    assert_eq!(
+        &handoff_focus_bits.bits[..4],
+        &[Some(false), Some(true), Some(true), Some(true)],
+        "handoff focus preview should start at the same unowned U/6 lead bits"
+    );
     assert_eq!(evidence.focus_failure_stage, "record-end");
     assert!(
         evidence.focus_failure_bit_cursor

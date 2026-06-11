@@ -2492,6 +2492,13 @@ Current status:
   bits and following item position bits from the normal failure object rather
   than from debug stderr. The two active pre-`U/6` bits still require compact
   source capture or source-side writer/list-handoff proof before assignment.
+- 2026-06-11 follow-up `P/05/01` item `U/6` handoff evidence model: packet
+  bytes and cursor ownership remain unchanged. Retained item cursor failures now
+  carry a first-class handoff summary tying the previous ledger owner, failed
+  focus `U/6` row, source/emitted two-bit gap, and first validating neighbor
+  into one structured object, and the quarantine evidence report emits stable
+  `item_handoff_*` lines. The next proof target remains a local compact source
+  capture or source-side writer/list-handoff owner before assigning those bits.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls

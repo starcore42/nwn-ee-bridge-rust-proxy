@@ -270,6 +270,43 @@ mod diagnostic_tests {
                 focus_failure_bit_cursor: 29,
                 focus_failure_orientation_vector: Some(true),
                 unowned_neighbor: None,
+                item_handoff: Some(LiveObjectUpdateItemHandoffEvidence {
+                    previous_offset: 16,
+                    previous_record_end: 51,
+                    previous_family: "item-create-rewrite",
+                    focus_offset: 51,
+                    focus_record_end: 104,
+                    focus_bit_cursor: 28,
+                    focus_update_mask: Some(0xFFFF_FFF3),
+                    focus_source_bits: Some(live_object_rewrite_bit_slice_evidence(
+                        22,
+                        38,
+                        &[false, true, true, true, false, true],
+                    )),
+                    neighbor_delta: 2,
+                    neighbor_bit_start: 30,
+                    neighbor_bit_end: 42,
+                    neighbor_read_end: 104,
+                    neighbor_translated_mask: 0x0008_0033,
+                    neighbor_orientation_vector: Some(false),
+                    gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
+                    emitted_gap_bits: 2,
+                    emitted_gap_bit_start: 28,
+                    emitted_gap_bit_end: 30,
+                    emitted_gap_values: live_object_rewrite_bit_slice_evidence(
+                        28,
+                        30,
+                        &[false, true],
+                    ),
+                    source_gap_bits: 2,
+                    source_gap_bit_start: 22,
+                    source_gap_bit_end: 24,
+                    source_gap_values: live_object_rewrite_bit_slice_evidence(
+                        22,
+                        24,
+                        &[false, true],
+                    ),
+                }),
                 contiguous_tail: None,
                 source_window: None,
             }),
@@ -286,6 +323,13 @@ mod diagnostic_tests {
             report.contains("reason=item-update-cursor-failed-before-valid-neighbor-unowned-gap")
         );
         assert!(report.contains("gap_origin=focus-position-bits"));
+        assert!(report.contains("item_handoff_previous=16..51:item-create-rewrite"));
+        assert!(report.contains("item_handoff_focus=51..104 bit_cursor=28 update_mask=0xFFFFFFF3"));
+        assert!(report.contains(
+            "item_handoff_valid_neighbor=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false gap_origin=focus-position-bits"
+        ));
+        assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
+        assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
         assert!(report.contains("focus_failure_stage=orientation-scalar-read-bytes"));
     }
@@ -1843,6 +1887,7 @@ pub struct LiveObjectUpdateItemCursorFailureEvidence {
     pub focus_failure_bit_cursor: usize,
     pub focus_failure_orientation_vector: Option<bool>,
     pub unowned_neighbor: Option<LiveObjectUpdateItemUnownedNeighborEvidence>,
+    pub item_handoff: Option<LiveObjectUpdateItemHandoffEvidence>,
     pub contiguous_tail: Option<LiveObjectUpdateRewriteTailEvidence>,
     pub source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
 }
@@ -1867,6 +1912,33 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
     pub previous_record_end: usize,
     pub previous_family: &'static str,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffEvidence {
+    pub previous_offset: usize,
+    pub previous_record_end: usize,
+    pub previous_family: &'static str,
+    pub focus_offset: usize,
+    pub focus_record_end: usize,
+    pub focus_bit_cursor: usize,
+    pub focus_update_mask: Option<u32>,
+    pub focus_source_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub neighbor_delta: isize,
+    pub neighbor_bit_start: usize,
+    pub neighbor_bit_end: usize,
+    pub neighbor_read_end: usize,
+    pub neighbor_translated_mask: u32,
+    pub neighbor_orientation_vector: Option<bool>,
+    pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+    pub emitted_gap_bits: usize,
+    pub emitted_gap_bit_start: usize,
+    pub emitted_gap_bit_end: usize,
+    pub emitted_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub source_gap_bits: usize,
+    pub source_gap_bit_start: usize,
+    pub source_gap_bit_end: usize,
+    pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -9518,6 +9590,9 @@ impl LiveObjectItemUpdateCursorFailure {
                 )
             })
             .unwrap_or(("none", self.offset, self.bit_cursor, None));
+        let item_handoff = self
+            .unowned_neighbor
+            .map(|neighbor| self.item_handoff_evidence(neighbor));
         LiveObjectUpdateItemCursorFailureEvidence {
             focus_failure_stage: focus.0,
             focus_failure_read_cursor: focus.1,
@@ -9545,8 +9620,54 @@ impl LiveObjectItemUpdateCursorFailure {
                     gap_origin: neighbor.gap_origin,
                 }
             }),
+            item_handoff,
             contiguous_tail: self.contiguous_tail,
             source_window: self.source_window,
+        }
+    }
+
+    fn item_handoff_evidence(
+        self,
+        neighbor: LiveObjectItemUpdateUnownedNeighbor,
+    ) -> LiveObjectUpdateItemHandoffEvidence {
+        let focus_entry = self.source_window.and_then(|source_window| {
+            source_window
+                .entries
+                .iter()
+                .flatten()
+                .copied()
+                .find(|entry| {
+                    entry.offset == self.offset
+                        && entry.record_end == self.record_end
+                        && entry.opcode == b'U'
+                        && entry.marker == ITEM_OBJECT_TYPE
+                })
+        });
+
+        LiveObjectUpdateItemHandoffEvidence {
+            previous_offset: neighbor.previous_offset,
+            previous_record_end: neighbor.previous_record_end,
+            previous_family: neighbor.previous_family,
+            focus_offset: self.offset,
+            focus_record_end: self.record_end,
+            focus_bit_cursor: self.bit_cursor,
+            focus_update_mask: focus_entry.and_then(|entry| entry.update_mask),
+            focus_source_bits: focus_entry.map(|entry| entry.source_bits),
+            neighbor_delta: neighbor.delta,
+            neighbor_bit_start: neighbor.bit_start,
+            neighbor_bit_end: neighbor.bit_end,
+            neighbor_read_end: neighbor.read_end,
+            neighbor_translated_mask: neighbor.translated_mask,
+            neighbor_orientation_vector: neighbor.orientation_vector,
+            gap_origin: neighbor.gap_origin,
+            emitted_gap_bits: neighbor.emitted_gap_bits,
+            emitted_gap_bit_start: neighbor.emitted_gap_bit_start,
+            emitted_gap_bit_end: neighbor.emitted_gap_bit_end,
+            emitted_gap_values: neighbor.emitted_gap_values,
+            source_gap_bits: neighbor.source_gap_bits,
+            source_gap_bit_start: neighbor.source_gap_bit_start,
+            source_gap_bit_end: neighbor.source_gap_bit_end,
+            source_gap_values: neighbor.source_gap_values,
         }
     }
 }
@@ -11063,6 +11184,67 @@ fn format_live_object_update_rewrite_failure_evidence(
             "unowned_neighbor={:#?}",
             evidence.unowned_neighbor
         );
+        if let Some(handoff) = evidence.item_handoff {
+            let focus_update_mask = handoff
+                .focus_update_mask
+                .map(|mask| format!("0x{mask:08X}"))
+                .unwrap_or_else(|| "none".to_string());
+            let neighbor_orientation = handoff
+                .neighbor_orientation_vector
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_previous={}..{}:{}",
+                handoff.previous_offset, handoff.previous_record_end, handoff.previous_family
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_focus={}..{} bit_cursor={} update_mask={}",
+                handoff.focus_offset,
+                handoff.focus_record_end,
+                handoff.focus_bit_cursor,
+                focus_update_mask
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_valid_neighbor=delta={} bits={}..{} read_end={} translated_mask=0x{:08X} orientation_vector={} gap_origin={}",
+                handoff.neighbor_delta,
+                handoff.neighbor_bit_start,
+                handoff.neighbor_bit_end,
+                handoff.neighbor_read_end,
+                handoff.neighbor_translated_mask,
+                neighbor_orientation,
+                handoff.gap_origin.as_str()
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_emitted_gap=bits={} range={}..{} values={}",
+                handoff.emitted_gap_bits,
+                handoff.emitted_gap_bit_start,
+                handoff.emitted_gap_bit_end,
+                format_rewrite_bit_slice_evidence(handoff.emitted_gap_values)
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_source_gap=bits={} range={}..{} values={}",
+                handoff.source_gap_bits,
+                handoff.source_gap_bit_start,
+                handoff.source_gap_bit_end,
+                format_rewrite_bit_slice_evidence(handoff.source_gap_values)
+            );
+            if let Some(focus_bits) = handoff.focus_source_bits {
+                let _ = writeln!(
+                    &mut out,
+                    "item_handoff_focus_source_bits={}",
+                    format_rewrite_bit_slice_evidence(focus_bits)
+                );
+            } else {
+                let _ = writeln!(&mut out, "item_handoff_focus_source_bits=none");
+            }
+        } else {
+            let _ = writeln!(&mut out, "item_handoff=none");
+        }
         let _ = writeln!(&mut out, "contiguous_tail={:#?}", evidence.contiguous_tail);
         let _ = writeln!(&mut out, "source_window={:#?}", evidence.source_window);
     } else {
@@ -11070,6 +11252,28 @@ fn format_live_object_update_rewrite_failure_evidence(
     }
 
     out
+}
+
+fn format_rewrite_bit_slice_evidence(evidence: LiveObjectUpdateRewriteBitSliceEvidence) -> String {
+    let mut bits = String::new();
+    for value in evidence.bits.iter().take(evidence.bits_retained) {
+        bits.push(match value {
+            Some(true) => '1',
+            Some(false) => '0',
+            None => '?',
+        });
+    }
+    if evidence.bits_retained < evidence.bit_count {
+        format!(
+            "{}..{}:{}...+{}",
+            evidence.bit_start,
+            evidence.bit_end,
+            bits,
+            evidence.bit_count.saturating_sub(evidence.bits_retained)
+        )
+    } else {
+        format!("{}..{}:{}", evidence.bit_start, evidence.bit_end, bits)
+    }
 }
 
 /// Return true when a live-object payload contains door/placeable add or update
