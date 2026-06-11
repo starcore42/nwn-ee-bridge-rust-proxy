@@ -2148,6 +2148,7 @@ mod diagnostic_tests {
             Some(LiveObjectRecordOrientation {
                 source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 0x70A,
+                vector: None,
             })
         );
         assert_eq!(
@@ -2334,6 +2335,7 @@ mod diagnostic_tests {
             Some(LiveObjectRecordOrientation {
                 source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 0x70A,
+                vector: None,
             })
         );
 
@@ -2376,6 +2378,7 @@ mod diagnostic_tests {
             Some(LiveObjectRecordOrientation {
                 source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
+                vector: None,
             }),
             "static direction bearing pi/2 should emit EE scalar orientation 900"
         );
@@ -2478,6 +2481,7 @@ mod diagnostic_tests {
             Some(LiveObjectRecordOrientation {
                 source: LiveObjectRecordOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
+                vector: None,
             })
         );
         assert_eq!(
@@ -2548,13 +2552,20 @@ mod diagnostic_tests {
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
         let original = payload.clone();
         let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact vector U/09");
+        let orientation = claim.mentions[0]
+            .orientation
+            .expect("exact vector U/09 should expose orientation diagnostics");
         assert_eq!(
-            claim.mentions[0].orientation,
-            Some(LiveObjectRecordOrientation {
-                source: LiveObjectRecordOrientationSource::Vector,
-                scalar_tenths_degrees: 1350,
-            }),
-            "vector orientation remains diagnostic-only, but exact mention extraction should expose its parser-owned yaw"
+            orientation.source,
+            LiveObjectRecordOrientationSource::Vector
+        );
+        assert_eq!(orientation.scalar_tenths_degrees, 1350);
+        let vector = orientation
+            .vector
+            .expect("vector orientation should retain parser-owned components");
+        assert!(
+            vector.x < -1.99 && vector.y < -1.99 && vector.z < -1.99,
+            "raw vector WORDs should remain visible for replay diagnostics: {vector:?}"
         );
 
         let area_context = crate::translate::area::AreaPlaceableContext {
@@ -3419,12 +3430,20 @@ pub struct LiveObjectRecordPosition {
 pub struct LiveObjectRecordOrientation {
     pub source: LiveObjectRecordOrientationSource,
     pub scalar_tenths_degrees: u16,
+    pub vector: Option<LiveObjectRecordOrientationVector>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectRecordOrientationSource {
     Scalar,
     Vector,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveObjectRecordOrientationVector {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5641,12 +5660,18 @@ fn verified_record_orientation(
         return Some(LiveObjectRecordOrientation {
             source: LiveObjectRecordOrientationSource::Scalar,
             scalar_tenths_degrees: scalar.scalar_tenths_degrees,
+            vector: None,
         });
     }
     let vector = claim.vector_orientation?;
     Some(LiveObjectRecordOrientation {
         source: LiveObjectRecordOrientationSource::Vector,
         scalar_tenths_degrees: vector_orientation_scalar_tenths_degrees(vector)?,
+        vector: Some(LiveObjectRecordOrientationVector {
+            x: vector.x,
+            y: vector.y,
+            z: vector.z,
+        }),
     })
 }
 

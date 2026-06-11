@@ -97,12 +97,20 @@ pub(crate) struct LiveObjectPosition {
 pub(crate) struct LiveObjectOrientation {
     pub(crate) source: LiveObjectOrientationSource,
     pub(crate) scalar_tenths_degrees: u16,
+    pub(crate) vector: Option<LiveObjectOrientationVector>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiveObjectOrientationSource {
     Scalar,
     Vector,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LiveObjectOrientationVector {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) z: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

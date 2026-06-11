@@ -15,15 +15,16 @@ use crate::translate::{
     VerifiedFamily,
     area::{
         AreaPlaceableContext, AreaPlaceableContextOrientationConflict, AreaPlaceableContextOverlap,
-        AreaPlaceableContextStateConflict, AreaPlaceableObservedState,
+        AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
+        AreaPlaceableObservedState,
     },
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
 };
 
 use super::event::{
-    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-    LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
+    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectOrientationSource,
+    LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
@@ -651,12 +652,22 @@ impl AreaPlaceableContextOrientationOverlap for AreaPlaceableContextOverlap<'_> 
         &self,
         observed: Option<LiveObjectOrientation>,
     ) -> Option<AreaPlaceableContextOrientationConflict> {
-        let observed = observed?.scalar_tenths_degrees;
+        let observed = observed?;
         let module = area_static_row_scalar_orientation(self.unique_module_backed_static_row()?)?;
-        (observed != module).then_some(AreaPlaceableContextOrientationConflict {
-            observed_scalar_tenths_degrees: observed,
-            module_scalar_tenths_degrees: module,
-        })
+        (observed.scalar_tenths_degrees != module).then_some(
+            AreaPlaceableContextOrientationConflict {
+                observed_source: match observed.source {
+                    LiveObjectOrientationSource::Scalar => {
+                        AreaPlaceableObservedOrientationSource::Scalar
+                    }
+                    LiveObjectOrientationSource::Vector => {
+                        AreaPlaceableObservedOrientationSource::Vector
+                    }
+                },
+                observed_scalar_tenths_degrees: observed.scalar_tenths_degrees,
+                module_scalar_tenths_degrees: module,
+            },
+        )
     }
 }
 
@@ -740,8 +751,9 @@ mod tests {
         AreaPlaceableContext, AreaPlaceableContextObjectIdConfidence,
         AreaPlaceableContextOrientationConflict, AreaPlaceableContextRow,
         AreaPlaceableContextState, AreaPlaceableContextStateConflict,
+        AreaPlaceableObservedOrientationSource,
     };
-    use crate::translate::semantic::LiveObjectOrientationSource;
+    use crate::translate::semantic::{LiveObjectOrientationSource, LiveObjectOrientationVector};
 
     use super::{
         LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
@@ -788,6 +800,7 @@ mod tests {
             orientation: Some(LiveObjectOrientation {
                 source: LiveObjectOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
+                vector: None,
             }),
             bounds: None,
             placeable_appearance: None,
@@ -916,6 +929,11 @@ mod tests {
             orientation: Some(LiveObjectOrientation {
                 source: LiveObjectOrientationSource::Vector,
                 scalar_tenths_degrees: 900,
+                vector: Some(LiveObjectOrientationVector {
+                    x: -1.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
             }),
             bounds: None,
             placeable_appearance: None,
@@ -928,6 +946,7 @@ mod tests {
         );
 
         let expected_conflict = AreaPlaceableContextOrientationConflict {
+            observed_source: AreaPlaceableObservedOrientationSource::Vector,
             observed_scalar_tenths_degrees: 900,
             module_scalar_tenths_degrees: 0,
         };
@@ -950,6 +969,11 @@ mod tests {
             Some(LiveObjectOrientation {
                 source: LiveObjectOrientationSource::Vector,
                 scalar_tenths_degrees: 900,
+                vector: Some(LiveObjectOrientationVector {
+                    x: -1.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
             }),
             "vector-sourced exact U/09 orientation should remain visible to replay diagnostics"
         );
@@ -971,6 +995,7 @@ mod tests {
             orientation: Some(LiveObjectOrientation {
                 source: LiveObjectOrientationSource::Scalar,
                 scalar_tenths_degrees: 0,
+                vector: None,
             }),
             bounds: None,
             placeable_appearance: None,

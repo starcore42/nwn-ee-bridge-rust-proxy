@@ -856,6 +856,17 @@ Current status:
   focused exact-vector update and semantic orientation-conflict regressions plus
   `cargo check -q -p hgbridge-proxy2`; next local replay should compare any
   remaining placeable drift against scalar-vs-vector orientation source labels.
+- 2026-06-12 follow-up vector orientation semantic payload: packet bytes and
+  reconciliation behavior are unchanged. Exact live-object orientation mentions
+  now carry parser-owned vector x/y/z components through the semantic reducer,
+  and module-backed static orientation conflicts record whether the observed row
+  came from the scalar or vector branch. This keeps replay diagnostics tied to
+  the exact EE `U/09` parser while leaving vector-byte rewrite policy blocked on
+  harness evidence. Verified with isolated-target focused exact-vector update
+  and semantic orientation-conflict regressions, `cargo fmt --all --check`,
+  `git diff --check`, and `cargo check -q -p hgbridge-proxy2`; next local
+  replay should compare vector components, source labels, and module static
+  direction before adding any vector rewrite rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
