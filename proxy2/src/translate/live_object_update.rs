@@ -3492,6 +3492,14 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_add_module_custom_template_resref_missing,
             0
         );
@@ -3536,6 +3544,117 @@ mod diagnostic_tests {
         assert!(
             rewritten_bits[CNW_FRAGMENT_HEADER_BITS + 8],
             "unknown 0x1AC sibling must stay packet-authored"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_add_module_custom_skip_classifies_same_payload_update_writer() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("A/09 + U/09 payload");
+        claim_payload_if_verified(&payload).expect("pre-rewrite exact A/09 + U/09 claim");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("the same-payload U/09 appearance row should carry the custom branch");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(
+            summary.bytes_inserted,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite exact A/09 + custom U/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "A/09 remains fixed-width and packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the following U/09 owns EE's WORD + CResRef custom branch"
         );
     }
 
@@ -3820,6 +3939,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_appearance_skipped: u32,
     pub exact_placeable_update_module_custom_appearance_skipped: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_skipped: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -10896,6 +11017,22 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped
                                 .saturating_add(1);
+                        if claim_has_exact_placeable_update_appearance_for_object(
+                            &claim,
+                            mention.object_id,
+                        ) {
+                            summary
+                                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
+                                    .saturating_add(1);
+                        } else {
+                            summary
+                                .exact_placeable_add_module_custom_template_resref_fixed_width_add_only =
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
+                                    .saturating_add(1);
+                        }
                     } else {
                         summary.exact_placeable_add_module_custom_template_resref_missing = summary
                             .exact_placeable_add_module_custom_template_resref_missing
@@ -11136,6 +11273,18 @@ fn record_exact_placeable_reconciliation_target(
     }
 }
 
+fn claim_has_exact_placeable_update_appearance_for_object(
+    claim: &LiveObjectUpdateClaimSummary,
+    object_id: u32,
+) -> bool {
+    claim.mentions.iter().any(|mention| {
+        mention.opcode == b'U'
+            && mention.object_type == PLACEABLE_OBJECT_TYPE
+            && mention.placeable_appearance.is_some()
+            && object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+    })
+}
+
 fn trace_exact_placeable_reconciliation_summary(
     area_context: &AreaPlaceableContext,
     summary: &LiveObjectUpdateRewriteSummary,
@@ -11166,6 +11315,10 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_update_module_custom_appearance_skipped,
         add_module_custom_template_resref_fixed_width_skipped =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+        add_module_custom_template_resref_fixed_width_with_update =
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+        add_module_custom_template_resref_fixed_width_add_only =
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
         add_module_custom_template_resref_missing =
             summary.exact_placeable_add_module_custom_template_resref_missing,
         update_module_custom_template_resref_missing =

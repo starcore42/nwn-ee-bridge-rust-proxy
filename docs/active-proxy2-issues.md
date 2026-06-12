@@ -1077,6 +1077,18 @@ Current status:
   `cargo fmt --all --check`, and `git diff --check`; next local replay should
   compare the new custom-with-resref/missing-resref counters against unresolved
   module-custom conflicts.
+- 2026-06-13 follow-up exact `A/09` fixed-width custom-target update
+  correlation: packet bytes are unchanged. Exact live-object placeable
+  reconciliation now splits module-custom add skips with TemplateResRef into
+  same-payload exact `U/09` appearance rows versus true add-only fixed-width
+  rows, and threads those counters through the M-frame dispatch summary. This
+  preserves the decompile-backed `A/09` WORD-only layout while showing whether
+  EE's parser-owned `U/09 WORD + CResRef` branch is already available in the
+  same payload. Verified with focused `exact_placeable_`, `area_context_`,
+  `placeable_update`, `cargo check -q -p hgbridge-proxy2`,
+  `cargo fmt --all --check`, and `git diff --check`; next local replay should
+  classify remaining module-custom add skips as `fixed_width_with_update` or
+  `fixed_width_add_only` before considering any synthesized follow-up update.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
