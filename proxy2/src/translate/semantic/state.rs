@@ -633,61 +633,65 @@ impl ObjectRegistry {
         active
     }
 
+    #[cfg(test)]
     pub(crate) fn unresolved_area_static_placeable_conflict_for_record(
         &self,
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextStateConflict> {
-        self.placeable_object_for_record_matching(object_type, object_id, |object| {
-            unresolved_area_static_placeable_conflict(object).is_some()
-        })
-        .and_then(unresolved_area_static_placeable_conflict)
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .and_then(|snapshot| snapshot.state)
     }
 
+    #[cfg(test)]
     pub(crate) fn unresolved_area_static_placeable_orientation_conflict_for_record(
         &self,
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextOrientationConflict> {
-        self.placeable_object_for_record_matching(object_type, object_id, |object| {
-            unresolved_area_static_placeable_orientation_conflict(object).is_some()
-        })
-        .and_then(unresolved_area_static_placeable_orientation_conflict)
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .and_then(|snapshot| snapshot.orientation)
     }
 
+    #[cfg(test)]
     pub(crate) fn unresolved_area_static_placeable_appearance_conflict_for_record(
         &self,
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextAppearanceConflict> {
-        self.placeable_object_for_record_matching(object_type, object_id, |object| {
-            unresolved_area_static_placeable_appearance_conflict(object).is_some()
-        })
-        .and_then(unresolved_area_static_placeable_appearance_conflict)
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .and_then(|snapshot| snapshot.appearance)
     }
 
+    #[cfg(test)]
     pub(crate) fn unresolved_area_static_placeable_identity_conflict_for_record(
         &self,
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextIdentityConflict> {
-        self.placeable_object_for_record_matching(object_type, object_id, |object| {
-            unresolved_area_static_placeable_identity_conflict(object).is_some()
-        })
-        .and_then(unresolved_area_static_placeable_identity_conflict)
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .and_then(|snapshot| snapshot.identity)
     }
 
+    pub(crate) fn unresolved_area_static_placeable_conflict_snapshot_for_record(
+        &self,
+        object_type: u8,
+        object_id: u32,
+    ) -> Option<AreaStaticPlaceableConflictSnapshot<'_>> {
+        self.placeable_object_for_record_matching(object_type, object_id, |object| {
+            unresolved_area_static_placeable_conflict_snapshot(object).is_some()
+        })
+        .and_then(unresolved_area_static_placeable_conflict_snapshot)
+    }
+
+    #[cfg(test)]
     pub(crate) fn active_placeable_with_unresolved_area_static_context_for_record(
         &self,
         object_type: u8,
         object_id: u32,
     ) -> Option<&KnownObjectState> {
-        self.placeable_object_for_record_matching(object_type, object_id, |object| {
-            unresolved_area_static_placeable_conflict(object).is_some()
-                || unresolved_area_static_placeable_appearance_conflict(object).is_some()
-                || unresolved_area_static_placeable_orientation_conflict(object).is_some()
-                || unresolved_area_static_placeable_identity_conflict(object).is_some()
-        })
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .map(|snapshot| snapshot.object)
     }
 
     fn placeable_object_for_record_matching<F>(
@@ -723,40 +727,20 @@ impl ObjectRegistry {
     }
 }
 
-fn unresolved_area_static_placeable_conflict(
+fn unresolved_area_static_placeable_conflict_snapshot(
     object: &KnownObjectState,
-) -> Option<AreaPlaceableContextStateConflict> {
-    object
-        .active
-        .then_some(object.unresolved_area_static_state_conflict)
-        .flatten()
-}
-
-fn unresolved_area_static_placeable_appearance_conflict(
-    object: &KnownObjectState,
-) -> Option<AreaPlaceableContextAppearanceConflict> {
-    object
-        .active
-        .then_some(object.unresolved_area_static_appearance_conflict)
-        .flatten()
-}
-
-fn unresolved_area_static_placeable_orientation_conflict(
-    object: &KnownObjectState,
-) -> Option<AreaPlaceableContextOrientationConflict> {
-    object
-        .active
-        .then_some(object.unresolved_area_static_orientation_conflict)
-        .flatten()
-}
-
-fn unresolved_area_static_placeable_identity_conflict(
-    object: &KnownObjectState,
-) -> Option<AreaPlaceableContextIdentityConflict> {
-    object
-        .active
-        .then_some(object.unresolved_area_static_identity_conflict)
-        .flatten()
+) -> Option<AreaStaticPlaceableConflictSnapshot<'_>> {
+    if !object.active {
+        return None;
+    }
+    let snapshot = AreaStaticPlaceableConflictSnapshot {
+        object,
+        identity: object.unresolved_area_static_identity_conflict,
+        appearance: object.unresolved_area_static_appearance_conflict,
+        state: object.unresolved_area_static_state_conflict,
+        orientation: object.unresolved_area_static_orientation_conflict,
+    };
+    snapshot.any().then_some(snapshot)
 }
 
 trait AreaPlaceableContextAppearanceOverlap {
@@ -866,6 +850,51 @@ pub(crate) struct KnownObjectState {
     pub(crate) unresolved_area_static_orientation_conflict:
         Option<AreaPlaceableContextOrientationConflict>,
     pub(crate) area_static_orientation_conflict_resolutions: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AreaStaticPlaceableConflictSnapshot<'a> {
+    pub(crate) object: &'a KnownObjectState,
+    pub(crate) identity: Option<AreaPlaceableContextIdentityConflict>,
+    pub(crate) appearance: Option<AreaPlaceableContextAppearanceConflict>,
+    pub(crate) state: Option<AreaPlaceableContextStateConflict>,
+    pub(crate) orientation: Option<AreaPlaceableContextOrientationConflict>,
+}
+
+impl AreaStaticPlaceableConflictSnapshot<'_> {
+    pub(crate) fn any(self) -> bool {
+        self.identity.is_some()
+            || self.appearance.is_some()
+            || self.state.is_some()
+            || self.orientation.is_some()
+    }
+
+    pub(crate) fn formatted_classes(self) -> String {
+        let mut classes = Vec::new();
+        if self.identity.is_some() {
+            classes.push("identity");
+        }
+        if self.appearance.is_some() {
+            classes.push("appearance");
+        }
+        if self.state.is_some() {
+            classes.push("state");
+        }
+        if self.orientation.is_some() {
+            classes.push("orientation");
+        }
+        if classes.is_empty() {
+            "none".to_string()
+        } else {
+            classes.join(",")
+        }
+    }
+
+    pub(crate) fn formatted_state_fields(self) -> String {
+        self.state
+            .map(AreaPlaceableContextStateConflict::formatted_fields)
+            .unwrap_or_else(|| "none".to_string())
+    }
 }
 
 impl KnownObjectState {
@@ -1117,6 +1146,16 @@ mod tests {
             conflict_object.placeable_appearance,
             conflicting_add.placeable_appearance
         );
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("compact diagnostics should expose one appearance snapshot");
+        assert_eq!(snapshot.object.object_id, external_object_id);
+        assert_eq!(snapshot.identity, None);
+        assert_eq!(snapshot.appearance, Some(expected_conflict));
+        assert_eq!(snapshot.state, None);
+        assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.formatted_classes(), "appearance");
+        assert_eq!(snapshot.formatted_state_fields(), "none");
 
         let resolving_update = LiveObjectMention {
             opcode: b'U',
@@ -1278,6 +1317,16 @@ mod tests {
             conflict_object.unresolved_area_static_orientation_conflict,
             Some(expected_conflict)
         );
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("compact diagnostics should expose one orientation snapshot");
+        assert_eq!(snapshot.object.object_id, external_object_id);
+        assert_eq!(snapshot.identity, None);
+        assert_eq!(snapshot.appearance, None);
+        assert_eq!(snapshot.state, None);
+        assert_eq!(snapshot.orientation, Some(expected_conflict));
+        assert_eq!(snapshot.formatted_classes(), "orientation");
+        assert_eq!(snapshot.formatted_state_fields(), "none");
 
         let resolving_update = LiveObjectMention {
             opcode: b'U',
@@ -1404,6 +1453,16 @@ mod tests {
             )
             .expect("compact diagnostics should resolve to the external identity owner");
         assert_eq!(conflict_object.object_id, external_object_id);
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("compact diagnostics should expose one identity snapshot");
+        assert_eq!(snapshot.object.object_id, external_object_id);
+        assert_eq!(snapshot.identity, Some(expected_conflict));
+        assert_eq!(snapshot.appearance, None);
+        assert_eq!(snapshot.state, None);
+        assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.formatted_classes(), "identity");
+        assert_eq!(snapshot.formatted_state_fields(), "none");
 
         let unique_area_context = AreaPlaceableContext {
             area_resref: "testarea".to_string(),
@@ -1652,6 +1711,22 @@ mod tests {
                 locked: Some(true),
             })
         );
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("compact diagnostics should expose one state snapshot");
+        assert_eq!(snapshot.object.object_id, external_object_id);
+        assert_eq!(snapshot.identity, None);
+        assert_eq!(snapshot.appearance, None);
+        assert_eq!(
+            snapshot.state,
+            Some(AreaPlaceableContextStateConflict {
+                locked: true,
+                ..AreaPlaceableContextStateConflict::default()
+            })
+        );
+        assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.formatted_classes(), "state");
+        assert_eq!(snapshot.formatted_state_fields(), "locked");
 
         let resolving_update_mention = LiveObjectMention {
             opcode: b'U',
