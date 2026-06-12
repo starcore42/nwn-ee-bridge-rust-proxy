@@ -4158,6 +4158,160 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_module_custom_add_only_synthesizes_following_update() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("add-only A/09 payload");
+        let original_len = payload.len();
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact fixed-width A/09");
+        assert_eq!(pre_claim.mentions.len(), 1);
+        assert_eq!(
+            pre_claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "A/09 has only the fixed-width appearance WORD before synthesis"
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("add-only custom A/09 should synthesize a parser-owned U/09 carrier");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 0);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(
+            summary.new_live_bytes_length,
+            summary.old_live_bytes_length + 28
+        );
+        assert_eq!(payload.len(), original_len + 28);
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite exact A/09 plus synthesized U/09 claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "the fixed-width add remains packet-authored"
+        );
+        assert_eq!(claim.mentions[1].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthetic following U/09 owns EE's custom WORD + CResRef branch"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: add_end + LEGACY_UPDATE_HEADER_BYTES,
+                resref_offset: Some(
+                    add_end + LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                ),
+            })
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_start, claim.mentions[0].fragment_bit_end,
+            "the synthetic appearance-only update consumes no fragment bits"
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_end, claim.mentions[0].fragment_bit_end,
+            "the synthetic appearance-only update must not move the bit cursor"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_reconciles_unique_area_static_state_with_optional_object_id() {
         let object_id = 0x8000_34D8u32;
         let optional_target = 0x8000_1234u32;
@@ -4447,6 +4601,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -11569,6 +11724,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                let mut custom_update_synthesized = false;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
                     && is_custom_placeable_appearance(row.appearance)
@@ -11641,6 +11797,28 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
+                            let target_resref = row.module_template_resref?;
+                            let bytes_inserted =
+                                synthesize_placeable_custom_appearance_update_after_add(
+                                    area_context,
+                                    &mut live_bytes,
+                                    &fragment_bits,
+                                    record_end,
+                                    add_claim,
+                                    row.appearance,
+                                    target_resref,
+                                )?;
+                            live_byte_offset_added =
+                                live_byte_offset_added.checked_add(bytes_inserted)?;
+                            summary.bytes_inserted = summary
+                                .bytes_inserted
+                                .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
+                            summary
+                                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
+                                    .saturating_add(1);
+                            custom_update_synthesized = true;
                         }
                     } else {
                         summary.exact_placeable_add_module_custom_template_resref_missing = summary
@@ -11679,7 +11857,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_state_rewritten
                         .saturating_add(1);
                 }
-                if appearance_rewritten || state_rewritten {
+                if custom_update_synthesized || appearance_rewritten || state_rewritten {
                     summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
                 } else if matches!(
                     target,
@@ -12068,6 +12246,61 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
     );
 }
 
+fn synthesize_placeable_custom_appearance_update_after_add(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &[bool],
+    insert_offset: usize,
+    add_claim: VerifiedPlaceableAddExactClaim,
+    appearance: u16,
+    template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
+) -> Option<usize> {
+    if insert_offset > live_bytes.len() || !is_custom_placeable_appearance(appearance) {
+        return None;
+    }
+
+    let mut update = Vec::with_capacity(
+        LEGACY_UPDATE_HEADER_BYTES
+            + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+            + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+    );
+    update.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+    update.extend_from_slice(&add_claim.object_id.to_le_bytes());
+    update.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+    update.extend_from_slice(&appearance.to_le_bytes());
+    update.extend_from_slice(&template_resref);
+
+    let bytes_inserted = update.len();
+    live_bytes.splice(insert_offset..insert_offset, update.iter().copied());
+    let record_end = insert_offset.checked_add(bytes_inserted)?;
+    let update_claim = verified_placeable_update_exact_claim(
+        live_bytes,
+        insert_offset,
+        record_end,
+        fragment_bits,
+        add_claim.layout.next_bit_cursor,
+    )?;
+    if update_claim.object_id != add_claim.object_id
+        || update_claim.mask != LEGACY_UPDATE_APPEARANCE_MASK
+        || update_claim.parser.next_bit_cursor != add_claim.layout.next_bit_cursor
+    {
+        return None;
+    }
+
+    tracing::info!(
+        object_id = format_args!("0x{:08X}", add_claim.object_id),
+        add_next_bit_cursor = add_claim.layout.next_bit_cursor,
+        insert_offset,
+        record_end,
+        emitted_appearance = format_args!("0x{appearance:04X}"),
+        emitted_resref = ?template_resref,
+        bytes_inserted,
+        area_resref = area_context.area_resref.as_str(),
+        "server->client exact live-object placeable add custom appearance synthesized as following U/09 update"
+    );
+    Some(bytes_inserted)
+}
+
 fn trace_exact_placeable_reconciliation_summary(
     area_context: &AreaPlaceableContext,
     summary: &LiveObjectUpdateRewriteSummary,
@@ -12112,6 +12345,9 @@ fn trace_exact_placeable_reconciliation_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
         add_module_custom_template_resref_fixed_width_add_only =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+        add_module_custom_template_resref_fixed_width_synthesized_update =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
         add_module_custom_template_resref_missing =
             summary.exact_placeable_add_module_custom_template_resref_missing,
         update_module_custom_template_resref_missing =

@@ -1031,6 +1031,8 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
         exact_placeable_add_module_custom_template_resref_fixed_width_add_only =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+        exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
         exact_placeable_add_module_custom_template_resref_missing =
             summary.exact_placeable_add_module_custom_template_resref_missing,
         exact_placeable_update_module_custom_template_resref_missing =

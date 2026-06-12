@@ -1123,6 +1123,21 @@ Current status:
   `exact_placeable_`, `area_context_`, `placeable_update`, and `cargo check`;
   next local replay should inspect the new candidate trace before deciding
   whether to synthesize a following `U/09` writer.
+- 2026-06-13 follow-up fixed-width `A/09` add-only custom synthesis: exact
+  placeable reconciliation now emits a minimal same-object following
+  `U/09 mask=0x20` when an exact fixed-width add targets a unique module-backed
+  custom static row with proven `TemplateResRef` and no following parser-owned
+  carrier. The original `A/09` stays fixed-width and fragment bits are not
+  moved; the synthesized update uses the decompile-backed generic
+  door/placeable update shape (`header -> appearance WORD -> CResRef`) and is
+  immediately exact-validated at the add's next bit cursor. M-frame/server
+  dispatch summaries now expose the synthesized-update count beside the
+  add-only bucket. Verified with focused
+  `exact_placeable_add_module_custom_add_only_synthesizes_following_update`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should compare remaining custom skips, especially pre-add-only
+  and lifecycle/identity-blocked rows.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
