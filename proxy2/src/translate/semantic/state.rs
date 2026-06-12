@@ -762,6 +762,39 @@ impl ObjectRegistry {
         summary
     }
 
+    pub(crate) fn unresolved_area_static_placeable_conflict_progress_for_records<I>(
+        &self,
+        records: I,
+    ) -> AreaStaticPlaceableConflictRecordProgressSummary
+    where
+        I: IntoIterator<Item = AreaStaticPlaceableConflictRecordObservation>,
+    {
+        let mut owner_progress = BTreeMap::new();
+        for record in records {
+            let Some(snapshot) = self
+                .unresolved_area_static_placeable_conflict_snapshot_for_record(
+                    record.object_type,
+                    record.object_id,
+                )
+            else {
+                continue;
+            };
+            let progress = snapshot.progress_for_observation(record);
+            owner_progress
+                .entry(snapshot.object.object_id)
+                .and_modify(|existing: &mut AreaStaticPlaceableConflictRecordProgress| {
+                    existing.merge(progress);
+                })
+                .or_insert(progress);
+        }
+
+        let mut summary = AreaStaticPlaceableConflictRecordProgressSummary::default();
+        for progress in owner_progress.values().copied() {
+            summary.record(progress);
+        }
+        summary
+    }
+
     #[cfg(test)]
     pub(crate) fn active_placeable_with_unresolved_area_static_context_for_record(
         &self,
@@ -983,6 +1016,62 @@ pub(crate) struct AreaStaticPlaceableConflictSnapshot<'a> {
     pub(crate) position: Option<AreaPlaceableContextPositionConflict>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AreaStaticPlaceableConflictRecordObservation {
+    pub(crate) object_type: u8,
+    pub(crate) object_id: u32,
+    pub(crate) placeable_appearance: Option<LiveObjectPlaceableAppearance>,
+    pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
+    pub(crate) orientation: Option<LiveObjectOrientation>,
+    pub(crate) position: Option<LiveObjectPosition>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AreaStaticPlaceableConflictRecordProgress {
+    pub(crate) untouched_identity: bool,
+    pub(crate) resolves_appearance: bool,
+    pub(crate) repeats_appearance: bool,
+    pub(crate) untouched_appearance: bool,
+    pub(crate) resolves_state_useable: bool,
+    pub(crate) repeats_state_useable: bool,
+    pub(crate) untouched_state_useable: bool,
+    pub(crate) resolves_state_trap_disarmable: bool,
+    pub(crate) repeats_state_trap_disarmable: bool,
+    pub(crate) untouched_state_trap_disarmable: bool,
+    pub(crate) resolves_state_lockable: bool,
+    pub(crate) repeats_state_lockable: bool,
+    pub(crate) untouched_state_lockable: bool,
+    pub(crate) resolves_state_locked: bool,
+    pub(crate) repeats_state_locked: bool,
+    pub(crate) untouched_state_locked: bool,
+    pub(crate) resolves_orientation: bool,
+    pub(crate) repeats_orientation: bool,
+    pub(crate) untouched_orientation: bool,
+    pub(crate) resolves_position: bool,
+    pub(crate) repeats_position: bool,
+    pub(crate) untouched_position: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AreaStaticPlaceableConflictRecordProgressSummary {
+    pub(crate) owners: u32,
+    pub(crate) resolving_owners: u32,
+    pub(crate) repeating_owners: u32,
+    pub(crate) untouched_owners: u32,
+    pub(crate) resolving_appearance: u32,
+    pub(crate) repeating_appearance: u32,
+    pub(crate) untouched_appearance: u32,
+    pub(crate) resolving_state: u32,
+    pub(crate) repeating_state: u32,
+    pub(crate) untouched_state: u32,
+    pub(crate) resolving_orientation: u32,
+    pub(crate) repeating_orientation: u32,
+    pub(crate) untouched_orientation: u32,
+    pub(crate) resolving_position: u32,
+    pub(crate) repeating_position: u32,
+    pub(crate) untouched_position: u32,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct AreaStaticPlaceableConflictRecordSummary {
     pub(crate) owners: u32,
@@ -1034,6 +1123,204 @@ impl AreaStaticPlaceableConflictRecordSummary {
     }
 }
 
+impl AreaStaticPlaceableConflictRecordProgressSummary {
+    fn record(&mut self, progress: AreaStaticPlaceableConflictRecordProgress) {
+        self.owners = self.owners.saturating_add(1);
+        if progress.any_resolving() {
+            self.resolving_owners = self.resolving_owners.saturating_add(1);
+        }
+        if progress.any_repeating() {
+            self.repeating_owners = self.repeating_owners.saturating_add(1);
+        }
+        if !progress.any_resolving() && !progress.any_repeating() && progress.any_untouched() {
+            self.untouched_owners = self.untouched_owners.saturating_add(1);
+        }
+        if progress.resolves_appearance {
+            self.resolving_appearance = self.resolving_appearance.saturating_add(1);
+        }
+        if progress.repeats_appearance {
+            self.repeating_appearance = self.repeating_appearance.saturating_add(1);
+        }
+        if progress.untouched_appearance {
+            self.untouched_appearance = self.untouched_appearance.saturating_add(1);
+        }
+        if progress.any_resolving_state() {
+            self.resolving_state = self.resolving_state.saturating_add(1);
+        }
+        if progress.any_repeating_state() {
+            self.repeating_state = self.repeating_state.saturating_add(1);
+        }
+        if progress.any_untouched_state() {
+            self.untouched_state = self.untouched_state.saturating_add(1);
+        }
+        if progress.resolves_orientation {
+            self.resolving_orientation = self.resolving_orientation.saturating_add(1);
+        }
+        if progress.repeats_orientation {
+            self.repeating_orientation = self.repeating_orientation.saturating_add(1);
+        }
+        if progress.untouched_orientation {
+            self.untouched_orientation = self.untouched_orientation.saturating_add(1);
+        }
+        if progress.resolves_position {
+            self.resolving_position = self.resolving_position.saturating_add(1);
+        }
+        if progress.repeats_position {
+            self.repeating_position = self.repeating_position.saturating_add(1);
+        }
+        if progress.untouched_position {
+            self.untouched_position = self.untouched_position.saturating_add(1);
+        }
+    }
+}
+
+impl AreaStaticPlaceableConflictRecordProgress {
+    fn merge(&mut self, other: Self) {
+        self.untouched_identity |= other.untouched_identity;
+        self.resolves_appearance |= other.resolves_appearance;
+        self.repeats_appearance |= other.repeats_appearance;
+        self.untouched_appearance |= other.untouched_appearance;
+        self.resolves_state_useable |= other.resolves_state_useable;
+        self.repeats_state_useable |= other.repeats_state_useable;
+        self.untouched_state_useable |= other.untouched_state_useable;
+        self.resolves_state_trap_disarmable |= other.resolves_state_trap_disarmable;
+        self.repeats_state_trap_disarmable |= other.repeats_state_trap_disarmable;
+        self.untouched_state_trap_disarmable |= other.untouched_state_trap_disarmable;
+        self.resolves_state_lockable |= other.resolves_state_lockable;
+        self.repeats_state_lockable |= other.repeats_state_lockable;
+        self.untouched_state_lockable |= other.untouched_state_lockable;
+        self.resolves_state_locked |= other.resolves_state_locked;
+        self.repeats_state_locked |= other.repeats_state_locked;
+        self.untouched_state_locked |= other.untouched_state_locked;
+        self.resolves_orientation |= other.resolves_orientation;
+        self.repeats_orientation |= other.repeats_orientation;
+        self.untouched_orientation |= other.untouched_orientation;
+        self.resolves_position |= other.resolves_position;
+        self.repeats_position |= other.repeats_position;
+        self.untouched_position |= other.untouched_position;
+    }
+
+    pub(crate) fn any_resolving(self) -> bool {
+        self.resolves_appearance
+            || self.any_resolving_state()
+            || self.resolves_orientation
+            || self.resolves_position
+    }
+
+    pub(crate) fn any_repeating(self) -> bool {
+        self.repeats_appearance
+            || self.any_repeating_state()
+            || self.repeats_orientation
+            || self.repeats_position
+    }
+
+    pub(crate) fn any_untouched(self) -> bool {
+        self.untouched_identity
+            || self.untouched_appearance
+            || self.any_untouched_state()
+            || self.untouched_orientation
+            || self.untouched_position
+    }
+
+    fn any_resolving_state(self) -> bool {
+        self.resolves_state_useable
+            || self.resolves_state_trap_disarmable
+            || self.resolves_state_lockable
+            || self.resolves_state_locked
+    }
+
+    fn any_repeating_state(self) -> bool {
+        self.repeats_state_useable
+            || self.repeats_state_trap_disarmable
+            || self.repeats_state_lockable
+            || self.repeats_state_locked
+    }
+
+    fn any_untouched_state(self) -> bool {
+        self.untouched_state_useable
+            || self.untouched_state_trap_disarmable
+            || self.untouched_state_lockable
+            || self.untouched_state_locked
+    }
+
+    pub(crate) fn formatted_resolving_fields(self) -> String {
+        self.format_fields(ConflictProgressFieldKind::Resolving)
+    }
+
+    pub(crate) fn formatted_repeating_fields(self) -> String {
+        self.format_fields(ConflictProgressFieldKind::Repeating)
+    }
+
+    pub(crate) fn formatted_untouched_fields(self) -> String {
+        self.format_fields(ConflictProgressFieldKind::Untouched)
+    }
+
+    fn format_fields(self, kind: ConflictProgressFieldKind) -> String {
+        let mut fields = Vec::new();
+        match kind {
+            ConflictProgressFieldKind::Resolving => {
+                push_if(&mut fields, self.resolves_appearance, "appearance");
+                push_if(&mut fields, self.resolves_state_useable, "state.useable");
+                push_if(
+                    &mut fields,
+                    self.resolves_state_trap_disarmable,
+                    "state.trap_disarmable",
+                );
+                push_if(&mut fields, self.resolves_state_lockable, "state.lockable");
+                push_if(&mut fields, self.resolves_state_locked, "state.locked");
+                push_if(&mut fields, self.resolves_orientation, "orientation");
+                push_if(&mut fields, self.resolves_position, "position");
+            }
+            ConflictProgressFieldKind::Repeating => {
+                push_if(&mut fields, self.repeats_appearance, "appearance");
+                push_if(&mut fields, self.repeats_state_useable, "state.useable");
+                push_if(
+                    &mut fields,
+                    self.repeats_state_trap_disarmable,
+                    "state.trap_disarmable",
+                );
+                push_if(&mut fields, self.repeats_state_lockable, "state.lockable");
+                push_if(&mut fields, self.repeats_state_locked, "state.locked");
+                push_if(&mut fields, self.repeats_orientation, "orientation");
+                push_if(&mut fields, self.repeats_position, "position");
+            }
+            ConflictProgressFieldKind::Untouched => {
+                push_if(&mut fields, self.untouched_identity, "identity");
+                push_if(&mut fields, self.untouched_appearance, "appearance");
+                push_if(&mut fields, self.untouched_state_useable, "state.useable");
+                push_if(
+                    &mut fields,
+                    self.untouched_state_trap_disarmable,
+                    "state.trap_disarmable",
+                );
+                push_if(&mut fields, self.untouched_state_lockable, "state.lockable");
+                push_if(&mut fields, self.untouched_state_locked, "state.locked");
+                push_if(&mut fields, self.untouched_orientation, "orientation");
+                push_if(&mut fields, self.untouched_position, "position");
+            }
+        }
+
+        if fields.is_empty() {
+            "none".to_string()
+        } else {
+            fields.join(",")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConflictProgressFieldKind {
+    Resolving,
+    Repeating,
+    Untouched,
+}
+
+fn push_if(fields: &mut Vec<&'static str>, condition: bool, field: &'static str) {
+    if condition {
+        fields.push(field);
+    }
+}
+
 impl AreaStaticPlaceableConflictSnapshot<'_> {
     pub(crate) fn any(self) -> bool {
         self.identity.is_some()
@@ -1072,6 +1359,142 @@ impl AreaStaticPlaceableConflictSnapshot<'_> {
             .map(AreaPlaceableContextStateConflict::formatted_fields)
             .unwrap_or_else(|| "none".to_string())
     }
+
+    pub(crate) fn progress_for_observation(
+        self,
+        observation: AreaStaticPlaceableConflictRecordObservation,
+    ) -> AreaStaticPlaceableConflictRecordProgress {
+        let mut progress = AreaStaticPlaceableConflictRecordProgress {
+            untouched_identity: self.identity.is_some(),
+            ..AreaStaticPlaceableConflictRecordProgress::default()
+        };
+
+        if let Some(conflict) = self.appearance {
+            match observation.placeable_appearance {
+                Some(observed) if observed.appearance == conflict.module_appearance => {
+                    progress.resolves_appearance = true;
+                }
+                Some(_) => {
+                    progress.repeats_appearance = true;
+                }
+                None => {
+                    progress.untouched_appearance = true;
+                }
+            }
+        }
+
+        if let Some(conflict) = self.state {
+            let prior = self.object.placeable_state;
+            classify_state_conflict_field(
+                conflict.useable,
+                prior.and_then(|state| state.useable),
+                observation.placeable_state.and_then(|state| state.useable),
+                &mut progress.resolves_state_useable,
+                &mut progress.repeats_state_useable,
+                &mut progress.untouched_state_useable,
+            );
+            classify_state_conflict_field(
+                conflict.trap_disarmable,
+                prior.and_then(|state| state.trap_disarmable),
+                observation
+                    .placeable_state
+                    .and_then(|state| state.trap_disarmable),
+                &mut progress.resolves_state_trap_disarmable,
+                &mut progress.repeats_state_trap_disarmable,
+                &mut progress.untouched_state_trap_disarmable,
+            );
+            classify_state_conflict_field(
+                conflict.lockable,
+                prior.and_then(|state| state.lockable),
+                observation.placeable_state.and_then(|state| state.lockable),
+                &mut progress.resolves_state_lockable,
+                &mut progress.repeats_state_lockable,
+                &mut progress.untouched_state_lockable,
+            );
+            classify_state_conflict_field(
+                conflict.locked,
+                prior.and_then(|state| state.locked),
+                observation.placeable_state.and_then(|state| state.locked),
+                &mut progress.resolves_state_locked,
+                &mut progress.repeats_state_locked,
+                &mut progress.untouched_state_locked,
+            );
+        }
+
+        if let Some(conflict) = self.orientation {
+            match observation.orientation {
+                Some(observed)
+                    if observed.scalar_tenths_degrees == conflict.module_scalar_tenths_degrees =>
+                {
+                    progress.resolves_orientation = true;
+                }
+                Some(_) => {
+                    progress.repeats_orientation = true;
+                }
+                None => {
+                    progress.untouched_orientation = true;
+                }
+            }
+        }
+
+        if let Some(conflict) = self.position {
+            match observation.position {
+                Some(observed)
+                    if position_matches_module(
+                        observed,
+                        conflict.module_x,
+                        conflict.module_y,
+                        conflict.module_z,
+                    ) =>
+                {
+                    progress.resolves_position = true;
+                }
+                Some(_) => {
+                    progress.repeats_position = true;
+                }
+                None => {
+                    progress.untouched_position = true;
+                }
+            }
+        }
+
+        progress
+    }
+}
+
+fn classify_state_conflict_field(
+    conflicting: bool,
+    prior_observed: Option<bool>,
+    current_observed: Option<bool>,
+    resolves: &mut bool,
+    repeats: &mut bool,
+    untouched: &mut bool,
+) {
+    if !conflicting {
+        return;
+    }
+    match (prior_observed, current_observed) {
+        (_, None) => {
+            *untouched = true;
+        }
+        (Some(previous), Some(current)) if current != previous => {
+            *resolves = true;
+        }
+        (Some(_), Some(_)) | (None, Some(_)) => {
+            *repeats = true;
+        }
+    }
+}
+
+fn position_matches_module(
+    position: LiveObjectPosition,
+    module_x: f32,
+    module_y: f32,
+    module_z: f32,
+) -> bool {
+    (position.x - module_x).abs() <= PLACEABLE_POSITION_EPSILON
+        && (position.y - module_y).abs() <= PLACEABLE_POSITION_EPSILON
+        && (position.z - module_z).abs() <= PLACEABLE_POSITION_EPSILON
 }
 
 impl KnownObjectState {
@@ -1117,9 +1540,10 @@ mod tests {
     use crate::translate::semantic::{LiveObjectOrientationSource, LiveObjectOrientationVector};
 
     use super::{
-        AreaStaticPlaceableConflictRecordSummary, LiveObjectMention, LiveObjectOrientation,
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition,
-        ObjectRegistry, PlayerListObjectIds,
+        AreaStaticPlaceableConflictRecordObservation,
+        AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
+        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -2263,6 +2687,161 @@ mod tests {
                 state_trap_disarmable: 0,
                 state_lockable: 1,
                 state_locked: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn area_context_conflict_progress_classifies_current_record_fields() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                appearance: 0x1234,
+                x: 12.34,
+                y: 56.78,
+                z: 0.0,
+                has_direction: true,
+                dir_x: -1.0,
+                dir_y: 0.0,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    useable: false,
+                    trap_disarmable: false,
+                    lockable: false,
+                    locked: false,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let conflicting_mention = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: Some(LiveObjectPosition {
+                x: 1.0,
+                y: 2.0,
+                z: -3.0,
+            }),
+            orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
+                scalar_tenths_degrees: 1800,
+                vector: None,
+            }),
+            bounds: None,
+            placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                appearance: 0x2222,
+                resref: None,
+            }),
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(true),
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&conflicting_mention));
+        registry.observe_placeable_area_context(
+            &area_context,
+            std::slice::from_ref(&conflicting_mention),
+        );
+
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("conflicting external add should be visible through compact alias");
+
+        let resolving_record = AreaStaticPlaceableConflictRecordObservation {
+            object_type: 0x09,
+            object_id: compact_object_id,
+            placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                appearance: 0x1234,
+                resref: None,
+            }),
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(false),
+                trap_disarmable: Some(false),
+                lockable: Some(false),
+                locked: Some(false),
+            }),
+            orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
+                scalar_tenths_degrees: 900,
+                vector: None,
+            }),
+            position: Some(LiveObjectPosition {
+                x: 12.34,
+                y: 56.78,
+                z: 0.0,
+            }),
+        };
+        let resolving_progress = snapshot.progress_for_observation(resolving_record);
+        assert_eq!(
+            resolving_progress.formatted_resolving_fields(),
+            "appearance,state.useable,state.lockable,state.locked,orientation,position"
+        );
+        assert_eq!(resolving_progress.formatted_repeating_fields(), "none");
+        assert_eq!(resolving_progress.formatted_untouched_fields(), "none");
+
+        let repeating_record = AreaStaticPlaceableConflictRecordObservation {
+            object_type: 0x09,
+            object_id: external_object_id,
+            placeable_appearance: conflicting_mention.placeable_appearance,
+            placeable_state: conflicting_mention.placeable_state,
+            orientation: conflicting_mention.orientation,
+            position: conflicting_mention.position,
+        };
+        let repeating_progress = snapshot.progress_for_observation(repeating_record);
+        assert_eq!(repeating_progress.formatted_resolving_fields(), "none");
+        assert_eq!(
+            repeating_progress.formatted_repeating_fields(),
+            "appearance,state.useable,state.lockable,state.locked,orientation,position"
+        );
+        assert_eq!(repeating_progress.formatted_untouched_fields(), "none");
+
+        let untouched_record = AreaStaticPlaceableConflictRecordObservation {
+            object_type: 0x09,
+            object_id: external_object_id,
+            ..AreaStaticPlaceableConflictRecordObservation::default()
+        };
+        let untouched_progress = snapshot.progress_for_observation(untouched_record);
+        assert_eq!(untouched_progress.formatted_resolving_fields(), "none");
+        assert_eq!(untouched_progress.formatted_repeating_fields(), "none");
+        assert_eq!(
+            untouched_progress.formatted_untouched_fields(),
+            "appearance,state.useable,state.lockable,state.locked,orientation,position"
+        );
+
+        let progress_summary = registry
+            .unresolved_area_static_placeable_conflict_progress_for_records([
+                resolving_record,
+                repeating_record,
+                untouched_record,
+            ]);
+        assert_eq!(
+            progress_summary,
+            AreaStaticPlaceableConflictRecordProgressSummary {
+                owners: 1,
+                resolving_owners: 1,
+                repeating_owners: 1,
+                untouched_owners: 0,
+                resolving_appearance: 1,
+                repeating_appearance: 1,
+                untouched_appearance: 1,
+                resolving_state: 1,
+                repeating_state: 1,
+                untouched_state: 1,
+                resolving_orientation: 1,
+                repeating_orientation: 1,
+                untouched_orientation: 1,
+                resolving_position: 1,
+                repeating_position: 1,
+                untouched_position: 1,
             }
         );
     }

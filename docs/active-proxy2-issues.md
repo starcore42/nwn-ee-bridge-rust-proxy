@@ -989,6 +989,15 @@ Current status:
   `area_context_`, `exact_placeable_`, and `placeable_update` regressions; next
   local replay should classify remaining drift outside exact position,
   vector/scalar orientation, same-width appearance, and proven state bits.
+- 2026-06-12 follow-up current-record conflict progress diagnostics: packet
+  bytes and reconciliation policy are unchanged. Server-dispatch unresolved
+  area/static placeable diagnostics now classify the exact current `A/09`/`U/09`
+  record as resolving, repeating, or leaving untouched each prior
+  identity/appearance/state/orientation/position conflict, with owner-deduped
+  aggregate counters beside the exact rewrite summary. Next local replay should
+  use these fields to tell whether remaining visual drift persists after a
+  resolving record or is simply waiting for a later exact record to carry the
+  correcting module-backed facts.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

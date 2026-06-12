@@ -105,6 +105,12 @@ struct LiveObjectExactRewriteClaim {
     summary: live_update::ExactLiveObjectRewriteSummary,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct AreaStaticPlaceableConflictTraceSummary {
+    unresolved: semantic::AreaStaticPlaceableConflictRecordSummary,
+    current_record_progress: semantic::AreaStaticPlaceableConflictRecordProgressSummary,
+}
+
 #[derive(Debug)]
 enum ServerTranslatorOutcome {
     None,
@@ -768,7 +774,7 @@ fn finalize_server_translator_claim(
     let unresolved_placeable_conflicts = if family == VerifiedFamily::GameObjUpdateLiveObject {
         trace_unresolved_area_static_placeable_conflicts(payload, family_name, object_registry)
     } else {
-        semantic::AreaStaticPlaceableConflictRecordSummary::default()
+        AreaStaticPlaceableConflictTraceSummary::default()
     };
     if let Some(exact_rewrite) = claim.live_object_exact_rewrite {
         trace_live_object_exact_rewrite_summary(
@@ -789,12 +795,12 @@ fn trace_unresolved_area_static_placeable_conflicts(
     payload: &[u8],
     family_name: &'static str,
     object_registry: Option<&semantic::ObjectRegistry>,
-) -> semantic::AreaStaticPlaceableConflictRecordSummary {
+) -> AreaStaticPlaceableConflictTraceSummary {
     let Some(registry) = object_registry else {
-        return semantic::AreaStaticPlaceableConflictRecordSummary::default();
+        return AreaStaticPlaceableConflictTraceSummary::default();
     };
     let Some(claim) = live_update::claim_payload_if_verified(payload) else {
-        return semantic::AreaStaticPlaceableConflictRecordSummary::default();
+        return AreaStaticPlaceableConflictTraceSummary::default();
     };
     let summary = registry.unresolved_area_static_placeable_conflict_summary_for_records(
         claim
@@ -802,6 +808,13 @@ fn trace_unresolved_area_static_placeable_conflicts(
             .iter()
             .map(|mention| (mention.object_type, mention.object_id)),
     );
+    let current_record_progress = registry
+        .unresolved_area_static_placeable_conflict_progress_for_records(
+            claim
+                .mentions
+                .iter()
+                .map(area_static_placeable_conflict_record_observation),
+        );
 
     let mut seen = BTreeSet::new();
     for mention in claim.mentions {
@@ -817,9 +830,14 @@ fn trace_unresolved_area_static_placeable_conflicts(
         if !seen.insert(conflict_object.object_id) {
             continue;
         }
+        let record_progress = snapshot
+            .progress_for_observation(area_static_placeable_conflict_record_observation(&mention));
         let registry_object_id = format!("0x{:08X}", conflict_object.object_id);
         let conflict_classes = snapshot.formatted_classes();
         let conflict_fields = snapshot.formatted_state_fields();
+        let resolving_fields = record_progress.formatted_resolving_fields();
+        let repeating_fields = record_progress.formatted_repeating_fields();
+        let untouched_fields = record_progress.formatted_untouched_fields();
         tracing::debug!(
             family = family_name,
             opcode = %char::from(mention.opcode),
@@ -849,6 +867,9 @@ fn trace_unresolved_area_static_placeable_conflicts(
             unresolved_area_module_appearance_mismatch = ?snapshot.appearance,
             unresolved_area_module_orientation_mismatch = ?snapshot.orientation,
             unresolved_area_module_position_mismatch = ?snapshot.position,
+            current_record_resolves_area_module_mismatch_fields = %resolving_fields,
+            current_record_repeats_area_module_mismatch_fields = %repeating_fields,
+            current_record_untouched_area_module_mismatch_fields = %untouched_fields,
             "server live-object record translated while prior area/static placeable identity/appearance/state/orientation/position conflict remains unresolved"
         );
     }
@@ -865,18 +886,105 @@ fn trace_unresolved_area_static_placeable_conflicts(
             unresolved_placeable_state_trap_disarmable_conflicts = summary.state_trap_disarmable,
             unresolved_placeable_state_lockable_conflicts = summary.state_lockable,
             unresolved_placeable_state_locked_conflicts = summary.state_locked,
+            current_record_placeable_conflict_owners = current_record_progress.owners,
+            current_record_resolving_placeable_conflict_owners =
+                current_record_progress.resolving_owners,
+            current_record_repeating_placeable_conflict_owners =
+                current_record_progress.repeating_owners,
+            current_record_untouched_placeable_conflict_owners =
+                current_record_progress.untouched_owners,
+            current_record_resolving_placeable_appearance_conflicts =
+                current_record_progress.resolving_appearance,
+            current_record_repeating_placeable_appearance_conflicts =
+                current_record_progress.repeating_appearance,
+            current_record_untouched_placeable_appearance_conflicts =
+                current_record_progress.untouched_appearance,
+            current_record_resolving_placeable_state_conflicts =
+                current_record_progress.resolving_state,
+            current_record_repeating_placeable_state_conflicts =
+                current_record_progress.repeating_state,
+            current_record_untouched_placeable_state_conflicts =
+                current_record_progress.untouched_state,
+            current_record_resolving_placeable_orientation_conflicts =
+                current_record_progress.resolving_orientation,
+            current_record_repeating_placeable_orientation_conflicts =
+                current_record_progress.repeating_orientation,
+            current_record_untouched_placeable_orientation_conflicts =
+                current_record_progress.untouched_orientation,
+            current_record_resolving_placeable_position_conflicts =
+                current_record_progress.resolving_position,
+            current_record_repeating_placeable_position_conflicts =
+                current_record_progress.repeating_position,
+            current_record_untouched_placeable_position_conflicts =
+                current_record_progress.untouched_position,
             "server live-object payload unresolved area/static placeable conflict aggregate"
         );
     }
-    summary
+    AreaStaticPlaceableConflictTraceSummary {
+        unresolved: summary,
+        current_record_progress,
+    }
+}
+
+fn area_static_placeable_conflict_record_observation(
+    mention: &crate::translate::live_object_update::LiveObjectRecordMention,
+) -> semantic::AreaStaticPlaceableConflictRecordObservation {
+    semantic::AreaStaticPlaceableConflictRecordObservation {
+        object_type: mention.object_type,
+        object_id: mention.object_id,
+        placeable_appearance: mention.placeable_appearance.map(|appearance| {
+            semantic::LiveObjectPlaceableAppearance {
+                appearance: appearance.appearance,
+                resref: appearance.resref,
+            }
+        }),
+        placeable_state: mention
+            .placeable_state
+            .map(|state| semantic::LiveObjectPlaceableState {
+                useable: state.useable,
+                trap_disarmable: state.trap_disarmable,
+                lockable: state.lockable,
+                locked: state.locked,
+            }),
+        orientation: mention.orientation.map(|orientation| {
+            let source = match orientation.source {
+                crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                    semantic::LiveObjectOrientationSource::Scalar
+                }
+                crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                    semantic::LiveObjectOrientationSource::Vector
+                }
+            };
+            semantic::LiveObjectOrientation {
+                source,
+                scalar_tenths_degrees: orientation.scalar_tenths_degrees,
+                vector: orientation
+                    .vector
+                    .map(|vector| semantic::LiveObjectOrientationVector {
+                        x: vector.x,
+                        y: vector.y,
+                        z: vector.z,
+                    }),
+            }
+        }),
+        position: mention
+            .position
+            .map(|position| semantic::LiveObjectPosition {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            }),
+    }
 }
 
 fn trace_live_object_exact_rewrite_summary(
     family_name: &'static str,
     exact_rewrite: LiveObjectExactRewriteClaim,
-    unresolved_placeable_conflicts: semantic::AreaStaticPlaceableConflictRecordSummary,
+    unresolved_placeable_conflicts: AreaStaticPlaceableConflictTraceSummary,
 ) {
     let summary = exact_rewrite.summary;
+    let unresolved = unresolved_placeable_conflicts.unresolved;
+    let current_record_progress = unresolved_placeable_conflicts.current_record_progress;
     tracing::info!(
         source = exact_rewrite.source,
         family = family_name,
@@ -893,18 +1001,47 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
         exact_placeable_appearance_custom_skipped =
             summary.exact_placeable_appearance_custom_skipped,
-        unresolved_placeable_conflict_owners = unresolved_placeable_conflicts.owners,
-        unresolved_placeable_identity_conflicts = unresolved_placeable_conflicts.identity,
-        unresolved_placeable_appearance_conflicts = unresolved_placeable_conflicts.appearance,
-        unresolved_placeable_state_conflicts = unresolved_placeable_conflicts.state,
-        unresolved_placeable_orientation_conflicts = unresolved_placeable_conflicts.orientation,
-        unresolved_placeable_position_conflicts = unresolved_placeable_conflicts.position,
-        unresolved_placeable_state_useable_conflicts = unresolved_placeable_conflicts.state_useable,
-        unresolved_placeable_state_trap_disarmable_conflicts =
-            unresolved_placeable_conflicts.state_trap_disarmable,
-        unresolved_placeable_state_lockable_conflicts =
-            unresolved_placeable_conflicts.state_lockable,
-        unresolved_placeable_state_locked_conflicts = unresolved_placeable_conflicts.state_locked,
+        unresolved_placeable_conflict_owners = unresolved.owners,
+        unresolved_placeable_identity_conflicts = unresolved.identity,
+        unresolved_placeable_appearance_conflicts = unresolved.appearance,
+        unresolved_placeable_state_conflicts = unresolved.state,
+        unresolved_placeable_orientation_conflicts = unresolved.orientation,
+        unresolved_placeable_position_conflicts = unresolved.position,
+        unresolved_placeable_state_useable_conflicts = unresolved.state_useable,
+        unresolved_placeable_state_trap_disarmable_conflicts = unresolved.state_trap_disarmable,
+        unresolved_placeable_state_lockable_conflicts = unresolved.state_lockable,
+        unresolved_placeable_state_locked_conflicts = unresolved.state_locked,
+        current_record_placeable_conflict_owners = current_record_progress.owners,
+        current_record_resolving_placeable_conflict_owners =
+            current_record_progress.resolving_owners,
+        current_record_repeating_placeable_conflict_owners =
+            current_record_progress.repeating_owners,
+        current_record_untouched_placeable_conflict_owners =
+            current_record_progress.untouched_owners,
+        current_record_resolving_placeable_appearance_conflicts =
+            current_record_progress.resolving_appearance,
+        current_record_repeating_placeable_appearance_conflicts =
+            current_record_progress.repeating_appearance,
+        current_record_untouched_placeable_appearance_conflicts =
+            current_record_progress.untouched_appearance,
+        current_record_resolving_placeable_state_conflicts =
+            current_record_progress.resolving_state,
+        current_record_repeating_placeable_state_conflicts =
+            current_record_progress.repeating_state,
+        current_record_untouched_placeable_state_conflicts =
+            current_record_progress.untouched_state,
+        current_record_resolving_placeable_orientation_conflicts =
+            current_record_progress.resolving_orientation,
+        current_record_repeating_placeable_orientation_conflicts =
+            current_record_progress.repeating_orientation,
+        current_record_untouched_placeable_orientation_conflicts =
+            current_record_progress.untouched_orientation,
+        current_record_resolving_placeable_position_conflicts =
+            current_record_progress.resolving_position,
+        current_record_repeating_placeable_position_conflicts =
+            current_record_progress.repeating_position,
+        current_record_untouched_placeable_position_conflicts =
+            current_record_progress.untouched_position,
         "server live-object payload reached exact EE shape through bounded typed orchestrator"
     );
 }
