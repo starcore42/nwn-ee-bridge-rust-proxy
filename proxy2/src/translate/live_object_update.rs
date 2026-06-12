@@ -5071,6 +5071,15 @@ fn verified_record_mention(
     } else {
         update_requires_materialized_object(object_type)
     };
+    let placeable_add_claim = verified_placeable_add_mention_claim(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        opcode,
+        object_type,
+    );
     let door_placeable_update_claim = verified_door_placeable_update_mention_claim(
         live_bytes,
         offset,
@@ -5102,25 +5111,37 @@ fn verified_record_mention(
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
         placeable_appearance: verified_record_placeable_appearance(
             live_bytes,
-            offset,
             record_end,
-            fragment_bits,
-            bit_cursor,
             opcode,
             object_type,
+            placeable_add_claim,
             door_placeable_update_claim,
         ),
         placeable_state: verified_record_placeable_state(
             live_bytes,
-            offset,
             record_end,
             fragment_bits,
-            bit_cursor,
             opcode,
             object_type,
+            placeable_add_claim,
             door_placeable_update_claim,
         ),
     })
+}
+
+fn verified_placeable_add_mention_claim(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    opcode: u8,
+    object_type: u8,
+) -> Option<VerifiedPlaceableAddExactClaim> {
+    if opcode != b'A' || object_type != PLACEABLE_OBJECT_TYPE {
+        return None;
+    }
+    verified_placeable_add_exact_claim(live_bytes, offset, record_end, fragment_bits, bit_cursor)
 }
 
 fn verified_door_placeable_update_mention_claim(
@@ -5692,12 +5713,10 @@ fn vector_orientation_scalar_tenths_degrees(
 
 fn verified_record_placeable_appearance(
     live_bytes: &[u8],
-    offset: usize,
     record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
     opcode: u8,
     object_type: u8,
+    placeable_add_claim: Option<VerifiedPlaceableAddExactClaim>,
     door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectPlaceableAppearance> {
     if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
@@ -5705,37 +5724,10 @@ fn verified_record_placeable_appearance(
     }
 
     match opcode {
-        b'A' => verified_placeable_add_appearance(
-            live_bytes,
-            offset,
-            record_end,
-            fragment_bits,
-            bit_cursor,
-        ),
+        b'A' => Some(placeable_add_claim?.live_object_appearance()),
         b'U' => verified_placeable_update_appearance(live_bytes, door_placeable_update_claim?),
         _ => None,
     }
-}
-
-fn verified_placeable_add_appearance(
-    live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
-) -> Option<LiveObjectPlaceableAppearance> {
-    let layout = add::verified_ee_placeable_add_fragment_layout(
-        live_bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    )?;
-    let appearance = read_u16_le(live_bytes, layout.byte_layout.tail_offset + 1)?;
-    Some(LiveObjectPlaceableAppearance {
-        appearance,
-        resref: None,
-    })
 }
 
 fn verified_placeable_update_appearance(
@@ -5758,12 +5750,11 @@ fn verified_placeable_update_appearance(
 
 fn verified_record_placeable_state(
     live_bytes: &[u8],
-    offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
-    bit_cursor: usize,
     opcode: u8,
     object_type: u8,
+    placeable_add_claim: Option<VerifiedPlaceableAddExactClaim>,
     door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectPlaceableState> {
     if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
@@ -5771,29 +5762,10 @@ fn verified_record_placeable_state(
     }
 
     match opcode {
-        b'A' => {
-            verified_placeable_add_state(live_bytes, offset, record_end, fragment_bits, bit_cursor)
-        }
+        b'A' => Some(placeable_add_claim?.live_object_state()),
         b'U' => verified_placeable_update_state(fragment_bits, door_placeable_update_claim?),
         _ => None,
     }
-}
-
-fn verified_placeable_add_state(
-    live_bytes: &[u8],
-    offset: usize,
-    record_end: usize,
-    fragment_bits: &[bool],
-    bit_cursor: usize,
-) -> Option<LiveObjectPlaceableState> {
-    let claim = verified_placeable_add_state_claim(
-        live_bytes,
-        offset,
-        record_end,
-        fragment_bits,
-        bit_cursor,
-    )?;
-    Some(claim.live_object_state())
 }
 
 fn verified_placeable_update_state(
@@ -10055,22 +10027,29 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         }
         match mention.opcode {
             b'A' => {
+                let Some(add_claim) = verified_placeable_add_exact_claim(
+                    &live_bytes,
+                    mention.record_offset,
+                    mention.record_end,
+                    &fragment_bits,
+                    mention.fragment_bit_start,
+                ) else {
+                    return None;
+                };
                 let appearance_rewritten =
                     reconcile_verified_placeable_add_appearance_with_area_context(
                         area_context,
                         &mut live_bytes,
                         mention.record_offset,
                         mention.record_end,
-                        &fragment_bits,
-                        mention.fragment_bit_start,
+                        add_claim,
                     )?;
                 let state_rewritten = reconcile_verified_placeable_add_state_with_area_context(
                     area_context,
-                    &live_bytes,
                     mention.record_offset,
                     mention.record_end,
                     &mut fragment_bits,
-                    mention.fragment_bit_start,
+                    add_claim,
                 )?;
                 if appearance_rewritten || state_rewritten {
                     add_records_rewritten = add_records_rewritten.saturating_add(1);
@@ -10152,8 +10131,7 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
     live_bytes: &mut [u8],
     record_offset: usize,
     record_end: usize,
-    bits: &[bool],
-    bit_cursor: usize,
+    claim: VerifiedPlaceableAddExactClaim,
 ) -> Option<bool> {
     if record_offset + 6 > record_end
         || record_end > live_bytes.len()
@@ -10163,23 +10141,15 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
         return Some(false);
     }
 
-    let layout = add::verified_ee_placeable_add_fragment_layout(
-        live_bytes,
-        record_offset,
-        record_end,
-        bits,
-        bit_cursor,
-    )?;
-    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
     });
     let Some(area_row) = overlap.unique_module_backed_static_row() else {
         return Some(false);
     };
     let area_appearance = area_row.appearance;
-    let source_appearance_offset = layout.byte_layout.tail_offset + 1;
-    let source_appearance = read_u16_le(live_bytes, source_appearance_offset)?;
+    let source_appearance_offset = claim.layout.byte_layout.tail_offset + 1;
+    let source_appearance = claim.appearance;
     if source_appearance == area_appearance {
         return Some(false);
     }
@@ -10189,15 +10159,15 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
 
     write_u16_le(live_bytes, source_appearance_offset, area_appearance)?;
     tracing::info!(
-        object_id = format_args!("0x{object_id:08X}"),
+        object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
         record_end,
         source_appearance = format_args!("0x{source_appearance:04X}"),
         emitted_appearance = format_args!("0x{area_appearance:04X}"),
-        state_bit_cursor = layout.post_name_bit,
-        next_bit_cursor = layout.next_bit_cursor,
-        optional_object_id = layout.byte_layout.optional_object_id,
-        visual_map_offset = layout.byte_layout.map_offset,
+        state_bit_cursor = claim.layout.post_name_bit,
+        next_bit_cursor = claim.layout.next_bit_cursor,
+        optional_object_id = claim.layout.byte_layout.optional_object_id,
+        visual_map_offset = claim.layout.byte_layout.map_offset,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %overlap.formatted_rows(),
         "server->client exact live-object placeable add appearance reconciled with unique module-backed area/static row"
@@ -10410,12 +10380,21 @@ impl VerifiedPlaceableAddStateBits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VerifiedPlaceableAddStateClaim {
+struct VerifiedPlaceableAddExactClaim {
+    object_id: u32,
     layout: add::VerifiedEePlaceableAddFragmentLayout,
+    appearance: u16,
     state: VerifiedPlaceableAddStateBits,
 }
 
-impl VerifiedPlaceableAddStateClaim {
+impl VerifiedPlaceableAddExactClaim {
+    fn live_object_appearance(self) -> LiveObjectPlaceableAppearance {
+        LiveObjectPlaceableAppearance {
+            appearance: self.appearance,
+            resref: None,
+        }
+    }
+
     fn live_object_state(self) -> LiveObjectPlaceableState {
         LiveObjectPlaceableState::from_add_record(
             self.state.useable,
@@ -10428,29 +10407,13 @@ impl VerifiedPlaceableAddStateClaim {
 
 fn reconcile_verified_placeable_add_state_with_area_context(
     area_context: &AreaPlaceableContext,
-    live_bytes: &[u8],
     record_offset: usize,
     record_end: usize,
     bits: &mut [bool],
-    bit_cursor: usize,
+    claim: VerifiedPlaceableAddExactClaim,
 ) -> Option<bool> {
-    if record_offset + 6 > record_end
-        || record_end > live_bytes.len()
-        || live_bytes.get(record_offset).copied()? != b'A'
-        || live_bytes.get(record_offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
-    {
-        return Some(false);
-    }
-    let claim = verified_placeable_add_state_claim(
-        live_bytes,
-        record_offset,
-        record_end,
-        bits,
-        bit_cursor,
-    )?;
-    let object_id = read_u32_le(live_bytes, record_offset + 2)?;
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
     });
     let Some(module_state) = overlap.unique_module_backed_static_state() else {
         return Some(false);
@@ -10473,7 +10436,7 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     changed |= set_fragment_bit(bits, post_name_bit + 6, rewritten_state.locked)?;
 
     tracing::info!(
-        object_id = format_args!("0x{object_id:08X}"),
+        object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
         record_end,
         state_bit_cursor = post_name_bit,
@@ -10490,13 +10453,20 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     Some(changed)
 }
 
-fn verified_placeable_add_state_claim(
+fn verified_placeable_add_exact_claim(
     live_bytes: &[u8],
     offset: usize,
     record_end: usize,
     fragment_bits: &[bool],
     bit_cursor: usize,
-) -> Option<VerifiedPlaceableAddStateClaim> {
+) -> Option<VerifiedPlaceableAddExactClaim> {
+    if offset + 6 > record_end
+        || record_end > live_bytes.len()
+        || live_bytes.get(offset).copied()? != b'A'
+        || live_bytes.get(offset + 1).copied()? != PLACEABLE_OBJECT_TYPE
+    {
+        return None;
+    }
     let layout = add::verified_ee_placeable_add_fragment_layout(
         live_bytes,
         offset,
@@ -10504,6 +10474,8 @@ fn verified_placeable_add_state_claim(
         fragment_bits,
         bit_cursor,
     )?;
+    let object_id = read_u32_le(live_bytes, offset + 2)?;
+    let appearance = read_u16_le(live_bytes, layout.byte_layout.tail_offset + 1)?;
     let post_name_bit = layout.post_name_bit;
     let state = VerifiedPlaceableAddStateBits {
         useable: fragment_bits.get(post_name_bit + 3).copied()?,
@@ -10511,7 +10483,12 @@ fn verified_placeable_add_state_claim(
         lockable: fragment_bits.get(post_name_bit + 5).copied()?,
         locked: fragment_bits.get(post_name_bit + 6).copied()?,
     };
-    Some(VerifiedPlaceableAddStateClaim { layout, state })
+    Some(VerifiedPlaceableAddExactClaim {
+        object_id,
+        layout,
+        appearance,
+        state,
+    })
 }
 
 fn set_fragment_bit(bits: &mut [bool], bit_index: usize, value: bool) -> Option<bool> {

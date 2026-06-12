@@ -867,6 +867,16 @@ Current status:
   `git diff --check`, and `cargo check -q -p hgbridge-proxy2`; next local
   replay should compare vector components, source labels, and module static
   direction before adding any vector rewrite rule.
+- 2026-06-12 follow-up exact `A/09` add-claim sharing: packet bytes and cursor
+  ownership are unchanged. Exact placeable add mention extraction and
+  module-backed static add reconciliation now share one verified EE add claim
+  carrying object id, layout, parser-owned appearance WORD, and add-state bits,
+  so optional-object/visual-map cursor proof cannot diverge between appearance
+  and state paths. Verified with focused exact add/update mention and add
+  appearance/state reconciliation regressions plus `cargo fmt --all`,
+  `git diff --check`, and `cargo check -q -p hgbridge-proxy2`; next local
+  replay should still focus on remaining drift outside exact scalar/vector
+  orientation diagnostics, same-width appearance, and proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
