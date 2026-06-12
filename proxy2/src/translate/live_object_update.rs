@@ -2828,7 +2828,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn exact_placeable_update_keeps_resref_appearance_diagnostic_only() {
+    fn exact_placeable_update_rewrites_resref_appearance_to_unique_area_static_word() {
         let object_id = 0x8000_34D8u32;
         let resref = *b"plc_visual_test\0";
         let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
@@ -2856,27 +2856,132 @@ mod diagnostic_tests {
             ..crate::translate::area::AreaPlaceableContext::default()
         };
 
-        assert!(
-            rewrite_update_records_payload_with_area_context_if_possible(
-                &mut payload,
-                Some(&area_context),
-            )
-            .is_none(),
-            "custom/resref appearance rows are not same-width static appearance rewrites"
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should collapse exact U/09 resref appearance");
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(
+            summary.bytes_removed,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
         );
-        assert_eq!(payload, original);
+        assert_eq!(
+            summary.old_live_bytes_length - summary.new_live_bytes_length,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+        assert_eq!(
+            summary.old_declared - summary.new_declared,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            }),
+            "the parser-owned CResRef branch should be removed after the WORD becomes non-custom"
+        );
+        assert_eq!(
+            payload.len() + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+            original.len()
+        );
     }
 
     #[test]
-    fn exact_placeable_update_summary_counts_custom_appearance_skip_when_state_rewrites() {
-        let object_id = 0x8000_34D8u32;
+    fn exact_placeable_update_resref_rewrite_keeps_following_update_offsets() {
+        let first_object_id = 0x8000_34D8u32;
+        let second_object_id = 0x8000_34D9u32;
         let resref = *b"plc_visual_test\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&first_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&resref);
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&second_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("two exact U/09 rows");
+        claim_payload_if_verified(&payload).expect("pre-rewrite exact two-row U/09 payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: first_object_id,
+                    appearance: 0x0022,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: second_object_id,
+                    appearance: 0x0033,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("both exact U/09 rows should reconcile after the first shrinks");
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.update_records_rewritten, 2);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 2);
+        assert_eq!(
+            summary.bytes_removed,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact two-row U/09 payload");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0033,
+                resref: None,
+            }),
+            "the second record must be parsed at its shifted post-removal offset"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
+        let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
         let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
         live.extend_from_slice(&object_id.to_le_bytes());
         live.extend_from_slice(&mask.to_le_bytes());
-        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
-        live.extend_from_slice(&resref);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         fragment_bits.extend([
@@ -2892,7 +2997,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
-                appearance: 0x0022,
+                appearance: 0xFFFE,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -2915,15 +3020,19 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_unique_targets, 1);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+        assert_eq!(summary.bytes_removed, 0);
 
-        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact custom U/09");
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact module-custom U/09");
         assert_eq!(
             claim.mentions[0].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
-                appearance: 0xFFFE,
-                resref: Some(resref),
+                appearance: 0x0011,
+                resref: None,
             }),
-            "custom/resref appearance must remain packet-authored"
+            "module-custom appearance targets remain packet-authored until a CResRef source is proven"
         );
         assert_eq!(
             claim.mentions[0].placeable_state,
@@ -10453,10 +10562,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         records_examined: claim.records_examined,
         ..LiveObjectUpdateRewriteSummary::default()
     };
+    let mut live_byte_offset_removed = 0usize;
     for mention in &claim.mentions {
         if mention.object_type != PLACEABLE_OBJECT_TYPE {
             continue;
         }
+        let record_offset = mention
+            .record_offset
+            .checked_sub(live_byte_offset_removed)?;
+        let record_end = mention.record_end.checked_sub(live_byte_offset_removed)?;
         match mention.opcode {
             b'A' => {
                 summary.add_records_examined = summary.add_records_examined.saturating_add(1);
@@ -10467,8 +10581,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
                 let Some(add_claim) = verified_placeable_add_exact_claim(
                     &live_bytes,
-                    mention.record_offset,
-                    mention.record_end,
+                    record_offset,
+                    record_end,
                     &fragment_bits,
                     mention.fragment_bit_start,
                 ) else {
@@ -10486,14 +10600,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     reconcile_verified_placeable_add_appearance_with_area_context(
                         area_context,
                         &mut live_bytes,
-                        mention.record_offset,
-                        mention.record_end,
+                        record_offset,
+                        record_end,
                         add_claim,
                     )?;
                 let state_rewritten = reconcile_verified_placeable_add_state_with_area_context(
                     area_context,
-                    mention.record_offset,
-                    mention.record_end,
+                    record_offset,
+                    record_end,
                     &mut fragment_bits,
                     add_claim,
                 )?;
@@ -10527,8 +10641,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 record_exact_placeable_reconciliation_target(&mut summary, b'U', target);
                 let Some(update_claim) = verified_placeable_update_exact_claim(
                     &live_bytes,
-                    mention.record_offset,
-                    mention.record_end,
+                    record_offset,
+                    record_end,
                     &fragment_bits,
                     mention.fragment_bit_start,
                 ) else {
@@ -10537,9 +10651,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
                 {
-                    if let Some(appearance_offset) = update_claim.parser.appearance_offset {
-                        let source_appearance = read_u16_le(&live_bytes, appearance_offset)?;
-                        if source_appearance >= 0xFFFE || row.appearance >= 0xFFFE {
+                    if update_claim.parser.appearance_offset.is_some() {
+                        if row.appearance >= 0xFFFE {
                             summary.exact_placeable_appearance_custom_skipped = summary
                                 .exact_placeable_appearance_custom_skipped
                                 .saturating_add(1);
@@ -10550,25 +10663,17 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     reconcile_verified_placeable_update_position_with_area_context(
                         area_context,
                         &mut live_bytes,
-                        mention.record_offset,
-                        mention.record_end,
+                        record_offset,
+                        record_end,
                         &mut fragment_bits,
-                        update_claim,
-                    )?;
-                let appearance_rewritten =
-                    reconcile_verified_placeable_update_appearance_with_area_context(
-                        area_context,
-                        &mut live_bytes,
-                        mention.record_offset,
-                        mention.record_end,
                         update_claim,
                     )?;
                 let orientation_rewritten =
                     reconcile_verified_placeable_update_orientation_with_area_context(
                         area_context,
                         &mut live_bytes,
-                        mention.record_offset,
-                        mention.record_end,
+                        record_offset,
+                        record_end,
                         &mut fragment_bits,
                         update_claim,
                     )?;
@@ -10579,15 +10684,35 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         update_claim.mask,
                         update_claim.parser,
                         &mut fragment_bits,
-                        mention.record_offset,
-                        mention.record_end,
+                        record_offset,
+                        record_end,
                     )?;
+                // Collapse a custom appearance branch only after the other
+                // helpers have consumed the pre-drain exact parser claim.
+                // EE/Diamond read appearance before scale/state bytes, so
+                // removing the CResRef shifts any following bytes into the
+                // normal-appearance cursor position.
+                let appearance_rewrite =
+                    reconcile_verified_placeable_update_appearance_with_area_context(
+                        area_context,
+                        &mut live_bytes,
+                        record_offset,
+                        record_end,
+                        update_claim,
+                    )?;
+                if appearance_rewrite.bytes_removed != 0 {
+                    live_byte_offset_removed =
+                        live_byte_offset_removed.checked_add(appearance_rewrite.bytes_removed)?;
+                    summary.bytes_removed = summary.bytes_removed.saturating_add(
+                        u32::try_from(appearance_rewrite.bytes_removed).unwrap_or(u32::MAX),
+                    );
+                }
                 if position_rewritten {
                     summary.exact_placeable_update_position_rewritten = summary
                         .exact_placeable_update_position_rewritten
                         .saturating_add(1);
                 }
-                if appearance_rewritten {
+                if appearance_rewrite.changed {
                     summary.exact_placeable_update_appearance_rewritten = summary
                         .exact_placeable_update_appearance_rewritten
                         .saturating_add(1);
@@ -10603,7 +10728,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .saturating_add(1);
                 }
                 if position_rewritten
-                    || appearance_rewritten
+                    || appearance_rewrite.changed
                     || orientation_rewritten
                     || state_rewritten
                 {
@@ -10627,9 +10752,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     }
 
     let rewritten = live_object_payload_from_parts(&live_bytes, &fragment_bits)?;
-    claim_payload_if_verified(&rewritten)?;
+    let rewritten_claim = claim_payload_if_verified(&rewritten)?;
     let new_payload_length = rewritten.len();
-    let new_fragment_bytes = new_payload_length.saturating_sub(claim.declared);
+    let new_fragment_bytes = new_payload_length.saturating_sub(rewritten_claim.declared);
+    summary.new_declared = u32::try_from(rewritten_claim.declared).ok()?;
+    summary.new_live_bytes_length = rewritten_claim.live_bytes_length;
     summary.new_payload_length = new_payload_length;
     summary.new_fragment_bytes = new_fragment_bytes;
 
@@ -10856,13 +10983,13 @@ fn reconcile_verified_placeable_update_position_with_area_context(
 
 fn reconcile_verified_placeable_update_appearance_with_area_context(
     area_context: &AreaPlaceableContext,
-    live_bytes: &mut [u8],
+    live_bytes: &mut Vec<u8>,
     record_offset: usize,
     record_end: usize,
     claim: VerifiedPlaceableUpdateExactClaim,
-) -> Option<bool> {
+) -> Option<PlaceableAppearanceRewrite> {
     let Some(appearance_offset) = claim.parser.appearance_offset else {
-        return Some(false);
+        return Some(PlaceableAppearanceRewrite::default());
     };
 
     let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
@@ -10872,33 +10999,59 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         record_end,
         "appearance-update",
     ) else {
-        return Some(false);
+        return Some(PlaceableAppearanceRewrite::default());
     };
     let area_appearance = area_row.appearance;
     let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
     if source_appearance == area_appearance {
-        return Some(false);
+        return Some(PlaceableAppearanceRewrite::default());
     }
-    if source_appearance >= 0xFFFE || area_appearance >= 0xFFFE {
-        return Some(false);
+    if area_appearance >= 0xFFFE {
+        return Some(PlaceableAppearanceRewrite::default());
     }
 
     write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+    let mut bytes_removed = 0usize;
+    let source_resref = if source_appearance >= 0xFFFE {
+        let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        if resref_end > record_end {
+            return None;
+        }
+        let source_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES] =
+            live_bytes.get(resref_start..resref_end)?.try_into().ok()?;
+        live_bytes.drain(resref_start..resref_end);
+        bytes_removed = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        Some(source_resref)
+    } else {
+        None
+    };
     tracing::info!(
         object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
         record_end,
         mask = format_args!("0x{:08X}", claim.mask),
         source_appearance = format_args!("0x{source_appearance:04X}"),
+        source_resref = ?source_resref,
         emitted_appearance = format_args!("0x{area_appearance:04X}"),
         appearance_offset,
+        bytes_removed,
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %area_rows,
         "server->client exact live-object placeable update appearance reconciled with unique module-backed area/static row"
     );
-    Some(true)
+    Some(PlaceableAppearanceRewrite {
+        changed: true,
+        bytes_removed,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PlaceableAppearanceRewrite {
+    changed: bool,
+    bytes_removed: usize,
 }
 
 fn reconcile_verified_placeable_update_orientation_with_area_context(

@@ -1008,6 +1008,17 @@ Current status:
   `cargo check -q -p hgbridge-proxy2`; next local replay should compare
   field-rewrite counters against unresolved conflict classes before adding
   another writer rule.
+- 2026-06-12 follow-up exact `U/09` CResRef appearance collapse: exact
+  placeable update appearance reconciliation now handles a source
+  `0xFFFE+ CResRef` branch when the unique module-backed static row proves a
+  normal appearance WORD. The pass rewrites the WORD, removes the parser-owned
+  16-byte CResRef payload, shifts later exact record offsets, updates declared
+  lengths from the final exact claim, and still refuses module-backed custom
+  appearance targets. Verified with incremental disabled using focused
+  `exact_placeable_`, `area_context_`, `placeable_update`,
+  `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all --check`, and
+  `git diff --check`; next local replay should compare remaining appearance
+  conflicts now that source-custom update rows can shrink to static WORDs.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
