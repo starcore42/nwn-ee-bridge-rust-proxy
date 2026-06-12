@@ -943,6 +943,19 @@ Current status:
   --all --check`, and `git diff --check`; next local replay should compare the
   new examined/rewrite counters with unresolved conflict classes before adding
   another writer rule.
+- 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
+  packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
+  pass now records unique-module-backed, identity-blocked, no-overlap, and
+  unique-unchanged target counts separately for add/update rows, counts
+  custom/resref appearance fields that cannot be same-width static rewrites,
+  emits a debug summary even when no exact-placeable rewrite is produced, and
+  threads the same counters through the M-frame exact-rewrite dispatch log.
+  Verified with focused `exact_placeable_`, `area_context_tracks_`,
+  `placeable_context_`, `placeable_update`, `cargo check -q`, `cargo fmt
+  --all --check`, and `git diff --check`; next local replay should compare
+  these target/skipped counters with unresolved conflict snapshots to decide
+  whether remaining placeable drift is an unimplemented writer rule or needs
+  more decompile proof for custom/resref appearance handling.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

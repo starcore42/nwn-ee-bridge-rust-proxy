@@ -1712,6 +1712,19 @@ fn translate_live_object_records_if_verified(
                 update_passes_changed = summary.update_passes_changed,
                 add_passes_changed = summary.add_passes_changed,
                 add_name_bit_passes_changed = summary.add_name_bit_passes_changed,
+                exact_placeable_add_unique_targets = summary.exact_placeable_add_unique_targets,
+                exact_placeable_update_unique_targets =
+                    summary.exact_placeable_update_unique_targets,
+                exact_placeable_add_identity_blocked = summary.exact_placeable_add_identity_blocked,
+                exact_placeable_update_identity_blocked =
+                    summary.exact_placeable_update_identity_blocked,
+                exact_placeable_add_no_overlap = summary.exact_placeable_add_no_overlap,
+                exact_placeable_update_no_overlap = summary.exact_placeable_update_no_overlap,
+                exact_placeable_add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
+                exact_placeable_update_unique_unchanged =
+                    summary.exact_placeable_update_unique_unchanged,
+                exact_placeable_appearance_custom_skipped =
+                    summary.exact_placeable_appearance_custom_skipped,
                 "server live-object payload reached exact EE shape through bounded typed orchestrator"
             );
             if let Some(summary) = external_object_id_summary {

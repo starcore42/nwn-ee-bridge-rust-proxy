@@ -22,6 +22,15 @@ pub struct ExactLiveObjectRewriteSummary {
     pub update_passes_changed: u8,
     pub add_passes_changed: u8,
     pub add_name_bit_passes_changed: u8,
+    pub exact_placeable_add_unique_targets: u32,
+    pub exact_placeable_update_unique_targets: u32,
+    pub exact_placeable_add_identity_blocked: u32,
+    pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_add_no_overlap: u32,
+    pub exact_placeable_update_no_overlap: u32,
+    pub exact_placeable_add_unique_unchanged: u32,
+    pub exact_placeable_update_unique_unchanged: u32,
+    pub exact_placeable_appearance_custom_skipped: u32,
 }
 
 impl ExactLiveObjectRewriteSummary {
@@ -29,6 +38,41 @@ impl ExactLiveObjectRewriteSummary {
         if changed {
             self.update_passes_changed = self.update_passes_changed.saturating_add(1);
         }
+    }
+
+    fn record_update_summary(&mut self, rewrite: Option<RewriteSummary>) -> bool {
+        let Some(rewrite) = rewrite else {
+            return false;
+        };
+        self.record_update(true);
+        self.exact_placeable_add_unique_targets = self
+            .exact_placeable_add_unique_targets
+            .saturating_add(rewrite.exact_placeable_add_unique_targets);
+        self.exact_placeable_update_unique_targets = self
+            .exact_placeable_update_unique_targets
+            .saturating_add(rewrite.exact_placeable_update_unique_targets);
+        self.exact_placeable_add_identity_blocked = self
+            .exact_placeable_add_identity_blocked
+            .saturating_add(rewrite.exact_placeable_add_identity_blocked);
+        self.exact_placeable_update_identity_blocked = self
+            .exact_placeable_update_identity_blocked
+            .saturating_add(rewrite.exact_placeable_update_identity_blocked);
+        self.exact_placeable_add_no_overlap = self
+            .exact_placeable_add_no_overlap
+            .saturating_add(rewrite.exact_placeable_add_no_overlap);
+        self.exact_placeable_update_no_overlap = self
+            .exact_placeable_update_no_overlap
+            .saturating_add(rewrite.exact_placeable_update_no_overlap);
+        self.exact_placeable_add_unique_unchanged = self
+            .exact_placeable_add_unique_unchanged
+            .saturating_add(rewrite.exact_placeable_add_unique_unchanged);
+        self.exact_placeable_update_unique_unchanged = self
+            .exact_placeable_update_unique_unchanged
+            .saturating_add(rewrite.exact_placeable_update_unique_unchanged);
+        self.exact_placeable_appearance_custom_skipped = self
+            .exact_placeable_appearance_custom_skipped
+            .saturating_add(rewrite.exact_placeable_appearance_custom_skipped);
+        true
     }
 
     fn record_add(&mut self, changed: bool) {
@@ -149,9 +193,9 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         .min(128)
         .max(16);
 
-    summary.record_update(
-        promote_work_remaining_trailing_fragment_span_if_needed(&mut candidate).is_some(),
-    );
+    summary.record_update_summary(promote_work_remaining_trailing_fragment_span_if_needed(
+        &mut candidate,
+    ));
     if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
@@ -164,10 +208,10 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
         )
         .is_some(),
     );
-    summary.record_update(
-        rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables)
-            .is_some(),
-    );
+    summary.record_update_summary(rewrite_payload_if_needed_with_area_context(
+        &mut candidate,
+        latest_area_placeables,
+    ));
     if exact_after_changed(&candidate, summary) {
         *payload = candidate;
         return Some(summary);
@@ -186,10 +230,9 @@ pub fn rewrite_payload_to_exact_ee_if_possible(
             return Some(summary);
         }
 
-        let update_changed =
-            rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables)
-                .is_some();
-        summary.record_update(update_changed);
+        let update_changed = summary.record_update_summary(
+            rewrite_payload_if_needed_with_area_context(&mut candidate, latest_area_placeables),
+        );
         if exact_after_changed(&candidate, summary) {
             *payload = candidate;
             return Some(summary);

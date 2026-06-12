@@ -2236,6 +2236,11 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(summary.exact_placeable_add_no_overlap, 0);
+        assert_eq!(summary.exact_placeable_add_unique_unchanged, 0);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -2300,6 +2305,11 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 0);
+        assert_eq!(summary.exact_placeable_update_no_overlap, 0);
+        assert_eq!(summary.exact_placeable_update_unique_unchanged, 0);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -2713,6 +2723,74 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_summary_counts_custom_appearance_skip_when_state_rewrites() {
+        let object_id = 0x8000_34D8u32;
+        let resref = *b"plc_visual_test\0";
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked in the live update.
+            false, // lockable in the live update.
+            false, // visual payload.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact custom U/09");
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0022,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("state bits should rewrite even though custom appearance stays packet-authored");
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact custom U/09");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(resref),
+            }),
+            "custom/resref appearance must remain packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_mentions_use_verified_vector_state_cursor() {
         let object_id = 0x8000_34D8u32;
         let mask =
@@ -3090,6 +3168,85 @@ mod diagnostic_tests {
         );
         assert_eq!(payload, original);
     }
+
+    #[test]
+    fn exact_placeable_update_summary_splits_identity_blocked_from_unique_rewrite() {
+        let blocked_object_id = 0x8000_3401u32;
+        let unique_object_id = 0x8000_3402u32;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&blocked_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&unique_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([false, false, true, false, false, false]);
+        fragment_bits.extend([false, false, true, false, false, false]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 pair");
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: blocked_object_id,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        lockable: true,
+                        locked: false,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: unique_object_id,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        lockable: true,
+                        locked: false,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique row should rewrite while identity-blocked row remains diagnostic-only");
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 1);
+        assert_eq!(summary.exact_placeable_update_no_overlap, 0);
+        assert_eq!(summary.exact_placeable_update_unique_unchanged, 0);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 pair");
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(false),
+                locked: Some(true),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "identity-blocked row must keep packet-authored state bits"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "unique module-backed row should reconcile lock bits"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3107,6 +3264,15 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub update_records_examined: u32,
     pub add_records_rewritten: u32,
     pub update_records_rewritten: u32,
+    pub exact_placeable_add_unique_targets: u32,
+    pub exact_placeable_update_unique_targets: u32,
+    pub exact_placeable_add_identity_blocked: u32,
+    pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_add_no_overlap: u32,
+    pub exact_placeable_update_no_overlap: u32,
+    pub exact_placeable_add_unique_unchanged: u32,
+    pub exact_placeable_update_unique_unchanged: u32,
+    pub exact_placeable_appearance_custom_skipped: u32,
     pub masks_translated: u32,
     pub bytes_inserted: u32,
     pub bytes_removed: u32,
@@ -10099,17 +10265,30 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     let mut fragment_bits =
         bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)?;
 
-    let mut add_records_examined = 0u32;
-    let mut update_records_examined = 0u32;
-    let mut add_records_rewritten = 0u32;
-    let mut update_records_rewritten = 0u32;
+    let mut summary = LiveObjectUpdateRewriteSummary {
+        old_declared,
+        new_declared: old_declared,
+        old_payload_length,
+        new_payload_length: old_payload_length,
+        old_live_bytes_length: live_bytes.len(),
+        new_live_bytes_length: live_bytes.len(),
+        old_fragment_bytes,
+        new_fragment_bytes: old_fragment_bytes,
+        records_examined: claim.records_examined,
+        ..LiveObjectUpdateRewriteSummary::default()
+    };
     for mention in &claim.mentions {
         if mention.object_type != PLACEABLE_OBJECT_TYPE {
             continue;
         }
         match mention.opcode {
             b'A' => {
-                add_records_examined = add_records_examined.saturating_add(1);
+                summary.add_records_examined = summary.add_records_examined.saturating_add(1);
+                let (target, _) = placeable_static_reconciliation_target_for_object(
+                    area_context,
+                    mention.object_id,
+                );
+                record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
                 let Some(add_claim) = verified_placeable_add_exact_claim(
                     &live_bytes,
                     mention.record_offset,
@@ -10119,6 +10298,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
+                    target
+                    && (add_claim.appearance >= 0xFFFE || row.appearance >= 0xFFFE)
+                {
+                    summary.exact_placeable_appearance_custom_skipped = summary
+                        .exact_placeable_appearance_custom_skipped
+                        .saturating_add(1);
+                }
                 let appearance_rewritten =
                     reconcile_verified_placeable_add_appearance_with_area_context(
                         area_context,
@@ -10135,11 +10322,23 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     add_claim,
                 )?;
                 if appearance_rewritten || state_rewritten {
-                    add_records_rewritten = add_records_rewritten.saturating_add(1);
+                    summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
+                } else if matches!(
+                    target,
+                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
+                ) {
+                    summary.exact_placeable_add_unique_unchanged = summary
+                        .exact_placeable_add_unique_unchanged
+                        .saturating_add(1);
                 }
             }
             b'U' => {
-                update_records_examined = update_records_examined.saturating_add(1);
+                summary.update_records_examined = summary.update_records_examined.saturating_add(1);
+                let (target, _) = placeable_static_reconciliation_target_for_object(
+                    area_context,
+                    mention.object_id,
+                );
+                record_exact_placeable_reconciliation_target(&mut summary, b'U', target);
                 let Some(update_claim) = verified_placeable_update_exact_claim(
                     &live_bytes,
                     mention.record_offset,
@@ -10149,6 +10348,18 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
+                    target
+                {
+                    if let Some(appearance_offset) = update_claim.parser.appearance_offset {
+                        let source_appearance = read_u16_le(&live_bytes, appearance_offset)?;
+                        if source_appearance >= 0xFFFE || row.appearance >= 0xFFFE {
+                            summary.exact_placeable_appearance_custom_skipped = summary
+                                .exact_placeable_appearance_custom_skipped
+                                .saturating_add(1);
+                        }
+                    }
+                }
                 let appearance_rewritten =
                     reconcile_verified_placeable_update_appearance_with_area_context(
                         area_context,
@@ -10177,13 +10388,22 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         mention.record_end,
                     )?;
                 if appearance_rewritten || orientation_rewritten || state_rewritten {
-                    update_records_rewritten = update_records_rewritten.saturating_add(1);
+                    summary.update_records_rewritten =
+                        summary.update_records_rewritten.saturating_add(1);
+                } else if matches!(
+                    target,
+                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
+                ) {
+                    summary.exact_placeable_update_unique_unchanged = summary
+                        .exact_placeable_update_unique_unchanged
+                        .saturating_add(1);
                 }
             }
             _ => {}
         }
     }
-    if add_records_rewritten == 0 && update_records_rewritten == 0 {
+    if summary.add_records_rewritten == 0 && summary.update_records_rewritten == 0 {
+        trace_exact_placeable_reconciliation_summary(area_context, &summary, false);
         return None;
     }
 
@@ -10191,24 +10411,77 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     claim_payload_if_verified(&rewritten)?;
     let new_payload_length = rewritten.len();
     let new_fragment_bytes = new_payload_length.saturating_sub(claim.declared);
+    summary.new_payload_length = new_payload_length;
+    summary.new_fragment_bytes = new_fragment_bytes;
 
     *payload = rewritten;
-    Some(LiveObjectUpdateRewriteSummary {
-        old_declared,
-        new_declared: old_declared,
-        old_payload_length,
-        new_payload_length,
-        old_live_bytes_length: live_bytes.len(),
-        new_live_bytes_length: live_bytes.len(),
-        old_fragment_bytes,
-        new_fragment_bytes,
-        records_examined: claim.records_examined,
-        add_records_examined,
-        update_records_examined,
-        add_records_rewritten,
-        update_records_rewritten,
-        ..LiveObjectUpdateRewriteSummary::default()
-    })
+    trace_exact_placeable_reconciliation_summary(area_context, &summary, true);
+    Some(summary)
+}
+
+fn record_exact_placeable_reconciliation_target(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    opcode: u8,
+    target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+) {
+    match (opcode, target) {
+        (b'A', AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)) => {
+            summary.exact_placeable_add_unique_targets =
+                summary.exact_placeable_add_unique_targets.saturating_add(1);
+        }
+        (b'U', AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)) => {
+            summary.exact_placeable_update_unique_targets = summary
+                .exact_placeable_update_unique_targets
+                .saturating_add(1);
+        }
+        (b'A', AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)) => {
+            summary.exact_placeable_add_identity_blocked = summary
+                .exact_placeable_add_identity_blocked
+                .saturating_add(1);
+        }
+        (b'U', AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)) => {
+            summary.exact_placeable_update_identity_blocked = summary
+                .exact_placeable_update_identity_blocked
+                .saturating_add(1);
+        }
+        (b'A', AreaPlaceableContextStaticReconciliationTarget::NoOverlap) => {
+            summary.exact_placeable_add_no_overlap =
+                summary.exact_placeable_add_no_overlap.saturating_add(1);
+        }
+        (b'U', AreaPlaceableContextStaticReconciliationTarget::NoOverlap) => {
+            summary.exact_placeable_update_no_overlap =
+                summary.exact_placeable_update_no_overlap.saturating_add(1);
+        }
+        _ => {}
+    }
+}
+
+fn trace_exact_placeable_reconciliation_summary(
+    area_context: &AreaPlaceableContext,
+    summary: &LiveObjectUpdateRewriteSummary,
+    emitted: bool,
+) {
+    if summary.add_records_examined == 0 && summary.update_records_examined == 0 {
+        return;
+    }
+    tracing::debug!(
+        area_resref = area_context.area_resref.as_str(),
+        exact_placeable_reconciliation_emitted = emitted,
+        add_records_examined = summary.add_records_examined,
+        update_records_examined = summary.update_records_examined,
+        add_records_rewritten = summary.add_records_rewritten,
+        update_records_rewritten = summary.update_records_rewritten,
+        add_unique_targets = summary.exact_placeable_add_unique_targets,
+        update_unique_targets = summary.exact_placeable_update_unique_targets,
+        add_identity_blocked = summary.exact_placeable_add_identity_blocked,
+        update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        add_no_overlap = summary.exact_placeable_add_no_overlap,
+        update_no_overlap = summary.exact_placeable_update_no_overlap,
+        add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
+        update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
+        appearance_custom_skipped = summary.exact_placeable_appearance_custom_skipped,
+        "server->client exact live-object placeable area/static reconciliation summary"
+    );
 }
 
 fn reconcile_verified_placeable_add_appearance_with_area_context(
@@ -10449,11 +10722,9 @@ fn placeable_static_reconciliation_target_for_record<'a>(
     record_end: usize,
     field: &'static str,
 ) -> Option<(&'a AreaPlaceableContextRow, String)> {
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
-    });
-    let area_rows = overlap.formatted_rows();
-    match overlap.static_reconciliation_target() {
+    let (target, area_rows) =
+        placeable_static_reconciliation_target_for_object(area_context, object_id);
+    match target {
         AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
             Some((row, area_rows))
         }
@@ -10472,6 +10743,17 @@ fn placeable_static_reconciliation_target_for_record<'a>(
         }
         AreaPlaceableContextStaticReconciliationTarget::NoOverlap => None,
     }
+}
+
+fn placeable_static_reconciliation_target_for_object<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+) -> (AreaPlaceableContextStaticReconciliationTarget<'a>, String) {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let area_rows = overlap.formatted_rows();
+    (overlap.static_reconciliation_target(), area_rows)
 }
 
 pub(crate) fn area_static_row_scalar_orientation(
