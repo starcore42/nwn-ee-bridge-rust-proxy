@@ -909,6 +909,40 @@ Current status:
   -q -p hgbridge-proxy2`; next local replay should classify any remaining
   placeable drift as appearance, state, orientation, identity, or an unmodeled
   packet family before adding another rewrite rule.
+- 2026-06-12 follow-up placeable identity-conflict diagnostics: packet bytes
+  and reconciliation behavior are unchanged. Area/static overlaps that are not
+  exactly one unique module-backed static row now produce a typed semantic
+  identity conflict, survive compact/external id aliases, clear on delete or
+  later unique proof, and appear in server-dispatch unresolved diagnostics
+  beside appearance/state/orientation. Verified with incremental disabled
+  because the local rustc incremental cache ICEs, using focused
+  `area_context_tracks_placeable_identity_conflicts`, `area_context_`, and
+  `cargo check -q`; next local replay should classify remaining placeable drift
+  as identity versus appearance/state/orientation before changing writer bytes.
+- 2026-06-12 follow-up placeable conflict snapshot diagnostics: packet bytes
+  and reconciliation behavior are unchanged. The semantic registry now exposes
+  one typed unresolved area/static placeable conflict snapshot per live-object
+  record, preserving compact/external alias owner state and classifying the
+  active mismatch as identity, appearance, state, and/or orientation for
+  server-dispatch replay logs. Verified with incremental disabled using focused
+  `area_context_tracks_`, `area_context_conflicts_use_merged_verified_placeable_state`,
+  `cargo check -q`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should use the conflict class field to decide whether any
+  remaining placeable drift needs a writer change or more decompile proof.
+- 2026-06-12 follow-up static/live placeable reconciliation target: packet
+  bytes and reconciliation policy are unchanged. Area placeable overlap now
+  exposes a typed unique-module-backed-static versus identity-blocked target,
+  and the exact `A/09`/`U/09` reconciliation pass uses that shared decision for
+  appearance, state, scalar orientation, and vector orientation while logging
+  identity-blocked skips. The pass now also reports exact add/update records
+  examined separately from records rewritten, so replay diagnostics can tell
+  whether a remaining conflict survived an inspected add row, update row, or an
+  unmodeled identity case. Verified with incremental disabled using focused
+  `placeable_context_overlap_formats_rows_and_checks_static_module_state`,
+  `exact_placeable_`, `area_context_tracks_`, `cargo check -q`, `cargo fmt
+  --all --check`, and `git diff --check`; next local replay should compare the
+  new examined/rewrite counters with unresolved conflict classes before adding
+  another writer rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

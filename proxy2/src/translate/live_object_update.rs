@@ -38,7 +38,8 @@ use std::{
 };
 
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextState, AreaPlaceableObservedState,
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
+    AreaPlaceableContextStaticReconciliationTarget, AreaPlaceableObservedState,
     format_area_placeable_module_state,
 };
 
@@ -2231,6 +2232,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact A/09 appearance");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
@@ -2293,6 +2296,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact U/09 appearance");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
@@ -2366,6 +2371,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact U/09 scalar orientation");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
@@ -2461,6 +2468,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact U/09 visual fields");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
@@ -2593,6 +2602,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact vector U/09 orientation");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
@@ -2797,6 +2808,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact U/09 lock bits");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
@@ -2874,6 +2887,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile exact A/09 state bits");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
@@ -2957,6 +2972,8 @@ mod diagnostic_tests {
             Some(&area_context),
         )
         .expect("unique static context should reconcile optional-object A/09 state bits");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
@@ -3086,6 +3103,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub old_fragment_bytes: usize,
     pub new_fragment_bytes: usize,
     pub records_examined: u32,
+    pub add_records_examined: u32,
     pub update_records_examined: u32,
     pub add_records_rewritten: u32,
     pub update_records_rewritten: u32,
@@ -10081,6 +10099,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     let mut fragment_bits =
         bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)?;
 
+    let mut add_records_examined = 0u32;
+    let mut update_records_examined = 0u32;
     let mut add_records_rewritten = 0u32;
     let mut update_records_rewritten = 0u32;
     for mention in &claim.mentions {
@@ -10089,6 +10109,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         }
         match mention.opcode {
             b'A' => {
+                add_records_examined = add_records_examined.saturating_add(1);
                 let Some(add_claim) = verified_placeable_add_exact_claim(
                     &live_bytes,
                     mention.record_offset,
@@ -10118,6 +10139,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 }
             }
             b'U' => {
+                update_records_examined = update_records_examined.saturating_add(1);
                 let Some(update_claim) = verified_placeable_update_exact_claim(
                     &live_bytes,
                     mention.record_offset,
@@ -10181,7 +10203,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         old_fragment_bytes,
         new_fragment_bytes,
         records_examined: claim.records_examined,
-        update_records_examined: update_records_rewritten,
+        add_records_examined,
+        update_records_examined,
         add_records_rewritten,
         update_records_rewritten,
         ..LiveObjectUpdateRewriteSummary::default()
@@ -10203,10 +10226,13 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
         return Some(false);
     }
 
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
-    });
-    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+        area_context,
+        claim.object_id,
+        record_offset,
+        record_end,
+        "appearance-add",
+    ) else {
         return Some(false);
     };
     let area_appearance = area_row.appearance;
@@ -10231,7 +10257,7 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
         optional_object_id = claim.layout.byte_layout.optional_object_id,
         visual_map_offset = claim.layout.byte_layout.map_offset,
         area_resref = area_context.area_resref.as_str(),
-        area_rows = %overlap.formatted_rows(),
+        area_rows = %area_rows,
         "server->client exact live-object placeable add appearance reconciled with unique module-backed area/static row"
     );
     Some(true)
@@ -10290,10 +10316,13 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         return Some(false);
     };
 
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
-    });
-    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+        area_context,
+        claim.object_id,
+        record_offset,
+        record_end,
+        "appearance-update",
+    ) else {
         return Some(false);
     };
     let area_appearance = area_row.appearance;
@@ -10317,7 +10346,7 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
         area_resref = area_context.area_resref.as_str(),
-        area_rows = %overlap.formatted_rows(),
+        area_rows = %area_rows,
         "server->client exact live-object placeable update appearance reconciled with unique module-backed area/static row"
     );
     Some(true)
@@ -10335,10 +10364,13 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
         return Some(false);
     }
 
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
-    });
-    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+        area_context,
+        claim.object_id,
+        record_offset,
+        record_end,
+        "orientation-update",
+    ) else {
         return Some(false);
     };
     let Some(area_orientation) = area_static_row_scalar_orientation(area_row) else {
@@ -10368,7 +10400,7 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
             state_bit_cursor = ?claim.parser.state_bit_cursor,
             next_bit_cursor = claim.parser.next_bit_cursor,
             area_resref = area_context.area_resref.as_str(),
-            area_rows = %overlap.formatted_rows(),
+            area_rows = %area_rows,
             "server->client exact live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
         );
         return Some(changed);
@@ -10404,10 +10436,42 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
         area_resref = area_context.area_resref.as_str(),
-        area_rows = %overlap.formatted_rows(),
+        area_rows = %area_rows,
         "server->client exact live-object placeable update vector orientation reconciled with unique module-backed area/static row"
     );
     Some(changed)
+}
+
+fn placeable_static_reconciliation_target_for_record<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    record_offset: usize,
+    record_end: usize,
+    field: &'static str,
+) -> Option<(&'a AreaPlaceableContextRow, String)> {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let area_rows = overlap.formatted_rows();
+    match overlap.static_reconciliation_target() {
+        AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
+            Some((row, area_rows))
+        }
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+            tracing::debug!(
+                object_id = format_args!("0x{object_id:08X}"),
+                record_offset,
+                record_end,
+                field,
+                area_resref = area_context.area_resref.as_str(),
+                area_module_identity_mismatch = ?conflict,
+                area_rows = %area_rows,
+                "server->client exact live-object placeable area/static reconciliation skipped: identity is not unique module-backed static"
+            );
+            None
+        }
+        AreaPlaceableContextStaticReconciliationTarget::NoOverlap => None,
+    }
 }
 
 pub(crate) fn area_static_row_scalar_orientation(
@@ -10581,12 +10645,16 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     bits: &mut [bool],
     claim: VerifiedPlaceableAddExactClaim,
 ) -> Option<bool> {
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
-    });
-    let Some(module_state) = overlap.unique_module_backed_static_state() else {
+    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+        area_context,
+        claim.object_id,
+        record_offset,
+        record_end,
+        "state-add",
+    ) else {
         return Some(false);
     };
+    let module_state = area_row.module_state?;
 
     let source_state = claim.state;
     let conflict = source_state
@@ -10616,6 +10684,8 @@ fn reconcile_verified_placeable_add_state_with_area_context(
         emitted_placeable_state = ?rewritten_state,
         area_module_state = %format_area_placeable_module_state(module_state),
         area_module_state_mismatch_fields = %conflict.formatted_fields(),
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %area_rows,
         "server->client exact live-object placeable add state reconciled with unique module-backed area/static row"
     );
 

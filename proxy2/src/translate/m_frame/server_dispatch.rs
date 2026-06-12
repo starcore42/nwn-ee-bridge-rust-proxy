@@ -1863,6 +1863,8 @@ fn translate_live_object_records_if_verified(
             )
         });
         let (
+            update_pass_add_records_examined,
+            update_pass_add_records_rewritten,
             update_records_examined,
             update_records_rewritten,
             update_bytes_inserted,
@@ -1878,18 +1880,22 @@ fn translate_live_object_records_if_verified(
         .flatten()
         .map(|summary| {
             (
+                summary.add_records_examined,
+                summary.add_records_rewritten,
                 summary.update_records_examined,
                 summary.update_records_rewritten,
                 summary.bytes_inserted,
                 summary.bytes_removed,
             )
         })
-        .fold((0u32, 0u32, 0u32, 0u32), |acc, summary| {
+        .fold((0u32, 0u32, 0u32, 0u32, 0u32, 0u32), |acc, summary| {
             (
                 acc.0.saturating_add(summary.0),
                 acc.1.saturating_add(summary.1),
                 acc.2.saturating_add(summary.2),
                 acc.3.saturating_add(summary.3),
+                acc.4.saturating_add(summary.4),
+                acc.5.saturating_add(summary.5),
             )
         });
         tracing::debug!(
@@ -1909,6 +1915,8 @@ fn translate_live_object_records_if_verified(
             maps_inserted,
             add_bytes_inserted,
             add_bytes_removed,
+            update_pass_add_records_examined,
+            update_pass_add_records_rewritten,
             update_records_examined,
             update_records_rewritten,
             update_bytes_inserted,

@@ -370,6 +370,18 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         self.unique_module_backed_static_row()?.module_state
     }
 
+    pub fn static_reconciliation_target(
+        &self,
+    ) -> AreaPlaceableContextStaticReconciliationTarget<'a> {
+        if let Some(conflict) = self.identity_conflict() {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict)
+        } else if let Some(row) = self.unique_module_backed_static_row() {
+            AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row)
+        } else {
+            AreaPlaceableContextStaticReconciliationTarget::NoOverlap
+        }
+    }
+
     pub fn identity_conflict(&self) -> Option<AreaPlaceableContextIdentityConflict> {
         if self.rows.is_empty() {
             return None;
@@ -435,6 +447,13 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         }
         combined
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AreaPlaceableContextStaticReconciliationTarget<'a> {
+    UniqueModuleBacked(&'a AreaPlaceableContextRow),
+    IdentityBlocked(AreaPlaceableContextIdentityConflict),
+    NoOverlap,
 }
 
 fn saturating_u16(value: usize) -> u16 {
@@ -9383,6 +9402,14 @@ mod public_static_direction_tests {
         assert_eq!(overlap.rows().len(), 2);
         assert!(overlap.has_light_row());
         assert!(overlap.has_static_row());
+        match overlap.static_reconciliation_target() {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.light_rows, 1);
+                assert_eq!(conflict.static_rows, 1);
+                assert_eq!(conflict.module_backed_static_rows, 1);
+            }
+            other => panic!("mixed light/static overlap must block reconciliation: {other:?}"),
+        }
         assert_eq!(
             overlap.formatted_rows(),
             "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
@@ -9407,6 +9434,15 @@ mod public_static_direction_tests {
         );
         assert!(update_conflict.any());
         assert_eq!(update_conflict.formatted_fields(), "lockable,locked");
+
+        let static_overlap = context.placeable_overlap_for_object_id(0x8000_0042);
+        match static_overlap.static_reconciliation_target() {
+            AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
+                assert_eq!(row.appearance, 82);
+                assert_eq!(row.module_state.unwrap().lockable, true);
+            }
+            other => panic!("unique static overlap should authorize reconciliation: {other:?}"),
+        }
     }
 
     #[test]
