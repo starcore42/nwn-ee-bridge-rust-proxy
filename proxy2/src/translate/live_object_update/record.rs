@@ -2539,6 +2539,7 @@ mod tests {
         let row = AreaPlaceableContextRow {
             object_id: 0x8000_0042,
             appearance: 0x0052,
+            module_template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,

@@ -2559,6 +2559,7 @@ mod live_object_dispatch_tests {
             static_rows: vec![area::AreaPlaceableContextRow {
                 object_id: 0x8000_35C8,
                 appearance: 0x0E60,
+                module_template_resref: None,
                 x: 89.0,
                 y: 9.0,
                 z: 0.8,

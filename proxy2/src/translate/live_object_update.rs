@@ -3116,6 +3116,107 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_module_custom_resref_insert_keeps_following_update_offsets() {
+        let first_object_id = 0x8000_34D8u32;
+        let second_object_id = 0x8000_34D9u32;
+        let target_resref = *b"plc_custom_one\0\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&first_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0022u16.to_le_bytes());
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&second_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("two exact U/09 rows");
+        let original_len = payload.len();
+        claim_payload_if_verified(&payload).expect("pre-rewrite exact two-row U/09 payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: first_object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: second_object_id,
+                    appearance: 0x0033,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("custom target insertion and following normal update should reconcile");
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.update_records_rewritten, 2);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 2);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 2);
+        assert_eq!(
+            summary.bytes_inserted,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+        assert_eq!(summary.bytes_removed, 0);
+        assert_eq!(
+            summary.new_live_bytes_length - summary.old_live_bytes_length,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+        assert_eq!(
+            summary.new_declared - summary.old_declared,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+        assert_eq!(
+            payload.len(),
+            original_len + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact two-row U/09 payload");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the first row should use EE's parser-owned custom WORD + CResRef branch"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0033,
+                resref: None,
+            }),
+            "the second record must be parsed at its shifted post-insertion offset"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -10732,6 +10833,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         records_examined: claim.records_examined,
         ..LiveObjectUpdateRewriteSummary::default()
     };
+    let mut live_byte_offset_added = 0usize;
     let mut live_byte_offset_removed = 0usize;
     for mention in &claim.mentions {
         if mention.object_type != PLACEABLE_OBJECT_TYPE {
@@ -10739,8 +10841,12 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         }
         let record_offset = mention
             .record_offset
+            .checked_add(live_byte_offset_added)?
             .checked_sub(live_byte_offset_removed)?;
-        let record_end = mention.record_end.checked_sub(live_byte_offset_removed)?;
+        let record_end = mention
+            .record_end
+            .checked_add(live_byte_offset_added)?
+            .checked_sub(live_byte_offset_removed)?;
         match mention.opcode {
             b'A' => {
                 summary.add_records_examined = summary.add_records_examined.saturating_add(1);
@@ -10838,6 +10944,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     target
                     && update_claim.parser.appearance_offset.is_some()
                     && is_custom_placeable_appearance(row.appearance)
+                    && row.module_template_resref.is_none()
                 {
                     summary.exact_placeable_appearance_custom_skipped = summary
                         .exact_placeable_appearance_custom_skipped
@@ -10887,6 +10994,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_end,
                         update_claim,
                     )?;
+                if appearance_rewrite.bytes_inserted != 0 {
+                    live_byte_offset_added =
+                        live_byte_offset_added.checked_add(appearance_rewrite.bytes_inserted)?;
+                    summary.bytes_inserted = summary.bytes_inserted.saturating_add(
+                        u32::try_from(appearance_rewrite.bytes_inserted).unwrap_or(u32::MAX),
+                    );
+                }
                 if appearance_rewrite.bytes_removed != 0 {
                     live_byte_offset_removed =
                         live_byte_offset_removed.checked_add(appearance_rewrite.bytes_removed)?;
@@ -11208,29 +11322,76 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
     };
     let area_appearance = area_row.appearance;
     let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
-    if source_appearance == area_appearance {
-        return Some(PlaceableAppearanceRewrite::default());
-    }
-    if is_custom_placeable_appearance(area_appearance) {
-        return Some(PlaceableAppearanceRewrite::default());
-    }
-
-    write_u16_le(live_bytes, appearance_offset, area_appearance)?;
-    let mut bytes_removed = 0usize;
-    let source_resref = if is_custom_placeable_appearance(source_appearance) {
+    let source_is_custom = is_custom_placeable_appearance(source_appearance);
+    let source_resref = if source_is_custom {
         let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
         let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
         if resref_end > record_end {
             return None;
         }
-        let source_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES] =
-            live_bytes.get(resref_start..resref_end)?.try_into().ok()?;
-        live_bytes.drain(resref_start..resref_end);
-        bytes_removed = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
-        Some(source_resref)
+        Some(live_bytes.get(resref_start..resref_end)?.try_into().ok()?)
     } else {
         None
     };
+    if is_custom_placeable_appearance(area_appearance) {
+        let Some(target_resref) = area_row.module_template_resref else {
+            return Some(PlaceableAppearanceRewrite::default());
+        };
+        if source_appearance == area_appearance && source_resref == Some(target_resref) {
+            return Some(PlaceableAppearanceRewrite::default());
+        }
+
+        write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+        let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        let bytes_inserted = if source_is_custom {
+            let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+            live_bytes
+                .get_mut(resref_start..resref_end)?
+                .copy_from_slice(&target_resref);
+            0
+        } else {
+            live_bytes.splice(resref_start..resref_start, target_resref.iter().copied());
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        };
+        tracing::info!(
+            object_id = format_args!("0x{:08X}", claim.object_id),
+            record_offset,
+            record_end,
+            mask = format_args!("0x{:08X}", claim.mask),
+            source_appearance = format_args!("0x{source_appearance:04X}"),
+            source_resref = ?source_resref,
+            emitted_appearance = format_args!("0x{area_appearance:04X}"),
+            emitted_resref = ?target_resref,
+            appearance_offset,
+            bytes_inserted,
+            state_bit_cursor = ?claim.parser.state_bit_cursor,
+            next_bit_cursor = claim.parser.next_bit_cursor,
+            area_resref = area_context.area_resref.as_str(),
+            area_rows = %area_rows,
+            "server->client exact live-object placeable update custom appearance reconciled with module-backed TemplateResRef"
+        );
+        return Some(PlaceableAppearanceRewrite {
+            changed: true,
+            bytes_inserted,
+            bytes_removed: 0,
+        });
+    }
+
+    if source_appearance == area_appearance {
+        return Some(PlaceableAppearanceRewrite::default());
+    }
+
+    write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+    let mut bytes_removed = 0usize;
+    if source_is_custom {
+        let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        if resref_end > record_end {
+            return None;
+        }
+        live_bytes.drain(resref_start..resref_end);
+        bytes_removed = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+    }
     tracing::info!(
         object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
@@ -11249,6 +11410,7 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
     );
     Some(PlaceableAppearanceRewrite {
         changed: true,
+        bytes_inserted: 0,
         bytes_removed,
     })
 }
@@ -11256,6 +11418,7 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
 #[derive(Debug, Clone, Copy, Default)]
 struct PlaceableAppearanceRewrite {
     changed: bool,
+    bytes_inserted: usize,
     bytes_removed: usize,
 }
 

@@ -2721,6 +2721,7 @@ fn local_cepv22_starter_area_entry_live_object_rewrites_to_exact_shape() {
         static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
             object_id: 0x8000_006D,
             appearance: 0x2743,
+            module_template_resref: None,
             x: 1.0,
             y: 1.0,
             z: 0.0,

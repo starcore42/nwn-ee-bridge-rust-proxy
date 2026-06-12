@@ -490,6 +490,7 @@ impl AreaPlaceableContextObjectIdConfidence {
 pub struct AreaPlaceableContextRow {
     pub object_id: u32,
     pub appearance: u16,
+    pub module_template_resref: Option<[u8; 16]>,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -1893,6 +1894,7 @@ struct ModuleAreaSound {
 struct ModuleAreaPlaceable {
     tag: String,
     appearance: u16,
+    template_resref: Option<String>,
     x: f32,
     y: f32,
     z: f32,
@@ -1930,6 +1932,7 @@ struct ModuleStaticPlaceableRowClaim {
 struct ModuleStaticPlaceableContextClaim {
     row: ModuleStaticPlaceableRowClaim,
     state: AreaPlaceableContextState,
+    template_resref: Option<[u8; 16]>,
 }
 
 fn repair_compact_area_from_module_resource(
@@ -3520,14 +3523,14 @@ fn collect_area_post_tile_placeable_context(
         let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
         let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
         let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
-        let module_state = module_context_claims.iter().find_map(|claim| {
-            (claim.row.cursor == cursor
+        let module_claim = module_context_claims.iter().find(|claim| {
+            claim.row.cursor == cursor
                 && module_static_placeable_row_claim_matches_source(
                     payload,
                     fragment_offset,
                     &claim.row,
-                )?)
-            .then_some(claim.state)
+                )
+                .unwrap_or(false)
         });
         if area_placeable_context_id_is_ambiguous(
             object_id,
@@ -3546,6 +3549,7 @@ fn collect_area_post_tile_placeable_context(
         static_rows.push(AreaPlaceableContextRow {
             object_id,
             appearance,
+            module_template_resref: module_claim.and_then(|claim| claim.template_resref),
             x,
             y,
             z,
@@ -3554,7 +3558,7 @@ fn collect_area_post_tile_placeable_context(
             dir_z,
             has_direction: true,
             object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
-            module_state,
+            module_state: module_claim.map(|claim| claim.state),
         });
         cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
     }
@@ -3600,6 +3604,7 @@ fn module_static_placeable_context_claims(
         context_claims.push(ModuleStaticPlaceableContextClaim {
             row: claim,
             state: area_placeable_context_state_from_module_placeable(placeable),
+            template_resref: module_placeable_template_resref_bytes(placeable),
         });
     }
 
@@ -3706,6 +3711,7 @@ fn mark_area_placeable_context_object_id_confidence(
         };
         if !row.object_id_confidence.is_unique() {
             row.module_state = None;
+            row.module_template_resref = None;
         }
     }
 }
@@ -4327,6 +4333,18 @@ fn module_static_placeable_resource_row_safe(placeable: &ModuleAreaPlaceable) ->
             .into_iter()
             .all(|value| value.abs() <= MAX_STATIC_PLACEABLE_COMPONENT_ABS)
         && static_placeable_direction_from_bearing(placeable.bearing).is_some()
+}
+
+fn module_placeable_template_resref_bytes(placeable: &ModuleAreaPlaceable) -> Option<[u8; 16]> {
+    let resref = placeable.template_resref.as_deref()?;
+    if !area_resref_plausible(resref) {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    bytes
+        .get_mut(..resref.len())?
+        .copy_from_slice(resref.as_bytes());
+    Some(bytes)
 }
 
 fn area_float_close(actual: f32, expected: f32, tolerance: f32) -> bool {
@@ -6493,6 +6511,9 @@ fn parse_git_placeables(
                 .and_then(|field| gff_string_value(bytes, field))
                 .unwrap_or_default(),
             appearance: required_gff_u16(&fields, "Appearance")?,
+            template_resref: gff_field_by_label(&fields, "TemplateResRef")
+                .and_then(|field| gff_resref_value(bytes, field))
+                .filter(|resref| area_resref_plausible(resref)),
             x: required_gff_float(&fields, "X")?,
             y: required_gff_float(&fields, "Y")?,
             z: required_gff_float(&fields, "Z")?,
@@ -9388,6 +9409,7 @@ mod public_static_direction_tests {
             static_rows: vec![AreaPlaceableContextRow {
                 object_id: 0x8000_0042,
                 appearance: 82,
+                module_template_resref: None,
                 x: 10.0,
                 y: 20.0,
                 z: 0.0,
@@ -9552,6 +9574,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "unclaimed_tail_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -9756,6 +9779,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "bearing_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -9846,6 +9870,7 @@ mod public_static_direction_tests {
             ModuleAreaPlaceable {
                 tag: "valid_bearing_chest".to_string(),
                 appearance: 82,
+                template_resref: None,
                 x: 10.0,
                 y: 20.0,
                 z: 0.0,
@@ -9860,6 +9885,7 @@ mod public_static_direction_tests {
             ModuleAreaPlaceable {
                 tag: "invalid_bearing_chest".to_string(),
                 appearance: 83,
+                template_resref: None,
                 x: 30.0,
                 y: 40.0,
                 z: 0.0,
@@ -9902,6 +9928,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "ambiguous_chest_a".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -9954,6 +9981,7 @@ mod public_static_direction_tests {
         let weak_count_only_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
             tag: "wrong_count_only_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 99.0,
             z: 88.0,
@@ -9979,6 +10007,7 @@ mod public_static_direction_tests {
         let two_coordinate_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
             tag: "two_coordinate_named_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 88.0,
@@ -10016,6 +10045,7 @@ mod public_static_direction_tests {
         let unsafe_info = module_info_with_placeables(vec![ModuleAreaPlaceable {
             tag: "unsafe_two_coordinate_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: MAX_STATIC_PLACEABLE_COMPONENT_ABS + 1.0,
@@ -10044,6 +10074,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "claim_backed_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10140,6 +10171,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "two_coordinate_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10252,6 +10284,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "zero_appearance_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10369,6 +10402,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "bad_static_geometry_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: MAX_STATIC_PLACEABLE_COMPONENT_ABS + 1.0,
@@ -10426,6 +10460,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "locked_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10476,6 +10511,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "zero_appearance_locked_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10549,6 +10585,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "locked_chest".to_string(),
             appearance: 82,
+            template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10606,6 +10643,7 @@ mod public_static_direction_tests {
         let placeable = ModuleAreaPlaceable {
             tag: "single_locked_static_chest".to_string(),
             appearance: 82,
+            template_resref: Some("plc_custom_one".to_string()),
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -10619,6 +10657,8 @@ mod public_static_direction_tests {
         };
         let expected_direction = static_placeable_direction_from_bearing(placeable.bearing)
             .expect("finite GIT bearing should produce a row direction");
+        let expected_template_resref = module_placeable_template_resref_bytes(&placeable)
+            .expect("test TemplateResRef should fit the fixed CResRef slot");
         let info = module_info_with_placeables(vec![placeable]);
         let (valid_payload, valid_fragment_offset, _valid_scan) =
             real_area_static_placeable_source_rows_payload_with_count(
@@ -10655,6 +10695,11 @@ mod public_static_direction_tests {
             }),
             "one-to-one static-list proof should export module trap/use/lock state"
         );
+        assert_eq!(
+            valid_context.static_rows[0].module_template_resref,
+            Some(expected_template_resref),
+            "the same static-list proof should export the module TemplateResRef for later U/09 custom appearance writes"
+        );
 
         let alias_context = collect_area_post_tile_placeable_context(
             &valid_payload,
@@ -10673,6 +10718,10 @@ mod public_static_direction_tests {
         assert_eq!(
             alias_context.static_rows[0].module_state, None,
             "area-object aliases are diagnostic context and must not seed live-object state mismatches"
+        );
+        assert_eq!(
+            alias_context.static_rows[0].module_template_resref, None,
+            "area-object aliases must not authorize module-template appearance writes"
         );
 
         let (payload, fragment_offset, scan) =

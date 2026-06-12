@@ -1051,6 +1051,20 @@ Current status:
   appearance WORD. Verified with focused `exact_placeable_`; next local replay
   should compare module-custom skip counters against unresolved module-custom
   appearance conflicts before adding a custom-target writer.
+- 2026-06-13 follow-up exact `U/09` module-custom TemplateResRef writer:
+  module-backed static placeable context now carries the GIT `TemplateResRef`
+  only after the same unique static-row, direction, and object-id proof used for
+  state/orientation/position. Exact `U/09` appearance reconciliation can now
+  widen a normal source WORD to EE's decompile-backed `0xFFFE+ WORD + CResRef`
+  branch, or overwrite an existing custom branch, while shifting following
+  record offsets and revalidating the final exact payload. Exact `A/09` custom
+  targets remain fixed-width skips because the verified add layout has no
+  parser-owned CResRef branch. Verified with focused `exact_placeable_`,
+  `area_context_`, `placeable_context_`, `placeable_update`, `cargo check -q
+  -p hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should check whether remaining module-custom appearance conflicts
+  are add-only fixed-width rows, missing module TemplateResRef proof,
+  identity/no-overlap, or another packet family.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

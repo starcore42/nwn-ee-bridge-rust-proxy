@@ -5099,6 +5099,7 @@ mod placeable_add_semantic_tests {
             static_rows: vec![AreaPlaceableContextRow {
                 object_id: 0x8000_0085,
                 appearance: 0x000E,
+                module_template_resref: None,
                 x: 1.0,
                 y: 2.0,
                 z: 0.0,
@@ -5149,6 +5150,7 @@ mod placeable_add_semantic_tests {
         let static_row = AreaPlaceableContextRow {
             object_id: 0x8000_0042,
             appearance: 82,
+            module_template_resref: None,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -8542,6 +8544,7 @@ mod tests {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id: 0x8000_35C8,
                 appearance: 0x0E60,
+                module_template_resref: None,
                 x: 89.0,
                 y: 9.0,
                 z: 0.8,
