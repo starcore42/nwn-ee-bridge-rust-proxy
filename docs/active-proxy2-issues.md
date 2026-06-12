@@ -1041,6 +1041,16 @@ Current status:
   decide whether remaining visual drift is an intentional module-custom skip,
   a normal target that never reached an exact `A/09`/`U/09` rewrite, or another
   packet family.
+- 2026-06-13 follow-up exact placeable custom-counter split: packet bytes and
+  rewrite policy are unchanged. Exact live-object `A/09`/`U/09` reconciliation
+  summaries now split module-custom target skips from source-custom appearance
+  collapses, with separate add/update counters threaded through the M-frame
+  dispatch summary. The remaining module-custom target rewrite is blocked until
+  decompile/capture proof identifies the exact CResRef source to emit for a
+  module-backed static row; the current area context only carries the `0xFFFE+`
+  appearance WORD. Verified with focused `exact_placeable_`; next local replay
+  should compare module-custom skip counters against unresolved module-custom
+  appearance conflicts before adding a custom-target writer.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

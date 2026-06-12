@@ -142,6 +142,7 @@ const EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES: usize = 6;
 const EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS: usize = 1;
 const EE_UPDATE_APPEARANCE_WORD_READ_BYTES: usize = 2;
 const EE_UPDATE_APPEARANCE_RESREF_READ_BYTES: usize = 16;
+const CUSTOM_PLACEABLE_APPEARANCE_MIN: u16 = 0xFFFE;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
 const LEGACY_COMPACT_PLACEABLE_ADD_SOURCE_BITS: usize = 4;
@@ -2241,6 +2242,22 @@ mod diagnostic_tests {
         assert_eq!(summary.exact_placeable_add_no_overlap, 0);
         assert_eq!(summary.exact_placeable_add_unique_unchanged, 0);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            0
+        );
         assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
         assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
@@ -2339,6 +2356,18 @@ mod diagnostic_tests {
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.exact_placeable_add_unique_targets, 1);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            0
+        );
         assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
         assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
         assert_eq!(summary.bytes_removed, 0);
@@ -2412,6 +2441,14 @@ mod diagnostic_tests {
         assert_eq!(summary.exact_placeable_update_no_overlap, 0);
         assert_eq!(summary.exact_placeable_update_unique_unchanged, 0);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            0
+        );
         assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
         assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
@@ -2961,6 +2998,14 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_unique_targets, 1);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            1
+        );
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
         assert_eq!(
             summary.bytes_removed,
@@ -3116,6 +3161,14 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_unique_targets, 1);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            0
+        );
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
         assert_eq!(summary.bytes_removed, 0);
@@ -3217,7 +3270,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
-                appearance: 0x0011,
+                appearance: 0xFFFE,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -3298,7 +3351,7 @@ mod diagnostic_tests {
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
-                appearance: 0x0011,
+                appearance: 0xFFFE,
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -3323,6 +3376,15 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 1);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+            0
+        );
         assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
         assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
@@ -3341,6 +3403,14 @@ mod diagnostic_tests {
                 lockable: Some(true),
                 locked: Some(false),
             })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "module-custom add appearance targets remain packet-authored until a CResRef source is proven"
         );
         let rewritten_bits =
             bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
@@ -3633,6 +3703,10 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_unique_unchanged: u32,
     pub exact_placeable_update_unique_unchanged: u32,
     pub exact_placeable_appearance_custom_skipped: u32,
+    pub exact_placeable_add_module_custom_appearance_skipped: u32,
+    pub exact_placeable_update_module_custom_appearance_skipped: u32,
+    pub exact_placeable_add_source_custom_appearance_rewritten: u32,
+    pub exact_placeable_update_source_custom_appearance_rewritten: u32,
     pub exact_placeable_add_appearance_rewritten: u32,
     pub exact_placeable_add_state_rewritten: u32,
     pub exact_placeable_update_position_rewritten: u32,
@@ -10684,14 +10758,20 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
-                if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
-                    target
-                    && row.appearance >= 0xFFFE
-                {
+                let module_custom_appearance_target = matches!(
+                    target,
+                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row)
+                        if is_custom_placeable_appearance(row.appearance)
+                );
+                if module_custom_appearance_target {
                     summary.exact_placeable_appearance_custom_skipped = summary
                         .exact_placeable_appearance_custom_skipped
                         .saturating_add(1);
+                    summary.exact_placeable_add_module_custom_appearance_skipped = summary
+                        .exact_placeable_add_module_custom_appearance_skipped
+                        .saturating_add(1);
                 }
+                let source_custom_appearance = is_custom_placeable_appearance(add_claim.appearance);
                 let appearance_rewritten =
                     reconcile_verified_placeable_add_appearance_with_area_context(
                         area_context,
@@ -10711,6 +10791,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     summary.exact_placeable_add_appearance_rewritten = summary
                         .exact_placeable_add_appearance_rewritten
                         .saturating_add(1);
+                    if source_custom_appearance {
+                        summary.exact_placeable_add_source_custom_appearance_rewritten = summary
+                            .exact_placeable_add_source_custom_appearance_rewritten
+                            .saturating_add(1);
+                    }
                 }
                 if state_rewritten {
                     summary.exact_placeable_add_state_rewritten = summary
@@ -10744,16 +10829,22 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                let source_custom_appearance = update_claim
+                    .parser
+                    .appearance_offset
+                    .and_then(|appearance_offset| read_u16_le(&live_bytes, appearance_offset))
+                    .is_some_and(is_custom_placeable_appearance);
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
+                    && update_claim.parser.appearance_offset.is_some()
+                    && is_custom_placeable_appearance(row.appearance)
                 {
-                    if update_claim.parser.appearance_offset.is_some() {
-                        if row.appearance >= 0xFFFE {
-                            summary.exact_placeable_appearance_custom_skipped = summary
-                                .exact_placeable_appearance_custom_skipped
-                                .saturating_add(1);
-                        }
-                    }
+                    summary.exact_placeable_appearance_custom_skipped = summary
+                        .exact_placeable_appearance_custom_skipped
+                        .saturating_add(1);
+                    summary.exact_placeable_update_module_custom_appearance_skipped = summary
+                        .exact_placeable_update_module_custom_appearance_skipped
+                        .saturating_add(1);
                 }
                 let position_rewritten =
                     reconcile_verified_placeable_update_position_with_area_context(
@@ -10812,6 +10903,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     summary.exact_placeable_update_appearance_rewritten = summary
                         .exact_placeable_update_appearance_rewritten
                         .saturating_add(1);
+                    if source_custom_appearance {
+                        summary.exact_placeable_update_source_custom_appearance_rewritten = summary
+                            .exact_placeable_update_source_custom_appearance_rewritten
+                            .saturating_add(1);
+                    }
                 }
                 if orientation_rewritten {
                     summary.exact_placeable_update_orientation_rewritten = summary
@@ -10922,6 +11018,14 @@ fn trace_exact_placeable_reconciliation_summary(
         add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
         update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
         appearance_custom_skipped = summary.exact_placeable_appearance_custom_skipped,
+        add_module_custom_appearance_skipped =
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+        update_module_custom_appearance_skipped =
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+        add_source_custom_appearance_rewritten =
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+        update_source_custom_appearance_rewritten =
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
         add_appearance_rewritten = summary.exact_placeable_add_appearance_rewritten,
         add_state_rewritten = summary.exact_placeable_add_state_rewritten,
         update_position_rewritten = summary.exact_placeable_update_position_rewritten,
@@ -10962,7 +11066,7 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
     if source_appearance == area_appearance {
         return Some(false);
     }
-    if area_appearance >= 0xFFFE {
+    if is_custom_placeable_appearance(area_appearance) {
         return Some(false);
     }
 
@@ -11107,13 +11211,13 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
     if source_appearance == area_appearance {
         return Some(PlaceableAppearanceRewrite::default());
     }
-    if area_appearance >= 0xFFFE {
+    if is_custom_placeable_appearance(area_appearance) {
         return Some(PlaceableAppearanceRewrite::default());
     }
 
     write_u16_le(live_bytes, appearance_offset, area_appearance)?;
     let mut bytes_removed = 0usize;
-    let source_resref = if source_appearance >= 0xFFFE {
+    let source_resref = if is_custom_placeable_appearance(source_appearance) {
         let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
         let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
         if resref_end > record_end {
@@ -11153,6 +11257,10 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
 struct PlaceableAppearanceRewrite {
     changed: bool,
     bytes_removed: usize,
+}
+
+fn is_custom_placeable_appearance(appearance: u16) -> bool {
+    appearance >= CUSTOM_PLACEABLE_APPEARANCE_MIN
 }
 
 fn reconcile_verified_placeable_update_orientation_with_area_context(

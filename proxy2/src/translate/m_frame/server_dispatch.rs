@@ -1007,6 +1007,14 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
         exact_placeable_appearance_custom_skipped =
             summary.exact_placeable_appearance_custom_skipped,
+        exact_placeable_add_module_custom_appearance_skipped =
+            summary.exact_placeable_add_module_custom_appearance_skipped,
+        exact_placeable_update_module_custom_appearance_skipped =
+            summary.exact_placeable_update_module_custom_appearance_skipped,
+        exact_placeable_add_source_custom_appearance_rewritten =
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+        exact_placeable_update_source_custom_appearance_rewritten =
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
         exact_placeable_add_appearance_rewritten = summary.exact_placeable_add_appearance_rewritten,
         exact_placeable_add_state_rewritten = summary.exact_placeable_add_state_rewritten,
         exact_placeable_update_position_rewritten =
