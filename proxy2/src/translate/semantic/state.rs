@@ -874,6 +874,7 @@ impl AreaPlaceableContextAppearanceOverlap for AreaPlaceableContextOverlap<'_> {
                 observed_appearance: observed.appearance,
                 observed_resref: observed.resref,
                 module_appearance: module.appearance,
+                module_template_resref: module.module_template_resref,
             },
         )
     }
@@ -1078,6 +1079,8 @@ pub(crate) struct AreaStaticPlaceableConflictRecordSummary {
     pub(crate) identity: u32,
     pub(crate) appearance: u32,
     pub(crate) appearance_module_custom_target: u32,
+    pub(crate) appearance_module_custom_target_with_resref: u32,
+    pub(crate) appearance_module_custom_target_missing_resref: u32,
     pub(crate) appearance_module_normal_target: u32,
     pub(crate) appearance_observed_custom_source: u32,
     pub(crate) state: u32,
@@ -1106,6 +1109,15 @@ impl AreaStaticPlaceableConflictRecordSummary {
             if is_custom_placeable_appearance(appearance.module_appearance) {
                 self.appearance_module_custom_target =
                     self.appearance_module_custom_target.saturating_add(1);
+                if appearance.module_template_resref.is_some() {
+                    self.appearance_module_custom_target_with_resref = self
+                        .appearance_module_custom_target_with_resref
+                        .saturating_add(1);
+                } else {
+                    self.appearance_module_custom_target_missing_resref = self
+                        .appearance_module_custom_target_missing_resref
+                        .saturating_add(1);
+                }
             } else {
                 self.appearance_module_normal_target =
                     self.appearance_module_normal_target.saturating_add(1);
@@ -1736,6 +1748,7 @@ mod tests {
             observed_appearance: 0x2222,
             observed_resref: None,
             module_appearance: 0x1234,
+            module_template_resref: None,
         };
         let object = registry
             .known
@@ -1854,6 +1867,7 @@ mod tests {
         let custom_target_compact_id = 0x0000_0004;
         let custom_target_external_id = 0x8000_0004;
         let observed_resref = *b"plc_custom_one\0\0";
+        let module_resref = *b"plc_custom_two\0\0";
         let area_context = AreaPlaceableContext {
             area_resref: "testarea".to_string(),
             static_rows: vec![
@@ -1867,6 +1881,7 @@ mod tests {
                 AreaPlaceableContextRow {
                     object_id: custom_target_compact_id,
                     appearance: 0xFFFE,
+                    module_template_resref: Some(module_resref),
                     object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
                     module_state: Some(AreaPlaceableContextState::default()),
                     ..AreaPlaceableContextRow::default()
@@ -1918,6 +1933,8 @@ mod tests {
                 owners: 2,
                 appearance: 2,
                 appearance_module_custom_target: 1,
+                appearance_module_custom_target_with_resref: 1,
+                appearance_module_custom_target_missing_resref: 0,
                 appearance_module_normal_target: 1,
                 appearance_observed_custom_source: 1,
                 ..AreaStaticPlaceableConflictRecordSummary::default()
@@ -2794,6 +2811,8 @@ mod tests {
                 identity: 1,
                 appearance: 1,
                 appearance_module_custom_target: 0,
+                appearance_module_custom_target_with_resref: 0,
+                appearance_module_custom_target_missing_resref: 0,
                 appearance_module_normal_target: 1,
                 appearance_observed_custom_source: 0,
                 state: 1,

@@ -1065,6 +1065,18 @@ Current status:
   local replay should check whether remaining module-custom appearance conflicts
   are add-only fixed-width rows, missing module TemplateResRef proof,
   identity/no-overlap, or another packet family.
+- 2026-06-13 follow-up module-custom placeable skip classification: packet
+  bytes are unchanged. Area/static placeable appearance conflicts now carry the
+  module TemplateResRef proof into the semantic snapshot, unresolved conflict
+  summaries split module-custom targets with/without TemplateResRef, and exact
+  `A/09`/`U/09` reconciliation summaries split fixed-width add skips from missing
+  TemplateResRef skips. This keeps the decompile-backed `A/09` fixed WORD layout
+  blocked while making the next local replay distinguish protocol-shape limits
+  from missing module context. Verified with focused `exact_placeable_`,
+  `area_context_`, `placeable_update`, `cargo check -q -p hgbridge-proxy2`,
+  `cargo fmt --all --check`, and `git diff --check`; next local replay should
+  compare the new custom-with-resref/missing-resref counters against unresolved
+  module-custom conflicts.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

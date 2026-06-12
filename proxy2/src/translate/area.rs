@@ -628,6 +628,7 @@ pub struct AreaPlaceableContextAppearanceConflict {
     pub observed_appearance: u16,
     pub observed_resref: Option<[u8; 16]>,
     pub module_appearance: u16,
+    pub module_template_resref: Option<[u8; 16]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

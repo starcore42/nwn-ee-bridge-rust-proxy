@@ -3267,6 +3267,10 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary.exact_placeable_update_module_custom_template_resref_missing,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_update_source_custom_appearance_rewritten,
             0
         );
@@ -3453,6 +3457,7 @@ mod diagnostic_tests {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
                 appearance: 0xFFFE,
+                module_template_resref: Some(*b"plc_custom_add\0\0"),
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: Some(crate::translate::area::AreaPlaceableContextState {
@@ -3481,6 +3486,14 @@ mod diagnostic_tests {
         assert_eq!(
             summary.exact_placeable_add_module_custom_appearance_skipped,
             1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_missing,
+            0
         );
         assert_eq!(
             summary.exact_placeable_add_source_custom_appearance_rewritten,
@@ -3806,6 +3819,9 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_appearance_custom_skipped: u32,
     pub exact_placeable_add_module_custom_appearance_skipped: u32,
     pub exact_placeable_update_module_custom_appearance_skipped: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_skipped: u32,
+    pub exact_placeable_add_module_custom_template_resref_missing: u32,
+    pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
     pub exact_placeable_update_source_custom_appearance_rewritten: u32,
     pub exact_placeable_add_appearance_rewritten: u32,
@@ -10864,18 +10880,27 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
-                let module_custom_appearance_target = matches!(
-                    target,
-                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row)
-                        if is_custom_placeable_appearance(row.appearance)
-                );
-                if module_custom_appearance_target {
+                if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
+                    target
+                    && is_custom_placeable_appearance(row.appearance)
+                {
                     summary.exact_placeable_appearance_custom_skipped = summary
                         .exact_placeable_appearance_custom_skipped
                         .saturating_add(1);
                     summary.exact_placeable_add_module_custom_appearance_skipped = summary
                         .exact_placeable_add_module_custom_appearance_skipped
                         .saturating_add(1);
+                    if row.module_template_resref.is_some() {
+                        summary
+                            .exact_placeable_add_module_custom_template_resref_fixed_width_skipped =
+                            summary
+                                .exact_placeable_add_module_custom_template_resref_fixed_width_skipped
+                                .saturating_add(1);
+                    } else {
+                        summary.exact_placeable_add_module_custom_template_resref_missing = summary
+                            .exact_placeable_add_module_custom_template_resref_missing
+                            .saturating_add(1);
+                    }
                 }
                 let source_custom_appearance = is_custom_placeable_appearance(add_claim.appearance);
                 let appearance_rewritten =
@@ -10951,6 +10976,9 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .saturating_add(1);
                     summary.exact_placeable_update_module_custom_appearance_skipped = summary
                         .exact_placeable_update_module_custom_appearance_skipped
+                        .saturating_add(1);
+                    summary.exact_placeable_update_module_custom_template_resref_missing = summary
+                        .exact_placeable_update_module_custom_template_resref_missing
                         .saturating_add(1);
                 }
                 let position_rewritten =
@@ -11136,6 +11164,12 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_module_custom_appearance_skipped,
         update_module_custom_appearance_skipped =
             summary.exact_placeable_update_module_custom_appearance_skipped,
+        add_module_custom_template_resref_fixed_width_skipped =
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+        add_module_custom_template_resref_missing =
+            summary.exact_placeable_add_module_custom_template_resref_missing,
+        update_module_custom_template_resref_missing =
+            summary.exact_placeable_update_module_custom_template_resref_missing,
         add_source_custom_appearance_rewritten =
             summary.exact_placeable_add_source_custom_appearance_rewritten,
         update_source_custom_appearance_rewritten =

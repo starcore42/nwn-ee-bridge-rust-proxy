@@ -881,6 +881,10 @@ fn trace_unresolved_area_static_placeable_conflicts(
             unresolved_placeable_appearance_conflicts = summary.appearance,
             unresolved_placeable_module_custom_appearance_conflicts =
                 summary.appearance_module_custom_target,
+            unresolved_placeable_module_custom_appearance_conflicts_with_resref =
+                summary.appearance_module_custom_target_with_resref,
+            unresolved_placeable_module_custom_appearance_conflicts_missing_resref =
+                summary.appearance_module_custom_target_missing_resref,
             unresolved_placeable_module_normal_appearance_conflicts =
                 summary.appearance_module_normal_target,
             unresolved_placeable_source_custom_appearance_conflicts =
@@ -1011,6 +1015,12 @@ fn trace_live_object_exact_rewrite_summary(
             summary.exact_placeable_add_module_custom_appearance_skipped,
         exact_placeable_update_module_custom_appearance_skipped =
             summary.exact_placeable_update_module_custom_appearance_skipped,
+        exact_placeable_add_module_custom_template_resref_fixed_width_skipped =
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+        exact_placeable_add_module_custom_template_resref_missing =
+            summary.exact_placeable_add_module_custom_template_resref_missing,
+        exact_placeable_update_module_custom_template_resref_missing =
+            summary.exact_placeable_update_module_custom_template_resref_missing,
         exact_placeable_add_source_custom_appearance_rewritten =
             summary.exact_placeable_add_source_custom_appearance_rewritten,
         exact_placeable_update_source_custom_appearance_rewritten =
@@ -1029,6 +1039,10 @@ fn trace_live_object_exact_rewrite_summary(
         unresolved_placeable_appearance_conflicts = unresolved.appearance,
         unresolved_placeable_module_custom_appearance_conflicts =
             unresolved.appearance_module_custom_target,
+        unresolved_placeable_module_custom_appearance_conflicts_with_resref =
+            unresolved.appearance_module_custom_target_with_resref,
+        unresolved_placeable_module_custom_appearance_conflicts_missing_resref =
+            unresolved.appearance_module_custom_target_missing_resref,
         unresolved_placeable_module_normal_appearance_conflicts =
             unresolved.appearance_module_normal_target,
         unresolved_placeable_source_custom_appearance_conflicts =
