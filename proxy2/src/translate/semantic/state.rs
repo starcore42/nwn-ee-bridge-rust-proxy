@@ -1077,6 +1077,9 @@ pub(crate) struct AreaStaticPlaceableConflictRecordSummary {
     pub(crate) owners: u32,
     pub(crate) identity: u32,
     pub(crate) appearance: u32,
+    pub(crate) appearance_module_custom_target: u32,
+    pub(crate) appearance_module_normal_target: u32,
+    pub(crate) appearance_observed_custom_source: u32,
     pub(crate) state: u32,
     pub(crate) orientation: u32,
     pub(crate) position: u32,
@@ -1098,6 +1101,21 @@ impl AreaStaticPlaceableConflictRecordSummary {
         }
         if snapshot.appearance.is_some() {
             self.appearance = self.appearance.saturating_add(1);
+        }
+        if let Some(appearance) = snapshot.appearance {
+            if is_custom_placeable_appearance(appearance.module_appearance) {
+                self.appearance_module_custom_target =
+                    self.appearance_module_custom_target.saturating_add(1);
+            } else {
+                self.appearance_module_normal_target =
+                    self.appearance_module_normal_target.saturating_add(1);
+            }
+            if is_custom_placeable_appearance(appearance.observed_appearance)
+                || appearance.observed_resref.is_some()
+            {
+                self.appearance_observed_custom_source =
+                    self.appearance_observed_custom_source.saturating_add(1);
+            }
         }
         if let Some(state) = snapshot.state {
             self.state = self.state.saturating_add(1);
@@ -1497,6 +1515,10 @@ fn position_matches_module(
         && (position.z - module_z).abs() <= PLACEABLE_POSITION_EPSILON
 }
 
+fn is_custom_placeable_appearance(appearance: u16) -> bool {
+    appearance >= 0xFFFE
+}
+
 impl KnownObjectState {
     fn merge_placeable_state(&mut self, observed: LiveObjectPlaceableState) {
         let state = self.placeable_state.get_or_insert_with(Default::default);
@@ -1759,6 +1781,18 @@ mod tests {
         assert_eq!(snapshot.position, None);
         assert_eq!(snapshot.formatted_classes(), "appearance");
         assert_eq!(snapshot.formatted_state_fields(), "none");
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_summary_for_records([(
+                0x09,
+                compact_object_id
+            )]),
+            AreaStaticPlaceableConflictRecordSummary {
+                owners: 1,
+                appearance: 1,
+                appearance_module_normal_target: 1,
+                ..AreaStaticPlaceableConflictRecordSummary::default()
+            }
+        );
 
         let resolving_update = LiveObjectMention {
             opcode: b'U',
@@ -1809,6 +1843,85 @@ mod tests {
             ),
             None,
             "static placeable appearance conflicts must not leak to other live-object types"
+        );
+    }
+
+    #[test]
+    fn area_context_conflict_summary_classifies_custom_placeable_appearance_edges() {
+        let mut registry = ObjectRegistry::default();
+        let normal_target_compact_id = 0x0000_0003;
+        let normal_target_external_id = 0x8000_0003;
+        let custom_target_compact_id = 0x0000_0004;
+        let custom_target_external_id = 0x8000_0004;
+        let observed_resref = *b"plc_custom_one\0\0";
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                AreaPlaceableContextRow {
+                    object_id: normal_target_compact_id,
+                    appearance: 0x0123,
+                    object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(AreaPlaceableContextState::default()),
+                    ..AreaPlaceableContextRow::default()
+                },
+                AreaPlaceableContextRow {
+                    object_id: custom_target_compact_id,
+                    appearance: 0xFFFE,
+                    object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(AreaPlaceableContextState::default()),
+                    ..AreaPlaceableContextRow::default()
+                },
+            ],
+            ..AreaPlaceableContext::default()
+        };
+        let mentions = [
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x09,
+                object_id: normal_target_external_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                    appearance: 0xFFFE,
+                    resref: Some(observed_resref),
+                }),
+                placeable_state: None,
+            },
+            LiveObjectMention {
+                opcode: b'A',
+                object_type: 0x09,
+                object_id: custom_target_external_id,
+                name: None,
+                position: None,
+                orientation: None,
+                bounds: None,
+                placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                    appearance: 0x0123,
+                    resref: None,
+                }),
+                placeable_state: None,
+            },
+        ];
+
+        registry.observe_mentions(&mentions);
+        registry.observe_placeable_area_context(&area_context, &mentions);
+
+        let summary = registry.unresolved_area_static_placeable_conflict_summary_for_records([
+            (0x09, normal_target_compact_id),
+            (0x09, custom_target_compact_id),
+        ]);
+        assert_eq!(
+            summary,
+            AreaStaticPlaceableConflictRecordSummary {
+                owners: 2,
+                appearance: 2,
+                appearance_module_custom_target: 1,
+                appearance_module_normal_target: 1,
+                appearance_observed_custom_source: 1,
+                ..AreaStaticPlaceableConflictRecordSummary::default()
+            }
         );
     }
 
@@ -2680,6 +2793,9 @@ mod tests {
                 owners: 2,
                 identity: 1,
                 appearance: 1,
+                appearance_module_custom_target: 0,
+                appearance_module_normal_target: 1,
+                appearance_observed_custom_source: 0,
                 state: 1,
                 orientation: 1,
                 position: 1,

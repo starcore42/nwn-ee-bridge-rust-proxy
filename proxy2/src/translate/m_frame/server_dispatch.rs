@@ -879,6 +879,12 @@ fn trace_unresolved_area_static_placeable_conflicts(
             unresolved_placeable_conflict_owners = summary.owners,
             unresolved_placeable_identity_conflicts = summary.identity,
             unresolved_placeable_appearance_conflicts = summary.appearance,
+            unresolved_placeable_module_custom_appearance_conflicts =
+                summary.appearance_module_custom_target,
+            unresolved_placeable_module_normal_appearance_conflicts =
+                summary.appearance_module_normal_target,
+            unresolved_placeable_source_custom_appearance_conflicts =
+                summary.appearance_observed_custom_source,
             unresolved_placeable_state_conflicts = summary.state,
             unresolved_placeable_orientation_conflicts = summary.orientation,
             unresolved_placeable_position_conflicts = summary.position,
@@ -1013,6 +1019,12 @@ fn trace_live_object_exact_rewrite_summary(
         unresolved_placeable_conflict_owners = unresolved.owners,
         unresolved_placeable_identity_conflicts = unresolved.identity,
         unresolved_placeable_appearance_conflicts = unresolved.appearance,
+        unresolved_placeable_module_custom_appearance_conflicts =
+            unresolved.appearance_module_custom_target,
+        unresolved_placeable_module_normal_appearance_conflicts =
+            unresolved.appearance_module_normal_target,
+        unresolved_placeable_source_custom_appearance_conflicts =
+            unresolved.appearance_observed_custom_source,
         unresolved_placeable_state_conflicts = unresolved.state,
         unresolved_placeable_orientation_conflicts = unresolved.orientation,
         unresolved_placeable_position_conflicts = unresolved.position,
