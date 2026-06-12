@@ -684,6 +684,31 @@ impl ObjectRegistry {
         .and_then(unresolved_area_static_placeable_conflict_snapshot)
     }
 
+    pub(crate) fn unresolved_area_static_placeable_conflict_summary_for_records<I>(
+        &self,
+        records: I,
+    ) -> AreaStaticPlaceableConflictRecordSummary
+    where
+        I: IntoIterator<Item = (u8, u32)>,
+    {
+        let mut summary = AreaStaticPlaceableConflictRecordSummary::default();
+        let mut seen_owner_ids = BTreeSet::new();
+        for (object_type, object_id) in records {
+            let Some(snapshot) = self
+                .unresolved_area_static_placeable_conflict_snapshot_for_record(
+                    object_type,
+                    object_id,
+                )
+            else {
+                continue;
+            };
+            if seen_owner_ids.insert(snapshot.object.object_id) {
+                summary.record(snapshot);
+            }
+        }
+        summary
+    }
+
     #[cfg(test)]
     pub(crate) fn active_placeable_with_unresolved_area_static_context_for_record(
         &self,
@@ -861,6 +886,53 @@ pub(crate) struct AreaStaticPlaceableConflictSnapshot<'a> {
     pub(crate) orientation: Option<AreaPlaceableContextOrientationConflict>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AreaStaticPlaceableConflictRecordSummary {
+    pub(crate) owners: u32,
+    pub(crate) identity: u32,
+    pub(crate) appearance: u32,
+    pub(crate) state: u32,
+    pub(crate) orientation: u32,
+    pub(crate) state_useable: u32,
+    pub(crate) state_trap_disarmable: u32,
+    pub(crate) state_lockable: u32,
+    pub(crate) state_locked: u32,
+}
+
+impl AreaStaticPlaceableConflictRecordSummary {
+    pub(crate) fn any(self) -> bool {
+        self.owners != 0
+    }
+
+    fn record(&mut self, snapshot: AreaStaticPlaceableConflictSnapshot<'_>) {
+        self.owners = self.owners.saturating_add(1);
+        if snapshot.identity.is_some() {
+            self.identity = self.identity.saturating_add(1);
+        }
+        if snapshot.appearance.is_some() {
+            self.appearance = self.appearance.saturating_add(1);
+        }
+        if let Some(state) = snapshot.state {
+            self.state = self.state.saturating_add(1);
+            if state.useable {
+                self.state_useable = self.state_useable.saturating_add(1);
+            }
+            if state.trap_disarmable {
+                self.state_trap_disarmable = self.state_trap_disarmable.saturating_add(1);
+            }
+            if state.lockable {
+                self.state_lockable = self.state_lockable.saturating_add(1);
+            }
+            if state.locked {
+                self.state_locked = self.state_locked.saturating_add(1);
+            }
+        }
+        if snapshot.orientation.is_some() {
+            self.orientation = self.orientation.saturating_add(1);
+        }
+    }
+}
+
 impl AreaStaticPlaceableConflictSnapshot<'_> {
     pub(crate) fn any(self) -> bool {
         self.identity.is_some()
@@ -940,8 +1012,9 @@ mod tests {
     use crate::translate::semantic::{LiveObjectOrientationSource, LiveObjectOrientationVector};
 
     use super::{
-        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableState, ObjectRegistry, PlayerListObjectIds,
+        AreaStaticPlaceableConflictRecordSummary, LiveObjectMention, LiveObjectOrientation,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, ObjectRegistry,
+        PlayerListObjectIds,
     };
 
     #[test]
@@ -1795,6 +1868,119 @@ mod tests {
             registry.unresolved_area_static_placeable_conflict_for_record(0x09, external_object_id),
             None,
             "delete rows clear unresolved mismatch state before id reuse"
+        );
+    }
+
+    #[test]
+    fn area_context_conflict_summary_dedupes_alias_owners_and_counts_classes() {
+        let mut registry = ObjectRegistry::default();
+        let compact_conflict_id = 0x0000_0003;
+        let external_conflict_id = 0x8000_0003;
+        let compact_identity_id = 0x0000_0004;
+        let external_identity_id = 0x8000_0004;
+
+        let conflict_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_conflict_id,
+                appearance: 0x1234,
+                has_direction: true,
+                dir_y: 1.0,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    useable: false,
+                    trap_disarmable: false,
+                    lockable: false,
+                    locked: false,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let conflicting_mention = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_conflict_id,
+            name: None,
+            position: None,
+            orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
+                scalar_tenths_degrees: 900,
+                vector: None,
+            }),
+            bounds: None,
+            placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                appearance: 0x2222,
+                resref: None,
+            }),
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(true),
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&conflicting_mention));
+        registry.observe_placeable_area_context(
+            &conflict_context,
+            std::slice::from_ref(&conflicting_mention),
+        );
+
+        let identity_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_identity_id,
+                appearance: 0x1234,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::AreaObjectAlias,
+                module_state: None,
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let identity_mention = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_identity_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&identity_mention));
+        registry.observe_placeable_area_context(
+            &identity_context,
+            std::slice::from_ref(&identity_mention),
+        );
+
+        let summary = registry.unresolved_area_static_placeable_conflict_summary_for_records([
+            (0x09, external_conflict_id),
+            (0x09, compact_conflict_id),
+            (0x09, external_identity_id),
+            (0x05, external_conflict_id),
+            (0x09, 0x8000_DEAD),
+        ]);
+
+        assert_eq!(
+            summary,
+            AreaStaticPlaceableConflictRecordSummary {
+                owners: 2,
+                identity: 1,
+                appearance: 1,
+                state: 1,
+                orientation: 1,
+                state_useable: 1,
+                state_trap_disarmable: 0,
+                state_lockable: 1,
+                state_locked: 1,
+            }
         );
     }
 

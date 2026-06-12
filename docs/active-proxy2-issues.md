@@ -956,6 +956,20 @@ Current status:
   these target/skipped counters with unresolved conflict snapshots to decide
   whether remaining placeable drift is an unimplemented writer rule or needs
   more decompile proof for custom/resref appearance handling.
+- 2026-06-12 follow-up exact placeable conflict-counter correlation: packet
+  bytes and reconciliation policy are unchanged. The semantic registry now
+  aggregates unresolved area/static placeable conflicts by compact/external
+  owner alias and class (`identity`, `appearance`, `state`, `orientation`, plus
+  state subfields). M-frame finalization carries the bounded exact live-object
+  rewrite summary through lifecycle proof and logs those unresolved conflict
+  counters beside the exact `A/09`/`U/09` target/skipped counters, so the next
+  local replay can compare a single final-payload summary instead of matching
+  separate lines by hand. Verified with focused `area_context_conflict_summary`,
+  `area_context_tracks_`, `exact_placeable_`, `placeable_update`,
+  `placeable_context_`, `cargo check -q -p hgbridge-proxy2`, and
+  `cargo fmt --all --check`; next local replay should classify remaining
+  placeable drift from the combined target-vs-conflict counters before adding
+  another writer rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

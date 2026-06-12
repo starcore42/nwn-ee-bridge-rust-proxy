@@ -96,6 +96,13 @@ pub(super) fn wrap_legacy_live_object_continuation_if_needed(payload: &mut Vec<u
 #[derive(Debug, Default)]
 struct ServerTranslatorClaim {
     area_rewrite: Option<area::AreaRewriteSummary>,
+    live_object_exact_rewrite: Option<LiveObjectExactRewriteClaim>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveObjectExactRewriteClaim {
+    source: &'static str,
+    summary: live_update::ExactLiveObjectRewriteSummary,
 }
 
 #[derive(Debug)]
@@ -758,8 +765,17 @@ fn finalize_server_translator_claim(
         return false;
     }
 
-    if family == VerifiedFamily::GameObjUpdateLiveObject {
-        trace_unresolved_area_static_placeable_conflicts(payload, family_name, object_registry);
+    let unresolved_placeable_conflicts = if family == VerifiedFamily::GameObjUpdateLiveObject {
+        trace_unresolved_area_static_placeable_conflicts(payload, family_name, object_registry)
+    } else {
+        semantic::AreaStaticPlaceableConflictRecordSummary::default()
+    };
+    if let Some(exact_rewrite) = claim.live_object_exact_rewrite {
+        trace_live_object_exact_rewrite_summary(
+            family_name,
+            exact_rewrite,
+            unresolved_placeable_conflicts,
+        );
     }
 
     rewrite.note_rewrite(family_name, family);
@@ -773,19 +789,22 @@ fn trace_unresolved_area_static_placeable_conflicts(
     payload: &[u8],
     family_name: &'static str,
     object_registry: Option<&semantic::ObjectRegistry>,
-) {
+) -> semantic::AreaStaticPlaceableConflictRecordSummary {
     let Some(registry) = object_registry else {
-        return;
+        return semantic::AreaStaticPlaceableConflictRecordSummary::default();
     };
     let Some(claim) = live_update::claim_payload_if_verified(payload) else {
-        return;
+        return semantic::AreaStaticPlaceableConflictRecordSummary::default();
     };
+    let summary = registry.unresolved_area_static_placeable_conflict_summary_for_records(
+        claim
+            .mentions
+            .iter()
+            .map(|mention| (mention.object_type, mention.object_id)),
+    );
 
     let mut seen = BTreeSet::new();
     for mention in claim.mentions {
-        if !seen.insert((mention.object_type, mention.object_id)) {
-            continue;
-        }
         let Some(snapshot) = registry
             .unresolved_area_static_placeable_conflict_snapshot_for_record(
                 mention.object_type,
@@ -795,6 +814,9 @@ fn trace_unresolved_area_static_placeable_conflicts(
             continue;
         };
         let conflict_object = snapshot.object;
+        if !seen.insert(conflict_object.object_id) {
+            continue;
+        }
         let registry_object_id = format!("0x{:08X}", conflict_object.object_id);
         let conflict_classes = snapshot.formatted_classes();
         let conflict_fields = snapshot.formatted_state_fields();
@@ -827,6 +849,59 @@ fn trace_unresolved_area_static_placeable_conflicts(
             "server live-object record translated while prior area/static placeable identity/appearance/state/orientation conflict remains unresolved"
         );
     }
+    if summary.any() {
+        tracing::debug!(
+            family = family_name,
+            unresolved_placeable_conflict_owners = summary.owners,
+            unresolved_placeable_identity_conflicts = summary.identity,
+            unresolved_placeable_appearance_conflicts = summary.appearance,
+            unresolved_placeable_state_conflicts = summary.state,
+            unresolved_placeable_orientation_conflicts = summary.orientation,
+            unresolved_placeable_state_useable_conflicts = summary.state_useable,
+            unresolved_placeable_state_trap_disarmable_conflicts = summary.state_trap_disarmable,
+            unresolved_placeable_state_lockable_conflicts = summary.state_lockable,
+            unresolved_placeable_state_locked_conflicts = summary.state_locked,
+            "server live-object payload unresolved area/static placeable conflict aggregate"
+        );
+    }
+    summary
+}
+
+fn trace_live_object_exact_rewrite_summary(
+    family_name: &'static str,
+    exact_rewrite: LiveObjectExactRewriteClaim,
+    unresolved_placeable_conflicts: semantic::AreaStaticPlaceableConflictRecordSummary,
+) {
+    let summary = exact_rewrite.summary;
+    tracing::info!(
+        source = exact_rewrite.source,
+        family = family_name,
+        update_passes_changed = summary.update_passes_changed,
+        add_passes_changed = summary.add_passes_changed,
+        add_name_bit_passes_changed = summary.add_name_bit_passes_changed,
+        exact_placeable_add_unique_targets = summary.exact_placeable_add_unique_targets,
+        exact_placeable_update_unique_targets = summary.exact_placeable_update_unique_targets,
+        exact_placeable_add_identity_blocked = summary.exact_placeable_add_identity_blocked,
+        exact_placeable_update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        exact_placeable_add_no_overlap = summary.exact_placeable_add_no_overlap,
+        exact_placeable_update_no_overlap = summary.exact_placeable_update_no_overlap,
+        exact_placeable_add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
+        exact_placeable_update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
+        exact_placeable_appearance_custom_skipped =
+            summary.exact_placeable_appearance_custom_skipped,
+        unresolved_placeable_conflict_owners = unresolved_placeable_conflicts.owners,
+        unresolved_placeable_identity_conflicts = unresolved_placeable_conflicts.identity,
+        unresolved_placeable_appearance_conflicts = unresolved_placeable_conflicts.appearance,
+        unresolved_placeable_state_conflicts = unresolved_placeable_conflicts.state,
+        unresolved_placeable_orientation_conflicts = unresolved_placeable_conflicts.orientation,
+        unresolved_placeable_state_useable_conflicts = unresolved_placeable_conflicts.state_useable,
+        unresolved_placeable_state_trap_disarmable_conflicts =
+            unresolved_placeable_conflicts.state_trap_disarmable,
+        unresolved_placeable_state_lockable_conflicts =
+            unresolved_placeable_conflicts.state_lockable,
+        unresolved_placeable_state_locked_conflicts = unresolved_placeable_conflicts.state_locked,
+        "server live-object payload reached exact EE shape through bounded typed orchestrator"
+    );
 }
 
 fn claimed() -> ServerTranslatorOutcome {
@@ -1707,26 +1782,6 @@ fn translate_live_object_records_if_verified(
         let external_object_id_summary =
             live_update::canonicalize_compact_external_object_ids_payload_for_ee(&mut candidate);
         if live_update::claim_payload_if_verified(&candidate).is_some() {
-            tracing::info!(
-                source,
-                update_passes_changed = summary.update_passes_changed,
-                add_passes_changed = summary.add_passes_changed,
-                add_name_bit_passes_changed = summary.add_name_bit_passes_changed,
-                exact_placeable_add_unique_targets = summary.exact_placeable_add_unique_targets,
-                exact_placeable_update_unique_targets =
-                    summary.exact_placeable_update_unique_targets,
-                exact_placeable_add_identity_blocked = summary.exact_placeable_add_identity_blocked,
-                exact_placeable_update_identity_blocked =
-                    summary.exact_placeable_update_identity_blocked,
-                exact_placeable_add_no_overlap = summary.exact_placeable_add_no_overlap,
-                exact_placeable_update_no_overlap = summary.exact_placeable_update_no_overlap,
-                exact_placeable_add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
-                exact_placeable_update_unique_unchanged =
-                    summary.exact_placeable_update_unique_unchanged,
-                exact_placeable_appearance_custom_skipped =
-                    summary.exact_placeable_appearance_custom_skipped,
-                "server live-object payload reached exact EE shape through bounded typed orchestrator"
-            );
             if let Some(summary) = external_object_id_summary {
                 tracing::info!(
                     source,
@@ -1738,7 +1793,10 @@ fn translate_live_object_records_if_verified(
             }
             dump_accepted_live_object_payload_if_enabled(&candidate, source);
             *payload = candidate;
-            return claimed();
+            return ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
+                live_object_exact_rewrite: Some(LiveObjectExactRewriteClaim { source, summary }),
+                ..ServerTranslatorClaim::default()
+            });
         }
     }
 
@@ -2041,6 +2099,7 @@ fn translate_area_client_area(
     ) {
         Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
             area_rewrite: Some(summary),
+            ..ServerTranslatorClaim::default()
         }),
         None => ServerTranslatorOutcome::None,
     }

@@ -19,6 +19,6 @@ pub(crate) use event::{
 };
 pub(crate) use reducer::{observe_verified_payload, observe_verified_payload_with_area_context};
 pub(crate) use state::{
-    AreaState, AuthState, KnownObjectState, ModuleState, ObjectRegistry, ResourceState,
-    SemanticSessionState, SyntheticState, UiState,
+    AreaState, AreaStaticPlaceableConflictRecordSummary, AuthState, KnownObjectState, ModuleState,
+    ObjectRegistry, ResourceState, SemanticSessionState, SyntheticState, UiState,
 };
