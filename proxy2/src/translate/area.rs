@@ -629,6 +629,16 @@ pub struct AreaPlaceableContextAppearanceConflict {
     pub module_appearance: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AreaPlaceableContextPositionConflict {
+    pub observed_x: f32,
+    pub observed_y: f32,
+    pub observed_z: f32,
+    pub module_x: f32,
+    pub module_y: f32,
+    pub module_z: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaPlaceableObservedOrientationSource {
     Scalar,

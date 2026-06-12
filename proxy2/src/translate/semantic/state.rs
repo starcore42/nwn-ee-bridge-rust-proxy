@@ -16,8 +16,9 @@ use crate::translate::{
     area::{
         AreaPlaceableContext, AreaPlaceableContextAppearanceConflict,
         AreaPlaceableContextIdentityConflict, AreaPlaceableContextOrientationConflict,
-        AreaPlaceableContextOverlap, AreaPlaceableContextStateConflict,
-        AreaPlaceableObservedOrientationSource, AreaPlaceableObservedState,
+        AreaPlaceableContextOverlap, AreaPlaceableContextPositionConflict,
+        AreaPlaceableContextStateConflict, AreaPlaceableObservedOrientationSource,
+        AreaPlaceableObservedState,
     },
     live_object_update::{area_static_row_scalar_orientation, object_ids},
     player_list::PlayerListObjectIds,
@@ -30,6 +31,7 @@ use super::event::{
 
 const MAX_RECENT_EVENTS: usize = 128;
 const PLACEABLE_OBJECT_TYPE: u8 = 0x09;
+const PLACEABLE_POSITION_EPSILON: f32 = 0.01;
 
 #[derive(Debug, Default)]
 pub(crate) struct SemanticSessionState {
@@ -286,6 +288,8 @@ impl ObjectRegistry {
                     entry.unresolved_area_static_state_conflict = None;
                     entry.latest_area_static_orientation_conflict = None;
                     entry.unresolved_area_static_orientation_conflict = None;
+                    entry.latest_area_static_position_conflict = None;
+                    entry.unresolved_area_static_position_conflict = None;
                     entry.delete_mentions = entry.delete_mentions.saturating_add(1);
                 }
                 b'U' | b'P' | b'I' | b'G' | b'W' => {
@@ -318,6 +322,7 @@ impl ObjectRegistry {
         const PLACEABLE_STATE_OBSERVATION: u8 = 0x01;
         const PLACEABLE_ORIENTATION_OBSERVATION: u8 = 0x02;
         const PLACEABLE_APPEARANCE_OBSERVATION: u8 = 0x04;
+        const PLACEABLE_POSITION_OBSERVATION: u8 = 0x08;
 
         let mut seen_observation_masks = BTreeMap::new();
         for mention in mentions {
@@ -333,6 +338,10 @@ impl ObjectRegistry {
                 0
             }) | (if mention.placeable_appearance.is_some() {
                 PLACEABLE_APPEARANCE_OBSERVATION
+            } else {
+                0
+            }) | (if mention.position.is_some() {
+                PLACEABLE_POSITION_OBSERVATION
             } else {
                 0
             });
@@ -352,6 +361,7 @@ impl ObjectRegistry {
                 (new_observation_mask & PLACEABLE_ORIENTATION_OBSERVATION) != 0;
             let observes_appearance =
                 (new_observation_mask & PLACEABLE_APPEARANCE_OBSERVATION) != 0;
+            let observes_position = (new_observation_mask & PLACEABLE_POSITION_OBSERVATION) != 0;
 
             let Some(known) = self.known.get(&registry_object_id) else {
                 continue;
@@ -359,6 +369,7 @@ impl ObjectRegistry {
             let placeable_state = known.placeable_state;
             let placeable_appearance = known.placeable_appearance;
             let live_orientation = known.orientation;
+            let live_position = known.position;
             let overlap = area_context.placeable_overlap_by(|row_object_id| {
                 object_ids::equivalent_legacy_external_object_ids(row_object_id, mention.object_id)
             });
@@ -391,6 +402,11 @@ impl ObjectRegistry {
             } else {
                 None
             };
+            let position_conflict = if observes_position {
+                overlap.static_module_position_conflict(live_position)
+            } else {
+                None
+            };
             let conflict_fields = conflict.formatted_fields();
             let area_rows = overlap.formatted_rows();
             let area_light_duplicate = overlap.has_light_row();
@@ -419,6 +435,10 @@ impl ObjectRegistry {
             let resolved_prior_orientation_conflict = observes_orientation
                 && prior_unresolved_orientation_conflict.is_some()
                 && orientation_conflict.is_none();
+            let prior_unresolved_position_conflict = known.unresolved_area_static_position_conflict;
+            let resolved_prior_position_conflict = observes_position
+                && prior_unresolved_position_conflict.is_some()
+                && position_conflict.is_none();
 
             if let Some(known) = self.known.get_mut(&registry_object_id) {
                 known.area_placeable_context_overlaps =
@@ -481,12 +501,29 @@ impl ObjectRegistry {
                             .saturating_add(1);
                     }
                 }
+                if observes_position {
+                    known.latest_area_static_position_conflict = position_conflict;
+                    if let Some(conflict) = position_conflict {
+                        known.area_static_position_conflicts =
+                            known.area_static_position_conflicts.saturating_add(1);
+                        known.unresolved_area_static_position_conflict = Some(conflict);
+                    } else if known
+                        .unresolved_area_static_position_conflict
+                        .take()
+                        .is_some()
+                    {
+                        known.area_static_position_conflict_resolutions = known
+                            .area_static_position_conflict_resolutions
+                            .saturating_add(1);
+                    }
+                }
             }
 
             if identity_conflict.is_some()
                 || conflict.any()
                 || appearance_conflict.is_some()
                 || orientation_conflict.is_some()
+                || position_conflict.is_some()
             {
                 tracing::info!(
                     object_id = format_args!("0x{registry_object_id:08X}"),
@@ -502,17 +539,20 @@ impl ObjectRegistry {
                     merged_placeable_appearance = ?placeable_appearance,
                     merged_placeable_state = ?placeable_state,
                     live_orientation = ?live_orientation,
+                    live_position = ?live_position,
                     area_module_identity_mismatch = ?identity_conflict,
                     area_module_state_mismatch_fields = %conflict_fields,
                     area_module_appearance_mismatch = ?appearance_conflict,
                     area_module_orientation_mismatch = ?orientation_conflict,
+                    area_module_position_mismatch = ?position_conflict,
                     area_rows = %area_rows,
-                    "semantic live-object placeable identity/appearance/state/orientation conflicts with module-backed area/static context"
+                    "semantic live-object placeable identity/appearance/state/orientation/position conflicts with module-backed area/static context"
                 );
             } else if resolved_prior_identity_conflict
                 || resolved_prior_conflict
                 || resolved_prior_appearance_conflict
                 || resolved_prior_orientation_conflict
+                || resolved_prior_position_conflict
             {
                 tracing::info!(
                     object_id = format_args!("0x{registry_object_id:08X}"),
@@ -528,12 +568,14 @@ impl ObjectRegistry {
                     merged_placeable_appearance = ?placeable_appearance,
                     merged_placeable_state = ?placeable_state,
                     live_orientation = ?live_orientation,
+                    live_position = ?live_position,
                     previous_area_module_identity_mismatch = ?prior_unresolved_identity_conflict,
                     previous_area_module_state_mismatch_fields = %prior_unresolved_conflict_fields,
                     previous_area_module_appearance_mismatch = ?prior_unresolved_appearance_conflict,
                     previous_area_module_orientation_mismatch = ?prior_unresolved_orientation_conflict,
+                    previous_area_module_position_mismatch = ?prior_unresolved_position_conflict,
                     area_rows = %area_rows,
-                    "semantic live-object placeable identity/appearance/state/orientation resolved prior module-backed area/static conflict"
+                    "semantic live-object placeable identity/appearance/state/orientation/position resolved prior module-backed area/static conflict"
                 );
             } else {
                 tracing::debug!(
@@ -548,9 +590,10 @@ impl ObjectRegistry {
                     merged_placeable_appearance = ?placeable_appearance,
                     merged_placeable_state = ?placeable_state,
                     live_orientation = ?live_orientation,
+                    live_position = ?live_position,
                     area_module_identity_mismatch = ?identity_conflict,
                     area_rows = %area_rows,
-                    "semantic live-object placeable identity/appearance/state/orientation overlaps area/static context"
+                    "semantic live-object placeable identity/appearance/state/orientation/position overlaps area/static context"
                 );
             }
         }
@@ -651,6 +694,16 @@ impl ObjectRegistry {
     ) -> Option<AreaPlaceableContextOrientationConflict> {
         self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
             .and_then(|snapshot| snapshot.orientation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unresolved_area_static_placeable_position_conflict_for_record(
+        &self,
+        object_type: u8,
+        object_id: u32,
+    ) -> Option<AreaPlaceableContextPositionConflict> {
+        self.unresolved_area_static_placeable_conflict_snapshot_for_record(object_type, object_id)
+            .and_then(|snapshot| snapshot.position)
     }
 
     #[cfg(test)]
@@ -764,6 +817,7 @@ fn unresolved_area_static_placeable_conflict_snapshot(
         appearance: object.unresolved_area_static_appearance_conflict,
         state: object.unresolved_area_static_state_conflict,
         orientation: object.unresolved_area_static_orientation_conflict,
+        position: object.unresolved_area_static_position_conflict,
     };
     snapshot.any().then_some(snapshot)
 }
@@ -823,6 +877,43 @@ impl AreaPlaceableContextOrientationOverlap for AreaPlaceableContextOverlap<'_> 
     }
 }
 
+trait AreaPlaceableContextPositionOverlap {
+    fn static_module_position_conflict(
+        &self,
+        observed: Option<LiveObjectPosition>,
+    ) -> Option<AreaPlaceableContextPositionConflict>;
+}
+
+impl AreaPlaceableContextPositionOverlap for AreaPlaceableContextOverlap<'_> {
+    fn static_module_position_conflict(
+        &self,
+        observed: Option<LiveObjectPosition>,
+    ) -> Option<AreaPlaceableContextPositionConflict> {
+        let observed = observed?;
+        let module = self.unique_module_backed_static_row()?;
+        if !observed.x.is_finite()
+            || !observed.y.is_finite()
+            || !observed.z.is_finite()
+            || !module.x.is_finite()
+            || !module.y.is_finite()
+            || !module.z.is_finite()
+        {
+            return None;
+        }
+        let differs = (observed.x - module.x).abs() > PLACEABLE_POSITION_EPSILON
+            || (observed.y - module.y).abs() > PLACEABLE_POSITION_EPSILON
+            || (observed.z - module.z).abs() > PLACEABLE_POSITION_EPSILON;
+        differs.then_some(AreaPlaceableContextPositionConflict {
+            observed_x: observed.x,
+            observed_y: observed.y,
+            observed_z: observed.z,
+            module_x: module.x,
+            module_y: module.y,
+            module_z: module.z,
+        })
+    }
+}
+
 fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
     if object_id == 0 || object_id == 0x7F00_0000 || object_id == u32::MAX {
         return None;
@@ -875,6 +966,11 @@ pub(crate) struct KnownObjectState {
     pub(crate) unresolved_area_static_orientation_conflict:
         Option<AreaPlaceableContextOrientationConflict>,
     pub(crate) area_static_orientation_conflict_resolutions: u64,
+    pub(crate) area_static_position_conflicts: u64,
+    pub(crate) latest_area_static_position_conflict: Option<AreaPlaceableContextPositionConflict>,
+    pub(crate) unresolved_area_static_position_conflict:
+        Option<AreaPlaceableContextPositionConflict>,
+    pub(crate) area_static_position_conflict_resolutions: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -884,6 +980,7 @@ pub(crate) struct AreaStaticPlaceableConflictSnapshot<'a> {
     pub(crate) appearance: Option<AreaPlaceableContextAppearanceConflict>,
     pub(crate) state: Option<AreaPlaceableContextStateConflict>,
     pub(crate) orientation: Option<AreaPlaceableContextOrientationConflict>,
+    pub(crate) position: Option<AreaPlaceableContextPositionConflict>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -893,6 +990,7 @@ pub(crate) struct AreaStaticPlaceableConflictRecordSummary {
     pub(crate) appearance: u32,
     pub(crate) state: u32,
     pub(crate) orientation: u32,
+    pub(crate) position: u32,
     pub(crate) state_useable: u32,
     pub(crate) state_trap_disarmable: u32,
     pub(crate) state_lockable: u32,
@@ -930,6 +1028,9 @@ impl AreaStaticPlaceableConflictRecordSummary {
         if snapshot.orientation.is_some() {
             self.orientation = self.orientation.saturating_add(1);
         }
+        if snapshot.position.is_some() {
+            self.position = self.position.saturating_add(1);
+        }
     }
 }
 
@@ -939,6 +1040,7 @@ impl AreaStaticPlaceableConflictSnapshot<'_> {
             || self.appearance.is_some()
             || self.state.is_some()
             || self.orientation.is_some()
+            || self.position.is_some()
     }
 
     pub(crate) fn formatted_classes(self) -> String {
@@ -954,6 +1056,9 @@ impl AreaStaticPlaceableConflictSnapshot<'_> {
         }
         if self.orientation.is_some() {
             classes.push("orientation");
+        }
+        if self.position.is_some() {
+            classes.push("position");
         }
         if classes.is_empty() {
             "none".to_string()
@@ -1005,16 +1110,16 @@ mod tests {
     use crate::translate::area::{
         AreaPlaceableContext, AreaPlaceableContextAppearanceConflict,
         AreaPlaceableContextIdentityConflict, AreaPlaceableContextObjectIdConfidence,
-        AreaPlaceableContextOrientationConflict, AreaPlaceableContextRow,
-        AreaPlaceableContextState, AreaPlaceableContextStateConflict,
+        AreaPlaceableContextOrientationConflict, AreaPlaceableContextPositionConflict,
+        AreaPlaceableContextRow, AreaPlaceableContextState, AreaPlaceableContextStateConflict,
         AreaPlaceableObservedOrientationSource,
     };
     use crate::translate::semantic::{LiveObjectOrientationSource, LiveObjectOrientationVector};
 
     use super::{
         AreaStaticPlaceableConflictRecordSummary, LiveObjectMention, LiveObjectOrientation,
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, ObjectRegistry,
-        PlayerListObjectIds,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition,
+        ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -1227,6 +1332,7 @@ mod tests {
         assert_eq!(snapshot.appearance, Some(expected_conflict));
         assert_eq!(snapshot.state, None);
         assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.position, None);
         assert_eq!(snapshot.formatted_classes(), "appearance");
         assert_eq!(snapshot.formatted_state_fields(), "none");
 
@@ -1398,6 +1504,7 @@ mod tests {
         assert_eq!(snapshot.appearance, None);
         assert_eq!(snapshot.state, None);
         assert_eq!(snapshot.orientation, Some(expected_conflict));
+        assert_eq!(snapshot.position, None);
         assert_eq!(snapshot.formatted_classes(), "orientation");
         assert_eq!(snapshot.formatted_state_fields(), "none");
 
@@ -1447,6 +1554,175 @@ mod tests {
             ),
             None,
             "static placeable orientation conflicts must not leak to other live-object types"
+        );
+    }
+
+    #[test]
+    fn area_context_tracks_verified_placeable_position_conflicts() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_object_id,
+                x: 12.34,
+                y: 56.78,
+                z: 0.0,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState::default()),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        let conflicting_update = LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: Some(LiveObjectPosition {
+                x: 1.0,
+                y: 2.0,
+                z: -3.0,
+            }),
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        };
+        registry.observe_mentions(std::slice::from_ref(&conflicting_update));
+        registry.observe_placeable_area_context(
+            &area_context,
+            std::slice::from_ref(&conflicting_update),
+        );
+
+        let expected_conflict = AreaPlaceableContextPositionConflict {
+            observed_x: 1.0,
+            observed_y: 2.0,
+            observed_z: -3.0,
+            module_x: 12.34,
+            module_y: 56.78,
+            module_z: 0.0,
+        };
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("placeable should stay registered after verified position update");
+        assert_eq!(object.area_placeable_context_overlaps, 1);
+        assert_eq!(object.area_static_position_conflicts, 1);
+        assert_eq!(
+            object.latest_area_static_position_conflict,
+            Some(expected_conflict)
+        );
+        assert_eq!(
+            object.unresolved_area_static_position_conflict,
+            Some(expected_conflict)
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_position_conflict_for_record(
+                0x09,
+                compact_object_id
+            ),
+            Some(expected_conflict),
+            "future compact U/09 rows should see the external position conflict"
+        );
+        let conflict_object = registry
+            .active_placeable_with_unresolved_area_static_context_for_record(
+                0x09,
+                compact_object_id,
+            )
+            .expect("compact diagnostics should resolve to the external conflict owner");
+        assert_eq!(conflict_object.object_id, external_object_id);
+        assert_eq!(conflict_object.position, conflicting_update.position);
+        assert_eq!(
+            conflict_object.unresolved_area_static_position_conflict,
+            Some(expected_conflict)
+        );
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0x09, compact_object_id)
+            .expect("compact diagnostics should expose one position snapshot");
+        assert_eq!(snapshot.object.object_id, external_object_id);
+        assert_eq!(snapshot.identity, None);
+        assert_eq!(snapshot.appearance, None);
+        assert_eq!(snapshot.state, None);
+        assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.position, Some(expected_conflict));
+        assert_eq!(snapshot.formatted_classes(), "position");
+        assert_eq!(snapshot.formatted_state_fields(), "none");
+
+        let summary = registry.unresolved_area_static_placeable_conflict_summary_for_records([
+            (0x09, external_object_id),
+            (0x09, compact_object_id),
+        ]);
+        assert_eq!(
+            summary,
+            AreaStaticPlaceableConflictRecordSummary {
+                owners: 1,
+                position: 1,
+                ..AreaStaticPlaceableConflictRecordSummary::default()
+            }
+        );
+
+        let resolving_update = LiveObjectMention {
+            opcode: b'U',
+            object_type: 0x09,
+            object_id: compact_object_id,
+            name: None,
+            position: Some(LiveObjectPosition {
+                x: 12.34,
+                y: 56.78,
+                z: 0.0,
+            }),
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        };
+        registry.observe_mentions(std::slice::from_ref(&resolving_update));
+        registry
+            .observe_placeable_area_context(&area_context, std::slice::from_ref(&resolving_update));
+
+        assert!(
+            !registry.known.contains_key(&compact_object_id),
+            "compact/external aliases should not create parallel placeable registry entries"
+        );
+        let object = registry
+            .known
+            .get(&external_object_id)
+            .expect("compact position update should merge into the external add entry");
+        assert_eq!(object.area_placeable_context_overlaps, 2);
+        assert_eq!(object.area_static_position_conflicts, 1);
+        assert_eq!(object.area_static_position_conflict_resolutions, 1);
+        assert_eq!(object.latest_area_static_position_conflict, None);
+        assert_eq!(object.unresolved_area_static_position_conflict, None);
+        assert_eq!(object.position, resolving_update.position);
+        assert_eq!(
+            registry.unresolved_area_static_placeable_position_conflict_for_record(
+                0x09,
+                external_object_id
+            ),
+            None
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_position_conflict_for_record(
+                0x05,
+                external_object_id
+            ),
+            None,
+            "static placeable position conflicts must not leak to other live-object types"
         );
     }
 
@@ -1534,6 +1810,7 @@ mod tests {
         assert_eq!(snapshot.appearance, None);
         assert_eq!(snapshot.state, None);
         assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.position, None);
         assert_eq!(snapshot.formatted_classes(), "identity");
         assert_eq!(snapshot.formatted_state_fields(), "none");
 
@@ -1798,6 +2075,7 @@ mod tests {
             })
         );
         assert_eq!(snapshot.orientation, None);
+        assert_eq!(snapshot.position, None);
         assert_eq!(snapshot.formatted_classes(), "state");
         assert_eq!(snapshot.formatted_state_fields(), "locked");
 
@@ -1903,7 +2181,11 @@ mod tests {
             object_type: 0x09,
             object_id: external_conflict_id,
             name: None,
-            position: None,
+            position: Some(LiveObjectPosition {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
             orientation: Some(LiveObjectOrientation {
                 source: LiveObjectOrientationSource::Scalar,
                 scalar_tenths_degrees: 900,
@@ -1976,6 +2258,7 @@ mod tests {
                 appearance: 1,
                 state: 1,
                 orientation: 1,
+                position: 1,
                 state_useable: 1,
                 state_trap_disarmable: 0,
                 state_lockable: 1,

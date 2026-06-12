@@ -981,6 +981,14 @@ Current status:
   `cargo fmt --all --check`, and `git diff --check`; next local replay should
   classify remaining drift outside exact position, vector/scalar orientation,
   same-width appearance, and proven state bits.
+- 2026-06-12 follow-up semantic position conflict diagnostics: packet bytes and
+  reconciliation policy are unchanged. Exact `U/09` position mentions now reuse
+  the verified parser-owned position claim, and the semantic registry plus
+  server-dispatch summaries track unresolved area/static position conflicts
+  beside identity, appearance, state, and orientation. Verified with focused
+  `area_context_`, `exact_placeable_`, and `placeable_update` regressions; next
+  local replay should classify remaining drift outside exact position,
+  vector/scalar orientation, same-width appearance, and proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

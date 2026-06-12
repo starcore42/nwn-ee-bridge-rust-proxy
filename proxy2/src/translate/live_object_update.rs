@@ -5476,6 +5476,8 @@ fn verified_record_mention(
             fragment_bits,
             bit_cursor,
             opcode,
+            object_type,
+            door_placeable_update_claim,
         ),
         orientation: verified_record_orientation(opcode, object_type, door_placeable_update_claim),
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
@@ -5997,9 +5999,22 @@ fn verified_record_position(
     fragment_bits: &[bool],
     bit_cursor: usize,
     opcode: u8,
+    object_type: u8,
+    door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
 ) -> Option<LiveObjectRecordPosition> {
-    if opcode != b'U'
-        || offset + LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES > record_end
+    if opcode != b'U' {
+        return None;
+    }
+    if matches!(object_type, DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) {
+        let position = door_placeable_update_claim?.position?;
+        return Some(LiveObjectRecordPosition {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+        });
+    }
+
+    if offset + LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES > record_end
         || record_end > live_bytes.len()
         || (read_u32_le(live_bytes, offset + 6)? & LEGACY_UPDATE_POSITION_MASK) == 0
         || fragment_bits.len().saturating_sub(bit_cursor) < LEGACY_UPDATE_POSITION_FRAGMENT_BITS

@@ -831,6 +831,7 @@ fn trace_unresolved_area_static_placeable_conflicts(
             registry_placeable_appearance = ?conflict_object.placeable_appearance,
             registry_placeable_state = ?conflict_object.placeable_state,
             registry_live_orientation = ?conflict_object.orientation,
+            registry_live_position = ?conflict_object.position,
             record_offset = mention.record_offset,
             record_end = mention.record_end,
             record_fragment_bits = format_args!(
@@ -841,12 +842,14 @@ fn trace_unresolved_area_static_placeable_conflicts(
             record_placeable_appearance = ?mention.placeable_appearance,
             record_placeable_state = ?mention.placeable_state,
             record_orientation = ?mention.orientation,
+            record_position = ?mention.position,
             unresolved_area_module_mismatch_classes = %conflict_classes,
             unresolved_area_module_identity_mismatch = ?snapshot.identity,
             unresolved_area_module_state_mismatch_fields = %conflict_fields,
             unresolved_area_module_appearance_mismatch = ?snapshot.appearance,
             unresolved_area_module_orientation_mismatch = ?snapshot.orientation,
-            "server live-object record translated while prior area/static placeable identity/appearance/state/orientation conflict remains unresolved"
+            unresolved_area_module_position_mismatch = ?snapshot.position,
+            "server live-object record translated while prior area/static placeable identity/appearance/state/orientation/position conflict remains unresolved"
         );
     }
     if summary.any() {
@@ -857,6 +860,7 @@ fn trace_unresolved_area_static_placeable_conflicts(
             unresolved_placeable_appearance_conflicts = summary.appearance,
             unresolved_placeable_state_conflicts = summary.state,
             unresolved_placeable_orientation_conflicts = summary.orientation,
+            unresolved_placeable_position_conflicts = summary.position,
             unresolved_placeable_state_useable_conflicts = summary.state_useable,
             unresolved_placeable_state_trap_disarmable_conflicts = summary.state_trap_disarmable,
             unresolved_placeable_state_lockable_conflicts = summary.state_lockable,
@@ -894,6 +898,7 @@ fn trace_live_object_exact_rewrite_summary(
         unresolved_placeable_appearance_conflicts = unresolved_placeable_conflicts.appearance,
         unresolved_placeable_state_conflicts = unresolved_placeable_conflicts.state,
         unresolved_placeable_orientation_conflicts = unresolved_placeable_conflicts.orientation,
+        unresolved_placeable_position_conflicts = unresolved_placeable_conflicts.position,
         unresolved_placeable_state_useable_conflicts = unresolved_placeable_conflicts.state_useable,
         unresolved_placeable_state_trap_disarmable_conflicts =
             unresolved_placeable_conflicts.state_trap_disarmable,
