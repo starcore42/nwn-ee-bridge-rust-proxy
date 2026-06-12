@@ -887,6 +887,28 @@ Current status:
   regressions, `cargo fmt --all --check`, `git diff --check`, and
   `cargo check -q -p hgbridge-proxy2`; next local replay should compare these
   current-vs-prior fields before adding any vector rewrite rule.
+- 2026-06-12 follow-up exact static/live placeable vector-orientation
+  synthesis: exact `U/09` vector-orientation rows now reconcile the six
+  parser-owned `ReadFLOAT(-2,2,16)` bytes with the uniquely matched,
+  module-backed static row direction while preserving the vector selector bit,
+  record length, fragment cursor, appearance/state offsets, and final exact EE
+  claim. Scalar rows still use the existing same-width 12-bit scalar rewrite,
+  and vector rewrite refuses rows without a normalized static direction. Verified
+  with focused vector/exact-placeable/placeable-update regressions,
+  `cargo fmt --all --check`, `git diff --check`, and `cargo check -q -p
+  hgbridge-proxy2`; next local replay should compare remaining drift outside
+  exact vector/scalar orientation, same-width appearance, and proven state bits.
+- 2026-06-12 follow-up unresolved placeable appearance diagnostics: packet
+  bytes and reconciliation behavior are unchanged. The semantic object registry
+  now tracks verified live-object placeable appearance conflicts against the
+  uniquely matched, module-backed static row appearance, carries unresolved
+  conflicts across compact/external id aliases, clears them on delete, and logs
+  appearance mismatches beside state/orientation in the live-object replay
+  diagnostic. Verified with focused appearance/state/orientation conflict
+  regressions, `cargo fmt --all --check`, `git diff --check`, and `cargo check
+  -q -p hgbridge-proxy2`; next local replay should classify any remaining
+  placeable drift as appearance, state, orientation, identity, or an unmodeled
+  packet family before adding another rewrite rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

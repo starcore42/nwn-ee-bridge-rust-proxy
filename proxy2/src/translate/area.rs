@@ -540,6 +540,13 @@ pub struct AreaPlaceableContextOrientationConflict {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaPlaceableContextAppearanceConflict {
+    pub observed_appearance: u16,
+    pub observed_resref: Option<[u8; 16]>,
+    pub module_appearance: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaPlaceableObservedOrientationSource {
     Scalar,
     Vector,
