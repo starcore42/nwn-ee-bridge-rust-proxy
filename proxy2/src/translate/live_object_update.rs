@@ -4013,6 +4013,151 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_module_custom_carrier_retains_nearest_update_details() {
+        let object_id = 0x8000_34D8u32;
+        let pre_add_resref = *b"plc_pre_update\0\0";
+        let following_resref = *b"plc_follow_updt\0";
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let pre_add_normal_offset = 0usize;
+
+        let pre_add_custom_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&pre_add_resref);
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        let following_normal_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0022u16.to_le_bytes());
+
+        let following_custom_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&following_resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("mixed U/A payload");
+        let claim = claim_payload_if_verified(&payload).expect("mixed U/A claim");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(&claim, object_id, add_end);
+
+        assert_eq!(carrier.following_kind(), "normal+custom");
+        assert_eq!(carrier.pre_add_kind(), "normal+custom");
+        assert_eq!(
+            carrier.following_normal.map(|record| record.record_offset),
+            Some(following_normal_offset)
+        );
+        assert_eq!(
+            carrier.following_custom.map(|record| {
+                (
+                    record.record_offset,
+                    record.appearance_offset,
+                    record.resref_offset,
+                    record.source_appearance,
+                    record.source_resref,
+                )
+            }),
+            Some((
+                following_custom_offset,
+                following_custom_offset + LEGACY_UPDATE_HEADER_BYTES,
+                Some(
+                    following_custom_offset
+                        + LEGACY_UPDATE_HEADER_BYTES
+                        + EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+                ),
+                0xFFFE,
+                Some(following_resref),
+            ))
+        );
+        assert_eq!(
+            carrier.pre_add_normal.map(|record| record.record_offset),
+            Some(pre_add_normal_offset)
+        );
+        assert_eq!(
+            carrier.pre_add_custom.map(|record| {
+                (
+                    record.record_offset,
+                    record.appearance_offset,
+                    record.resref_offset,
+                    record.source_appearance,
+                    record.source_resref,
+                )
+            }),
+            Some((
+                pre_add_custom_offset,
+                pre_add_custom_offset + LEGACY_UPDATE_HEADER_BYTES,
+                Some(
+                    pre_add_custom_offset
+                        + LEGACY_UPDATE_HEADER_BYTES
+                        + EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+                ),
+                0xFFFE,
+                Some(pre_add_resref),
+            ))
+        );
+        assert_eq!(
+            carrier
+                .selected_following()
+                .map(|record| record.record_offset),
+            Some(following_custom_offset),
+            "custom following rows are the actionable parser-owned carrier"
+        );
+        assert_eq!(
+            carrier
+                .selected_pre_add()
+                .map(|record| record.record_offset),
+            Some(pre_add_custom_offset),
+            "pre-add rows are logged as evidence but do not carry the add"
+        );
+
+        let add_mention = claim
+            .mentions
+            .iter()
+            .find(|mention| mention.record_offset == add_offset)
+            .expect("claim should retain the fixed-width A/09 mention");
+        assert_eq!(
+            add_mention.placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: add_offset + 11,
+                resref_offset: None,
+            }),
+            "A/09 remains a fixed-width WORD-only add-tail owner"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_reconciles_unique_area_static_state_with_optional_object_id() {
         let object_id = 0x8000_34D8u32;
         let optional_target = 0x8000_1234u32;
@@ -11445,13 +11590,20 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             mention.object_id,
                             mention.record_end,
                         );
+                        trace_exact_placeable_fixed_width_custom_add_candidate(
+                            area_context,
+                            mention,
+                            row,
+                            add_claim,
+                            update_carrier,
+                        );
                         if update_carrier.has_following() {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
                                     .saturating_add(1);
-                            if update_carrier.following_custom {
+                            if update_carrier.following_custom.is_some() {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update =
                                     summary
@@ -11470,7 +11622,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
                                     .saturating_add(1);
-                            if update_carrier.pre_add_custom {
+                            if update_carrier.pre_add_custom.is_some() {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only =
                                     summary
@@ -11732,19 +11884,77 @@ fn record_exact_placeable_reconciliation_target(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ExactPlaceableUpdateAppearanceCarrier {
-    following_normal: bool,
-    following_custom: bool,
-    pre_add_normal: bool,
-    pre_add_custom: bool,
+    following_normal: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
+    following_custom: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
+    pre_add_normal: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
+    pre_add_custom: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
 }
 
 impl ExactPlaceableUpdateAppearanceCarrier {
     fn has_following(self) -> bool {
-        self.following_normal || self.following_custom
+        self.following_normal.is_some() || self.following_custom.is_some()
     }
 
     fn has_pre_add(self) -> bool {
-        self.pre_add_normal || self.pre_add_custom
+        self.pre_add_normal.is_some() || self.pre_add_custom.is_some()
+    }
+
+    fn selected_following(self) -> Option<ExactPlaceableUpdateAppearanceCarrierRecord> {
+        self.following_custom.or(self.following_normal)
+    }
+
+    fn selected_pre_add(self) -> Option<ExactPlaceableUpdateAppearanceCarrierRecord> {
+        self.pre_add_custom.or(self.pre_add_normal)
+    }
+
+    fn following_kind(self) -> &'static str {
+        match (
+            self.following_normal.is_some(),
+            self.following_custom.is_some(),
+        ) {
+            (true, true) => "normal+custom",
+            (true, false) => "normal",
+            (false, true) => "custom",
+            (false, false) => "none",
+        }
+    }
+
+    fn pre_add_kind(self) -> &'static str {
+        match (self.pre_add_normal.is_some(), self.pre_add_custom.is_some()) {
+            (true, true) => "normal+custom",
+            (true, false) => "normal",
+            (false, true) => "custom",
+            (false, false) => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactPlaceableUpdateAppearanceCarrierRecord {
+    record_offset: usize,
+    record_end: usize,
+    appearance_offset: usize,
+    resref_offset: Option<usize>,
+    source_appearance: u16,
+    source_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+    fragment_bit_start: usize,
+    fragment_bit_end: usize,
+}
+
+impl ExactPlaceableUpdateAppearanceCarrierRecord {
+    fn from_mention(mention: &LiveObjectRecordMention) -> Option<Self> {
+        let claim = mention.placeable_appearance_claim?;
+        let appearance = mention.placeable_appearance?;
+        Some(Self {
+            record_offset: mention.record_offset,
+            record_end: mention.record_end,
+            appearance_offset: claim.appearance_offset,
+            resref_offset: claim.resref_offset,
+            source_appearance: appearance.appearance,
+            source_resref: appearance.resref,
+            fragment_bit_start: mention.fragment_bit_start,
+            fragment_bit_end: mention.fragment_bit_end,
+        })
     }
 }
 
@@ -11764,18 +11974,98 @@ fn exact_placeable_update_appearance_carrier_for_add(
         let Some(appearance_claim) = mention.placeable_appearance_claim else {
             continue;
         };
+        let Some(record) = ExactPlaceableUpdateAppearanceCarrierRecord::from_mention(mention)
+        else {
+            continue;
+        };
         let is_following = mention.record_offset >= add_record_end;
         if is_following && appearance_claim.resref_offset.is_some() {
-            carrier.following_custom = true;
+            keep_nearest_following_update_carrier(&mut carrier.following_custom, record);
         } else if is_following {
-            carrier.following_normal = true;
+            keep_nearest_following_update_carrier(&mut carrier.following_normal, record);
         } else if appearance_claim.resref_offset.is_some() {
-            carrier.pre_add_custom = true;
+            keep_nearest_pre_add_update_carrier(&mut carrier.pre_add_custom, record);
         } else {
-            carrier.pre_add_normal = true;
+            keep_nearest_pre_add_update_carrier(&mut carrier.pre_add_normal, record);
         }
     }
     carrier
+}
+
+fn keep_nearest_following_update_carrier(
+    slot: &mut Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
+    candidate: ExactPlaceableUpdateAppearanceCarrierRecord,
+) {
+    if match slot {
+        Some(existing) => candidate.record_offset < existing.record_offset,
+        None => true,
+    } {
+        *slot = Some(candidate);
+    }
+}
+
+fn keep_nearest_pre_add_update_carrier(
+    slot: &mut Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
+    candidate: ExactPlaceableUpdateAppearanceCarrierRecord,
+) {
+    if match slot {
+        Some(existing) => candidate.record_offset > existing.record_offset,
+        None => true,
+    } {
+        *slot = Some(candidate);
+    }
+}
+
+fn trace_exact_placeable_fixed_width_custom_add_candidate(
+    area_context: &AreaPlaceableContext,
+    mention: &LiveObjectRecordMention,
+    row: &AreaPlaceableContextRow,
+    add_claim: VerifiedPlaceableAddExactClaim,
+    carrier: ExactPlaceableUpdateAppearanceCarrier,
+) {
+    if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_none() {
+        return;
+    }
+
+    let following = carrier.selected_following();
+    let pre_add = carrier.selected_pre_add();
+    let following_source_appearance =
+        following.map(|record| format!("0x{:04X}", record.source_appearance));
+    let pre_add_source_appearance =
+        pre_add.map(|record| format!("0x{:04X}", record.source_appearance));
+    tracing::debug!(
+        area_resref = area_context.area_resref.as_str(),
+        object_id = format_args!("0x{:08X}", mention.object_id),
+        add_record_offset = mention.record_offset,
+        add_record_end = mention.record_end,
+        add_appearance_offset = add_claim.layout.byte_layout.tail_offset + 1,
+        add_source_appearance = format_args!("0x{:04X}", add_claim.appearance),
+        add_fragment_bit_start = mention.fragment_bit_start,
+        add_fragment_bit_end = mention.fragment_bit_end,
+        add_state_bit_cursor = add_claim.layout.post_name_bit,
+        add_next_bit_cursor = add_claim.layout.next_bit_cursor,
+        module_appearance = format_args!("0x{:04X}", row.appearance),
+        module_template_resref = ?row.module_template_resref,
+        following_carrier_kind = carrier.following_kind(),
+        following_record_offset = following.map(|record| record.record_offset),
+        following_record_end = following.map(|record| record.record_end),
+        following_appearance_offset = following.map(|record| record.appearance_offset),
+        following_resref_offset = following.and_then(|record| record.resref_offset),
+        following_source_appearance = following_source_appearance.as_deref(),
+        following_source_resref = ?following.and_then(|record| record.source_resref),
+        following_fragment_bit_start = following.map(|record| record.fragment_bit_start),
+        following_fragment_bit_end = following.map(|record| record.fragment_bit_end),
+        pre_add_carrier_kind = carrier.pre_add_kind(),
+        pre_add_record_offset = pre_add.map(|record| record.record_offset),
+        pre_add_record_end = pre_add.map(|record| record.record_end),
+        pre_add_appearance_offset = pre_add.map(|record| record.appearance_offset),
+        pre_add_resref_offset = pre_add.and_then(|record| record.resref_offset),
+        pre_add_source_appearance = pre_add_source_appearance.as_deref(),
+        pre_add_source_resref = ?pre_add.and_then(|record| record.source_resref),
+        pre_add_fragment_bit_start = pre_add.map(|record| record.fragment_bit_start),
+        pre_add_fragment_bit_end = pre_add.map(|record| record.fragment_bit_end),
+        "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
+    );
 }
 
 fn trace_exact_placeable_reconciliation_summary(

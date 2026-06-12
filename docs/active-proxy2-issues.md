@@ -1111,6 +1111,18 @@ Current status:
   ordered carrier regressions; next local replay should compare following
   `with_normal_update`/`with_custom_update`, `pre_add_update_only`, and
   `add_only` before adding any synthesized follow-up `U/09`.
+- 2026-06-13 follow-up fixed-width `A/09` custom-carrier detail trace: packet
+  bytes are unchanged. The exact placeable carrier helper now retains the
+  nearest same-object `U/09` appearance record details on each side of a
+  module-custom fixed-width add skip: record offsets, parser-owned appearance
+  WORD/CResRef offsets, source appearance/resref, and fragment bit span. When
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` is enabled, the skip branch emits one
+  candidate trace beside the aggregate counters so the next local replay can
+  distinguish add-only synthesis candidates from normal/custom following
+  carriers without guessing. Verified with focused carrier-detail regression,
+  `exact_placeable_`, `area_context_`, `placeable_update`, and `cargo check`;
+  next local replay should inspect the new candidate trace before deciding
+  whether to synthesize a following `U/09` writer.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
