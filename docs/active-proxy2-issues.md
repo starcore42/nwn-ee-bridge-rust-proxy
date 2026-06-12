@@ -1019,6 +1019,18 @@ Current status:
   `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all --check`, and
   `git diff --check`; next local replay should compare remaining appearance
   conflicts now that source-custom update rows can shrink to static WORDs.
+- 2026-06-13 follow-up exact `A/09` source-custom appearance collapse: exact
+  placeable add appearance reconciliation now treats a source `0xFFFE+`
+  appearance as the fixed-width add-tail WORD proven by the add parser, not a
+  `U/09`-style CResRef branch. A unique module-backed normal static row can
+  rewrite that WORD in place while preserving declared length, fragment cursor,
+  add-state bits, and the EE visual-transform map; only module-backed custom
+  targets remain counted as custom skipped. Verified with focused
+  `exact_placeable_add_rewrites_custom_word_to_unique_area_static_word`,
+  `exact_placeable_`, `placeable_update`, `cargo fmt --all --check`, and
+  `cargo check -q -p hgbridge-proxy2`; next local replay should classify any
+  remaining appearance conflicts as module-custom targets, identity/no-overlap,
+  or an unmodeled packet family.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

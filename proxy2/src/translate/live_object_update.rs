@@ -2272,6 +2272,102 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_rewrites_custom_word_to_unique_area_static_word() {
+        let object_id = 0x8000_34D8u32;
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact custom A/09");
+        let original_len = payload.len();
+        assert_eq!(
+            claim_payload_if_verified(&payload)
+                .expect("pre-rewrite exact custom A/09 claim")
+                .mentions[0]
+                .placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            })
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0022,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("fixed-width exact A/09 appearance WORD should reconcile");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
+        assert_eq!(summary.bytes_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+        assert_eq!(payload.len(), original_len);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact custom A/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            }),
+            "A/09 has no parser-owned CResRef branch, so only the WORD changes"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+            "same-width appearance collapse must not disturb add-state bits"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_reconciles_unique_area_static_appearance_word() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
@@ -10590,7 +10686,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 };
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
-                    && (add_claim.appearance >= 0xFFFE || row.appearance >= 0xFFFE)
+                    && row.appearance >= 0xFFFE
                 {
                     summary.exact_placeable_appearance_custom_skipped = summary
                         .exact_placeable_appearance_custom_skipped
@@ -10866,10 +10962,15 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
     if source_appearance == area_appearance {
         return Some(false);
     }
-    if source_appearance >= 0xFFFE || area_appearance >= 0xFFFE {
+    if area_appearance >= 0xFFFE {
         return Some(false);
     }
 
+    // Exact A/09 placeable adds have a fixed-width add tail: type byte,
+    // appearance WORD, secondary WORD, then fragment-owned optional-target and
+    // state BOOLs. Unlike U/09 updates, there is no parser-owned CResRef branch
+    // after a 0xFFFE+ source WORD, so a unique module-backed normal appearance
+    // can safely collapse the source WORD in place.
     write_u16_le(live_bytes, source_appearance_offset, area_appearance)?;
     tracing::info!(
         object_id = format_args!("0x{:08X}", claim.object_id),
