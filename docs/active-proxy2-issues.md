@@ -970,6 +970,17 @@ Current status:
   `cargo fmt --all --check`; next local replay should classify remaining
   placeable drift from the combined target-vs-conflict counters before adding
   another writer rule.
+- 2026-06-12 follow-up exact static/live placeable position synthesis: exact
+  `U/09` position rows now expose the parser-owned six read-buffer bytes plus
+  two Z residual bits from the verified EE/Diamond shared generic update
+  reader. The exact area/static reconciliation pass rewrites those same-width
+  X/Y/Z fields to the uniquely matched module-backed static row while
+  preserving orientation/appearance/state cursors and final exact claim.
+  Verified with focused exact-position, exact-placeable, placeable-update, and
+  area-context regressions plus `cargo check -q -p hgbridge-proxy2`,
+  `cargo fmt --all --check`, and `git diff --check`; next local replay should
+  classify remaining drift outside exact position, vector/scalar orientation,
+  same-width appearance, and proven state bits.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

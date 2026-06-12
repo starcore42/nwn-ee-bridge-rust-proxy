@@ -25,11 +25,24 @@ pub(super) struct LegacyNamedUpdateTail {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) read_end: usize,
+    pub(super) position: Option<VerifiedEeDoorPlaceablePosition>,
     pub(super) scalar_orientation: Option<VerifiedEeDoorPlaceableScalarOrientation>,
     pub(super) vector_orientation: Option<VerifiedEeDoorPlaceableVectorOrientation>,
     pub(super) appearance_offset: Option<usize>,
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEeDoorPlaceablePosition {
+    pub(super) read_offset: usize,
+    pub(super) bit_cursor: usize,
+    pub(super) x_raw: u16,
+    pub(super) y_raw: u16,
+    pub(super) z_raw: u32,
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) z: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -394,6 +407,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     let mut read_cursor = offset + LEGACY_UPDATE_HEADER_BYTES;
     let mut fragment_cursor = bit_cursor;
+    let mut position = None;
     let mut scalar_orientation = None;
     let mut vector_orientation = None;
     let mut appearance_offset = None;
@@ -401,6 +415,28 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
+        // Diamond `sub_467AE0` and EE `sub_14079C050` both read the shared
+        // position prefix before orientation: X/Y as full read-buffer
+        // `ReadFLOAT(100.0, 16)` words, then Z as `ReadFLOAT(-20.0, 320.0,
+        // 18)` with its low two bits in the CNW fragment stream.
+        let position_read_offset = read_cursor;
+        let position_bit_cursor = fragment_cursor;
+        let x_raw = read_u16_le(bytes, read_cursor)?;
+        let y_raw = read_u16_le(bytes, read_cursor + 2)?;
+        let z_high = u32::from(read_u16_le(bytes, read_cursor + 4)?);
+        let z_low = ((fragment_bits.get(fragment_cursor).copied()? as u32) << 1)
+            | (fragment_bits.get(fragment_cursor + 1).copied()? as u32);
+        let z_raw = (z_high << 2) | z_low;
+        position = Some(VerifiedEeDoorPlaceablePosition {
+            read_offset: position_read_offset,
+            bit_cursor: position_bit_cursor,
+            x_raw,
+            y_raw,
+            z_raw,
+            x: f32::from(x_raw) / 100.0,
+            y: f32::from(y_raw) / 100.0,
+            z: decode_ee_position_z(z_raw),
+        });
         read_cursor = read_cursor.checked_add(LEGACY_UPDATE_POSITION_READ_BYTES)?;
         if read_cursor > record_end {
             return None;
@@ -537,12 +573,20 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
 
     Some(VerifiedEeDoorPlaceableUpdateRecord {
         read_end: read_cursor,
+        position,
         scalar_orientation,
         vector_orientation,
         appearance_offset,
         state_bit_cursor,
         next_bit_cursor: fragment_cursor,
     })
+}
+
+fn decode_ee_position_z(raw: u32) -> f32 {
+    const Z_MIN: f32 = -20.0;
+    const Z_MAX: f32 = 320.0;
+    const Z_RAW_MAX: f32 = ((1_u32 << 18) - 1) as f32;
+    Z_MIN + (raw as f32 / Z_RAW_MAX) * (Z_MAX - Z_MIN)
 }
 
 fn decode_ee_vector_orientation_component(raw: u16) -> f32 {

@@ -2428,6 +2428,130 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_reconciles_unique_area_static_position() {
+        let object_id = 0x8000_34D8u32;
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        live.push(0x70);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, true, // position Z residual bits.
+            false, true, false, true, false, // scalar orientation 0x70A.
+            false, true, false, true, false, // lockable=true, locked=false.
+            false, // EE-only door/placeable state guard.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact U/09 payload");
+        let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact U/09");
+        let source_position = claim.mentions[0]
+            .position
+            .expect("pre-rewrite exact U/09 should expose position");
+        assert!((source_position.x - 0.16).abs() < 0.0001);
+        assert!((source_position.y - 0.32).abs() < 0.0001);
+        assert!(
+            source_position.z > -20.0 && source_position.z < -19.0,
+            "source Z should decode from the 16 read-buffer bits plus two residual bits"
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                x: 12.34,
+                y: 56.78,
+                z: 0.0,
+                has_direction: false,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact U/09 position");
+        assert_eq!(summary.add_records_examined, 0);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 claim");
+        let position = claim.mentions[0]
+            .position
+            .expect("post-rewrite exact U/09 should retain position mention");
+        assert!((position.x - 12.34).abs() < 0.0001);
+        assert!((position.y - 56.78).abs() < 0.0001);
+        assert!((position.z - 0.0).abs() < 0.001);
+        assert_eq!(
+            claim.mentions[0].orientation,
+            Some(LiveObjectRecordOrientation {
+                source: LiveObjectRecordOrientationSource::Scalar,
+                scalar_tenths_degrees: 0x70A,
+                vector: None,
+            }),
+            "position reconciliation must not disturb the parser-owned orientation bits"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "position reconciliation must not disturb the parser-owned state block"
+        );
+
+        let rewritten_live = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared];
+        assert_eq!(
+            read_u16_le(rewritten_live, LEGACY_UPDATE_HEADER_BYTES),
+            Some(1234)
+        );
+        assert_eq!(
+            read_u16_le(rewritten_live, LEGACY_UPDATE_HEADER_BYTES + 2),
+            Some(5678)
+        );
+        let target_z_raw = encode_ee_position_z(0.0).expect("test Z should be encodable");
+        assert_eq!(
+            read_u16_le(rewritten_live, LEGACY_UPDATE_HEADER_BYTES + 4),
+            Some((target_z_raw >> 2) as u16)
+        );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact U/09 fragment bits");
+        assert_eq!(
+            &rewritten_bits[CNW_FRAGMENT_HEADER_BITS
+                ..CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS],
+            &[((target_z_raw >> 1) & 1) != 0, (target_z_raw & 1) != 0],
+            "Z residual bits must stay at the parser-owned position cursor"
+        );
+        assert_eq!(
+            &rewritten_bits[CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                ..CNW_FRAGMENT_HEADER_BITS
+                    + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS],
+            &[false, true, false, true, false],
+            "the following scalar orientation bits must be unchanged"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_reconciles_visual_fields_from_one_verified_claim() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_POSITION_MASK
@@ -6747,9 +6871,9 @@ fn rewrite_update_records_payload_with_area_context_inner(
     // update rewriter again would be byte surgery against a proven packet.
     // The only exact-payload exception is the area/static placeable
     // reconciliation below: it reuses verified record boundaries and changes
-    // only same-width `A/09`/`U/09` placeable appearance WORDs, scalar
-    // orientation fields, and state BOOLs when a unique module-backed static
-    // row proves the EE-facing state.
+    // only same-width `A/09`/`U/09` placeable appearance WORDs, U/09 position
+    // fields, orientation fields, and state BOOLs when a unique module-backed
+    // static row proves the EE-facing state.
     if claim_payload_if_verified(payload).is_some() {
         if let Some(area_context) = area_context {
             return rewrite_verified_placeable_states_with_area_context_if_possible(
@@ -10360,6 +10484,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         }
                     }
                 }
+                let position_rewritten =
+                    reconcile_verified_placeable_update_position_with_area_context(
+                        area_context,
+                        &mut live_bytes,
+                        mention.record_offset,
+                        mention.record_end,
+                        &mut fragment_bits,
+                        update_claim,
+                    )?;
                 let appearance_rewritten =
                     reconcile_verified_placeable_update_appearance_with_area_context(
                         area_context,
@@ -10387,7 +10520,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         mention.record_offset,
                         mention.record_end,
                     )?;
-                if appearance_rewritten || orientation_rewritten || state_rewritten {
+                if position_rewritten
+                    || appearance_rewritten
+                    || orientation_rewritten
+                    || state_rewritten
+                {
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                 } else if matches!(
@@ -10578,6 +10715,57 @@ fn verified_placeable_update_exact_claim(
     })
 }
 
+fn reconcile_verified_placeable_update_position_with_area_context(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut [u8],
+    record_offset: usize,
+    record_end: usize,
+    bits: &mut [bool],
+    claim: VerifiedPlaceableUpdateExactClaim,
+) -> Option<bool> {
+    let Some(source_position) = claim.parser.position else {
+        return Some(false);
+    };
+    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+        area_context,
+        claim.object_id,
+        record_offset,
+        record_end,
+        "position-update",
+    ) else {
+        return Some(false);
+    };
+    let area_position = encode_area_static_row_position(area_row)?;
+    if source_position.x_raw == area_position.x_raw
+        && source_position.y_raw == area_position.y_raw
+        && source_position.z_raw == area_position.z_raw
+    {
+        return Some(false);
+    }
+
+    let changed = write_verified_position(live_bytes, bits, source_position, area_position)?;
+    tracing::info!(
+        object_id = format_args!("0x{:08X}", claim.object_id),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{:08X}", claim.mask),
+        source_x = source_position.x,
+        source_y = source_position.y,
+        source_z = source_position.z,
+        emitted_x = area_position.x,
+        emitted_y = area_position.y,
+        emitted_z = area_position.z,
+        position_read_offset = source_position.read_offset,
+        position_bit_cursor = source_position.bit_cursor,
+        state_bit_cursor = ?claim.parser.state_bit_cursor,
+        next_bit_cursor = claim.parser.next_bit_cursor,
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %area_rows,
+        "server->client exact live-object placeable update position reconciled with unique module-backed area/static row"
+    );
+    Some(changed)
+}
+
 fn reconcile_verified_placeable_update_appearance_with_area_context(
     area_context: &AreaPlaceableContext,
     live_bytes: &mut [u8],
@@ -10756,6 +10944,29 @@ fn placeable_static_reconciliation_target_for_object<'a>(
     (overlap.static_reconciliation_target(), area_rows)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AreaStaticRowPosition {
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+fn encode_area_static_row_position(
+    row: &crate::translate::area::AreaPlaceableContextRow,
+) -> Option<AreaStaticRowPosition> {
+    Some(AreaStaticRowPosition {
+        x_raw: encode_ee_position_component_100(row.x)?,
+        y_raw: encode_ee_position_component_100(row.y)?,
+        z_raw: encode_ee_position_z(row.z)?,
+        x: row.x,
+        y: row.y,
+        z: row.z,
+    })
+}
+
 pub(crate) fn area_static_row_scalar_orientation(
     row: &crate::translate::area::AreaPlaceableContextRow,
 ) -> Option<u16> {
@@ -10812,6 +11023,31 @@ fn area_static_row_vector_orientation(
     })
 }
 
+fn write_verified_position(
+    live_bytes: &mut [u8],
+    bits: &mut [bool],
+    source: reader::VerifiedEeDoorPlaceablePosition,
+    position: AreaStaticRowPosition,
+) -> Option<bool> {
+    let mut changed = false;
+    for (offset, raw) in [
+        (source.read_offset, position.x_raw),
+        (source.read_offset + 2, position.y_raw),
+        (source.read_offset + 4, (position.z_raw >> 2) as u16),
+    ] {
+        let target = raw.to_le_bytes();
+        let bytes = live_bytes.get_mut(offset..offset + 2)?;
+        if bytes != target {
+            bytes.copy_from_slice(&target);
+            changed = true;
+        }
+    }
+
+    changed |= set_fragment_bit(bits, source.bit_cursor, ((position.z_raw >> 1) & 1) != 0)?;
+    changed |= set_fragment_bit(bits, source.bit_cursor + 1, (position.z_raw & 1) != 0)?;
+    Some(changed)
+}
+
 fn write_verified_scalar_orientation(
     live_bytes: &mut [u8],
     bits: &mut [bool],
@@ -10864,6 +11100,32 @@ fn write_verified_vector_orientation(
         }
     }
     Some((changed, bits_changed))
+}
+
+fn encode_ee_position_component_100(value: f32) -> Option<u16> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    let raw = (f64::from(value) * 100.0).round();
+    if !(0.0..=f64::from(u16::MAX)).contains(&raw) {
+        return None;
+    }
+    Some(raw as u16)
+}
+
+fn encode_ee_position_z(value: f32) -> Option<u32> {
+    if !value.is_finite() {
+        return None;
+    }
+    const Z_MIN: f64 = -20.0;
+    const Z_MAX: f64 = 320.0;
+    const Z_RAW_MAX: u32 = (1_u32 << 18) - 1;
+    let value = f64::from(value);
+    if !(Z_MIN..=Z_MAX).contains(&value) {
+        return None;
+    }
+    let raw = ((value - Z_MIN) * f64::from(Z_RAW_MAX) / (Z_MAX - Z_MIN)).round();
+    Some((raw as u32).min(Z_RAW_MAX))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
