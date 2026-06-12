@@ -565,26 +565,10 @@ impl ObjectRegistry {
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextStateConflict> {
-        if object_type != PLACEABLE_OBJECT_TYPE {
-            return None;
-        }
-
-        self.known
-            .get(&object_id)
-            .and_then(unresolved_area_static_placeable_conflict)
-            .or_else(|| {
-                self.known
-                    .values()
-                    .find(|object| {
-                        object.object_type == PLACEABLE_OBJECT_TYPE
-                            && object_ids::equivalent_legacy_external_object_ids(
-                                object.object_id,
-                                object_id,
-                            )
-                            && unresolved_area_static_placeable_conflict(object).is_some()
-                    })
-                    .and_then(unresolved_area_static_placeable_conflict)
-            })
+        self.placeable_object_for_record_matching(object_type, object_id, |object| {
+            unresolved_area_static_placeable_conflict(object).is_some()
+        })
+        .and_then(unresolved_area_static_placeable_conflict)
     }
 
     pub(crate) fn unresolved_area_static_placeable_orientation_conflict_for_record(
@@ -592,27 +576,47 @@ impl ObjectRegistry {
         object_type: u8,
         object_id: u32,
     ) -> Option<AreaPlaceableContextOrientationConflict> {
+        self.placeable_object_for_record_matching(object_type, object_id, |object| {
+            unresolved_area_static_placeable_orientation_conflict(object).is_some()
+        })
+        .and_then(unresolved_area_static_placeable_orientation_conflict)
+    }
+
+    pub(crate) fn active_placeable_with_unresolved_area_static_context_for_record(
+        &self,
+        object_type: u8,
+        object_id: u32,
+    ) -> Option<&KnownObjectState> {
+        self.placeable_object_for_record_matching(object_type, object_id, |object| {
+            unresolved_area_static_placeable_conflict(object).is_some()
+                || unresolved_area_static_placeable_orientation_conflict(object).is_some()
+        })
+    }
+
+    fn placeable_object_for_record_matching<F>(
+        &self,
+        object_type: u8,
+        object_id: u32,
+        mut predicate: F,
+    ) -> Option<&KnownObjectState>
+    where
+        F: FnMut(&KnownObjectState) -> bool,
+    {
         if object_type != PLACEABLE_OBJECT_TYPE {
             return None;
         }
 
-        self.known
-            .get(&object_id)
-            .and_then(unresolved_area_static_placeable_orientation_conflict)
-            .or_else(|| {
-                self.known
-                    .values()
-                    .find(|object| {
-                        object.object_type == PLACEABLE_OBJECT_TYPE
-                            && object_ids::equivalent_legacy_external_object_ids(
-                                object.object_id,
-                                object_id,
-                            )
-                            && unresolved_area_static_placeable_orientation_conflict(object)
-                                .is_some()
-                    })
-                    .and_then(unresolved_area_static_placeable_orientation_conflict)
-            })
+        if let Some(object) = self.known.get(&object_id) {
+            if object.object_type == PLACEABLE_OBJECT_TYPE && predicate(object) {
+                return Some(object);
+            }
+        }
+
+        self.known.values().find(|object| {
+            object.object_type == PLACEABLE_OBJECT_TYPE
+                && object_ids::equivalent_legacy_external_object_ids(object.object_id, object_id)
+                && predicate(object)
+        })
     }
 
     pub(crate) fn session_creature_id_for_compact(&self, compact_id: u32) -> Option<u32> {
@@ -985,6 +989,18 @@ mod tests {
             Some(expected_conflict),
             "future compact U/09 rows should see the external orientation conflict"
         );
+        let conflict_object = registry
+            .active_placeable_with_unresolved_area_static_context_for_record(
+                0x09,
+                compact_object_id,
+            )
+            .expect("compact diagnostics should resolve to the external conflict owner");
+        assert_eq!(conflict_object.object_id, external_object_id);
+        assert_eq!(conflict_object.orientation, conflicting_update.orientation);
+        assert_eq!(
+            conflict_object.unresolved_area_static_orientation_conflict,
+            Some(expected_conflict)
+        );
 
         let resolving_update = LiveObjectMention {
             opcode: b'U',
@@ -1344,6 +1360,17 @@ mod tests {
                 ..AreaPlaceableContextStateConflict::default()
             }),
             "future compact U/09 rows should see the external A/09 conflict"
+        );
+        let conflict_object = registry
+            .active_placeable_with_unresolved_area_static_context_for_record(
+                0x09,
+                compact_object_id,
+            )
+            .expect("compact diagnostics should resolve to the external conflict owner");
+        assert_eq!(conflict_object.object_id, external_object_id);
+        assert_eq!(
+            conflict_object.placeable_state,
+            conflicting_add.placeable_state
         );
 
         let resolving_compact_update = LiveObjectMention {

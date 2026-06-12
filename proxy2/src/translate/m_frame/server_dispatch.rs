@@ -798,6 +798,14 @@ fn trace_unresolved_area_static_placeable_conflicts(
         if state_conflict.is_none() && orientation_conflict.is_none() {
             continue;
         }
+        let conflict_object = registry
+            .active_placeable_with_unresolved_area_static_context_for_record(
+                mention.object_type,
+                mention.object_id,
+            );
+        let registry_object_id = conflict_object
+            .map(|object| format!("0x{:08X}", object.object_id))
+            .unwrap_or_else(|| "none".to_string());
         let conflict_fields = state_conflict
             .map(|conflict| conflict.formatted_fields())
             .unwrap_or_else(|| "none".to_string());
@@ -806,6 +814,22 @@ fn trace_unresolved_area_static_placeable_conflicts(
             opcode = %char::from(mention.opcode),
             object_type = mention.object_type,
             object_id = format_args!("0x{:08X}", mention.object_id),
+            registry_object_id = %registry_object_id,
+            registry_last_opcode = ?conflict_object.map(|object| char::from(object.last_opcode)),
+            registry_mentions = conflict_object.map(|object| object.mentions).unwrap_or(0),
+            registry_placeable_appearance = ?conflict_object.and_then(|object| object.placeable_appearance),
+            registry_placeable_state = ?conflict_object.and_then(|object| object.placeable_state),
+            registry_live_orientation = ?conflict_object.and_then(|object| object.orientation),
+            record_offset = mention.record_offset,
+            record_end = mention.record_end,
+            record_fragment_bits = format_args!(
+                "{}..{}",
+                mention.fragment_bit_start,
+                mention.fragment_bit_end
+            ),
+            record_placeable_appearance = ?mention.placeable_appearance,
+            record_placeable_state = ?mention.placeable_state,
+            record_orientation = ?mention.orientation,
             unresolved_area_module_state_mismatch_fields = %conflict_fields,
             unresolved_area_module_orientation_mismatch = ?orientation_conflict,
             "server live-object record translated while prior area/static placeable state/orientation conflict remains unresolved"
