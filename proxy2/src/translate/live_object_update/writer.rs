@@ -56,11 +56,23 @@ pub(super) fn encode_ee_scalar_orientation_from_bearing_radians(bearing: f32) ->
     Some(raw.rem_euclid(FULL_TURN_TENTHS).min(0x0FFF) as u16)
 }
 
+pub(super) fn encode_ee_vector_orientation_component(value: f32) -> Option<u16> {
+    if !value.is_finite() {
+        return None;
+    }
+    // EE `sub_14079C050` and Diamond `sub_467AE0` both read orientation-vector
+    // components with `CNWMessage::ReadFLOAT(-2.0, 2.0, 16)`. Keep vector
+    // rewrites in that same six-byte branch instead of converting the record
+    // to scalar and moving the fragment cursor.
+    let normalized = ((value.clamp(-2.0, 2.0) + 2.0) as f64) / 4.0;
+    Some((normalized * f64::from(u16::MAX)).round() as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         encode_ee_scalar_orientation_from_bearing_radians,
-        encode_ee_scalar_orientation_from_legacy_facing,
+        encode_ee_scalar_orientation_from_legacy_facing, encode_ee_vector_orientation_component,
     };
 
     #[test]
@@ -95,5 +107,19 @@ mod tests {
             encode_ee_scalar_orientation_from_bearing_radians(-std::f32::consts::FRAC_PI_2),
             Some(2700)
         );
+    }
+
+    #[test]
+    fn ee_vector_orientation_component_encodes_read_float_domain() {
+        assert_eq!(encode_ee_vector_orientation_component(-2.0), Some(0));
+        assert_eq!(encode_ee_vector_orientation_component(2.0), Some(u16::MAX));
+        assert_eq!(
+            encode_ee_vector_orientation_component(0.0),
+            Some(0x8000),
+            "midpoint should round to the nearest representable ReadFLOAT value"
+        );
+        assert_eq!(encode_ee_vector_orientation_component(-3.0), Some(0));
+        assert_eq!(encode_ee_vector_orientation_component(3.0), Some(u16::MAX));
+        assert_eq!(encode_ee_vector_orientation_component(f32::NAN), None);
     }
 }

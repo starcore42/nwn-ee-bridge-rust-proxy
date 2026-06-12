@@ -2531,7 +2531,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn exact_placeable_update_keeps_vector_orientation_diagnostic_only() {
+    fn exact_placeable_update_reconciles_unique_area_static_vector_orientation() {
         let object_id = 0x8000_34D8u32;
         let mask =
             LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -2550,7 +2550,6 @@ mod diagnostic_tests {
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("exact vector U/09");
-        let original = payload.clone();
         let claim = claim_payload_if_verified(&payload).expect("pre-rewrite exact vector U/09");
         let orientation = claim.mentions[0]
             .orientation
@@ -2565,10 +2564,11 @@ mod diagnostic_tests {
             .expect("vector orientation should retain parser-owned components");
         assert!(
             vector.x < -1.99 && vector.y < -1.99 && vector.z < -1.99,
-            "raw vector WORDs should remain visible for replay diagnostics: {vector:?}"
+            "raw vector WORDs should remain visible before reconciliation: {vector:?}"
         );
 
         let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
                 object_id,
                 dir_x: -1.0,
@@ -2588,15 +2588,77 @@ mod diagnostic_tests {
             ..crate::translate::area::AreaPlaceableContext::default()
         };
 
-        assert!(
-            rewrite_update_records_payload_with_area_context_if_possible(
-                &mut payload,
-                Some(&area_context),
-            )
-            .is_none(),
-            "vector orientation has no same-width scalar field to rewrite"
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique static context should reconcile exact vector U/09 orientation");
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.bits_inserted, 0);
+        assert_eq!(summary.bits_removed, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact vector U/09");
+        let orientation = claim.mentions[0]
+            .orientation
+            .expect("post-rewrite exact vector U/09 orientation");
+        assert_eq!(
+            orientation.source,
+            LiveObjectRecordOrientationSource::Vector,
+            "reconciliation keeps the parser-owned vector branch instead of moving the cursor to scalar"
         );
-        assert_eq!(payload, original);
+        assert_eq!(orientation.scalar_tenths_degrees, 900);
+        let vector = orientation
+            .vector
+            .expect("rewritten vector orientation should retain components");
+        assert!(
+            (vector.x + 1.0).abs() < 1.0e-4 && vector.y.abs() < 1.0e-4 && vector.z.abs() < 1.0e-4,
+            "static direction bearing pi/2 should emit a normalized vector: {vector:?}"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "vector reconciliation must not disturb the parser-owned state block"
+        );
+
+        let rewritten_live = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..claim.declared];
+        let vector_offset = LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES;
+        assert_eq!(
+            read_u16_le(rewritten_live, vector_offset),
+            writer::encode_ee_vector_orientation_component(-1.0)
+        );
+        assert_eq!(
+            read_u16_le(rewritten_live, vector_offset + 2),
+            writer::encode_ee_vector_orientation_component(0.0)
+        );
+        assert_eq!(
+            read_u16_le(rewritten_live, vector_offset + 4),
+            writer::encode_ee_vector_orientation_component(0.0)
+        );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact vector U/09 fragment bits");
+        assert!(
+            rewritten_bits[CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS],
+            "the vector selector bit remains true"
+        );
+        assert_eq!(
+            &rewritten_bits[CNW_FRAGMENT_HEADER_BITS
+                + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                ..CNW_FRAGMENT_HEADER_BITS
+                    + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                    + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+                    + 1],
+            &[false, true, false, true, false, false],
+            "the state block and neutral EE guard keep their exact width"
+        );
     }
 
     #[test]
@@ -10272,9 +10334,6 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
     if (claim.mask & LEGACY_UPDATE_ORIENTATION_MASK) == 0 {
         return Some(false);
     }
-    let Some(source_orientation) = claim.parser.scalar_orientation else {
-        return Some(false);
-    };
 
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
         object_ids::equivalent_legacy_external_object_ids(row_object_id, claim.object_id)
@@ -10285,26 +10344,68 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
     let Some(area_orientation) = area_static_row_scalar_orientation(area_row) else {
         return Some(false);
     };
-    if source_orientation.scalar_tenths_degrees == area_orientation {
-        return Some(false);
+
+    if let Some(source_orientation) = claim.parser.scalar_orientation {
+        if source_orientation.scalar_tenths_degrees == area_orientation {
+            return Some(false);
+        }
+
+        let (changed, _bits_changed) = write_verified_scalar_orientation(
+            live_bytes,
+            bits,
+            source_orientation,
+            area_orientation,
+        )?;
+        tracing::info!(
+            object_id = format_args!("0x{:08X}", claim.object_id),
+            record_offset,
+            record_end,
+            mask = format_args!("0x{:08X}", claim.mask),
+            source_orientation = source_orientation.scalar_tenths_degrees,
+            emitted_orientation = area_orientation,
+            orientation_read_offset = source_orientation.read_offset,
+            orientation_bit_cursor = source_orientation.bit_cursor,
+            state_bit_cursor = ?claim.parser.state_bit_cursor,
+            next_bit_cursor = claim.parser.next_bit_cursor,
+            area_resref = area_context.area_resref.as_str(),
+            area_rows = %overlap.formatted_rows(),
+            "server->client exact live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
+        );
+        return Some(changed);
     }
 
+    let Some(source_orientation) = claim.parser.vector_orientation else {
+        return Some(false);
+    };
+    let Some(area_vector) = area_static_row_vector_orientation(area_row) else {
+        return Some(false);
+    };
+    let source_scalar_orientation = vector_orientation_scalar_tenths_degrees(source_orientation)?;
     let (changed, _bits_changed) =
-        write_verified_scalar_orientation(live_bytes, bits, source_orientation, area_orientation)?;
+        write_verified_vector_orientation(live_bytes, bits, source_orientation, area_vector)?;
+    if !changed {
+        return Some(false);
+    }
     tracing::info!(
         object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
         record_end,
         mask = format_args!("0x{:08X}", claim.mask),
-        source_orientation = source_orientation.scalar_tenths_degrees,
+        source_orientation = source_scalar_orientation,
         emitted_orientation = area_orientation,
+        source_vector_x = source_orientation.x,
+        source_vector_y = source_orientation.y,
+        source_vector_z = source_orientation.z,
+        emitted_vector_x = area_vector.x,
+        emitted_vector_y = area_vector.y,
+        emitted_vector_z = area_vector.z,
         orientation_read_offset = source_orientation.read_offset,
         orientation_bit_cursor = source_orientation.bit_cursor,
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %overlap.formatted_rows(),
-        "server->client exact live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
+        "server->client exact live-object placeable update vector orientation reconciled with unique module-backed area/static row"
     );
     Some(changed)
 }
@@ -10321,6 +10422,48 @@ pub(crate) fn area_static_row_scalar_orientation(
     }
     let bearing = (-row.dir_x).atan2(row.dir_y);
     writer::encode_ee_scalar_orientation_from_bearing_radians(bearing)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AreaStaticRowVectorOrientation {
+    x: f32,
+    y: f32,
+    z: f32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u16,
+}
+
+fn area_static_row_vector_orientation(
+    row: &crate::translate::area::AreaPlaceableContextRow,
+) -> Option<AreaStaticRowVectorOrientation> {
+    if !row.has_direction
+        || !row.dir_x.is_finite()
+        || !row.dir_y.is_finite()
+        || !row.dir_z.is_finite()
+        || row.dir_z.abs() > 1.0e-4
+    {
+        return None;
+    }
+    let len_sq = row.dir_x.mul_add(row.dir_x, row.dir_y * row.dir_y);
+    if !len_sq.is_finite() || len_sq <= 1.0e-12 {
+        return None;
+    }
+    let len = len_sq.sqrt();
+    if !len.is_finite() || len <= 0.0 {
+        return None;
+    }
+    let x = row.dir_x / len;
+    let y = row.dir_y / len;
+    let z = 0.0;
+    Some(AreaStaticRowVectorOrientation {
+        x,
+        y,
+        z,
+        x_raw: writer::encode_ee_vector_orientation_component(x)?,
+        y_raw: writer::encode_ee_vector_orientation_component(y)?,
+        z_raw: writer::encode_ee_vector_orientation_component(z)?,
+    })
 }
 
 fn write_verified_scalar_orientation(
@@ -10347,6 +10490,32 @@ fn write_verified_scalar_orientation(
         let bit_changed = set_fragment_bit(bits, source.bit_cursor + 1 + bit_index, value)?;
         changed |= bit_changed;
         bits_changed |= bit_changed;
+    }
+    Some((changed, bits_changed))
+}
+
+fn write_verified_vector_orientation(
+    live_bytes: &mut [u8],
+    bits: &mut [bool],
+    source: reader::VerifiedEeDoorPlaceableVectorOrientation,
+    vector: AreaStaticRowVectorOrientation,
+) -> Option<(bool, bool)> {
+    let mut changed = false;
+    let mut bits_changed = false;
+    let selector_changed = set_fragment_bit(bits, source.bit_cursor, true)?;
+    changed |= selector_changed;
+    bits_changed |= selector_changed;
+    for (offset, raw) in [
+        (source.read_offset, vector.x_raw),
+        (source.read_offset + 2, vector.y_raw),
+        (source.read_offset + 4, vector.z_raw),
+    ] {
+        let target = raw.to_le_bytes();
+        let bytes = live_bytes.get_mut(offset..offset + 2)?;
+        if bytes != target {
+            bytes.copy_from_slice(&target);
+            changed = true;
+        }
     }
     Some((changed, bits_changed))
 }
