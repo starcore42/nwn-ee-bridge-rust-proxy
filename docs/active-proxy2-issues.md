@@ -998,6 +998,16 @@ Current status:
   use these fields to tell whether remaining visual drift persists after a
   resolving record or is simply waiting for a later exact record to carry the
   correcting module-backed facts.
+- 2026-06-12 follow-up exact placeable field-rewrite counters: packet bytes
+  and reconciliation policy are unchanged. Exact `A/09`/`U/09` reconciliation
+  summaries now count rewritten fields separately (`add` appearance/state and
+  `update` position/appearance/orientation/state) and thread those counts
+  through the M-frame exact-rewrite log beside unresolved conflict and
+  current-record progress counters. Verified with incremental disabled using
+  focused `exact_placeable_`, `area_context_`, `placeable_update`, and
+  `cargo check -q -p hgbridge-proxy2`; next local replay should compare
+  field-rewrite counters against unresolved conflict classes before adding
+  another writer rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

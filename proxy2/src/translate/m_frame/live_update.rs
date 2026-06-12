@@ -31,6 +31,12 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_unique_unchanged: u32,
     pub exact_placeable_update_unique_unchanged: u32,
     pub exact_placeable_appearance_custom_skipped: u32,
+    pub exact_placeable_add_appearance_rewritten: u32,
+    pub exact_placeable_add_state_rewritten: u32,
+    pub exact_placeable_update_position_rewritten: u32,
+    pub exact_placeable_update_appearance_rewritten: u32,
+    pub exact_placeable_update_orientation_rewritten: u32,
+    pub exact_placeable_update_state_rewritten: u32,
 }
 
 impl ExactLiveObjectRewriteSummary {
@@ -72,6 +78,24 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_appearance_custom_skipped = self
             .exact_placeable_appearance_custom_skipped
             .saturating_add(rewrite.exact_placeable_appearance_custom_skipped);
+        self.exact_placeable_add_appearance_rewritten = self
+            .exact_placeable_add_appearance_rewritten
+            .saturating_add(rewrite.exact_placeable_add_appearance_rewritten);
+        self.exact_placeable_add_state_rewritten = self
+            .exact_placeable_add_state_rewritten
+            .saturating_add(rewrite.exact_placeable_add_state_rewritten);
+        self.exact_placeable_update_position_rewritten = self
+            .exact_placeable_update_position_rewritten
+            .saturating_add(rewrite.exact_placeable_update_position_rewritten);
+        self.exact_placeable_update_appearance_rewritten = self
+            .exact_placeable_update_appearance_rewritten
+            .saturating_add(rewrite.exact_placeable_update_appearance_rewritten);
+        self.exact_placeable_update_orientation_rewritten = self
+            .exact_placeable_update_orientation_rewritten
+            .saturating_add(rewrite.exact_placeable_update_orientation_rewritten);
+        self.exact_placeable_update_state_rewritten = self
+            .exact_placeable_update_state_rewritten
+            .saturating_add(rewrite.exact_placeable_update_state_rewritten);
         true
     }
 

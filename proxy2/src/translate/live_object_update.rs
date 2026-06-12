@@ -2241,6 +2241,12 @@ mod diagnostic_tests {
         assert_eq!(summary.exact_placeable_add_no_overlap, 0);
         assert_eq!(summary.exact_placeable_add_unique_unchanged, 0);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -2310,6 +2316,12 @@ mod diagnostic_tests {
         assert_eq!(summary.exact_placeable_update_no_overlap, 0);
         assert_eq!(summary.exact_placeable_update_unique_unchanged, 0);
         assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -2385,6 +2397,9 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -2488,6 +2503,12 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.add_records_rewritten, 0);
         assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
         assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
@@ -3013,6 +3034,10 @@ mod diagnostic_tests {
         assert_eq!(summary.add_records_examined, 0);
         assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
 
@@ -3093,6 +3118,12 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 0);
         assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_orientation_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 0);
         assert_eq!(summary.bits_inserted, 0);
         assert_eq!(summary.bits_removed, 0);
 
@@ -3397,6 +3428,12 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_unique_unchanged: u32,
     pub exact_placeable_update_unique_unchanged: u32,
     pub exact_placeable_appearance_custom_skipped: u32,
+    pub exact_placeable_add_appearance_rewritten: u32,
+    pub exact_placeable_add_state_rewritten: u32,
+    pub exact_placeable_update_position_rewritten: u32,
+    pub exact_placeable_update_appearance_rewritten: u32,
+    pub exact_placeable_update_orientation_rewritten: u32,
+    pub exact_placeable_update_state_rewritten: u32,
     pub masks_translated: u32,
     pub bytes_inserted: u32,
     pub bytes_removed: u32,
@@ -10460,6 +10497,16 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     &mut fragment_bits,
                     add_claim,
                 )?;
+                if appearance_rewritten {
+                    summary.exact_placeable_add_appearance_rewritten = summary
+                        .exact_placeable_add_appearance_rewritten
+                        .saturating_add(1);
+                }
+                if state_rewritten {
+                    summary.exact_placeable_add_state_rewritten = summary
+                        .exact_placeable_add_state_rewritten
+                        .saturating_add(1);
+                }
                 if appearance_rewritten || state_rewritten {
                     summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
                 } else if matches!(
@@ -10535,6 +10582,26 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         mention.record_offset,
                         mention.record_end,
                     )?;
+                if position_rewritten {
+                    summary.exact_placeable_update_position_rewritten = summary
+                        .exact_placeable_update_position_rewritten
+                        .saturating_add(1);
+                }
+                if appearance_rewritten {
+                    summary.exact_placeable_update_appearance_rewritten = summary
+                        .exact_placeable_update_appearance_rewritten
+                        .saturating_add(1);
+                }
+                if orientation_rewritten {
+                    summary.exact_placeable_update_orientation_rewritten = summary
+                        .exact_placeable_update_orientation_rewritten
+                        .saturating_add(1);
+                }
+                if state_rewritten {
+                    summary.exact_placeable_update_state_rewritten = summary
+                        .exact_placeable_update_state_rewritten
+                        .saturating_add(1);
+                }
                 if position_rewritten
                     || appearance_rewritten
                     || orientation_rewritten
@@ -10632,6 +10699,12 @@ fn trace_exact_placeable_reconciliation_summary(
         add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,
         update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
         appearance_custom_skipped = summary.exact_placeable_appearance_custom_skipped,
+        add_appearance_rewritten = summary.exact_placeable_add_appearance_rewritten,
+        add_state_rewritten = summary.exact_placeable_add_state_rewritten,
+        update_position_rewritten = summary.exact_placeable_update_position_rewritten,
+        update_appearance_rewritten = summary.exact_placeable_update_appearance_rewritten,
+        update_orientation_rewritten = summary.exact_placeable_update_orientation_rewritten,
+        update_state_rewritten = summary.exact_placeable_update_state_rewritten,
         "server->client exact live-object placeable area/static reconciliation summary"
     );
 }

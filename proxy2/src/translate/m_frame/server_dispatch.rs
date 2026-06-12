@@ -1001,6 +1001,15 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_update_unique_unchanged = summary.exact_placeable_update_unique_unchanged,
         exact_placeable_appearance_custom_skipped =
             summary.exact_placeable_appearance_custom_skipped,
+        exact_placeable_add_appearance_rewritten = summary.exact_placeable_add_appearance_rewritten,
+        exact_placeable_add_state_rewritten = summary.exact_placeable_add_state_rewritten,
+        exact_placeable_update_position_rewritten =
+            summary.exact_placeable_update_position_rewritten,
+        exact_placeable_update_appearance_rewritten =
+            summary.exact_placeable_update_appearance_rewritten,
+        exact_placeable_update_orientation_rewritten =
+            summary.exact_placeable_update_orientation_rewritten,
+        exact_placeable_update_state_rewritten = summary.exact_placeable_update_state_rewritten,
         unresolved_placeable_conflict_owners = unresolved.owners,
         unresolved_placeable_identity_conflicts = unresolved.identity,
         unresolved_placeable_appearance_conflicts = unresolved.appearance,
