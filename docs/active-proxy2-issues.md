@@ -1089,6 +1089,17 @@ Current status:
   `cargo fmt --all --check`, and `git diff --check`; next local replay should
   classify remaining module-custom add skips as `fixed_width_with_update` or
   `fixed_width_add_only` before considering any synthesized follow-up update.
+- 2026-06-13 follow-up exact `U/09` custom-update branch classification:
+  packet bytes are unchanged. Exact live-object placeable mentions now expose
+  the parser-owned appearance WORD offset and optional CResRef offset, and the
+  fixed-width `A/09` module-custom add-skip counters split same-payload `U/09`
+  rows into normal-WORD branches that can be widened versus existing
+  WORD+CResRef branches that can be overwritten. M-frame/server-dispatch
+  summaries carry both branch counters beside the aggregate `with_update` and
+  `add_only` counts. Verified with focused branch regressions plus
+  `exact_placeable_`, `area_context_`, and `placeable_update`; next local
+  replay should compare `with_normal_update`, `with_custom_update`, and
+  `add_only` before adding any synthesized follow-up `U/09`.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

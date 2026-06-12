@@ -3496,6 +3496,16 @@ mod diagnostic_tests {
             0
         );
         assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            0
+        );
+        assert_eq!(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             1
         );
@@ -3579,7 +3589,24 @@ mod diagnostic_tests {
         ]);
         let mut payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("A/09 + U/09 payload");
-        claim_payload_if_verified(&payload).expect("pre-rewrite exact A/09 + U/09 claim");
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact A/09 + U/09 claim");
+        assert_eq!(
+            pre_claim.mentions[0].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: 11,
+                resref_offset: None,
+            }),
+            "A/09 owns only its fixed-width add-tail appearance WORD"
+        );
+        assert_eq!(
+            pre_claim.mentions[1].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: live.len() - EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+                resref_offset: None,
+            }),
+            "the same-payload U/09 starts as a parser-owned normal WORD branch"
+        );
 
         let area_context = crate::translate::area::AreaPlaceableContext {
             static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
@@ -3624,6 +3651,16 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            0
+        );
+        assert_eq!(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             0
         );
@@ -3655,6 +3692,137 @@ mod diagnostic_tests {
                 resref: Some(target_resref),
             }),
             "the following U/09 owns EE's WORD + CResRef custom branch"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: live.len() - EE_UPDATE_APPEARANCE_WORD_READ_BYTES,
+                resref_offset: Some(live.len()),
+            }),
+            "the rewritten U/09 claim exposes the inserted CResRef branch owner"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_add_module_custom_skip_classifies_existing_custom_update_writer() {
+        let object_id = 0x8000_34D8u32;
+        let source_resref = *b"plc_source_old\0\0";
+        let target_resref = *b"plc_custom_add\0\0";
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let update_appearance_offset = live.len() + LEGACY_UPDATE_HEADER_BYTES;
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&source_resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("A/09 + custom U/09 payload");
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact custom U/09 claim");
+        assert_eq!(
+            pre_claim.mentions[1].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: update_appearance_offset,
+                resref_offset: Some(
+                    update_appearance_offset + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                ),
+            }),
+            "the same-payload U/09 already owns EE's custom CResRef branch"
+        );
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("the same-payload custom U/09 branch should be overwritten");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            0
+        );
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_update_source_custom_appearance_rewritten,
+            1
+        );
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(summary.old_live_bytes_length, summary.new_live_bytes_length);
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite exact A/09 + custom U/09 claim");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "A/09 remains fixed-width and packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the following U/09 keeps the existing custom branch and overwrites its CResRef"
         );
     }
 
@@ -3940,6 +4108,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_module_custom_appearance_skipped: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_skipped: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
@@ -4428,7 +4598,14 @@ pub struct LiveObjectRecordMention {
     pub orientation: Option<LiveObjectRecordOrientation>,
     pub bounds: Option<LiveObjectRecordBounds>,
     pub placeable_appearance: Option<LiveObjectPlaceableAppearance>,
+    pub placeable_appearance_claim: Option<LiveObjectPlaceableAppearanceClaim>,
     pub placeable_state: Option<LiveObjectPlaceableState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectPlaceableAppearanceClaim {
+    pub appearance_offset: usize,
+    pub resref_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6013,6 +6190,14 @@ fn verified_record_mention(
         opcode,
         object_type,
     );
+    let placeable_appearance_claim = verified_record_placeable_appearance_claim(
+        live_bytes,
+        record_end,
+        opcode,
+        object_type,
+        placeable_add_claim,
+        door_placeable_update_claim,
+    );
     Some(LiveObjectRecordMention {
         opcode,
         object_type,
@@ -6043,6 +6228,7 @@ fn verified_record_mention(
             placeable_add_claim,
             door_placeable_update_claim,
         ),
+        placeable_appearance_claim,
         placeable_state: verified_record_placeable_state(
             live_bytes,
             record_end,
@@ -6669,6 +6855,33 @@ fn verified_record_placeable_appearance(
     }
 }
 
+fn verified_record_placeable_appearance_claim(
+    live_bytes: &[u8],
+    record_end: usize,
+    opcode: u8,
+    object_type: u8,
+    placeable_add_claim: Option<VerifiedPlaceableAddExactClaim>,
+    door_placeable_update_claim: Option<reader::VerifiedEeDoorPlaceableUpdateRecord>,
+) -> Option<LiveObjectPlaceableAppearanceClaim> {
+    if object_type != PLACEABLE_OBJECT_TYPE || record_end > live_bytes.len() {
+        return None;
+    }
+
+    match opcode {
+        b'A' => {
+            let claim = placeable_add_claim?;
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: claim.layout.byte_layout.tail_offset + 1,
+                resref_offset: None,
+            })
+        }
+        b'U' => {
+            verified_placeable_update_appearance_claim(live_bytes, door_placeable_update_claim?)
+        }
+        _ => None,
+    }
+}
+
 fn verified_placeable_update_appearance(
     live_bytes: &[u8],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
@@ -6685,6 +6898,25 @@ fn verified_placeable_update_appearance(
         None
     };
     Some(LiveObjectPlaceableAppearance { appearance, resref })
+}
+
+fn verified_placeable_update_appearance_claim(
+    live_bytes: &[u8],
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+) -> Option<LiveObjectPlaceableAppearanceClaim> {
+    let appearance_offset = claim.appearance_offset?;
+    let appearance = read_u16_le(live_bytes, appearance_offset)?;
+    let resref_offset = if appearance >= 0xFFFE {
+        let start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
+        live_bytes.get(start..start + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+        Some(start)
+    } else {
+        None
+    };
+    Some(LiveObjectPlaceableAppearanceClaim {
+        appearance_offset,
+        resref_offset,
+    })
 }
 
 fn verified_record_placeable_state(
@@ -11017,15 +11249,30 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped
                                 .saturating_add(1);
-                        if claim_has_exact_placeable_update_appearance_for_object(
-                            &claim,
-                            mention.object_id,
-                        ) {
+                        let update_appearance =
+                            exact_placeable_update_appearance_availability_for_object(
+                                &claim,
+                                mention.object_id,
+                            );
+                        if update_appearance.any() {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
                                     .saturating_add(1);
+                            if update_appearance.source_custom {
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update =
+                                    summary
+                                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update
+                                        .saturating_add(1);
+                            } else {
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update =
+                                    summary
+                                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update
+                                        .saturating_add(1);
+                            }
                         } else {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_add_only =
@@ -11273,16 +11520,40 @@ fn record_exact_placeable_reconciliation_target(
     }
 }
 
-fn claim_has_exact_placeable_update_appearance_for_object(
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ExactPlaceableUpdateAppearanceAvailability {
+    source_normal: bool,
+    source_custom: bool,
+}
+
+impl ExactPlaceableUpdateAppearanceAvailability {
+    fn any(self) -> bool {
+        self.source_normal || self.source_custom
+    }
+}
+
+fn exact_placeable_update_appearance_availability_for_object(
     claim: &LiveObjectUpdateClaimSummary,
     object_id: u32,
-) -> bool {
-    claim.mentions.iter().any(|mention| {
-        mention.opcode == b'U'
-            && mention.object_type == PLACEABLE_OBJECT_TYPE
-            && mention.placeable_appearance.is_some()
-            && object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
-    })
+) -> ExactPlaceableUpdateAppearanceAvailability {
+    let mut availability = ExactPlaceableUpdateAppearanceAvailability::default();
+    for mention in &claim.mentions {
+        if mention.opcode != b'U'
+            || mention.object_type != PLACEABLE_OBJECT_TYPE
+            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+        {
+            continue;
+        }
+        let Some(appearance_claim) = mention.placeable_appearance_claim else {
+            continue;
+        };
+        if appearance_claim.resref_offset.is_some() {
+            availability.source_custom = true;
+        } else {
+            availability.source_normal = true;
+        }
+    }
+    availability
 }
 
 fn trace_exact_placeable_reconciliation_summary(
@@ -11317,6 +11588,10 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
         add_module_custom_template_resref_fixed_width_with_update =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+        add_module_custom_template_resref_fixed_width_with_normal_update = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+        add_module_custom_template_resref_fixed_width_with_custom_update = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
         add_module_custom_template_resref_fixed_width_add_only =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
         add_module_custom_template_resref_missing =
