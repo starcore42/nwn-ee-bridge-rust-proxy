@@ -1100,6 +1100,17 @@ Current status:
   `exact_placeable_`, `area_context_`, and `placeable_update`; next local
   replay should compare `with_normal_update`, `with_custom_update`, and
   `add_only` before adding any synthesized follow-up `U/09`.
+- 2026-06-13 follow-up ordered `A/09` custom-target carrier classification:
+  packet bytes are unchanged. The fixed-width module-custom add-skip
+  classifier now treats `with_update`/`with_normal_update`/`with_custom_update`
+  as same-object `U/09` appearance carriers that follow the `A/09` in payload
+  order, and splits prior-only same-object updates into
+  `pre_add_update_only` counters. A pre-add `U/09` may still rewrite its own
+  parser-owned WORD+CResRef branch, but it is not evidence that the following
+  fixed-width add has a usable custom CResRef carrier. Verified with focused
+  ordered carrier regressions; next local replay should compare following
+  `with_normal_update`/`with_custom_update`, `pre_add_update_only`, and
+  `add_only` before adding any synthesized follow-up `U/09`.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

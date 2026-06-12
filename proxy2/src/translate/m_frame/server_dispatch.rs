@@ -1023,6 +1023,12 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
         exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+        exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
+        exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
+        exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
         exact_placeable_add_module_custom_template_resref_fixed_width_add_only =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
         exact_placeable_add_module_custom_template_resref_missing =
