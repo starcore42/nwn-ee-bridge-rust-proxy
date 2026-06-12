@@ -370,6 +370,56 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         self.unique_module_backed_static_row()?.module_state
     }
 
+    pub fn identity_conflict(&self) -> Option<AreaPlaceableContextIdentityConflict> {
+        if self.rows.is_empty() {
+            return None;
+        }
+
+        let mut light_rows = 0usize;
+        let mut static_rows = 0usize;
+        let mut module_backed_static_rows = 0usize;
+        let mut area_alias_rows = 0usize;
+        let mut duplicate_object_id_rows = 0usize;
+
+        for matched in &self.rows {
+            match matched.kind {
+                AreaPlaceableContextRowKind::Light => light_rows += 1,
+                AreaPlaceableContextRowKind::Static => {
+                    static_rows += 1;
+                    if matched.row.module_state.is_some() {
+                        module_backed_static_rows += 1;
+                    }
+                }
+            }
+            match matched.row.object_id_confidence {
+                AreaPlaceableContextObjectIdConfidence::Unique => {}
+                AreaPlaceableContextObjectIdConfidence::AreaObjectAlias => area_alias_rows += 1,
+                AreaPlaceableContextObjectIdConfidence::DuplicateObjectId => {
+                    duplicate_object_id_rows += 1;
+                }
+                AreaPlaceableContextObjectIdConfidence::AreaObjectAliasDuplicate => {
+                    area_alias_rows += 1;
+                    duplicate_object_id_rows += 1;
+                }
+            }
+        }
+
+        let unproven_static_rows = static_rows.saturating_sub(module_backed_static_rows);
+        let conflict = light_rows != 0
+            || static_rows != 1
+            || module_backed_static_rows != 1
+            || area_alias_rows != 0
+            || duplicate_object_id_rows != 0;
+        conflict.then_some(AreaPlaceableContextIdentityConflict {
+            light_rows: saturating_u16(light_rows),
+            static_rows: saturating_u16(static_rows),
+            module_backed_static_rows: saturating_u16(module_backed_static_rows),
+            unproven_static_rows: saturating_u16(unproven_static_rows),
+            area_alias_rows: saturating_u16(area_alias_rows),
+            duplicate_object_id_rows: saturating_u16(duplicate_object_id_rows),
+        })
+    }
+
     pub fn static_module_state_conflict(
         &self,
         observed: AreaPlaceableObservedState,
@@ -385,6 +435,10 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         }
         combined
     }
+}
+
+fn saturating_u16(value: usize) -> u16 {
+    value.min(u16::MAX as usize) as u16
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -530,6 +584,16 @@ impl AreaPlaceableContextStateConflict {
         self.lockable |= other.lockable;
         self.locked |= other.locked;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaPlaceableContextIdentityConflict {
+    pub light_rows: u16,
+    pub static_rows: u16,
+    pub module_backed_static_rows: u16,
+    pub unproven_static_rows: u16,
+    pub area_alias_rows: u16,
+    pub duplicate_object_id_rows: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

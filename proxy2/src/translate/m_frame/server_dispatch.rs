@@ -800,9 +800,15 @@ fn trace_unresolved_area_static_placeable_conflicts(
                 mention.object_type,
                 mention.object_id,
             );
+        let identity_conflict = registry
+            .unresolved_area_static_placeable_identity_conflict_for_record(
+                mention.object_type,
+                mention.object_id,
+            );
         if state_conflict.is_none()
             && appearance_conflict.is_none()
             && orientation_conflict.is_none()
+            && identity_conflict.is_none()
         {
             continue;
         }
@@ -838,10 +844,11 @@ fn trace_unresolved_area_static_placeable_conflicts(
             record_placeable_appearance = ?mention.placeable_appearance,
             record_placeable_state = ?mention.placeable_state,
             record_orientation = ?mention.orientation,
+            unresolved_area_module_identity_mismatch = ?identity_conflict,
             unresolved_area_module_state_mismatch_fields = %conflict_fields,
             unresolved_area_module_appearance_mismatch = ?appearance_conflict,
             unresolved_area_module_orientation_mismatch = ?orientation_conflict,
-            "server live-object record translated while prior area/static placeable appearance/state/orientation conflict remains unresolved"
+            "server live-object record translated while prior area/static placeable identity/appearance/state/orientation conflict remains unresolved"
         );
     }
 }
