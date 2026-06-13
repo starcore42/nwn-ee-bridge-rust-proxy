@@ -5433,6 +5433,137 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS + EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS
         );
     }
+
+    #[test]
+    fn exact_placeable_add_identity_resolves_by_following_position_update() {
+        let object_id = 0x8000_3610u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable conflicts with the selected module row.
+            false, // trap disarmable already matches.
+            false, // lockable conflicts with the selected module row.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("exact A/09 followed by position U/09");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0033,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0044,
+                    x: 30.0,
+                    y: 40.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("following parser-owned position update should select one static row for A/09");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position, 1,
+            "the following U/09 still records its own position-based identity proof"
+        );
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(summary.bytes_removed, 0);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 + U/09 claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(claim.mentions[1].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0033,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            })
+        );
+        let position = claim.mentions[1]
+            .position
+            .expect("following U/09 position should stay parser-owned");
+        assert_eq!(position.x_raw, 1000);
+        assert_eq!(position.y_raw, 2000);
+        assert_eq!(position.z_raw, z_raw);
+        assert_eq!(position.x, 10.0);
+        assert_eq!(position.y, 20.0);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5456,6 +5587,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_identity_blocked: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_following_position: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
@@ -5892,6 +6024,9 @@ pub struct LiveObjectUpdateClaimSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveObjectRecordPosition {
+    pub x_raw: u16,
+    pub y_raw: u16,
+    pub z_raw: u32,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -8125,6 +8260,9 @@ fn verified_record_position(
     if matches!(object_type, DOOR_OBJECT_TYPE | PLACEABLE_OBJECT_TYPE) {
         let position = door_placeable_update_claim?.position?;
         return Some(LiveObjectRecordPosition {
+            x_raw: position.x_raw,
+            y_raw: position.y_raw,
+            z_raw: position.z_raw,
             x: position.x,
             y: position.y,
             z: position.z,
@@ -8155,6 +8293,9 @@ fn verified_record_position(
     let z_raw = (fixed_z << 2) | z_low_bits;
     let z_max = (1_u32 << 18) - 1;
     Some(LiveObjectRecordPosition {
+        x_raw: fixed_x as u16,
+        y_raw: fixed_y as u16,
+        z_raw,
         x: fixed_x as f32 / 100.0,
         y: fixed_y as f32 / 100.0,
         z: -20.0 + (z_raw as f32 / z_max as f32) * 340.0,
@@ -12619,6 +12760,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 let selection = placeable_static_reconciliation_selection_for_add(
                     area_context,
                     mention.object_id,
+                    mention.record_end,
+                    &claim,
                     add_claim,
                     base_target,
                 );
@@ -12632,6 +12775,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         summary
                             .exact_placeable_add_identity_resolved_by_fixed_field_equivalence
                             .saturating_add(1);
+                }
+                if selection.identity_resolved_by_following_position {
+                    summary.exact_placeable_add_identity_resolved_by_following_position = summary
+                        .exact_placeable_add_identity_resolved_by_following_position
+                        .saturating_add(1);
                 }
                 if selection.identity_resolved_by_add_output_equivalence {
                     summary.exact_placeable_add_identity_resolved_by_add_output_equivalence =
@@ -13026,12 +13174,15 @@ struct PlaceableStaticReconciliationSelection<'a> {
     identity_resolved_by_position: bool,
     identity_resolved_by_fixed_fields: bool,
     identity_resolved_by_fixed_field_equivalence: bool,
+    identity_resolved_by_following_position: bool,
     identity_resolved_by_add_output_equivalence: bool,
 }
 
 fn placeable_static_reconciliation_selection_for_add<'a>(
     area_context: &'a AreaPlaceableContext,
     object_id: u32,
+    add_record_end: usize,
+    claim_summary: &LiveObjectUpdateClaimSummary,
     claim: VerifiedPlaceableAddExactClaim,
     target: AreaPlaceableContextStaticReconciliationTarget<'a>,
 ) -> PlaceableStaticReconciliationSelection<'a> {
@@ -13049,6 +13200,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_position: false,
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_following_position: false,
                 identity_resolved_by_add_output_equivalence: false,
             };
         }
@@ -13064,6 +13216,22 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_position: false,
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: true,
+                identity_resolved_by_following_position: false,
+                identity_resolved_by_add_output_equivalence: false,
+            };
+        }
+        if let Some(row) = unique_module_static_row_matching_following_update_position_for_add(
+            area_context,
+            object_id,
+            add_record_end,
+            claim_summary,
+        ) {
+            return PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: false,
+                identity_resolved_by_fixed_fields: false,
+                identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_following_position: true,
                 identity_resolved_by_add_output_equivalence: false,
             };
         }
@@ -13075,6 +13243,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_position: false,
                 identity_resolved_by_fixed_fields: false,
                 identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_following_position: false,
                 identity_resolved_by_add_output_equivalence: true,
             };
         }
@@ -13085,6 +13254,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
         identity_resolved_by_position: false,
         identity_resolved_by_fixed_fields: false,
         identity_resolved_by_fixed_field_equivalence: false,
+        identity_resolved_by_following_position: false,
         identity_resolved_by_add_output_equivalence: false,
     }
 }
@@ -13112,6 +13282,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_position: true,
                 identity_resolved_by_fixed_fields: false,
                 identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_following_position: false,
                 identity_resolved_by_add_output_equivalence: false,
             },
             area_rows,
@@ -13124,6 +13295,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             identity_resolved_by_position: false,
             identity_resolved_by_fixed_fields: false,
             identity_resolved_by_fixed_field_equivalence: false,
+            identity_resolved_by_following_position: false,
             identity_resolved_by_add_output_equivalence: false,
         },
         area_rows,
@@ -13134,6 +13306,60 @@ fn unique_module_static_row_matching_verified_update_position(
     area_context: &AreaPlaceableContext,
     object_id: u32,
     source_position: reader::VerifiedEeDoorPlaceablePosition,
+) -> Option<&AreaPlaceableContextRow> {
+    unique_module_static_row_matching_raw_position(
+        area_context,
+        object_id,
+        source_position.x_raw,
+        source_position.y_raw,
+        source_position.z_raw,
+    )
+}
+
+fn unique_module_static_row_matching_following_update_position_for_add<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    add_record_end: usize,
+    claim_summary: &LiveObjectUpdateClaimSummary,
+) -> Option<&'a AreaPlaceableContextRow> {
+    let mut following_position = None;
+    for mention in &claim_summary.mentions {
+        if mention.record_offset < add_record_end {
+            continue;
+        }
+        if mention.object_type != PLACEABLE_OBJECT_TYPE
+            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+        {
+            continue;
+        }
+        match mention.opcode {
+            b'U' => {
+                if let Some(position) = mention.position {
+                    following_position = Some(position);
+                    break;
+                }
+            }
+            b'A' | b'D' => break,
+            _ => {}
+        }
+    }
+
+    let position = following_position?;
+    unique_module_static_row_matching_raw_position(
+        area_context,
+        object_id,
+        position.x_raw,
+        position.y_raw,
+        position.z_raw,
+    )
+}
+
+fn unique_module_static_row_matching_raw_position(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
 ) -> Option<&AreaPlaceableContextRow> {
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
         object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
@@ -13147,9 +13373,9 @@ fn unique_module_static_row_matching_verified_update_position(
         let Some(area_position) = encode_area_static_row_position(matched.row) else {
             continue;
         };
-        if area_position.x_raw != source_position.x_raw
-            || area_position.y_raw != source_position.y_raw
-            || area_position.z_raw != source_position.z_raw
+        if area_position.x_raw != x_raw
+            || area_position.y_raw != y_raw
+            || area_position.z_raw != z_raw
         {
             continue;
         }
@@ -13740,6 +13966,8 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_fixed_fields,
         add_identity_resolved_by_fixed_field_equivalence =
             summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
+        add_identity_resolved_by_following_position =
+            summary.exact_placeable_add_identity_resolved_by_following_position,
         add_identity_resolved_by_add_output_equivalence =
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         update_identity_resolved_by_position =
@@ -13880,6 +14108,8 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
             selection.identity_resolved_by_fixed_fields,
         area_static_identity_resolved_by_fixed_field_equivalence =
             selection.identity_resolved_by_fixed_field_equivalence,
+        area_static_identity_resolved_by_following_position =
+            selection.identity_resolved_by_following_position,
         area_static_identity_resolved_by_add_output_equivalence =
             selection.identity_resolved_by_add_output_equivalence,
         area_resref = area_context.area_resref.as_str(),
@@ -14542,6 +14772,8 @@ fn reconcile_verified_placeable_add_state_with_area_context(
             selection.identity_resolved_by_fixed_fields,
         area_static_identity_resolved_by_fixed_field_equivalence =
             selection.identity_resolved_by_fixed_field_equivalence,
+        area_static_identity_resolved_by_following_position =
+            selection.identity_resolved_by_following_position,
         area_static_identity_resolved_by_add_output_equivalence =
             selection.identity_resolved_by_add_output_equivalence,
         source_placeable_state = ?source_state,

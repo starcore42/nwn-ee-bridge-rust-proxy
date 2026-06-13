@@ -1238,6 +1238,18 @@ Current status:
   replay should compare the new output-equivalence counter against remaining
   identity-blocked add appearance/state conflicts before adding any position-
   or resource-based add identity rule.
+- 2026-06-13 follow-up exact `A/09` following-position identity selection:
+  identity-blocked exact placeable adds can now promote to a module-backed
+  static row when a later same-object verified `U/09` before any same-object
+  add/delete owns a position branch whose raw packed X/Y/Z match exactly one
+  overlapping module-backed static row. The add still rewrites only its own
+  fixed appearance WORD and parser-owned add-state BOOLs, and the following
+  update keeps its own position proof/counters. Verified with focused
+  `exact_placeable_add_identity_resolves_by_following_position_update`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, and `cargo check`;
+  next local replay should compare
+  `exact_placeable_add_identity_resolved_by_following_position` against
+  remaining identity-blocked add conflicts and same-object lifecycle breaks.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
