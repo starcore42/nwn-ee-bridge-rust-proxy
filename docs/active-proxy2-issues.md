@@ -1250,6 +1250,19 @@ Current status:
   next local replay should compare
   `exact_placeable_add_identity_resolved_by_following_position` against
   remaining identity-blocked add conflicts and same-object lifecycle breaks.
+- 2026-06-13 follow-up following-position blocker diagnostics: packet bytes are
+  unchanged. Identity-blocked exact `A/09` adds that remain unresolved now split
+  the unavailable following-position proof into no later position, same-object
+  add/delete lifecycle fence, no matching module-backed static position, and
+  ambiguous static-position matches, with the counters carried through
+  live-object, M-frame, and server-dispatch summaries. The scanner still stops
+  before any same-object `A`/`D`; a later `U/09` keeps its own parser-owned
+  position/state rewrite proof but cannot identify the earlier add across that
+  lifecycle boundary. Verified with focused
+  `exact_placeable_add_following_position_stops_at_lifecycle_delete`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, and `cargo check`;
+  next local replay should compare lifecycle-blocked versus missing/ambiguous
+  following-position counters before adding any broader add identity rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

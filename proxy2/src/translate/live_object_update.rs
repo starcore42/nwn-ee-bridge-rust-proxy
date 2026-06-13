@@ -5522,6 +5522,10 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked,
+            0
+        );
+        assert_eq!(
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
             0
         );
@@ -5564,6 +5568,153 @@ mod diagnostic_tests {
         assert_eq!(position.x, 10.0);
         assert_eq!(position.y, 20.0);
     }
+
+    #[test]
+    fn exact_placeable_add_following_position_stops_at_lifecycle_delete() {
+        let object_id = 0x8000_3611u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let update_mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+
+        let update_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&update_mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable conflicts with both module rows.
+            false, // trap disarmable already matches.
+            false, // lockable conflicts with the selected module row.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.push(false); // D/09 placeable delete owns one BOOL.
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            false, // locked already matches.
+            false, // lockable conflicts with the selected module row.
+            false, // visual payload.
+            false, // EE-only terminal state BOOL.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("exact A/09, D/09, and position+state U/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0033,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0044,
+                    x: 30.0,
+                    y: 40.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("following U/09 state rewrite should make diagnostics observable");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 1);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position, 0,
+            "A/09 must not borrow a position proof across a same-object delete"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_missing,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_no_static_match,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position, 1,
+            "the later U/09 still owns its own position proof after the lifecycle break"
+        );
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09, D/09, U/09 claim");
+        assert_eq!(claim.mentions.len(), 3);
+        assert_eq!(claim.mentions[1].opcode, b'D');
+        assert_eq!(claim.mentions[2].record_offset, update_offset);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "the lifecycle-fenced add remains packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[2].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "the later update can still reconcile its own parser-owned state"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5590,6 +5741,11 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_following_position: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
+    pub exact_placeable_add_identity_blocked_following_position_missing: u32,
+    pub exact_placeable_add_identity_blocked_following_position_lifecycle_blocked: u32,
+    pub exact_placeable_add_identity_blocked_following_position_no_static_match: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_matches: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
@@ -12788,6 +12944,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             .saturating_add(1);
                 }
                 let target = selection.target;
+                record_exact_placeable_identity_blocked_add_following_position_match(
+                    &mut summary,
+                    target,
+                    area_context,
+                    mention.object_id,
+                    mention.record_end,
+                    &claim,
+                );
                 record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
                 record_exact_placeable_identity_blocked_module_custom_rows(
                     &mut summary,
@@ -13220,12 +13384,14 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_add_output_equivalence: false,
             };
         }
-        if let Some(row) = unique_module_static_row_matching_following_update_position_for_add(
-            area_context,
-            object_id,
-            add_record_end,
-            claim_summary,
-        ) {
+        if let AddFollowingPositionIdentityMatch::Unique(row) =
+            following_update_position_identity_match_for_add(
+                area_context,
+                object_id,
+                add_record_end,
+                claim_summary,
+            )
+        {
             return PlaceableStaticReconciliationSelection {
                 target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
                 identity_resolved_by_position: false,
@@ -13257,6 +13423,166 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
         identity_resolved_by_following_position: false,
         identity_resolved_by_add_output_equivalence: false,
     }
+}
+
+fn record_exact_placeable_identity_blocked_add_following_position_match(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    add_record_end: usize,
+    claim_summary: &LiveObjectUpdateClaimSummary,
+) {
+    if !matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) {
+        return;
+    }
+
+    match following_update_position_identity_match_for_add(
+        area_context,
+        object_id,
+        add_record_end,
+        claim_summary,
+    ) {
+        AddFollowingPositionIdentityMatch::Unique(_) => {}
+        AddFollowingPositionIdentityMatch::MissingBeforeLifecycle => {
+            summary.exact_placeable_add_identity_blocked_following_position_missing = summary
+                .exact_placeable_add_identity_blocked_following_position_missing
+                .saturating_add(1);
+        }
+        AddFollowingPositionIdentityMatch::LifecycleBlocked => {
+            summary.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked =
+                summary
+                    .exact_placeable_add_identity_blocked_following_position_lifecycle_blocked
+                    .saturating_add(1);
+        }
+        AddFollowingPositionIdentityMatch::NoStaticPositionMatch => {
+            summary.exact_placeable_add_identity_blocked_following_position_no_static_match =
+                summary
+                    .exact_placeable_add_identity_blocked_following_position_no_static_match
+                    .saturating_add(1);
+        }
+        AddFollowingPositionIdentityMatch::AmbiguousStaticPositionMatch { rows } => {
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches =
+                summary
+                    .exact_placeable_add_identity_blocked_following_position_ambiguous_matches
+                    .saturating_add(1);
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows =
+                summary
+                    .exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows
+                    .saturating_add(rows);
+        }
+    }
+}
+
+enum AddFollowingPositionIdentityMatch<'a> {
+    Unique(&'a AreaPlaceableContextRow),
+    MissingBeforeLifecycle,
+    LifecycleBlocked,
+    NoStaticPositionMatch,
+    AmbiguousStaticPositionMatch { rows: u32 },
+}
+
+fn following_update_position_identity_match_for_add<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    add_record_end: usize,
+    claim_summary: &LiveObjectUpdateClaimSummary,
+) -> AddFollowingPositionIdentityMatch<'a> {
+    let mut following_position = None;
+    for mention in &claim_summary.mentions {
+        if mention.record_offset < add_record_end {
+            continue;
+        }
+        if mention.object_type != PLACEABLE_OBJECT_TYPE
+            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+        {
+            continue;
+        }
+        match mention.opcode {
+            b'U' => {
+                if let Some(position) = mention.position {
+                    following_position = Some(position);
+                    break;
+                }
+            }
+            b'A' | b'D' => return AddFollowingPositionIdentityMatch::LifecycleBlocked,
+            _ => {}
+        }
+    }
+
+    let Some(position) = following_position else {
+        return AddFollowingPositionIdentityMatch::MissingBeforeLifecycle;
+    };
+    let matched = module_static_rows_matching_raw_position(
+        area_context,
+        object_id,
+        position.x_raw,
+        position.y_raw,
+        position.z_raw,
+    );
+    match matched.rows {
+        0 => AddFollowingPositionIdentityMatch::NoStaticPositionMatch,
+        1 => matched
+            .selected
+            .map(AddFollowingPositionIdentityMatch::Unique)
+            .unwrap_or(AddFollowingPositionIdentityMatch::NoStaticPositionMatch),
+        rows => AddFollowingPositionIdentityMatch::AmbiguousStaticPositionMatch { rows },
+    }
+}
+
+struct RawPositionStaticRowMatch<'a> {
+    selected: Option<&'a AreaPlaceableContextRow>,
+    rows: u32,
+}
+
+fn module_static_rows_matching_raw_position<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+) -> RawPositionStaticRowMatch<'a> {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    let mut rows = 0u32;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static || matched.row.module_state.is_none()
+        {
+            continue;
+        }
+        let Some(area_position) = encode_area_static_row_position(matched.row) else {
+            continue;
+        };
+        if area_position.x_raw != x_raw
+            || area_position.y_raw != y_raw
+            || area_position.z_raw != z_raw
+        {
+            continue;
+        }
+        rows = rows.saturating_add(1);
+        if selected.is_none() {
+            selected = Some(matched.row);
+        }
+    }
+
+    RawPositionStaticRowMatch { selected, rows }
+}
+
+fn unique_module_static_row_matching_raw_position(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+) -> Option<&AreaPlaceableContextRow> {
+    let matched =
+        module_static_rows_matching_raw_position(area_context, object_id, x_raw, y_raw, z_raw);
+    (matched.rows == 1).then_some(matched.selected).flatten()
 }
 
 fn placeable_static_reconciliation_selection_for_update<'a>(
@@ -13314,76 +13640,6 @@ fn unique_module_static_row_matching_verified_update_position(
         source_position.y_raw,
         source_position.z_raw,
     )
-}
-
-fn unique_module_static_row_matching_following_update_position_for_add<'a>(
-    area_context: &'a AreaPlaceableContext,
-    object_id: u32,
-    add_record_end: usize,
-    claim_summary: &LiveObjectUpdateClaimSummary,
-) -> Option<&'a AreaPlaceableContextRow> {
-    let mut following_position = None;
-    for mention in &claim_summary.mentions {
-        if mention.record_offset < add_record_end {
-            continue;
-        }
-        if mention.object_type != PLACEABLE_OBJECT_TYPE
-            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
-        {
-            continue;
-        }
-        match mention.opcode {
-            b'U' => {
-                if let Some(position) = mention.position {
-                    following_position = Some(position);
-                    break;
-                }
-            }
-            b'A' | b'D' => break,
-            _ => {}
-        }
-    }
-
-    let position = following_position?;
-    unique_module_static_row_matching_raw_position(
-        area_context,
-        object_id,
-        position.x_raw,
-        position.y_raw,
-        position.z_raw,
-    )
-}
-
-fn unique_module_static_row_matching_raw_position(
-    area_context: &AreaPlaceableContext,
-    object_id: u32,
-    x_raw: u16,
-    y_raw: u16,
-    z_raw: u32,
-) -> Option<&AreaPlaceableContextRow> {
-    let overlap = area_context.placeable_overlap_by(|row_object_id| {
-        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
-    });
-    let mut selected = None;
-    for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static || matched.row.module_state.is_none()
-        {
-            continue;
-        }
-        let Some(area_position) = encode_area_static_row_position(matched.row) else {
-            continue;
-        };
-        if area_position.x_raw != x_raw
-            || area_position.y_raw != y_raw
-            || area_position.z_raw != z_raw
-        {
-            continue;
-        }
-        if selected.replace(matched.row).is_some() {
-            return None;
-        }
-    }
-    selected
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -13972,6 +14228,16 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
+        add_identity_blocked_following_position_missing =
+            summary.exact_placeable_add_identity_blocked_following_position_missing,
+        add_identity_blocked_following_position_lifecycle_blocked =
+            summary.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked,
+        add_identity_blocked_following_position_no_static_match =
+            summary.exact_placeable_add_identity_blocked_following_position_no_static_match,
+        add_identity_blocked_following_position_ambiguous_matches =
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
+        add_identity_blocked_following_position_ambiguous_match_rows =
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows,
         add_identity_blocked_module_custom_rows =
             summary.exact_placeable_add_identity_blocked_module_custom_rows,
         add_identity_blocked_module_custom_with_resref_rows = summary

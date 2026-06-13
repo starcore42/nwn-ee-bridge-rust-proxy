@@ -1015,6 +1015,16 @@ fn trace_live_object_exact_rewrite_summary(
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         exact_placeable_update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
+        exact_placeable_add_identity_blocked_following_position_missing =
+            summary.exact_placeable_add_identity_blocked_following_position_missing,
+        exact_placeable_add_identity_blocked_following_position_lifecycle_blocked =
+            summary.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked,
+        exact_placeable_add_identity_blocked_following_position_no_static_match =
+            summary.exact_placeable_add_identity_blocked_following_position_no_static_match,
+        exact_placeable_add_identity_blocked_following_position_ambiguous_matches =
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
+        exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows =
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows,
         exact_placeable_add_identity_blocked_module_custom_rows =
             summary.exact_placeable_add_identity_blocked_module_custom_rows,
         exact_placeable_add_identity_blocked_module_custom_with_resref_rows = summary

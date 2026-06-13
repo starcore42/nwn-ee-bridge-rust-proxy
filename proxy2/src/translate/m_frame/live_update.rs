@@ -31,6 +31,11 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_following_position: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
+    pub exact_placeable_add_identity_blocked_following_position_missing: u32,
+    pub exact_placeable_add_identity_blocked_following_position_lifecycle_blocked: u32,
+    pub exact_placeable_add_identity_blocked_following_position_no_static_match: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_matches: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
@@ -116,6 +121,32 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_identity_resolved_by_position = self
             .exact_placeable_update_identity_resolved_by_position
             .saturating_add(rewrite.exact_placeable_update_identity_resolved_by_position);
+        self.exact_placeable_add_identity_blocked_following_position_missing = self
+            .exact_placeable_add_identity_blocked_following_position_missing
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_blocked_following_position_missing,
+            );
+        self.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked = self
+            .exact_placeable_add_identity_blocked_following_position_lifecycle_blocked
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_blocked_following_position_lifecycle_blocked,
+            );
+        self.exact_placeable_add_identity_blocked_following_position_no_static_match = self
+            .exact_placeable_add_identity_blocked_following_position_no_static_match
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_blocked_following_position_no_static_match,
+            );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_matches = self
+            .exact_placeable_add_identity_blocked_following_position_ambiguous_matches
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
+            );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows = self
+            .exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows
+            .saturating_add(
+                rewrite
+                    .exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows,
+            );
         self.exact_placeable_add_identity_blocked_module_custom_rows = self
             .exact_placeable_add_identity_blocked_module_custom_rows
             .saturating_add(rewrite.exact_placeable_add_identity_blocked_module_custom_rows);
