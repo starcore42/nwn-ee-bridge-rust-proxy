@@ -37,6 +37,13 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_identity_blocked_following_position_no_static_match: u32,
     pub exact_placeable_add_identity_blocked_following_position_ambiguous_matches: u32,
     pub exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_rows: u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_missing_resref_rows:
+        u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_output_unavailable_rows:
+        u32,
+    pub exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches:
+        u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
@@ -153,6 +160,30 @@ impl ExactLiveObjectRewriteSummary {
                 rewrite
                     .exact_placeable_add_identity_blocked_following_position_ambiguous_match_rows,
             );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_rows =
+            self.exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_rows
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_rows,
+                );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_missing_resref_rows =
+            self.exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_missing_resref_rows
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_blocked_following_position_ambiguous_module_custom_missing_resref_rows,
+                );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_output_unavailable_rows =
+            self.exact_placeable_add_identity_blocked_following_position_ambiguous_output_unavailable_rows
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_blocked_following_position_ambiguous_output_unavailable_rows,
+                );
+        self.exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches =
+            self.exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches,
+                );
         self.exact_placeable_add_identity_blocked_module_custom_rows = self
             .exact_placeable_add_identity_blocked_module_custom_rows
             .saturating_add(rewrite.exact_placeable_add_identity_blocked_module_custom_rows);

@@ -1279,6 +1279,18 @@ Current status:
   local replay should compare this counter against remaining
   `following_position_ambiguous` rows and divergent/missing-resref custom
   candidates.
+- 2026-06-13 follow-up following-position ambiguity-output diagnostics: packet
+  bytes are unchanged. Unresolved identity-blocked exact `A/09` adds with an
+  ambiguous later same-object `U/09` position proof now split the ambiguous
+  static-row set by module-custom rows, missing module `TemplateResRef` rows,
+  add-output-unavailable rows, and add-output-divergent matches. These counters
+  are carried through live-object, M-frame, and server-dispatch summaries so the
+  next replay can distinguish missing module resource proof from genuinely
+  divergent add-visible output before any broader identity selection rule.
+  Verified with focused
+  `exact_placeable_add_following_position_ambiguous_counts_missing_output`;
+  next local replay should compare the new ambiguous-output counters against
+  remaining `identity_blocked` exact add rows.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
