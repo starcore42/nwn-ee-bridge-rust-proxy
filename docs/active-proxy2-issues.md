@@ -1201,6 +1201,16 @@ Current status:
   `exact_placeable_add_identity_blocked_fixed_fields_select_unique_static_match`;
   next local replay should compare remaining identity-blocked custom rows
   against fixed-field-resolved and ambiguous add counters.
+- 2026-06-13 follow-up exact `A/09` fixed-field ambiguity counters: packet bytes
+  and reconciliation policy are unchanged. Identity-blocked fixed-width add
+  diagnostics now split ambiguous fixed-field candidate sets from no-evidence
+  identity blocks, including total candidate rows, module-custom rows, and
+  missing-`TemplateResRef` rows. This keeps ambiguous add rows diagnostic-only
+  while making the next replay able to distinguish missing identity proof from
+  genuinely non-matching static context. Verified with focused
+  `exact_placeable_add_identity_blocked_fixed_fields_select_unique_static_match`;
+  next local replay should compare the ambiguous counters against remaining
+  identity-blocked custom rows before adding any stronger add selection rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

@@ -5009,7 +5009,7 @@ mod diagnostic_tests {
                 crate::translate::area::AreaPlaceableContextRow {
                     object_id: ambiguous_static_id,
                     appearance: 0xFFFE,
-                    module_template_resref: Some(*b"plc_ambig_two\0\0\0"),
+                    module_template_resref: None,
                     module_state: Some(matching_module_state),
                     ..crate::translate::area::AreaPlaceableContextRow::default()
                 },
@@ -5053,6 +5053,23 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
             0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches, 1,
+            "the ambiguous add should be visible separately from no-evidence identity blocks"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows,
+            2
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows,
+            2
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows,
+            1
         );
         assert_eq!(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
@@ -5133,6 +5150,11 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
     pub exact_placeable_add_identity_blocked_fixed_field_module_custom_matches: u32,
     pub exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows:
+        u32,
     pub exact_placeable_update_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_update_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_no_overlap: u32,
@@ -12845,6 +12867,10 @@ struct IdentityBlockedAddFixedFieldMatch {
     matched_rows: u32,
     module_custom_rows: u32,
     missing_resref_rows: u32,
+    ambiguous_matches: u32,
+    ambiguous_match_rows: u32,
+    ambiguous_module_custom_rows: u32,
+    ambiguous_missing_resref_rows: u32,
 }
 
 fn record_exact_placeable_identity_blocked_add_fixed_field_match(
@@ -12862,7 +12888,7 @@ fn record_exact_placeable_identity_blocked_add_fixed_field_match(
     }
 
     let matched = identity_blocked_add_fixed_field_match_for_object(area_context, object_id, claim);
-    if matched.matched_rows == 0 {
+    if matched.matched_rows == 0 && matched.ambiguous_matches == 0 {
         return;
     }
 
@@ -12876,6 +12902,20 @@ fn record_exact_placeable_identity_blocked_add_fixed_field_match(
         summary
             .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches
             .saturating_add(matched.missing_resref_rows);
+    summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches = summary
+        .exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches
+        .saturating_add(matched.ambiguous_matches);
+    summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows = summary
+        .exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows
+        .saturating_add(matched.ambiguous_match_rows);
+    summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows = summary
+        .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows
+        .saturating_add(matched.ambiguous_module_custom_rows);
+    summary
+        .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows =
+        summary
+            .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows
+            .saturating_add(matched.ambiguous_missing_resref_rows);
 }
 
 fn identity_blocked_add_fixed_field_match_for_object(
@@ -12883,18 +12923,42 @@ fn identity_blocked_add_fixed_field_match_for_object(
     object_id: u32,
     claim: VerifiedPlaceableAddExactClaim,
 ) -> IdentityBlockedAddFixedFieldMatch {
-    let Some(row) =
-        unique_module_static_row_matching_verified_add_fixed_fields(area_context, object_id, claim)
-    else {
-        return IdentityBlockedAddFixedFieldMatch::default();
-    };
-    let module_custom_rows = u32::from(is_custom_placeable_appearance(row.appearance));
-    IdentityBlockedAddFixedFieldMatch {
-        matched_rows: 1,
-        module_custom_rows,
-        missing_resref_rows: u32::from(
-            module_custom_rows != 0 && row.module_template_resref.is_none(),
-        ),
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut matched_rows = 0u32;
+    let mut module_custom_rows = 0u32;
+    let mut missing_resref_rows = 0u32;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
+        {
+            continue;
+        }
+        matched_rows = matched_rows.saturating_add(1);
+        if is_custom_placeable_appearance(matched.row.appearance) {
+            module_custom_rows = module_custom_rows.saturating_add(1);
+            if matched.row.module_template_resref.is_none() {
+                missing_resref_rows = missing_resref_rows.saturating_add(1);
+            }
+        }
+    }
+
+    match matched_rows {
+        0 => IdentityBlockedAddFixedFieldMatch::default(),
+        1 => IdentityBlockedAddFixedFieldMatch {
+            matched_rows,
+            module_custom_rows,
+            missing_resref_rows,
+            ..IdentityBlockedAddFixedFieldMatch::default()
+        },
+        _ => IdentityBlockedAddFixedFieldMatch {
+            ambiguous_matches: 1,
+            ambiguous_match_rows: matched_rows,
+            ambiguous_module_custom_rows: module_custom_rows,
+            ambiguous_missing_resref_rows: missing_resref_rows,
+            ..IdentityBlockedAddFixedFieldMatch::default()
+        },
     }
 }
 
@@ -12909,22 +12973,7 @@ fn unique_module_static_row_matching_verified_add_fixed_fields<'a>(
     let mut selected = None;
     for matched in overlap.rows() {
         if matched.kind != AreaPlaceableContextRowKind::Static
-            || matched.row.appearance != claim.appearance
-        {
-            continue;
-        }
-        let Some(module_state) = matched.row.module_state else {
-            continue;
-        };
-        // Exact A/09 exposes only the fixed appearance WORD and add-state BOOL
-        // block. Position and TemplateResRef are not part of the add reader, so
-        // any selected row may only drive state/appearance rules already backed
-        // by those fields or a separate following U/09 carrier.
-        if claim
-            .state
-            .observed_area_state()
-            .conflict_with_module_state(module_state)
-            .any()
+            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
         {
             continue;
         }
@@ -12934,6 +12983,27 @@ fn unique_module_static_row_matching_verified_add_fixed_fields<'a>(
     }
 
     selected
+}
+
+fn module_static_row_matches_verified_add_fixed_fields(
+    row: &AreaPlaceableContextRow,
+    claim: VerifiedPlaceableAddExactClaim,
+) -> bool {
+    if row.appearance != claim.appearance {
+        return false;
+    }
+    let Some(module_state) = row.module_state else {
+        return false;
+    };
+    // Exact A/09 exposes only the fixed appearance WORD and add-state BOOL
+    // block. Position and TemplateResRef are not part of the add reader, so any
+    // selected row may only drive state/appearance rules already backed by
+    // those fields or a separate following U/09 carrier.
+    !claim
+        .state
+        .observed_area_state()
+        .conflict_with_module_state(module_state)
+        .any()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -13215,6 +13285,14 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
         add_identity_blocked_fixed_field_module_custom_missing_resref_matches = summary
             .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
+        add_identity_blocked_fixed_field_ambiguous_matches =
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches,
+        add_identity_blocked_fixed_field_ambiguous_match_rows =
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows,
+        add_identity_blocked_fixed_field_ambiguous_module_custom_rows =
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows,
+        add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows = summary
+            .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows,
         update_identity_blocked_module_custom_rows =
             summary.exact_placeable_update_identity_blocked_module_custom_rows,
         update_identity_blocked_module_custom_with_resref_rows = summary

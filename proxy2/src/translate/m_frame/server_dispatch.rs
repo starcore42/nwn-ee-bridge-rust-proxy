@@ -1024,6 +1024,14 @@ fn trace_live_object_exact_rewrite_summary(
             summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
         exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches = summary
             .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
+        exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches =
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches,
+        exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows =
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows,
+        exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows = summary
+            .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows,
+        exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows = summary
+            .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows,
         exact_placeable_update_identity_blocked_module_custom_rows =
             summary.exact_placeable_update_identity_blocked_module_custom_rows,
         exact_placeable_update_identity_blocked_module_custom_with_resref_rows = summary
