@@ -4609,6 +4609,170 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_position_resolves_light_static_identity_for_custom_rewrite() {
+        let object_id = 0x8000_3601u32;
+        let compact_static_id = 0x0000_3601u32;
+        let target_resref = *b"plc_pos_select\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked conflicts with the selected module row.
+            false, // lockable conflicts with the selected module row.
+            false, // visual payload.
+            false, // EE-only terminal state BOOL.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("position+appearance+state U/09 payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            light_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x004D,
+                x: 5.0,
+                y: 6.0,
+                z: 0.0,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id: compact_static_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                x: 10.0,
+                y: 20.0,
+                z: 0.0,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    lockable: true,
+                    locked: false,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("exact position should select the static row despite a light-row overlap");
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position,
+            1
+        );
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+        assert_eq!(
+            summary.bytes_inserted,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("position-selected custom U/09 should exact-claim after rewrite");
+        assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_position_resolution_requires_one_static_row() {
+        let object_id = 0x8000_3602u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([false, false, true, false, false, false]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("ambiguous position+appearance+state U/09 payload");
+        let original = payload.clone();
+
+        let duplicate_row = crate::translate::area::AreaPlaceableContextRow {
+            object_id,
+            appearance: 0xFFFE,
+            module_template_resref: Some(*b"plc_dup_one\0\0\0\0\0"),
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+            module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                static_object: true,
+                lockable: true,
+                locked: false,
+                ..crate::translate::area::AreaPlaceableContextState::default()
+            }),
+            ..crate::translate::area::AreaPlaceableContextRow::default()
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                duplicate_row.clone(),
+                crate::translate::area::AreaPlaceableContextRow {
+                    module_template_resref: Some(*b"plc_dup_two\0\0\0\0\0"),
+                    ..duplicate_row
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        assert!(
+            rewrite_update_records_payload_with_area_context_if_possible(
+                &mut payload,
+                Some(&area_context),
+            )
+            .is_none(),
+            "two matching static rows must keep identity-blocked U/09 diagnostic-only"
+        );
+        assert_eq!(payload, original);
+    }
+
+    #[test]
     fn exact_placeable_summary_counts_identity_blocked_module_custom_rows() {
         let blocked_with_resref_id = 0x8000_3501u32;
         let blocked_missing_resref_id = 0x8000_3502u32;
@@ -4783,6 +4947,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_unique_targets: u32,
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_update_identity_blocked_module_custom_rows: u32,
@@ -12082,11 +12247,6 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
             }
             b'U' => {
                 summary.update_records_examined = summary.update_records_examined.saturating_add(1);
-                let (target, _) = placeable_static_reconciliation_target_for_object(
-                    area_context,
-                    mention.object_id,
-                );
-                record_exact_placeable_reconciliation_target(&mut summary, b'U', target);
                 let Some(update_claim) = verified_placeable_update_exact_claim(
                     &live_bytes,
                     record_offset,
@@ -12096,11 +12256,22 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                let (selection, area_rows) = placeable_static_reconciliation_selection_for_update(
+                    area_context,
+                    mention.object_id,
+                    update_claim,
+                );
+                record_exact_placeable_reconciliation_target(&mut summary, b'U', selection.target);
+                if selection.identity_resolved_by_position {
+                    summary.exact_placeable_update_identity_resolved_by_position = summary
+                        .exact_placeable_update_identity_resolved_by_position
+                        .saturating_add(1);
+                }
                 if update_claim.parser.appearance_offset.is_some() {
                     record_exact_placeable_identity_blocked_module_custom_rows(
                         &mut summary,
                         b'U',
-                        target,
+                        selection.target,
                         area_context,
                         mention.object_id,
                     );
@@ -12111,7 +12282,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     .and_then(|appearance_offset| read_u16_le(&live_bytes, appearance_offset))
                     .is_some_and(is_custom_placeable_appearance);
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
-                    target
+                    selection.target
                     && update_claim.parser.appearance_offset.is_some()
                     && is_custom_placeable_appearance(row.appearance)
                     && row.module_template_resref.is_none()
@@ -12134,6 +12305,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_end,
                         &mut fragment_bits,
                         update_claim,
+                        selection,
+                        &area_rows,
                     )?;
                 let orientation_rewritten =
                     reconcile_verified_placeable_update_orientation_with_area_context(
@@ -12143,17 +12316,28 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_end,
                         &mut fragment_bits,
                         update_claim,
+                        selection,
+                        &area_rows,
                     )?;
                 let state_rewritten =
-                    record::reconcile_verified_placeable_update_state_claim_with_area_context(
-                        area_context,
-                        update_claim.object_id,
-                        update_claim.mask,
-                        update_claim.parser,
-                        &mut fragment_bits,
-                        record_offset,
-                        record_end,
-                    )?;
+                    if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
+                        selection.target
+                    {
+                        record::reconcile_verified_placeable_update_state_claim_with_area_row(
+                            area_context,
+                            row,
+                            &area_rows,
+                            selection.identity_resolved_by_position,
+                            update_claim.object_id,
+                            update_claim.mask,
+                            update_claim.parser,
+                            &mut fragment_bits,
+                            record_offset,
+                            record_end,
+                        )?
+                    } else {
+                        false
+                    };
                 // Collapse a custom appearance branch only after the other
                 // helpers have consumed the pre-drain exact parser claim.
                 // EE/Diamond read appearance before scale/state bytes, so
@@ -12166,6 +12350,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_offset,
                         record_end,
                         update_claim,
+                        selection,
+                        &area_rows,
                     )?;
                 if appearance_rewrite.bytes_inserted != 0 {
                     live_byte_offset_added =
@@ -12214,7 +12400,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     summary.update_records_rewritten =
                         summary.update_records_rewritten.saturating_add(1);
                 } else if matches!(
-                    target,
+                    selection.target,
                     AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
                 ) {
                     summary.exact_placeable_update_unique_unchanged = summary
@@ -12279,6 +12465,77 @@ fn record_exact_placeable_reconciliation_target(
         }
         _ => {}
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlaceableStaticReconciliationSelection<'a> {
+    target: AreaPlaceableContextStaticReconciliationTarget<'a>,
+    identity_resolved_by_position: bool,
+}
+
+fn placeable_static_reconciliation_selection_for_update<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableUpdateExactClaim,
+) -> (PlaceableStaticReconciliationSelection<'a>, String) {
+    let (target, area_rows) =
+        placeable_static_reconciliation_target_for_object(area_context, object_id);
+    if matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) && let Some(source_position) = claim.parser.position
+        && let Some(row) = unique_module_static_row_matching_verified_update_position(
+            area_context,
+            object_id,
+            source_position,
+        )
+    {
+        return (
+            PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: true,
+            },
+            area_rows,
+        );
+    }
+
+    (
+        PlaceableStaticReconciliationSelection {
+            target,
+            identity_resolved_by_position: false,
+        },
+        area_rows,
+    )
+}
+
+fn unique_module_static_row_matching_verified_update_position(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    source_position: reader::VerifiedEeDoorPlaceablePosition,
+) -> Option<&AreaPlaceableContextRow> {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static || matched.row.module_state.is_none()
+        {
+            continue;
+        }
+        let Some(area_position) = encode_area_static_row_position(matched.row) else {
+            continue;
+        };
+        if area_position.x_raw != source_position.x_raw
+            || area_position.y_raw != source_position.y_raw
+            || area_position.z_raw != source_position.z_raw
+        {
+            continue;
+        }
+        if selected.replace(matched.row).is_some() {
+            return None;
+        }
+    }
+    selected
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -12612,6 +12869,8 @@ fn trace_exact_placeable_reconciliation_summary(
         update_unique_targets = summary.exact_placeable_update_unique_targets,
         add_identity_blocked = summary.exact_placeable_add_identity_blocked,
         update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        update_identity_resolved_by_position =
+            summary.exact_placeable_update_identity_resolved_by_position,
         add_identity_blocked_module_custom_rows =
             summary.exact_placeable_add_identity_blocked_module_custom_rows,
         add_identity_blocked_module_custom_with_resref_rows = summary
@@ -12782,16 +13041,20 @@ fn reconcile_verified_placeable_update_position_with_area_context(
     record_end: usize,
     bits: &mut [bool],
     claim: VerifiedPlaceableUpdateExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    area_rows: &str,
 ) -> Option<bool> {
     let Some(source_position) = claim.parser.position else {
         return Some(false);
     };
-    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+    let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
         claim.object_id,
         record_offset,
         record_end,
         "position-update",
+        selection,
+        area_rows,
     ) else {
         return Some(false);
     };
@@ -12819,6 +13082,7 @@ fn reconcile_verified_placeable_update_position_with_area_context(
         position_bit_cursor = source_position.bit_cursor,
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
+        area_static_identity_resolved_by_position = selection.identity_resolved_by_position,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %area_rows,
         "server->client exact live-object placeable update position reconciled with unique module-backed area/static row"
@@ -12832,17 +13096,21 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
     record_offset: usize,
     record_end: usize,
     claim: VerifiedPlaceableUpdateExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    area_rows: &str,
 ) -> Option<PlaceableAppearanceRewrite> {
     let Some(appearance_offset) = claim.parser.appearance_offset else {
         return Some(PlaceableAppearanceRewrite::default());
     };
 
-    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+    let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
         claim.object_id,
         record_offset,
         record_end,
         "appearance-update",
+        selection,
+        area_rows,
     ) else {
         return Some(PlaceableAppearanceRewrite::default());
     };
@@ -12892,6 +13160,7 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
             bytes_inserted,
             state_bit_cursor = ?claim.parser.state_bit_cursor,
             next_bit_cursor = claim.parser.next_bit_cursor,
+            area_static_identity_resolved_by_position = selection.identity_resolved_by_position,
             area_resref = area_context.area_resref.as_str(),
             area_rows = %area_rows,
             "server->client exact live-object placeable update custom appearance reconciled with module-backed TemplateResRef"
@@ -12930,6 +13199,7 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         bytes_removed,
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
+        area_static_identity_resolved_by_position = selection.identity_resolved_by_position,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %area_rows,
         "server->client exact live-object placeable update appearance reconciled with unique module-backed area/static row"
@@ -12959,17 +13229,21 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
     record_end: usize,
     bits: &mut [bool],
     claim: VerifiedPlaceableUpdateExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    area_rows: &str,
 ) -> Option<bool> {
     if (claim.mask & LEGACY_UPDATE_ORIENTATION_MASK) == 0 {
         return Some(false);
     }
 
-    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+    let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
         claim.object_id,
         record_offset,
         record_end,
         "orientation-update",
+        selection,
+        area_rows,
     ) else {
         return Some(false);
     };
@@ -12999,6 +13273,7 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
             orientation_bit_cursor = source_orientation.bit_cursor,
             state_bit_cursor = ?claim.parser.state_bit_cursor,
             next_bit_cursor = claim.parser.next_bit_cursor,
+            area_static_identity_resolved_by_position = selection.identity_resolved_by_position,
             area_resref = area_context.area_resref.as_str(),
             area_rows = %area_rows,
             "server->client exact live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
@@ -13035,6 +13310,7 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
         orientation_bit_cursor = source_orientation.bit_cursor,
         state_bit_cursor = ?claim.parser.state_bit_cursor,
         next_bit_cursor = claim.parser.next_bit_cursor,
+        area_static_identity_resolved_by_position = selection.identity_resolved_by_position,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %area_rows,
         "server->client exact live-object placeable update vector orientation reconciled with unique module-backed area/static row"
@@ -13055,6 +13331,34 @@ fn placeable_static_reconciliation_target_for_record<'a>(
         AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
             Some((row, area_rows))
         }
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+            tracing::debug!(
+                object_id = format_args!("0x{object_id:08X}"),
+                record_offset,
+                record_end,
+                field,
+                area_resref = area_context.area_resref.as_str(),
+                area_module_identity_mismatch = ?conflict,
+                area_rows = %area_rows,
+                "server->client exact live-object placeable area/static reconciliation skipped: identity is not unique module-backed static"
+            );
+            None
+        }
+        AreaPlaceableContextStaticReconciliationTarget::NoOverlap => None,
+    }
+}
+
+fn placeable_static_reconciliation_row_for_selected_record<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    record_offset: usize,
+    record_end: usize,
+    field: &'static str,
+    selection: PlaceableStaticReconciliationSelection<'a>,
+    area_rows: &str,
+) -> Option<&'a AreaPlaceableContextRow> {
+    match selection.target {
+        AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => Some(row),
         AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
             tracing::debug!(
                 object_id = format_args!("0x{object_id:08X}"),

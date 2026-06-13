@@ -1161,6 +1161,21 @@ Current status:
   disabled using focused `exact_placeable_summary_counts_identity_blocked_module_custom_rows`,
   `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
   hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`.
+- 2026-06-13 follow-up identity-blocked exact `U/09` position selection: exact
+  placeable reconciliation now promotes an otherwise identity-blocked update to
+  the module-backed static row only when the same verified `U/09` record owns
+  the decompile-ordered position branch and exactly one overlapping static row
+  has identical packed X/Y/Z position words/bits. Ambiguous overlaps remain
+  diagnostic-only. The selected row is then shared by the position, orientation,
+  appearance, and lock-state helpers without moving bits; the reader proof
+  remains `header -> position words/z fragment bits -> orientation ->
+  appearance -> scale/state -> state BOOLs`. Summaries now expose
+  `exact_placeable_update_identity_resolved_by_position` so local replay can
+  separate position-resolved custom statics from rows that still need a stronger
+  identity source. Verified with incremental disabled using focused
+  `exact_placeable_update_position*`, `exact_placeable_`, `area_context_`,
+  `placeable_update`, `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all
+  --check`, and `git diff --check`.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

@@ -18,13 +18,11 @@ use super::{
     world_status, write_u32_le, write_verified_scalar_orientation, writer,
 };
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextState, AreaPlaceableObservedState,
-    format_area_placeable_module_state,
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
+    AreaPlaceableObservedState, format_area_placeable_module_state,
 };
 #[cfg(test)]
-use crate::translate::area::{
-    AreaPlaceableContextRow, AreaPlaceableContextRowKind, format_area_placeable_context_row,
-};
+use crate::translate::area::{AreaPlaceableContextRowKind, format_area_placeable_context_row};
 
 const MAX_DOOR_PLACEABLE_UPDATE_INTERLEAVED_FRAGMENT_STORAGE_BYTES: usize = 64;
 
@@ -1677,6 +1675,61 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_context(
         record_offset,
         record_end,
     )
+}
+
+pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
+    area_context: &AreaPlaceableContext,
+    area_row: &AreaPlaceableContextRow,
+    area_rows: &str,
+    identity_resolved_by_position: bool,
+    object_id: u32,
+    mask: u32,
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    bits: &mut [bool],
+    record_offset: usize,
+    record_end: usize,
+) -> Option<bool> {
+    if claim.read_end != record_end {
+        return None;
+    }
+    if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
+        return Some(false);
+    }
+    let Some(state_cursor) = claim.state_bit_cursor else {
+        return Some(false);
+    };
+    let module_state = area_row.module_state?;
+
+    let source_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+    let conflict = source_state
+        .observed_area_state()
+        .conflict_with_module_state(module_state);
+    if !conflict.any() {
+        return Some(false);
+    }
+
+    let rewritten_state = source_state.with_module_static_lock_state(module_state);
+    let mut changed = false;
+    changed |= set_bool_bit(bits, state_cursor + 2, rewritten_state.locked)?;
+    changed |= set_bool_bit(bits, state_cursor + 3, rewritten_state.lockable)?;
+    let emitted_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_placeable_state = ?source_state,
+        emitted_placeable_state = ?emitted_state,
+        area_module_state = %format_area_placeable_module_state(module_state),
+        area_module_state_mismatch_fields = %conflict.formatted_fields(),
+        area_static_identity_resolved_by_position = identity_resolved_by_position,
+        area_resref = area_context.area_resref.as_str(),
+        area_rows = %area_rows,
+        "server->client exact live-object placeable update lock state reconciled with selected module-backed area/static row"
+    );
+
+    Some(changed)
 }
 
 fn reconcile_placeable_update_orientation_with_area_context(
