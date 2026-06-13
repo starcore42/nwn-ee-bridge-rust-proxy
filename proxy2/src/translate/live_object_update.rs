@@ -38,9 +38,9 @@ use std::{
 };
 
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
-    AreaPlaceableContextStaticReconciliationTarget, AreaPlaceableObservedState,
-    format_area_placeable_module_state,
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
+    AreaPlaceableContextState, AreaPlaceableContextStaticReconciliationTarget,
+    AreaPlaceableObservedState, format_area_placeable_module_state,
 };
 
 mod add;
@@ -4607,6 +4607,161 @@ mod diagnostic_tests {
             "unique module-backed row should reconcile lock bits"
         );
     }
+
+    #[test]
+    fn exact_placeable_summary_counts_identity_blocked_module_custom_rows() {
+        let blocked_with_resref_id = 0x8000_3501u32;
+        let blocked_missing_resref_id = 0x8000_3502u32;
+        let unique_object_id = 0x8000_3503u32;
+        let target_resref = *b"plc_blocked_one\0";
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&blocked_with_resref_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&blocked_missing_resref_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0012u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&blocked_with_resref_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&unique_object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        for _ in 0..2 {
+            fragment_bits.extend([
+                false, // direct CExoString name branch.
+                false, // reputation/visual selector.
+                false, // no optional object id bytes.
+                false, // static/plot stays packet-authored.
+                true,  // useable.
+                false, // trap disarmable.
+                true,  // lockable.
+                false, // locked.
+                false, // unknown 0x1AC sibling.
+                true,  // name-valid.
+                false, // EE-only light/visual guard before the transform map.
+            ]);
+        }
+        fragment_bits.extend([false, false, true, false, false, false]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("identity-blocked custom A/U plus unique U payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: blocked_with_resref_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        useable: true,
+                        lockable: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: blocked_missing_resref_id,
+                    appearance: 0xFFFF,
+                    module_template_resref: None,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        useable: true,
+                        lockable: true,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: unique_object_id,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        lockable: true,
+                        locked: false,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique state row should rewrite while blocked custom rows stay diagnostic-only");
+        assert_eq!(summary.add_records_examined, 2);
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 2);
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 1);
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_module_custom_rows,
+            2
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_blocked_module_custom_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows,
+            0
+        );
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact mixed payload");
+        assert_eq!(claim.mentions.len(), 4);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "identity-blocked custom add remains packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "identity-blocked appearance update remains packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[3].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            }),
+            "the unique row still supplies the emitted rewrite"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4628,6 +4783,10 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_unique_targets: u32,
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
+    pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
+    pub exact_placeable_update_identity_blocked_module_custom_rows: u32,
+    pub exact_placeable_update_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_no_overlap: u32,
     pub exact_placeable_update_no_overlap: u32,
     pub exact_placeable_add_unique_unchanged: u32,
@@ -11759,6 +11918,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     mention.object_id,
                 );
                 record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
+                record_exact_placeable_identity_blocked_module_custom_rows(
+                    &mut summary,
+                    b'A',
+                    target,
+                    area_context,
+                    mention.object_id,
+                );
                 let Some(add_claim) = verified_placeable_add_exact_claim(
                     &live_bytes,
                     record_offset,
@@ -11930,6 +12096,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                if update_claim.parser.appearance_offset.is_some() {
+                    record_exact_placeable_identity_blocked_module_custom_rows(
+                        &mut summary,
+                        b'U',
+                        target,
+                        area_context,
+                        mention.object_id,
+                    );
+                }
                 let source_custom_appearance = update_claim
                     .parser
                     .appearance_offset
@@ -12104,6 +12279,77 @@ fn record_exact_placeable_reconciliation_target(
         }
         _ => {}
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct IdentityBlockedModuleCustomRows {
+    rows: u32,
+    missing_resref_rows: u32,
+}
+
+fn record_exact_placeable_identity_blocked_module_custom_rows(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    opcode: u8,
+    target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+) {
+    if !matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) {
+        return;
+    }
+
+    let custom_rows = identity_blocked_module_custom_rows_for_object(area_context, object_id);
+    if custom_rows.rows == 0 {
+        return;
+    }
+
+    match opcode {
+        b'A' => {
+            summary.exact_placeable_add_identity_blocked_module_custom_rows = summary
+                .exact_placeable_add_identity_blocked_module_custom_rows
+                .saturating_add(custom_rows.rows);
+            summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows =
+                summary
+                    .exact_placeable_add_identity_blocked_module_custom_missing_resref_rows
+                    .saturating_add(custom_rows.missing_resref_rows);
+        }
+        b'U' => {
+            summary.exact_placeable_update_identity_blocked_module_custom_rows = summary
+                .exact_placeable_update_identity_blocked_module_custom_rows
+                .saturating_add(custom_rows.rows);
+            summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows =
+                summary
+                    .exact_placeable_update_identity_blocked_module_custom_missing_resref_rows
+                    .saturating_add(custom_rows.missing_resref_rows);
+        }
+        _ => {}
+    }
+}
+
+fn identity_blocked_module_custom_rows_for_object(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+) -> IdentityBlockedModuleCustomRows {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut summary = IdentityBlockedModuleCustomRows::default();
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || matched.row.module_state.is_none()
+            || !is_custom_placeable_appearance(matched.row.appearance)
+        {
+            continue;
+        }
+        summary.rows = summary.rows.saturating_add(1);
+        if matched.row.module_template_resref.is_none() {
+            summary.missing_resref_rows = summary.missing_resref_rows.saturating_add(1);
+        }
+    }
+    summary
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -12366,6 +12612,24 @@ fn trace_exact_placeable_reconciliation_summary(
         update_unique_targets = summary.exact_placeable_update_unique_targets,
         add_identity_blocked = summary.exact_placeable_add_identity_blocked,
         update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        add_identity_blocked_module_custom_rows =
+            summary.exact_placeable_add_identity_blocked_module_custom_rows,
+        add_identity_blocked_module_custom_with_resref_rows = summary
+            .exact_placeable_add_identity_blocked_module_custom_rows
+            .saturating_sub(
+                summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+            ),
+        add_identity_blocked_module_custom_missing_resref_rows =
+            summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+        update_identity_blocked_module_custom_rows =
+            summary.exact_placeable_update_identity_blocked_module_custom_rows,
+        update_identity_blocked_module_custom_with_resref_rows = summary
+            .exact_placeable_update_identity_blocked_module_custom_rows
+            .saturating_sub(
+                summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows,
+            ),
+        update_identity_blocked_module_custom_missing_resref_rows =
+            summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows,
         add_no_overlap = summary.exact_placeable_add_no_overlap,
         update_no_overlap = summary.exact_placeable_update_no_overlap,
         add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,

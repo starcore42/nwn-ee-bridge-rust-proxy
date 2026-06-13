@@ -1005,6 +1005,24 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_update_unique_targets = summary.exact_placeable_update_unique_targets,
         exact_placeable_add_identity_blocked = summary.exact_placeable_add_identity_blocked,
         exact_placeable_update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        exact_placeable_add_identity_blocked_module_custom_rows =
+            summary.exact_placeable_add_identity_blocked_module_custom_rows,
+        exact_placeable_add_identity_blocked_module_custom_with_resref_rows = summary
+            .exact_placeable_add_identity_blocked_module_custom_rows
+            .saturating_sub(
+                summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+            ),
+        exact_placeable_add_identity_blocked_module_custom_missing_resref_rows =
+            summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+        exact_placeable_update_identity_blocked_module_custom_rows =
+            summary.exact_placeable_update_identity_blocked_module_custom_rows,
+        exact_placeable_update_identity_blocked_module_custom_with_resref_rows = summary
+            .exact_placeable_update_identity_blocked_module_custom_rows
+            .saturating_sub(
+                summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows,
+            ),
+        exact_placeable_update_identity_blocked_module_custom_missing_resref_rows =
+            summary.exact_placeable_update_identity_blocked_module_custom_missing_resref_rows,
         exact_placeable_add_no_overlap = summary.exact_placeable_add_no_overlap,
         exact_placeable_update_no_overlap = summary.exact_placeable_update_no_overlap,
         exact_placeable_add_unique_unchanged = summary.exact_placeable_add_unique_unchanged,

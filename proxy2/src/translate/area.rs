@@ -330,8 +330,7 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
             .any(|matched| matched.kind == AreaPlaceableContextRowKind::Static)
     }
 
-    #[cfg(test)]
-    pub fn rows(&self) -> &[AreaPlaceableContextRowMatch<'a>] {
+    pub(crate) fn rows(&self) -> &[AreaPlaceableContextRowMatch<'a>] {
         &self.rows
     }
 

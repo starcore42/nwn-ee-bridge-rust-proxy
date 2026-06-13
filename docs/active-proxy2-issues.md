@@ -1150,6 +1150,17 @@ Current status:
   and `exact_placeable_`; next local replay should compare remaining custom
   skips against lifecycle/identity-blocked rows and missing `TemplateResRef`
   context.
+- 2026-06-13 follow-up identity-blocked module-custom row diagnostics: packet
+  bytes and reconciliation policy are unchanged. Exact placeable reconciliation
+  now counts module-backed custom static rows hidden behind non-unique area
+  identity separately for `A/09` and appearance-owning `U/09` records, and
+  splits those counts by rows with versus without `TemplateResRef` proof. The
+  counters flow through the exact live-object summary and server-dispatch log so
+  the next local replay can distinguish custom-carrier gaps from missing row
+  identity before adding another writer rule. Verified with incremental
+  disabled using focused `exact_placeable_summary_counts_identity_blocked_module_custom_rows`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
