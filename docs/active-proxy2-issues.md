@@ -1317,6 +1317,19 @@ Current status:
   hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
   local replay should compare preceding and following blocker counters before
   adding any broader add identity rule.
+- 2026-06-14 follow-up surrounding-position exact `A/09` identity selection:
+  identity-blocked fixed-width placeable adds now treat bracketing same-object
+  exact `U/09` position evidence as a shared proof source. When both the nearest
+  preceding and following position mentions resolve, the add is rewritten only
+  if they select the same module-backed row or rows with byte/bit-identical
+  add-visible output; divergent bracketing positions stay packet-authored and
+  increment `exact_placeable_add_identity_surrounding_position_conflicts`
+  instead of silently trusting the later mention. New replay counters expose
+  surrounding-position resolutions, output-equivalent resolutions, and
+  conflicts. Verified with focused `surrounding_position`, `exact_placeable_`,
+  `area_context_`, and `placeable_update`; next local replay should compare the
+  new conflict counter against remaining preceding/following blockers before
+  broadening position-derived add identity again.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
