@@ -29,6 +29,9 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_module_custom_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches: u32,
     pub exact_placeable_update_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_update_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_no_overlap: u32,
@@ -96,6 +99,20 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add(
                 rewrite.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
             );
+        self.exact_placeable_add_identity_blocked_fixed_field_matches = self
+            .exact_placeable_add_identity_blocked_fixed_field_matches
+            .saturating_add(rewrite.exact_placeable_add_identity_blocked_fixed_field_matches);
+        self.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches = self
+            .exact_placeable_add_identity_blocked_fixed_field_module_custom_matches
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
+            );
+        self.exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches =
+            self.exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
+                );
         self.exact_placeable_update_identity_blocked_module_custom_rows = self
             .exact_placeable_update_identity_blocked_module_custom_rows
             .saturating_add(rewrite.exact_placeable_update_identity_blocked_module_custom_rows);

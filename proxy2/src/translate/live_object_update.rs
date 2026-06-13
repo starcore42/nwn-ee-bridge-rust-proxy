@@ -4926,6 +4926,147 @@ mod diagnostic_tests {
             "the unique row still supplies the emitted rewrite"
         );
     }
+
+    #[test]
+    fn exact_placeable_add_identity_blocked_fixed_fields_count_unique_static_match() {
+        let matched_object_id = 0x8000_3605u32;
+        let matched_static_id = 0x0000_3605u32;
+        let ambiguous_object_id = 0x8000_3606u32;
+        let ambiguous_static_id = 0x0000_3606u32;
+        let unique_update_id = 0x8000_3607u32;
+        let target_resref = *b"plc_fixed_add\0\0\0";
+
+        let mut live = Vec::new();
+        for object_id in [matched_object_id, ambiguous_object_id] {
+            live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&0u32.to_le_bytes());
+            live.push(5);
+            live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+            live.extend_from_slice(&0u16.to_le_bytes());
+            live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        }
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&unique_update_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_STATE_MASK.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        for _ in 0..2 {
+            fragment_bits.extend([
+                false, // direct CExoString name branch.
+                false, // reputation/visual selector.
+                false, // no optional object id bytes.
+                false, // static/plot stays packet-authored.
+                true,  // useable.
+                false, // trap disarmable.
+                true,  // lockable.
+                false, // locked.
+                false, // unknown 0x1AC sibling.
+                true,  // name-valid.
+                false, // EE-only light/visual guard before the transform map.
+            ]);
+        }
+        fragment_bits.extend([false, false, true, false, false, false]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("identity-blocked A/09 pair plus unique U/09 payload");
+
+        let matching_module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            light_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: matched_object_id,
+                    appearance: 0x004D,
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: ambiguous_object_id,
+                    appearance: 0x004D,
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: matched_static_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    module_state: Some(matching_module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: ambiguous_static_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(*b"plc_ambig_one\0\0\0"),
+                    module_state: Some(matching_module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: ambiguous_static_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(*b"plc_ambig_two\0\0\0"),
+                    module_state: Some(matching_module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id: unique_update_id,
+                    module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                        static_object: true,
+                        lockable: true,
+                        locked: false,
+                        ..crate::translate::area::AreaPlaceableContextState::default()
+                    }),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("unique U/09 rewrite should expose identity-blocked add diagnostics");
+        assert_eq!(summary.add_records_examined, 2);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 2);
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_matches, 1,
+            "only the add with one matching static row should count"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
+            0
+        );
+
+        let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact mixed payload");
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            }),
+            "identity-blocked fixed-field add remains packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            }),
+            "ambiguous fixed-field add also remains packet-authored"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4950,6 +5091,9 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_module_custom_matches: u32,
+    pub exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches: u32,
     pub exact_placeable_update_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_update_identity_blocked_module_custom_missing_resref_rows: u32,
     pub exact_placeable_add_no_overlap: u32,
@@ -12099,6 +12243,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
+                record_exact_placeable_identity_blocked_add_fixed_field_match(
+                    &mut summary,
+                    target,
+                    area_context,
+                    mention.object_id,
+                    add_claim,
+                );
                 let mut custom_update_synthesized = false;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
@@ -12610,6 +12761,91 @@ fn identity_blocked_module_custom_rows_for_object(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct IdentityBlockedAddFixedFieldMatch {
+    matched_rows: u32,
+    module_custom_rows: u32,
+    missing_resref_rows: u32,
+}
+
+fn record_exact_placeable_identity_blocked_add_fixed_field_match(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableAddExactClaim,
+) {
+    if !matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) {
+        return;
+    }
+
+    let matched = identity_blocked_add_fixed_field_match_for_object(area_context, object_id, claim);
+    if matched.matched_rows == 0 {
+        return;
+    }
+
+    summary.exact_placeable_add_identity_blocked_fixed_field_matches = summary
+        .exact_placeable_add_identity_blocked_fixed_field_matches
+        .saturating_add(matched.matched_rows);
+    summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches = summary
+        .exact_placeable_add_identity_blocked_fixed_field_module_custom_matches
+        .saturating_add(matched.module_custom_rows);
+    summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches =
+        summary
+            .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches
+            .saturating_add(matched.missing_resref_rows);
+}
+
+fn identity_blocked_add_fixed_field_match_for_object(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableAddExactClaim,
+) -> IdentityBlockedAddFixedFieldMatch {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || matched.row.appearance != claim.appearance
+        {
+            continue;
+        }
+        let Some(module_state) = matched.row.module_state else {
+            continue;
+        };
+        // Exact A/09 exposes only the fixed appearance WORD and add-state BOOL
+        // block. Position and TemplateResRef are not part of the add reader, so
+        // this is diagnostic evidence only; it must not promote a writer target.
+        if claim
+            .state
+            .observed_area_state()
+            .conflict_with_module_state(module_state)
+            .any()
+        {
+            continue;
+        }
+        if selected.replace(matched.row).is_some() {
+            return IdentityBlockedAddFixedFieldMatch::default();
+        }
+    }
+
+    let Some(row) = selected else {
+        return IdentityBlockedAddFixedFieldMatch::default();
+    };
+    let module_custom_rows = u32::from(is_custom_placeable_appearance(row.appearance));
+    IdentityBlockedAddFixedFieldMatch {
+        matched_rows: 1,
+        module_custom_rows,
+        missing_resref_rows: u32::from(
+            module_custom_rows != 0 && row.module_template_resref.is_none(),
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ExactPlaceableUpdateAppearanceCarrier {
     following_normal: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
     following_custom: Option<ExactPlaceableUpdateAppearanceCarrierRecord>,
@@ -12880,6 +13116,12 @@ fn trace_exact_placeable_reconciliation_summary(
             ),
         add_identity_blocked_module_custom_missing_resref_rows =
             summary.exact_placeable_add_identity_blocked_module_custom_missing_resref_rows,
+        add_identity_blocked_fixed_field_matches =
+            summary.exact_placeable_add_identity_blocked_fixed_field_matches,
+        add_identity_blocked_fixed_field_module_custom_matches =
+            summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
+        add_identity_blocked_fixed_field_module_custom_missing_resref_matches = summary
+            .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
         update_identity_blocked_module_custom_rows =
             summary.exact_placeable_update_identity_blocked_module_custom_rows,
         update_identity_blocked_module_custom_with_resref_rows = summary

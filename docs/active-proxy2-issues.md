@@ -1176,6 +1176,20 @@ Current status:
   `exact_placeable_update_position*`, `exact_placeable_`, `area_context_`,
   `placeable_update`, `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all
   --check`, and `git diff --check`.
+- 2026-06-13 follow-up identity-blocked exact `A/09` fixed-field diagnostics:
+  packet bytes and reconciliation policy are unchanged. Exact placeable add
+  reconciliation now counts identity-blocked rows where the verified fixed-width
+  add fields (`appearance` WORD plus add-state BOOLs) match exactly one
+  module-backed static row, split by module-custom target and missing
+  `TemplateResRef`. This deliberately does not promote a writer target because
+  the decompiled `A/09` add reader owns no position or CResRef branch. Verified
+  with incremental disabled using focused
+  `exact_placeable_add_identity_blocked_fixed_fields_count_unique_static_match`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should compare fixed-field matches against remaining
+  identity-blocked custom skips before considering a stronger add identity
+  source or another synthetic carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
