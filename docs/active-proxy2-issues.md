@@ -1330,6 +1330,17 @@ Current status:
   `area_context_`, and `placeable_update`; next local replay should compare the
   new conflict counter against remaining preceding/following blockers before
   broadening position-derived add identity again.
+- 2026-06-14 follow-up surrounding-position conflict classification: packet
+  bytes and identity policy are unchanged. Bracketing exact `A/09` position
+  conflicts now split into missing add-output proof versus concrete divergent
+  add output via
+  `exact_placeable_add_identity_surrounding_position_conflict_output_unavailable`
+  and
+  `exact_placeable_add_identity_surrounding_position_conflict_output_divergent`.
+  The split is threaded through direct live-object, M-frame, and
+  server-dispatch traces. Next local replay should compare unavailable-output
+  conflicts against missing `TemplateResRef`/module context before treating
+  them as true position disagreements.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
