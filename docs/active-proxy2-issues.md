@@ -1223,6 +1223,21 @@ Current status:
   `exact_placeable_add_fixed_field_equivalent_custom_rows_synthesize_update`;
   next local replay should separate equivalent-resolved ambiguous rows from
   remaining divergent/missing-resref rows before widening identity selection.
+- 2026-06-13 follow-up exact `A/09` add-output equivalence selection:
+  identity-blocked exact placeable adds now promote to a module-backed static
+  row when every concrete static candidate has unique object-id confidence and
+  would emit identical add-visible output: the fixed appearance WORD, the
+  add-state BOOL block, and, for custom appearances, the identical synthetic
+  `U/09 mask=0x20` carrier `TemplateResRef`. The selected target is now passed
+  through both add appearance and add state reconciliation; rows with light
+  overlap, duplicate/alias confidence, unproven module state, divergent output,
+  or missing custom `TemplateResRef` remain diagnostic-only. Verified with
+  focused
+  `exact_placeable_add_output_equivalent_duplicate_rows_rewrite_visible_fields`
+  plus `exact_placeable_`, `area_context_`, and `placeable_update`; next local
+  replay should compare the new output-equivalence counter against remaining
+  identity-blocked add appearance/state conflicts before adding any position-
+  or resource-based add identity rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

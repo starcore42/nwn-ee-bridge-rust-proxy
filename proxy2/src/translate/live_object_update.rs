@@ -5281,6 +5281,158 @@ mod diagnostic_tests {
             "the synthetic carrier consumes no fragment bits"
         );
     }
+
+    #[test]
+    fn exact_placeable_add_output_equivalent_duplicate_rows_rewrite_visible_fields() {
+        let object_id = 0x8000_3609u32;
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable disagrees with the shared module state.
+            false, // trap disarmable already matches.
+            false, // lockable disagrees with the shared module state.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact custom A/09");
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact duplicate A/09 claim");
+        assert_eq!(
+            pre_claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            pre_claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(false),
+                trap_disarmable: Some(false),
+                lockable: Some(false),
+                locked: Some(false),
+            })
+        );
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0022,
+                    x: 1.0,
+                    y: 2.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0022,
+                    x: 9.0,
+                    y: 10.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let original_len = payload.len();
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("duplicate rows with identical add output should rewrite");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_fields, 0,
+            "the packet fields did not match the module rows before rewrite"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_add_output_equivalence, 1,
+            "selection is allowed only because every static candidate emits the same A/09 output"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_matches,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches,
+            0
+        );
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_add_source_custom_appearance_rewritten,
+            1
+        );
+        assert_eq!(summary.exact_placeable_appearance_custom_skipped, 0);
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(summary.bytes_removed, 0);
+        assert_eq!(payload.len(), original_len);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact duplicate A/09 claim");
+        assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            }),
+            "A/09 output-equivalence rewrites only the fixed WORD"
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+            "state bits use the shared module-backed output"
+        );
+        assert_eq!(
+            claim.mentions[0].fragment_bit_start,
+            CNW_FRAGMENT_HEADER_BITS
+        );
+        assert_eq!(
+            claim.mentions[0].fragment_bit_end,
+            CNW_FRAGMENT_HEADER_BITS + EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5304,6 +5456,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_identity_blocked: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
@@ -12443,7 +12596,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         match mention.opcode {
             b'A' => {
                 summary.add_records_examined = summary.add_records_examined.saturating_add(1);
-                let (base_target, _) = placeable_static_reconciliation_target_for_object(
+                let (base_target, area_rows) = placeable_static_reconciliation_target_for_object(
                     area_context,
                     mention.object_id,
                 );
@@ -12478,6 +12631,12 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence =
                         summary
                             .exact_placeable_add_identity_resolved_by_fixed_field_equivalence
+                            .saturating_add(1);
+                }
+                if selection.identity_resolved_by_add_output_equivalence {
+                    summary.exact_placeable_add_identity_resolved_by_add_output_equivalence =
+                        summary
+                            .exact_placeable_add_identity_resolved_by_add_output_equivalence
                             .saturating_add(1);
                 }
                 let target = selection.target;
@@ -12601,6 +12760,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_offset,
                         record_end,
                         add_claim,
+                        selection,
+                        &area_rows,
                     )?;
                 let state_rewritten = reconcile_verified_placeable_add_state_with_area_context(
                     area_context,
@@ -12608,6 +12769,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     record_end,
                     &mut fragment_bits,
                     add_claim,
+                    selection,
+                    &area_rows,
                 )?;
                 if appearance_rewritten {
                     summary.exact_placeable_add_appearance_rewritten = summary
@@ -12863,6 +13026,7 @@ struct PlaceableStaticReconciliationSelection<'a> {
     identity_resolved_by_position: bool,
     identity_resolved_by_fixed_fields: bool,
     identity_resolved_by_fixed_field_equivalence: bool,
+    identity_resolved_by_add_output_equivalence: bool,
 }
 
 fn placeable_static_reconciliation_selection_for_add<'a>(
@@ -12885,6 +13049,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_position: false,
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_add_output_equivalence: false,
             };
         }
         if let Some(row) =
@@ -12899,6 +13064,18 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_position: false,
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: true,
+                identity_resolved_by_add_output_equivalence: false,
+            };
+        }
+        if let Some(row) =
+            equivalent_module_static_row_for_verified_add_output(area_context, object_id)
+        {
+            return PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: false,
+                identity_resolved_by_fixed_fields: false,
+                identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_add_output_equivalence: true,
             };
         }
     }
@@ -12908,6 +13085,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
         identity_resolved_by_position: false,
         identity_resolved_by_fixed_fields: false,
         identity_resolved_by_fixed_field_equivalence: false,
+        identity_resolved_by_add_output_equivalence: false,
     }
 }
 
@@ -12934,6 +13112,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_position: true,
                 identity_resolved_by_fixed_fields: false,
                 identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_add_output_equivalence: false,
             },
             area_rows,
         );
@@ -12945,6 +13124,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             identity_resolved_by_position: false,
             identity_resolved_by_fixed_fields: false,
             identity_resolved_by_fixed_field_equivalence: false,
+            identity_resolved_by_add_output_equivalence: false,
         },
         area_rows,
     )
@@ -13210,6 +13390,69 @@ fn equivalent_module_static_row_matching_verified_add_fixed_field_custom_carrier
     }
 
     if matched_rows > 1 { selected } else { None }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableAddOutput {
+    appearance: u16,
+    module_state: AreaPlaceableContextState,
+    custom_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+}
+
+fn equivalent_module_static_row_for_verified_add_output(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+) -> Option<&AreaPlaceableContextRow> {
+    // A/09 owns only a fixed appearance WORD plus its add-state BOOL block.
+    // Position and custom TemplateResRef are not present in the add record, so
+    // identity-blocked rows are writable only when every module-backed static
+    // candidate would produce byte/bit-identical add output and, for custom
+    // appearances, an identical synthetic U/09 carrier.
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    let mut selected_output = None;
+    let mut static_rows = 0u32;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static {
+            return None;
+        }
+        if !matches!(
+            matched.row.object_id_confidence,
+            crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique
+        ) {
+            return None;
+        }
+        static_rows = static_rows.saturating_add(1);
+        let output = placeable_add_output_for_module_static_row(matched.row)?;
+        if let Some(existing_output) = selected_output {
+            if existing_output != output {
+                return None;
+            }
+        } else {
+            selected_output = Some(output);
+            selected = Some(matched.row);
+        }
+    }
+
+    if static_rows != 0 { selected } else { None }
+}
+
+fn placeable_add_output_for_module_static_row(
+    row: &AreaPlaceableContextRow,
+) -> Option<PlaceableAddOutput> {
+    let module_state = row.module_state?;
+    let custom_resref = if is_custom_placeable_appearance(row.appearance) {
+        Some(row.module_template_resref?)
+    } else {
+        None
+    };
+    Some(PlaceableAddOutput {
+        appearance: row.appearance,
+        module_state,
+        custom_resref,
+    })
 }
 
 fn module_static_row_matches_verified_add_fixed_fields(
@@ -13497,6 +13740,8 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_fixed_fields,
         add_identity_resolved_by_fixed_field_equivalence =
             summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
+        add_identity_resolved_by_add_output_equivalence =
+            summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
         add_identity_blocked_module_custom_rows =
@@ -13583,6 +13828,8 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
     record_offset: usize,
     record_end: usize,
     claim: VerifiedPlaceableAddExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    area_rows: &str,
 ) -> Option<bool> {
     if record_offset + 6 > record_end
         || record_end > live_bytes.len()
@@ -13592,12 +13839,14 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
         return Some(false);
     }
 
-    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+    let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
         claim.object_id,
         record_offset,
         record_end,
         "appearance-add",
+        selection,
+        area_rows,
     ) else {
         return Some(false);
     };
@@ -13627,6 +13876,12 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
         next_bit_cursor = claim.layout.next_bit_cursor,
         optional_object_id = claim.layout.byte_layout.optional_object_id,
         visual_map_offset = claim.layout.byte_layout.map_offset,
+        area_static_identity_resolved_by_fixed_fields =
+            selection.identity_resolved_by_fixed_fields,
+        area_static_identity_resolved_by_fixed_field_equivalence =
+            selection.identity_resolved_by_fixed_field_equivalence,
+        area_static_identity_resolved_by_add_output_equivalence =
+            selection.identity_resolved_by_add_output_equivalence,
         area_resref = area_context.area_resref.as_str(),
         area_rows = %area_rows,
         "server->client exact live-object placeable add appearance reconciled with unique module-backed area/static row"
@@ -13960,36 +14215,6 @@ fn reconcile_verified_placeable_update_orientation_with_area_context(
     Some(changed)
 }
 
-fn placeable_static_reconciliation_target_for_record<'a>(
-    area_context: &'a AreaPlaceableContext,
-    object_id: u32,
-    record_offset: usize,
-    record_end: usize,
-    field: &'static str,
-) -> Option<(&'a AreaPlaceableContextRow, String)> {
-    let (target, area_rows) =
-        placeable_static_reconciliation_target_for_object(area_context, object_id);
-    match target {
-        AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
-            Some((row, area_rows))
-        }
-        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
-            tracing::debug!(
-                object_id = format_args!("0x{object_id:08X}"),
-                record_offset,
-                record_end,
-                field,
-                area_resref = area_context.area_resref.as_str(),
-                area_module_identity_mismatch = ?conflict,
-                area_rows = %area_rows,
-                "server->client exact live-object placeable area/static reconciliation skipped: identity is not unique module-backed static"
-            );
-            None
-        }
-        AreaPlaceableContextStaticReconciliationTarget::NoOverlap => None,
-    }
-}
-
 fn placeable_static_reconciliation_row_for_selected_record<'a>(
     area_context: &'a AreaPlaceableContext,
     object_id: u32,
@@ -14273,13 +14498,17 @@ fn reconcile_verified_placeable_add_state_with_area_context(
     record_end: usize,
     bits: &mut [bool],
     claim: VerifiedPlaceableAddExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    area_rows: &str,
 ) -> Option<bool> {
-    let Some((area_row, area_rows)) = placeable_static_reconciliation_target_for_record(
+    let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
         claim.object_id,
         record_offset,
         record_end,
         "state-add",
+        selection,
+        area_rows,
     ) else {
         return Some(false);
     };
@@ -14309,6 +14538,12 @@ fn reconcile_verified_placeable_add_state_with_area_context(
         next_bit_cursor = claim.layout.next_bit_cursor,
         optional_object_id = claim.layout.byte_layout.optional_object_id,
         visual_map_offset = claim.layout.byte_layout.map_offset,
+        area_static_identity_resolved_by_fixed_fields =
+            selection.identity_resolved_by_fixed_fields,
+        area_static_identity_resolved_by_fixed_field_equivalence =
+            selection.identity_resolved_by_fixed_field_equivalence,
+        area_static_identity_resolved_by_add_output_equivalence =
+            selection.identity_resolved_by_add_output_equivalence,
         source_placeable_state = ?source_state,
         emitted_placeable_state = ?rewritten_state,
         area_module_state = %format_area_placeable_module_state(module_state),
