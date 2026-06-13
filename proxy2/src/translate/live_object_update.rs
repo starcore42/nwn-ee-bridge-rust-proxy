@@ -5570,6 +5570,143 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_identity_resolves_by_following_position_output_equivalence() {
+        let object_id = 0x8000_3612u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable conflicts with the equivalent module rows.
+            false, // trap disarmable already matches.
+            false, // lockable conflicts with the equivalent module rows.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("exact A/09 followed by position U/09");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0033,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0x0033,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("same-position equivalent rows should resolve the add output");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position_equivalence, 1,
+            "the position proof is ambiguous, but all matching rows emit identical add output"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_add_output_equivalence, 0,
+            "duplicate-confidence rows should not fall through to broad add-output equivalence"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches, 0,
+            "resolved position-equivalent rows are no longer an unresolved blocker"
+        );
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 1);
+        assert_eq!(summary.exact_placeable_add_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(summary.bytes_removed, 0);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 + U/09 claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(claim.mentions[1].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0033,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            })
+        );
+        let position = claim.mentions[1]
+            .position
+            .expect("following U/09 position should stay parser-owned");
+        assert_eq!(position.x_raw, 1000);
+        assert_eq!(position.y_raw, 2000);
+        assert_eq!(position.z_raw, z_raw);
+    }
+
+    #[test]
     fn exact_placeable_add_following_position_stops_at_lifecycle_delete() {
         let object_id = 0x8000_3611u32;
         let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
@@ -5739,6 +5876,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_following_position: u32,
+    pub exact_placeable_add_identity_resolved_by_following_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_following_position_missing: u32,
@@ -12937,6 +13075,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_identity_resolved_by_following_position
                         .saturating_add(1);
                 }
+                if selection.identity_resolved_by_following_position_equivalence {
+                    summary
+                        .exact_placeable_add_identity_resolved_by_following_position_equivalence =
+                        summary
+                            .exact_placeable_add_identity_resolved_by_following_position_equivalence
+                            .saturating_add(1);
+                }
                 if selection.identity_resolved_by_add_output_equivalence {
                     summary.exact_placeable_add_identity_resolved_by_add_output_equivalence =
                         summary
@@ -13339,6 +13484,7 @@ struct PlaceableStaticReconciliationSelection<'a> {
     identity_resolved_by_fixed_fields: bool,
     identity_resolved_by_fixed_field_equivalence: bool,
     identity_resolved_by_following_position: bool,
+    identity_resolved_by_following_position_equivalence: bool,
     identity_resolved_by_add_output_equivalence: bool,
 }
 
@@ -13365,6 +13511,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: false,
                 identity_resolved_by_following_position: false,
+                identity_resolved_by_following_position_equivalence: false,
                 identity_resolved_by_add_output_equivalence: false,
             };
         }
@@ -13381,25 +13528,42 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_fixed_fields: true,
                 identity_resolved_by_fixed_field_equivalence: true,
                 identity_resolved_by_following_position: false,
+                identity_resolved_by_following_position_equivalence: false,
                 identity_resolved_by_add_output_equivalence: false,
             };
         }
-        if let AddFollowingPositionIdentityMatch::Unique(row) =
-            following_update_position_identity_match_for_add(
-                area_context,
-                object_id,
-                add_record_end,
-                claim_summary,
-            )
-        {
-            return PlaceableStaticReconciliationSelection {
-                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
-                identity_resolved_by_position: false,
-                identity_resolved_by_fixed_fields: false,
-                identity_resolved_by_fixed_field_equivalence: false,
-                identity_resolved_by_following_position: true,
-                identity_resolved_by_add_output_equivalence: false,
-            };
+        match following_update_position_identity_match_for_add(
+            area_context,
+            object_id,
+            add_record_end,
+            claim_summary,
+        ) {
+            AddFollowingPositionIdentityMatch::Unique(row) => {
+                return PlaceableStaticReconciliationSelection {
+                    target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                    identity_resolved_by_position: false,
+                    identity_resolved_by_fixed_fields: false,
+                    identity_resolved_by_fixed_field_equivalence: false,
+                    identity_resolved_by_following_position: true,
+                    identity_resolved_by_following_position_equivalence: false,
+                    identity_resolved_by_add_output_equivalence: false,
+                };
+            }
+            AddFollowingPositionIdentityMatch::EquivalentOutput(row) => {
+                return PlaceableStaticReconciliationSelection {
+                    target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                    identity_resolved_by_position: false,
+                    identity_resolved_by_fixed_fields: false,
+                    identity_resolved_by_fixed_field_equivalence: false,
+                    identity_resolved_by_following_position: true,
+                    identity_resolved_by_following_position_equivalence: true,
+                    identity_resolved_by_add_output_equivalence: false,
+                };
+            }
+            AddFollowingPositionIdentityMatch::MissingBeforeLifecycle
+            | AddFollowingPositionIdentityMatch::LifecycleBlocked
+            | AddFollowingPositionIdentityMatch::NoStaticPositionMatch
+            | AddFollowingPositionIdentityMatch::AmbiguousStaticPositionMatch { .. } => {}
         }
         if let Some(row) =
             equivalent_module_static_row_for_verified_add_output(area_context, object_id)
@@ -13410,6 +13574,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_fixed_fields: false,
                 identity_resolved_by_fixed_field_equivalence: false,
                 identity_resolved_by_following_position: false,
+                identity_resolved_by_following_position_equivalence: false,
                 identity_resolved_by_add_output_equivalence: true,
             };
         }
@@ -13421,6 +13586,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
         identity_resolved_by_fixed_fields: false,
         identity_resolved_by_fixed_field_equivalence: false,
         identity_resolved_by_following_position: false,
+        identity_resolved_by_following_position_equivalence: false,
         identity_resolved_by_add_output_equivalence: false,
     }
 }
@@ -13446,7 +13612,8 @@ fn record_exact_placeable_identity_blocked_add_following_position_match(
         add_record_end,
         claim_summary,
     ) {
-        AddFollowingPositionIdentityMatch::Unique(_) => {}
+        AddFollowingPositionIdentityMatch::Unique(_)
+        | AddFollowingPositionIdentityMatch::EquivalentOutput(_) => {}
         AddFollowingPositionIdentityMatch::MissingBeforeLifecycle => {
             summary.exact_placeable_add_identity_blocked_following_position_missing = summary
                 .exact_placeable_add_identity_blocked_following_position_missing
@@ -13479,6 +13646,7 @@ fn record_exact_placeable_identity_blocked_add_following_position_match(
 
 enum AddFollowingPositionIdentityMatch<'a> {
     Unique(&'a AreaPlaceableContextRow),
+    EquivalentOutput(&'a AreaPlaceableContextRow),
     MissingBeforeLifecycle,
     LifecycleBlocked,
     NoStaticPositionMatch,
@@ -13529,7 +13697,19 @@ fn following_update_position_identity_match_for_add<'a>(
             .selected
             .map(AddFollowingPositionIdentityMatch::Unique)
             .unwrap_or(AddFollowingPositionIdentityMatch::NoStaticPositionMatch),
-        rows => AddFollowingPositionIdentityMatch::AmbiguousStaticPositionMatch { rows },
+        rows => {
+            if let Some(row) = equivalent_module_static_row_matching_raw_position_output(
+                area_context,
+                object_id,
+                position.x_raw,
+                position.y_raw,
+                position.z_raw,
+            ) {
+                AddFollowingPositionIdentityMatch::EquivalentOutput(row)
+            } else {
+                AddFollowingPositionIdentityMatch::AmbiguousStaticPositionMatch { rows }
+            }
+        }
     }
 }
 
@@ -13555,13 +13735,7 @@ fn module_static_rows_matching_raw_position<'a>(
         {
             continue;
         }
-        let Some(area_position) = encode_area_static_row_position(matched.row) else {
-            continue;
-        };
-        if area_position.x_raw != x_raw
-            || area_position.y_raw != y_raw
-            || area_position.z_raw != z_raw
-        {
+        if !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw) {
             continue;
         }
         rows = rows.saturating_add(1);
@@ -13571,6 +13745,57 @@ fn module_static_rows_matching_raw_position<'a>(
     }
 
     RawPositionStaticRowMatch { selected, rows }
+}
+
+fn equivalent_module_static_row_matching_raw_position_output<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+) -> Option<&'a AreaPlaceableContextRow> {
+    // A following U/09 position branch can narrow an identity-blocked A/09 to a
+    // same-position static candidate set. If every candidate would emit the
+    // same fixed add WORD/state bits and optional synthetic custom carrier, any
+    // row in that set is output-equivalent for the add.
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    let mut selected_output = None;
+    let mut rows = 0u32;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || matched.row.module_state.is_none()
+            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
+        {
+            continue;
+        }
+        rows = rows.saturating_add(1);
+        let output = placeable_add_output_for_module_static_row(matched.row)?;
+        if let Some(existing_output) = selected_output {
+            if existing_output != output {
+                return None;
+            }
+        } else {
+            selected_output = Some(output);
+            selected = Some(matched.row);
+        }
+    }
+
+    if rows > 1 { selected } else { None }
+}
+
+fn module_static_row_matches_raw_position(
+    row: &AreaPlaceableContextRow,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+) -> bool {
+    let Some(area_position) = encode_area_static_row_position(row) else {
+        return false;
+    };
+    area_position.x_raw == x_raw && area_position.y_raw == y_raw && area_position.z_raw == z_raw
 }
 
 fn unique_module_static_row_matching_raw_position(
@@ -13609,6 +13834,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_fixed_fields: false,
                 identity_resolved_by_fixed_field_equivalence: false,
                 identity_resolved_by_following_position: false,
+                identity_resolved_by_following_position_equivalence: false,
                 identity_resolved_by_add_output_equivalence: false,
             },
             area_rows,
@@ -13622,6 +13848,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             identity_resolved_by_fixed_fields: false,
             identity_resolved_by_fixed_field_equivalence: false,
             identity_resolved_by_following_position: false,
+            identity_resolved_by_following_position_equivalence: false,
             identity_resolved_by_add_output_equivalence: false,
         },
         area_rows,
@@ -14224,6 +14451,8 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
         add_identity_resolved_by_following_position =
             summary.exact_placeable_add_identity_resolved_by_following_position,
+        add_identity_resolved_by_following_position_equivalence =
+            summary.exact_placeable_add_identity_resolved_by_following_position_equivalence,
         add_identity_resolved_by_add_output_equivalence =
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         update_identity_resolved_by_position =
@@ -14376,6 +14605,8 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
             selection.identity_resolved_by_fixed_field_equivalence,
         area_static_identity_resolved_by_following_position =
             selection.identity_resolved_by_following_position,
+        area_static_identity_resolved_by_following_position_equivalence =
+            selection.identity_resolved_by_following_position_equivalence,
         area_static_identity_resolved_by_add_output_equivalence =
             selection.identity_resolved_by_add_output_equivalence,
         area_resref = area_context.area_resref.as_str(),
@@ -15040,6 +15271,8 @@ fn reconcile_verified_placeable_add_state_with_area_context(
             selection.identity_resolved_by_fixed_field_equivalence,
         area_static_identity_resolved_by_following_position =
             selection.identity_resolved_by_following_position,
+        area_static_identity_resolved_by_following_position_equivalence =
+            selection.identity_resolved_by_following_position_equivalence,
         area_static_identity_resolved_by_add_output_equivalence =
             selection.identity_resolved_by_add_output_equivalence,
         source_placeable_state = ?source_state,

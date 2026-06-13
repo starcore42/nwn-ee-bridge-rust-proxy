@@ -1263,6 +1263,22 @@ Current status:
   `exact_placeable_`, `area_context_`, `placeable_update`, and `cargo check`;
   next local replay should compare lifecycle-blocked versus missing/ambiguous
   following-position counters before adding any broader add identity rule.
+- 2026-06-13 follow-up following-position output-equivalence selection:
+  identity-blocked exact `A/09` adds now resolve ambiguous later same-object
+  `U/09` position matches when every same-position module-backed static row
+  would emit identical add-visible output: fixed appearance WORD, add-state
+  BOOL block, and optional synthetic custom `TemplateResRef` carrier. The later
+  `U/09` still owns its parser-position proof; divergent same-position outputs
+  remain diagnostic-only. Summaries expose
+  `exact_placeable_add_identity_resolved_by_following_position_equivalence`
+  beside the existing aggregate following-position resolution counter. Verified
+  with focused
+  `exact_placeable_add_identity_resolves_by_following_position_output_equivalence`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should compare this counter against remaining
+  `following_position_ambiguous` rows and divergent/missing-resref custom
+  candidates.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
