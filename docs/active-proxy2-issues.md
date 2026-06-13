@@ -1305,6 +1305,18 @@ Current status:
   `exact_placeable_`, `area_context_`, and `placeable_update`; next local
   replay should compare preceding-position resolutions against remaining
   following-position missing/lifecycle/ambiguous blockers.
+- 2026-06-13 follow-up preceding-position blocker diagnostics: packet bytes and
+  reconciliation policy are unchanged. Identity-blocked exact `A/09` adds that
+  still cannot use a prior same-object `U/09` position proof now split that
+  backward scan into missing prior position, same-object `A`/`D` lifecycle
+  fence, no static-position match, and ambiguous static-position candidates,
+  with the same module-custom/missing-`TemplateResRef`/output-unavailable/
+  output-divergent detail already used by the following-position scan. Verified
+  with focused `exact_placeable_add_preceding_position_stops_at_lifecycle_delete`,
+  `exact_placeable_`, `area_context_`, `placeable_update`, `cargo check -q -p
+  hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
+  local replay should compare preceding and following blocker counters before
+  adding any broader add identity rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

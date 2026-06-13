@@ -1039,6 +1039,24 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_identity_blocked_following_position_ambiguous_output_unavailable_rows,
         exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches = summary
             .exact_placeable_add_identity_blocked_following_position_ambiguous_output_divergent_matches,
+        exact_placeable_add_identity_blocked_preceding_position_missing =
+            summary.exact_placeable_add_identity_blocked_preceding_position_missing,
+        exact_placeable_add_identity_blocked_preceding_position_lifecycle_blocked =
+            summary.exact_placeable_add_identity_blocked_preceding_position_lifecycle_blocked,
+        exact_placeable_add_identity_blocked_preceding_position_no_static_match =
+            summary.exact_placeable_add_identity_blocked_preceding_position_no_static_match,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_matches =
+            summary.exact_placeable_add_identity_blocked_preceding_position_ambiguous_matches,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_match_rows =
+            summary.exact_placeable_add_identity_blocked_preceding_position_ambiguous_match_rows,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_module_custom_rows = summary
+            .exact_placeable_add_identity_blocked_preceding_position_ambiguous_module_custom_rows,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_module_custom_missing_resref_rows = summary
+            .exact_placeable_add_identity_blocked_preceding_position_ambiguous_module_custom_missing_resref_rows,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_output_unavailable_rows = summary
+            .exact_placeable_add_identity_blocked_preceding_position_ambiguous_output_unavailable_rows,
+        exact_placeable_add_identity_blocked_preceding_position_ambiguous_output_divergent_matches = summary
+            .exact_placeable_add_identity_blocked_preceding_position_ambiguous_output_divergent_matches,
         exact_placeable_add_identity_blocked_module_custom_rows =
             summary.exact_placeable_add_identity_blocked_module_custom_rows,
         exact_placeable_add_identity_blocked_module_custom_with_resref_rows = summary
