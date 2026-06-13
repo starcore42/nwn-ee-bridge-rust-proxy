@@ -27,6 +27,7 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
@@ -97,6 +98,11 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_add_identity_resolved_by_fixed_fields = self
             .exact_placeable_add_identity_resolved_by_fixed_fields
             .saturating_add(rewrite.exact_placeable_add_identity_resolved_by_fixed_fields);
+        self.exact_placeable_add_identity_resolved_by_fixed_field_equivalence = self
+            .exact_placeable_add_identity_resolved_by_fixed_field_equivalence
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
+            );
         self.exact_placeable_update_identity_resolved_by_position = self
             .exact_placeable_update_identity_resolved_by_position
             .saturating_add(rewrite.exact_placeable_update_identity_resolved_by_position);

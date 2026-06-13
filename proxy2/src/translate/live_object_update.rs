@@ -5122,6 +5122,165 @@ mod diagnostic_tests {
             "ambiguous fixed-field add also remains packet-authored"
         );
     }
+
+    #[test]
+    fn exact_placeable_add_fixed_field_equivalent_custom_rows_synthesize_update() {
+        let object_id = 0x8000_3608u32;
+        let target_resref = *b"plc_equiv_add\0\0\0";
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("exact custom A/09");
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact fixed-width A/09");
+        assert_eq!(pre_claim.mentions.len(), 1);
+        assert_eq!(
+            pre_claim.mentions[0].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: 11,
+                resref_offset: None,
+            }),
+            "A/09 owns only its fixed-width appearance WORD before synthesis"
+        );
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    x: 1.0,
+                    y: 2.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    x: 9.0,
+                    y: 10.0,
+                    z: 0.0,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("same-output fixed-field custom rows should synthesize a carrier");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_fields,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence, 1,
+            "multiple matching static rows resolve only because their emitted carrier bytes match"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_matches,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_matches,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_match_rows,
+            2
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_rows,
+            2
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_blocked_fixed_field_ambiguous_module_custom_missing_resref_rows,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 + U/09 claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            }),
+            "the add remains fixed-width and packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthetic update carries the equivalent custom appearance output"
+        );
+        assert_eq!(claim.mentions[1].record_offset, live.len());
+        assert_eq!(
+            claim.mentions[1].fragment_bit_start, claim.mentions[0].fragment_bit_end,
+            "the synthetic carrier starts at the add-owned next cursor"
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_end, claim.mentions[0].fragment_bit_end,
+            "the synthetic carrier consumes no fragment bits"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5144,6 +5303,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
@@ -12314,6 +12474,12 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_identity_resolved_by_fixed_fields
                         .saturating_add(1);
                 }
+                if selection.identity_resolved_by_fixed_field_equivalence {
+                    summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence =
+                        summary
+                            .exact_placeable_add_identity_resolved_by_fixed_field_equivalence
+                            .saturating_add(1);
+                }
                 let target = selection.target;
                 record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
                 record_exact_placeable_identity_blocked_module_custom_rows(
@@ -12696,6 +12862,7 @@ struct PlaceableStaticReconciliationSelection<'a> {
     target: AreaPlaceableContextStaticReconciliationTarget<'a>,
     identity_resolved_by_position: bool,
     identity_resolved_by_fixed_fields: bool,
+    identity_resolved_by_fixed_field_equivalence: bool,
 }
 
 fn placeable_static_reconciliation_selection_for_add<'a>(
@@ -12707,20 +12874,40 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
     if matches!(
         target,
         AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
-    ) && let Some(row) =
-        unique_module_static_row_matching_verified_add_fixed_fields(area_context, object_id, claim)
-    {
-        return PlaceableStaticReconciliationSelection {
-            target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
-            identity_resolved_by_position: false,
-            identity_resolved_by_fixed_fields: true,
-        };
+    ) {
+        if let Some(row) = unique_module_static_row_matching_verified_add_fixed_fields(
+            area_context,
+            object_id,
+            claim,
+        ) {
+            return PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: false,
+                identity_resolved_by_fixed_fields: true,
+                identity_resolved_by_fixed_field_equivalence: false,
+            };
+        }
+        if let Some(row) =
+            equivalent_module_static_row_matching_verified_add_fixed_field_custom_carrier(
+                area_context,
+                object_id,
+                claim,
+            )
+        {
+            return PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: false,
+                identity_resolved_by_fixed_fields: true,
+                identity_resolved_by_fixed_field_equivalence: true,
+            };
+        }
     }
 
     PlaceableStaticReconciliationSelection {
         target,
         identity_resolved_by_position: false,
         identity_resolved_by_fixed_fields: false,
+        identity_resolved_by_fixed_field_equivalence: false,
     }
 }
 
@@ -12746,6 +12933,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
                 identity_resolved_by_position: true,
                 identity_resolved_by_fixed_fields: false,
+                identity_resolved_by_fixed_field_equivalence: false,
             },
             area_rows,
         );
@@ -12756,6 +12944,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             target,
             identity_resolved_by_position: false,
             identity_resolved_by_fixed_fields: false,
+            identity_resolved_by_fixed_field_equivalence: false,
         },
         area_rows,
     )
@@ -12983,6 +13172,44 @@ fn unique_module_static_row_matching_verified_add_fixed_fields<'a>(
     }
 
     selected
+}
+
+fn equivalent_module_static_row_matching_verified_add_fixed_field_custom_carrier<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableAddExactClaim,
+) -> Option<&'a AreaPlaceableContextRow> {
+    // Exact A/09 exposes no parser-owned CResRef branch. Multiple fixed-field
+    // candidates are writable only when the synthetic U/09 carrier bytes are
+    // identical no matter which matching static row supplied them.
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut matched_rows = 0u32;
+    let mut selected = None;
+    let mut selected_carrier = None;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
+        {
+            continue;
+        }
+        matched_rows = matched_rows.saturating_add(1);
+        if !is_custom_placeable_appearance(matched.row.appearance) {
+            return None;
+        }
+        let carrier = (matched.row.appearance, matched.row.module_template_resref?);
+        if let Some(existing_carrier) = selected_carrier {
+            if existing_carrier != carrier {
+                return None;
+            }
+        } else {
+            selected_carrier = Some(carrier);
+            selected = Some(matched.row);
+        }
+    }
+
+    if matched_rows > 1 { selected } else { None }
 }
 
 fn module_static_row_matches_verified_add_fixed_fields(
@@ -13268,6 +13495,8 @@ fn trace_exact_placeable_reconciliation_summary(
         update_identity_blocked = summary.exact_placeable_update_identity_blocked,
         add_identity_resolved_by_fixed_fields =
             summary.exact_placeable_add_identity_resolved_by_fixed_fields,
+        add_identity_resolved_by_fixed_field_equivalence =
+            summary.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
         update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
         add_identity_blocked_module_custom_rows =

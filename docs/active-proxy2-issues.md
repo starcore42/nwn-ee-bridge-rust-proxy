@@ -1211,6 +1211,18 @@ Current status:
   `exact_placeable_add_identity_blocked_fixed_fields_select_unique_static_match`;
   next local replay should compare the ambiguous counters against remaining
   identity-blocked custom rows before adding any stronger add selection rule.
+- 2026-06-13 follow-up exact `A/09` fixed-field output-equivalence selection:
+  ambiguous fixed-width add candidates now become writable only when every
+  fixed-field-matching module-backed static row would emit the same custom
+  appearance carrier (`0xFFFE+` WORD plus identical module `TemplateResRef`).
+  The `A/09` row remains fixed-width and packet-authored; the bridge inserts
+  the same decompile-backed following `U/09 mask=0x20` carrier at the add-owned
+  next bit cursor and still counts the candidate set as ambiguous for replay.
+  Divergent carrier bytes and missing `TemplateResRef` rows remain
+  diagnostic-only. Verified with focused
+  `exact_placeable_add_fixed_field_equivalent_custom_rows_synthesize_update`;
+  next local replay should separate equivalent-resolved ambiguous rows from
+  remaining divergent/missing-resref rows before widening identity selection.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
