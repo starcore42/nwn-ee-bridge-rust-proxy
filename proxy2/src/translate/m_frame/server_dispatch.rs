@@ -1005,6 +1005,8 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_update_unique_targets = summary.exact_placeable_update_unique_targets,
         exact_placeable_add_identity_blocked = summary.exact_placeable_add_identity_blocked,
         exact_placeable_update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        exact_placeable_add_identity_resolved_by_fixed_fields =
+            summary.exact_placeable_add_identity_resolved_by_fixed_fields,
         exact_placeable_update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
         exact_placeable_add_identity_blocked_module_custom_rows =

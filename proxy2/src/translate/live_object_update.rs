@@ -4928,7 +4928,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn exact_placeable_add_identity_blocked_fixed_fields_count_unique_static_match() {
+    fn exact_placeable_add_identity_blocked_fixed_fields_select_unique_static_match() {
         let matched_object_id = 0x8000_3605u32;
         let matched_static_id = 0x0000_3605u32;
         let ambiguous_object_id = 0x8000_3606u32;
@@ -5031,13 +5031,19 @@ mod diagnostic_tests {
             &mut payload,
             Some(&area_context),
         )
-        .expect("unique U/09 rewrite should expose identity-blocked add diagnostics");
+        .expect("unique fixed-field A/09 and U/09 rewrites should emit");
         assert_eq!(summary.add_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 1);
-        assert_eq!(summary.exact_placeable_add_identity_blocked, 2);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 1);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_fields, 1,
+            "only the add with one matching static row should become a selected module target"
+        );
         assert_eq!(
             summary.exact_placeable_add_identity_blocked_fixed_field_matches, 1,
-            "only the add with one matching static row should count"
+            "only the add with one matching static row should count as fixed-field evidence"
         );
         assert_eq!(
             summary.exact_placeable_add_identity_blocked_fixed_field_module_custom_matches,
@@ -5048,18 +5054,50 @@ mod diagnostic_tests {
                 .exact_placeable_add_identity_blocked_fixed_field_module_custom_missing_resref_matches,
             0
         );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
 
         let claim = claim_payload_if_verified(&payload).expect("post-rewrite exact mixed payload");
+        assert_eq!(claim.mentions.len(), 4);
         assert_eq!(
             claim.mentions[0].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
                 appearance: 0xFFFE,
                 resref: None,
             }),
-            "identity-blocked fixed-field add remains packet-authored"
+            "the selected A/09 remains fixed-width and packet-authored"
         );
         assert_eq!(
             claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthesized following U/09 carries the module TemplateResRef"
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_start, claim.mentions[0].fragment_bit_end,
+            "the synthetic carrier starts at the add-owned next cursor"
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_end, claim.mentions[0].fragment_bit_end,
+            "the synthetic carrier consumes no fragment bits"
+        );
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
                 appearance: 0xFFFE,
                 resref: None,
@@ -5088,6 +5126,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_unique_targets: u32,
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
     pub exact_placeable_add_identity_blocked_module_custom_rows: u32,
     pub exact_placeable_add_identity_blocked_module_custom_missing_resref_rows: u32,
@@ -12222,15 +12261,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
         match mention.opcode {
             b'A' => {
                 summary.add_records_examined = summary.add_records_examined.saturating_add(1);
-                let (target, _) = placeable_static_reconciliation_target_for_object(
-                    area_context,
-                    mention.object_id,
-                );
-                record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
-                record_exact_placeable_identity_blocked_module_custom_rows(
-                    &mut summary,
-                    b'A',
-                    target,
+                let (base_target, _) = placeable_static_reconciliation_target_for_object(
                     area_context,
                     mention.object_id,
                 );
@@ -12245,10 +12276,30 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 };
                 record_exact_placeable_identity_blocked_add_fixed_field_match(
                     &mut summary,
-                    target,
+                    base_target,
                     area_context,
                     mention.object_id,
                     add_claim,
+                );
+                let selection = placeable_static_reconciliation_selection_for_add(
+                    area_context,
+                    mention.object_id,
+                    add_claim,
+                    base_target,
+                );
+                if selection.identity_resolved_by_fixed_fields {
+                    summary.exact_placeable_add_identity_resolved_by_fixed_fields = summary
+                        .exact_placeable_add_identity_resolved_by_fixed_fields
+                        .saturating_add(1);
+                }
+                let target = selection.target;
+                record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
+                record_exact_placeable_identity_blocked_module_custom_rows(
+                    &mut summary,
+                    b'A',
+                    target,
+                    area_context,
+                    mention.object_id,
                 );
                 let mut custom_update_synthesized = false;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
@@ -12622,6 +12673,33 @@ fn record_exact_placeable_reconciliation_target(
 struct PlaceableStaticReconciliationSelection<'a> {
     target: AreaPlaceableContextStaticReconciliationTarget<'a>,
     identity_resolved_by_position: bool,
+    identity_resolved_by_fixed_fields: bool,
+}
+
+fn placeable_static_reconciliation_selection_for_add<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableAddExactClaim,
+    target: AreaPlaceableContextStaticReconciliationTarget<'a>,
+) -> PlaceableStaticReconciliationSelection<'a> {
+    if matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) && let Some(row) =
+        unique_module_static_row_matching_verified_add_fixed_fields(area_context, object_id, claim)
+    {
+        return PlaceableStaticReconciliationSelection {
+            target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+            identity_resolved_by_position: false,
+            identity_resolved_by_fixed_fields: true,
+        };
+    }
+
+    PlaceableStaticReconciliationSelection {
+        target,
+        identity_resolved_by_position: false,
+        identity_resolved_by_fixed_fields: false,
+    }
 }
 
 fn placeable_static_reconciliation_selection_for_update<'a>(
@@ -12645,6 +12723,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             PlaceableStaticReconciliationSelection {
                 target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
                 identity_resolved_by_position: true,
+                identity_resolved_by_fixed_fields: false,
             },
             area_rows,
         );
@@ -12654,6 +12733,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
         PlaceableStaticReconciliationSelection {
             target,
             identity_resolved_by_position: false,
+            identity_resolved_by_fixed_fields: false,
         },
         area_rows,
     )
@@ -12803,6 +12883,26 @@ fn identity_blocked_add_fixed_field_match_for_object(
     object_id: u32,
     claim: VerifiedPlaceableAddExactClaim,
 ) -> IdentityBlockedAddFixedFieldMatch {
+    let Some(row) =
+        unique_module_static_row_matching_verified_add_fixed_fields(area_context, object_id, claim)
+    else {
+        return IdentityBlockedAddFixedFieldMatch::default();
+    };
+    let module_custom_rows = u32::from(is_custom_placeable_appearance(row.appearance));
+    IdentityBlockedAddFixedFieldMatch {
+        matched_rows: 1,
+        module_custom_rows,
+        missing_resref_rows: u32::from(
+            module_custom_rows != 0 && row.module_template_resref.is_none(),
+        ),
+    }
+}
+
+fn unique_module_static_row_matching_verified_add_fixed_fields<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableAddExactClaim,
+) -> Option<&'a AreaPlaceableContextRow> {
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
         object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
     });
@@ -12818,7 +12918,8 @@ fn identity_blocked_add_fixed_field_match_for_object(
         };
         // Exact A/09 exposes only the fixed appearance WORD and add-state BOOL
         // block. Position and TemplateResRef are not part of the add reader, so
-        // this is diagnostic evidence only; it must not promote a writer target.
+        // any selected row may only drive state/appearance rules already backed
+        // by those fields or a separate following U/09 carrier.
         if claim
             .state
             .observed_area_state()
@@ -12828,21 +12929,11 @@ fn identity_blocked_add_fixed_field_match_for_object(
             continue;
         }
         if selected.replace(matched.row).is_some() {
-            return IdentityBlockedAddFixedFieldMatch::default();
+            return None;
         }
     }
 
-    let Some(row) = selected else {
-        return IdentityBlockedAddFixedFieldMatch::default();
-    };
-    let module_custom_rows = u32::from(is_custom_placeable_appearance(row.appearance));
-    IdentityBlockedAddFixedFieldMatch {
-        matched_rows: 1,
-        module_custom_rows,
-        missing_resref_rows: u32::from(
-            module_custom_rows != 0 && row.module_template_resref.is_none(),
-        ),
-    }
+    selected
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -13105,6 +13196,8 @@ fn trace_exact_placeable_reconciliation_summary(
         update_unique_targets = summary.exact_placeable_update_unique_targets,
         add_identity_blocked = summary.exact_placeable_add_identity_blocked,
         update_identity_blocked = summary.exact_placeable_update_identity_blocked,
+        add_identity_resolved_by_fixed_fields =
+            summary.exact_placeable_add_identity_resolved_by_fixed_fields,
         update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
         add_identity_blocked_module_custom_rows =

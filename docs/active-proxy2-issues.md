@@ -1190,6 +1190,17 @@ Current status:
   local replay should compare fixed-field matches against remaining
   identity-blocked custom skips before considering a stronger add identity
   source or another synthetic carrier rule.
+- 2026-06-13 follow-up exact `A/09` fixed-field identity selection: exact
+  placeable add reconciliation now promotes an otherwise identity-blocked add to
+  a module-backed static row only when the parser-owned fixed-width add fields
+  (`appearance` WORD plus add-state BOOLs) match exactly one overlapping static
+  row. The add itself remains fixed-width; this selection only lets the
+  decompile-backed synthetic following `U/09 mask=0x20` carrier emit a custom
+  `TemplateResRef` when the selected row is module-custom. Ambiguous matches
+  stay diagnostic-only. Verified with focused
+  `exact_placeable_add_identity_blocked_fixed_fields_select_unique_static_match`;
+  next local replay should compare remaining identity-blocked custom rows
+  against fixed-field-resolved and ambiguous add counters.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
