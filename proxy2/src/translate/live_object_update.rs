@@ -3872,7 +3872,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn exact_placeable_add_module_custom_skip_classifies_pre_add_update_only() {
+    fn exact_placeable_add_module_custom_pre_add_only_synthesizes_following_update() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
         let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
@@ -3948,10 +3948,14 @@ mod diagnostic_tests {
             &mut payload,
             Some(&area_context),
         )
-        .expect("the prior U/09 can rewrite, but cannot carry the following A/09");
+        .expect("the prior U/09 should rewrite and the later A/09 should synthesize a carrier");
+        let expected_bytes_inserted = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+            + LEGACY_UPDATE_HEADER_BYTES
+            + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+            + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
         assert_eq!(summary.add_records_examined, 1);
         assert_eq!(summary.update_records_examined, 1);
-        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.add_records_rewritten, 1);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
@@ -3986,14 +3990,21 @@ mod diagnostic_tests {
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             0
         );
-        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
         assert_eq!(
-            summary.bytes_inserted,
-            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(summary.bytes_inserted, expected_bytes_inserted as u32);
+        assert_eq!(
+            summary.new_live_bytes_length,
+            summary.old_live_bytes_length + expected_bytes_inserted
         );
 
         let claim = claim_payload_if_verified(&payload)
-            .expect("post-rewrite exact custom U/09 + fixed-width A/09 claim");
+            .expect("post-rewrite exact custom U/09 + fixed-width A/09 + synthesized U/09 claim");
+        assert_eq!(claim.mentions.len(), 3);
         assert_eq!(
             claim.mentions[0].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
@@ -4003,12 +4014,45 @@ mod diagnostic_tests {
             "the prior update can be widened for its own parser-owned branch"
         );
         assert_eq!(
+            claim.mentions[1].record_offset,
+            add_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+        assert_eq!(
             claim.mentions[1].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
                 appearance: 0x0011,
                 resref: None,
             }),
             "the following add remains fixed-width and packet-authored"
+        );
+        let synthesized_offset = live.len() + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        assert_eq!(claim.mentions[2].record_offset, synthesized_offset);
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "a following synthetic U/09 now carries the add's custom TemplateResRef"
+        );
+        assert_eq!(
+            claim.mentions[2].placeable_appearance_claim,
+            Some(LiveObjectPlaceableAppearanceClaim {
+                appearance_offset: synthesized_offset + LEGACY_UPDATE_HEADER_BYTES,
+                resref_offset: Some(
+                    synthesized_offset
+                        + LEGACY_UPDATE_HEADER_BYTES
+                        + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                ),
+            })
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_start, claim.mentions[1].fragment_bit_end,
+            "the synthesized carrier starts from the add-owned next cursor"
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_end, claim.mentions[1].fragment_bit_end,
+            "the synthesized carrier consumes no fragment bits"
         );
     }
 
@@ -11797,6 +11841,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
+                        }
+                        if !update_carrier.has_following() {
                             let target_resref = row.module_template_resref?;
                             let bytes_inserted =
                                 synthesize_placeable_custom_appearance_update_after_add(

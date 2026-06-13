@@ -1138,6 +1138,18 @@ Current status:
   hgbridge-proxy2`, `cargo fmt --all --check`, and `git diff --check`; next
   local replay should compare remaining custom skips, especially pre-add-only
   and lifecycle/identity-blocked rows.
+- 2026-06-13 follow-up fixed-width `A/09` pre-add-only custom synthesis:
+  exact placeable reconciliation now also synthesizes the same minimal
+  following `U/09 mask=0x20` when the only same-object appearance update in
+  the payload is before the fixed-width add. The pre-add update may still
+  rewrite its own parser-owned custom branch, but it is not treated as a carrier
+  for the later add. The add remains fixed-width, the synthesized update
+  exact-validates from the add-owned next bit cursor, and no fragment bits move.
+  Verified with focused
+  `exact_placeable_add_module_custom_pre_add_only_synthesizes_following_update`
+  and `exact_placeable_`; next local replay should compare remaining custom
+  skips against lifecycle/identity-blocked rows and missing `TemplateResRef`
+  context.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
