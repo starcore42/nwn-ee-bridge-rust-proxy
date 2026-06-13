@@ -1291,6 +1291,20 @@ Current status:
   `exact_placeable_add_following_position_ambiguous_counts_missing_output`;
   next local replay should compare the new ambiguous-output counters against
   remaining `identity_blocked` exact add rows.
+- 2026-06-13 follow-up preceding-position exact `A/09` identity selection:
+  identity-blocked exact placeable adds now also resolve from a prior
+  same-object exact `U/09` position branch when no same-object `A`/`D`
+  lifecycle row lies between the update and add, and the parser-owned raw
+  X/Y/Z position identifies exactly one module-backed static row or an
+  output-equivalent same-position row set. The add still rewrites only its
+  fixed appearance WORD and add-state BOOLs; the preceding update keeps its
+  own parser-owned position proof. New live-object, M-frame, and
+  server-dispatch counters split preceding-position resolutions from existing
+  following-position resolutions. Verified with focused
+  `exact_placeable_add_identity_resolves_by_preceding_position_update`,
+  `exact_placeable_`, `area_context_`, and `placeable_update`; next local
+  replay should compare preceding-position resolutions against remaining
+  following-position missing/lifecycle/ambiguous blockers.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
