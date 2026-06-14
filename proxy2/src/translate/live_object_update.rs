@@ -8098,6 +8098,12 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output,
+            1,
+            "pre-add-only fixed-output blockers should remain comparable to add-only fixed-output blockers"
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
             1,
             "the fixed-output candidate set still lacks complete TemplateResRef proof"
@@ -8416,6 +8422,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only:
@@ -15854,6 +15862,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
                                     .saturating_add(1);
+                            if selection
+                                .identity_resolved_by_preceding_position_fixed_output_equivalence
+                            {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output
+                                        .saturating_add(1);
+                            }
                         }
                         let mut unproven_missing_template_resref_rows = 0u32;
                         let mut unproven_output_divergent = false;
@@ -15983,6 +16000,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 unproven_missing_template_resref_rows,
                             area_static_custom_carrier_unproven_output_divergent =
                                 unproven_output_divergent,
+                            area_static_custom_carrier_unproven_pre_add_position_only_fixed_output =
+                                selection
+                                    .identity_resolved_by_preceding_position_fixed_output_equivalence
+                                    && !update_carrier.has_following()
+                                    && !update_carrier.has_pre_add(),
                             "server->client exact live-object placeable add custom carrier skipped: position proof covers only fixed A/09 output"
                         );
                     } else if row.module_template_resref.is_some() {
@@ -19094,6 +19116,8 @@ fn trace_exact_placeable_reconciliation_summary(
         add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+        add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output,
         add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only,

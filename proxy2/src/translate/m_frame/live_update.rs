@@ -132,6 +132,8 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only:
@@ -630,6 +632,12 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output,
                 );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only

@@ -1254,6 +1254,8 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only = summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only = summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only = summary

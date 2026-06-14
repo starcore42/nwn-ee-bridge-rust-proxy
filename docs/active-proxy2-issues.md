@@ -1497,6 +1497,13 @@ Current status:
   server-dispatch summaries. Next local replay should compare these add-only
   fixed-output counters against position-only pre-add rows before adding any
   broader synthetic custom-carrier rule.
+- 2026-06-15 follow-up unproven-carrier pre-add position split: packet bytes
+  are unchanged. Add-only unproven custom-carrier summaries now also count the
+  subset selected by a preceding same-object position-only `U/09` fixed-output
+  proof, propagated through direct live-object, M-frame aggregation, and
+  server-dispatch logs. This makes the next local replay able to compare true
+  add-only fixed-output rows against pre-add position-only rows without treating
+  either as a proven `TemplateResRef` carrier.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
