@@ -1432,6 +1432,26 @@ Current status:
   `placeable_update`, `cargo check`, formatter, and diff-check. Next replay can
   compare these joined counters directly against remaining fixed-output custom
   carrier skips before widening synthetic carrier emission.
+- 2026-06-14 follow-up fixed-output custom-carrier suppression diagnostics:
+  packet bytes and carrier policy are unchanged. Fixed-width module-custom
+  `A/09` adds selected only by fixed-output position proof now expose direct,
+  M-frame, and server-dispatch counters for suppressed custom carriers, split by
+  following, preceding, and surrounding position proof plus missing
+  `TemplateResRef` rows and divergent carrier output. The selected-row
+  missing-resref case now also increments the existing add-side missing
+  `TemplateResRef` diagnostic instead of disappearing behind the broad
+  fixed-output suppression branch. Verified with
+  `cargo test -q -p hgbridge-proxy2 fixed_output_equivalence -- --nocapture`,
+  `cargo test -q -p hgbridge-proxy2 exact_placeable_ -- --test-threads=1`,
+  `cargo test -q -p hgbridge-proxy2 placeable_update -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, `cargo fmt --all --check`, and
+  `git diff --check`. A full serial proxy2 run still fails in pre-existing
+  fixture/resource-dependent paths starting with
+  `local_to_heir_compact_area_uses_module_resource_dimensions`; the focused
+  `A/09`/`U/09` fixed-output carrier path passes. Next replay should inspect
+  the `server exact placeable surrounding fixed-output carrier blockers` event
+  and compare unproven-carrier missing-resref versus divergent counts before
+  any broader synthetic carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

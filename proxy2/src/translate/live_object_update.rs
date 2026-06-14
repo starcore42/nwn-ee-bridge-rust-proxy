@@ -6443,6 +6443,24 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_add_identity_surrounding_position_conflicts, 1,
             "the custom carrier output still conflicts even though A/09 fixed fields agree"
         );
@@ -6917,6 +6935,24 @@ mod diagnostic_tests {
             "two concrete custom carriers disagree, so synthesis remains suppressed"
         );
         assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
             0
         );
@@ -7096,6 +7132,25 @@ mod diagnostic_tests {
                 .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent,
             0,
             "only one concrete carrier exists in this case"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+            1,
+            "the fixed-output candidate set still lacks complete TemplateResRef proof"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            0
         );
         assert_eq!(
             summary
@@ -7387,6 +7442,16 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -14736,6 +14801,77 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_module_custom_appearance_skipped
                         .saturating_add(1);
                     if selection.custom_appearance_carrier_unproven() {
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped =
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
+                                .saturating_add(1);
+                        let mut unproven_missing_template_resref_rows = 0u32;
+                        let mut unproven_output_divergent = false;
+                        if selection
+                            .identity_resolved_by_following_position_fixed_output_equivalence
+                        {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output
+                                    .saturating_add(1);
+                            unproven_missing_template_resref_rows =
+                                unproven_missing_template_resref_rows.saturating_add(
+                                    following_fixed_output_carrier_proof
+                                        .output_missing_template_resref_rows,
+                                );
+                            unproven_output_divergent |=
+                                following_fixed_output_carrier_proof.output_divergent;
+                        }
+                        if selection
+                            .identity_resolved_by_preceding_position_fixed_output_equivalence
+                        {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output
+                                    .saturating_add(1);
+                            unproven_missing_template_resref_rows =
+                                unproven_missing_template_resref_rows.saturating_add(
+                                    preceding_fixed_output_carrier_proof
+                                        .output_missing_template_resref_rows,
+                                );
+                            unproven_output_divergent |=
+                                preceding_fixed_output_carrier_proof.output_divergent;
+                        }
+                        if selection.identity_surrounding_position_conflict {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output
+                                    .saturating_add(1);
+                            unproven_missing_template_resref_rows =
+                                unproven_missing_template_resref_rows.saturating_add(
+                                    selection
+                                        .identity_surrounding_position_conflict_output_missing_template_resref_rows,
+                                );
+                            unproven_output_divergent |=
+                                selection.identity_surrounding_position_conflict_output_divergent;
+                        }
+                        if row.module_template_resref.is_none() {
+                            summary.exact_placeable_add_module_custom_template_resref_missing =
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_missing
+                                    .saturating_add(1);
+                        }
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows
+                                .saturating_add(unproven_missing_template_resref_rows);
+                        if unproven_output_divergent {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent
+                                    .saturating_add(1);
+                        }
                         tracing::debug!(
                             object_id = format_args!("0x{:08X}", mention.object_id),
                             record_offset,
@@ -14771,6 +14907,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .identity_surrounding_position_conflict_output_missing_template_resref_rows,
                             area_static_identity_surrounding_position_conflict_output_divergent =
                                 selection.identity_surrounding_position_conflict_output_divergent,
+                            area_static_custom_carrier_unproven_missing_template_resref_rows =
+                                unproven_missing_template_resref_rows,
+                            area_static_custom_carrier_unproven_output_divergent =
+                                unproven_output_divergent,
                             "server->client exact live-object placeable add custom carrier skipped: position proof covers only fixed A/09 output"
                         );
                     } else if row.module_template_resref.is_some() {
@@ -17318,6 +17458,23 @@ fn trace_exact_placeable_reconciliation_summary(
         add_module_custom_template_resref_fixed_width_synthesized_update =
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+        add_module_custom_fixed_width_unproven_carrier_skipped =
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+        add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+        add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output,
+        add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output,
+        add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+        add_module_custom_fixed_width_unproven_carrier_output_divergent =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
         add_module_custom_template_resref_missing =
             summary.exact_placeable_add_module_custom_template_resref_missing,
         update_module_custom_template_resref_missing =

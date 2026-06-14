@@ -1226,6 +1226,18 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence,
         exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped =
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
         "server exact placeable surrounding fixed-output carrier blockers"
     );
 }
