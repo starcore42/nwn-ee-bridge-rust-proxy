@@ -1047,6 +1047,8 @@ fn trace_live_object_exact_rewrite_summary(
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         exact_placeable_update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
+        exact_placeable_update_identity_resolved_by_position_output_equivalence = summary
+            .exact_placeable_update_identity_resolved_by_position_output_equivalence,
         exact_placeable_add_identity_blocked_following_position_missing =
             summary.exact_placeable_add_identity_blocked_following_position_missing,
         exact_placeable_add_identity_blocked_following_position_lifecycle_blocked =

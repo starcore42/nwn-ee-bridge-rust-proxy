@@ -53,6 +53,7 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_identity_surrounding_position_conflict_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
+    pub exact_placeable_update_identity_resolved_by_position_output_equivalence: u32,
     pub exact_placeable_add_identity_blocked_following_position_missing: u32,
     pub exact_placeable_add_identity_blocked_following_position_lifecycle_blocked: u32,
     pub exact_placeable_add_identity_blocked_following_position_no_static_match: u32,
@@ -277,6 +278,11 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_identity_resolved_by_position = self
             .exact_placeable_update_identity_resolved_by_position
             .saturating_add(rewrite.exact_placeable_update_identity_resolved_by_position);
+        self.exact_placeable_update_identity_resolved_by_position_output_equivalence = self
+            .exact_placeable_update_identity_resolved_by_position_output_equivalence
+            .saturating_add(
+                rewrite.exact_placeable_update_identity_resolved_by_position_output_equivalence,
+            );
         self.exact_placeable_add_identity_blocked_following_position_missing = self
             .exact_placeable_add_identity_blocked_following_position_missing
             .saturating_add(

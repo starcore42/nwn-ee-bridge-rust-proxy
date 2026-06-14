@@ -4682,6 +4682,10 @@ mod diagnostic_tests {
             summary.exact_placeable_update_identity_resolved_by_position,
             1
         );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position_output_equivalence, 0,
+            "a unique same-position static row must not be counted as duplicate output-equivalence"
+        );
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
@@ -4836,6 +4840,10 @@ mod diagnostic_tests {
         assert_eq!(
             summary.exact_placeable_update_identity_resolved_by_position, 1,
             "the parser-owned position branch supplies the duplicate-row proof"
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position_output_equivalence, 1,
+            "duplicate same-position rows should be visible separately from unique position matches"
         );
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
@@ -7157,6 +7165,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_surrounding_position_conflict_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
+    pub exact_placeable_update_identity_resolved_by_position_output_equivalence: u32,
     pub exact_placeable_add_identity_blocked_following_position_missing: u32,
     pub exact_placeable_add_identity_blocked_following_position_lifecycle_blocked: u32,
     pub exact_placeable_add_identity_blocked_following_position_no_static_match: u32,
@@ -14747,16 +14756,24 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
-                let (selection, area_rows) = placeable_static_reconciliation_selection_for_update(
-                    area_context,
-                    mention.object_id,
-                    update_claim,
-                );
+                let (selection, area_rows, update_position_output_equivalence) =
+                    placeable_static_reconciliation_selection_for_update(
+                        area_context,
+                        mention.object_id,
+                        update_claim,
+                    );
                 record_exact_placeable_reconciliation_target(&mut summary, b'U', selection.target);
                 if selection.identity_resolved_by_position {
                     summary.exact_placeable_update_identity_resolved_by_position = summary
                         .exact_placeable_update_identity_resolved_by_position
                         .saturating_add(1);
+                    if update_position_output_equivalence {
+                        summary
+                            .exact_placeable_update_identity_resolved_by_position_output_equivalence =
+                            summary
+                                .exact_placeable_update_identity_resolved_by_position_output_equivalence
+                                .saturating_add(1);
+                    }
                 }
                 if update_claim.parser.appearance_offset.is_some() {
                     record_exact_placeable_identity_blocked_module_custom_rows(
@@ -16027,7 +16044,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
     area_context: &'a AreaPlaceableContext,
     object_id: u32,
     claim: VerifiedPlaceableUpdateExactClaim,
-) -> (PlaceableStaticReconciliationSelection<'a>, String) {
+) -> (PlaceableStaticReconciliationSelection<'a>, String, bool) {
     let (target, area_rows) =
         placeable_static_reconciliation_target_for_object(area_context, object_id);
     if matches!(
@@ -16061,6 +16078,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_add_output_equivalence: false,
             },
             area_rows,
+            false,
         );
     } else if matches!(
         target,
@@ -16093,6 +16111,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_add_output_equivalence: false,
             },
             area_rows,
+            true,
         );
     }
 
@@ -16117,6 +16136,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             identity_resolved_by_add_output_equivalence: false,
         },
         area_rows,
+        false,
     )
 }
 
@@ -16900,6 +16920,8 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_add_output_equivalence,
         update_identity_resolved_by_position =
             summary.exact_placeable_update_identity_resolved_by_position,
+        update_identity_resolved_by_position_output_equivalence = summary
+            .exact_placeable_update_identity_resolved_by_position_output_equivalence,
         add_identity_blocked_following_position_missing =
             summary.exact_placeable_add_identity_blocked_following_position_missing,
         add_identity_blocked_following_position_lifecycle_blocked =

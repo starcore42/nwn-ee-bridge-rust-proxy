@@ -1412,6 +1412,13 @@ Current status:
   focused `exact_placeable_update_position` and full `exact_placeable_`
   diagnostics using isolated non-incremental target dirs after a rustc
   incremental-cache panic in the default target.
+- 2026-06-14 follow-up exact `U/09` duplicate-output replay split: packet bytes
+  and reconciliation policy are unchanged. Direct live-object, M-frame, and
+  server-dispatch summaries now split duplicate same-position
+  output-equivalence update resolutions from ordinary unique-position matches via
+  `exact_placeable_update_identity_resolved_by_position_output_equivalence`.
+  Next replay should compare this counter against remaining fixed-output custom
+  carrier skips before widening synthetic carrier emission.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
