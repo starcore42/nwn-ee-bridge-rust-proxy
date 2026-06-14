@@ -379,6 +379,16 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     fragment_bits: &[bool],
     bit_cursor: usize,
 ) -> Option<VerifiedEeDoorPlaceableUpdateRecord> {
+    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
+    if bit_cursor > fragment_bits.len() {
+        if debug_live_claim {
+            eprintln!(
+                "door/placeable update reject fragment cursor offset={offset} record_end={record_end} bit_cursor={bit_cursor} fragment_bits={}",
+                fragment_bits.len()
+            );
+        }
+        return None;
+    }
     if offset + LEGACY_UPDATE_HEADER_BYTES > record_end || record_end > bytes.len() {
         return None;
     }
@@ -412,7 +422,6 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut vector_orientation = None;
     let mut appearance_offset = None;
     let mut state_bit_cursor = None;
-    let debug_live_claim = std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some();
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
         // Diamond `sub_467AE0` and EE `sub_14079C050` both read the shared

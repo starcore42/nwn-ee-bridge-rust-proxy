@@ -264,6 +264,70 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_rejects_fragment_cursor_past_valid_bits() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&target_resref);
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+
+        assert!(
+            verified_placeable_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .is_some(),
+            "a no-fragment-bit U/09 custom appearance row may start exactly at the valid cursor"
+        );
+        assert!(
+            verified_placeable_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS + 1,
+            )
+            .is_none(),
+            "even zero-bit U/09 rows cannot start beyond the valid CNW fragment stream"
+        );
+    }
+
+    #[test]
+    fn synthesized_custom_placeable_update_is_transactional_on_cursor_reject() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let mut live = vec![b'D', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        let original_live = live.clone();
+
+        let result = synthesize_placeable_custom_appearance_update(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            0,
+            object_id,
+            CNW_FRAGMENT_HEADER_BITS + 1,
+            0xFFFE,
+            target_resref,
+            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            live, original_live,
+            "failed synthetic U/09 validation must not leave inserted bytes behind"
+        );
+    }
+
+    #[test]
     fn declared_length_repair_dump_signature_ignores_only_declared_slot() {
         let mut first = vec![
             HIGH_LEVEL_ENVELOPE,
@@ -19786,10 +19850,11 @@ fn synthesize_placeable_custom_appearance_update(
     update.extend_from_slice(&template_resref);
 
     let bytes_inserted = update.len();
-    live_bytes.splice(insert_offset..insert_offset, update.iter().copied());
+    let mut candidate = live_bytes.clone();
+    candidate.splice(insert_offset..insert_offset, update.iter().copied());
     let record_end = insert_offset.checked_add(bytes_inserted)?;
     let update_claim = verified_placeable_update_exact_claim(
-        live_bytes,
+        &candidate,
         insert_offset,
         record_end,
         fragment_bits,
@@ -19801,6 +19866,7 @@ fn synthesize_placeable_custom_appearance_update(
     {
         return None;
     }
+    *live_bytes = candidate;
 
     tracing::info!(
         object_id = format_args!("0x{object_id:08X}"),
