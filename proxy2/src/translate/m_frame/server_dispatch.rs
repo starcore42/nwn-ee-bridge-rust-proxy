@@ -1015,12 +1015,20 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_identity_resolved_by_following_position_equivalence,
         exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence = summary
             .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
+        exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows,
+        exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent,
         exact_placeable_add_identity_resolved_by_preceding_position =
             summary.exact_placeable_add_identity_resolved_by_preceding_position,
         exact_placeable_add_identity_resolved_by_preceding_position_equivalence = summary
             .exact_placeable_add_identity_resolved_by_preceding_position_equivalence,
         exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence = summary
             .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence,
+        exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows,
+        exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent,
         exact_placeable_add_identity_resolved_by_surrounding_position =
             summary.exact_placeable_add_identity_resolved_by_surrounding_position,
         exact_placeable_add_identity_resolved_by_surrounding_position_equivalence = summary

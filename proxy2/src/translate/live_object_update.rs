@@ -6583,6 +6583,18 @@ mod diagnostic_tests {
                     ..crate::translate::area::AreaPlaceableContextRow::default()
                 },
                 crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    module_template_resref: Some(*b"plc_ambig_alt\0\0\0"),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
                     object_id: rewrite_object_id,
                     appearance: 0x0044,
                     x: 30.0,
@@ -6619,6 +6631,18 @@ mod diagnostic_tests {
                 .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
             1,
             "only fixed A/09 appearance/state output is equivalent across the same-position rows"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows,
+            1,
+            "one same-position custom row has no TemplateResRef proof"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent,
+            1,
+            "two concrete custom carriers disagree, so synthesis remains suppressed"
         );
         assert_eq!(
             summary.exact_placeable_add_identity_blocked_following_position_ambiguous_matches,
@@ -6788,6 +6812,18 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence,
             1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows,
+            1,
+            "the selected fixed-output set is still blocked by missing TemplateResRef proof"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent,
+            0,
+            "only one concrete carrier exists in this case"
         );
         assert_eq!(
             summary
@@ -6998,9 +7034,15 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_following_position: u32,
     pub exact_placeable_add_identity_resolved_by_following_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows:
+        u32,
+    pub exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_preceding_position: u32,
     pub exact_placeable_add_identity_resolved_by_preceding_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows:
+        u32,
+    pub exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence: u32,
@@ -14211,6 +14253,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     add_claim,
                     base_target,
                 );
+                let mut following_fixed_output_carrier_proof =
+                    FixedOutputEquivalenceCarrierProof::default();
+                let mut preceding_fixed_output_carrier_proof =
+                    FixedOutputEquivalenceCarrierProof::default();
                 if selection.identity_resolved_by_fixed_fields {
                     summary.exact_placeable_add_identity_resolved_by_fixed_fields = summary
                         .exact_placeable_add_identity_resolved_by_fixed_fields
@@ -14240,6 +14286,28 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         summary
                             .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence
                             .saturating_add(1);
+                    if let Some(proof) = fixed_output_equivalence_carrier_proof(
+                        following_update_position_identity_match_for_add(
+                            area_context,
+                            mention.object_id,
+                            mention.record_end,
+                            &claim,
+                        ),
+                    ) {
+                        following_fixed_output_carrier_proof = proof;
+                        summary
+                            .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows =
+                            summary
+                                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows
+                                .saturating_add(proof.output_missing_template_resref_rows);
+                        if proof.output_divergent {
+                            summary
+                                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent =
+                                summary
+                                    .exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent
+                                    .saturating_add(1);
+                        }
+                    }
                 }
                 if selection.identity_resolved_by_preceding_position {
                     summary.exact_placeable_add_identity_resolved_by_preceding_position = summary
@@ -14259,6 +14327,28 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         summary
                             .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence
                             .saturating_add(1);
+                    if let Some(proof) = fixed_output_equivalence_carrier_proof(
+                        preceding_update_position_identity_match_for_add(
+                            area_context,
+                            mention.object_id,
+                            mention.record_offset,
+                            &claim,
+                        ),
+                    ) {
+                        preceding_fixed_output_carrier_proof = proof;
+                        summary
+                            .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows =
+                            summary
+                                .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows
+                                .saturating_add(proof.output_missing_template_resref_rows);
+                        if proof.output_divergent {
+                            summary
+                                .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent =
+                                summary
+                                    .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent
+                                    .saturating_add(1);
+                        }
+                    }
                 }
                 if selection.identity_resolved_by_surrounding_position {
                     summary.exact_placeable_add_identity_resolved_by_surrounding_position = summary
@@ -14362,11 +14452,21 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             area_static_identity_resolved_by_following_position_fixed_output_equivalence =
                                 selection
                                     .identity_resolved_by_following_position_fixed_output_equivalence,
+                            area_static_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows =
+                                following_fixed_output_carrier_proof
+                                    .output_missing_template_resref_rows,
+                            area_static_identity_resolved_by_following_position_fixed_output_divergent =
+                                following_fixed_output_carrier_proof.output_divergent,
                             area_static_identity_resolved_by_preceding_position =
                                 selection.identity_resolved_by_preceding_position,
                             area_static_identity_resolved_by_preceding_position_fixed_output_equivalence =
                                 selection
                                     .identity_resolved_by_preceding_position_fixed_output_equivalence,
+                            area_static_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows =
+                                preceding_fixed_output_carrier_proof
+                                    .output_missing_template_resref_rows,
+                            area_static_identity_resolved_by_preceding_position_fixed_output_divergent =
+                                preceding_fixed_output_carrier_proof.output_divergent,
                             area_static_identity_resolved_by_surrounding_position =
                                 selection.identity_resolved_by_surrounding_position,
                             area_static_identity_surrounding_position_conflict_output_unavailable =
@@ -15357,6 +15457,28 @@ impl<'a> AddPositionIdentityMatch<'a> {
             | AddPositionIdentityMatch::NoStaticPositionMatch
             | AddPositionIdentityMatch::AmbiguousStaticPositionMatch { .. } => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FixedOutputEquivalenceCarrierProof {
+    output_missing_template_resref_rows: u32,
+    output_divergent: bool,
+}
+
+fn fixed_output_equivalence_carrier_proof(
+    identity_match: AddPositionIdentityMatch<'_>,
+) -> Option<FixedOutputEquivalenceCarrierProof> {
+    match identity_match {
+        AddPositionIdentityMatch::FixedOutputEquivalent {
+            output_missing_template_resref_rows,
+            output_divergent,
+            ..
+        } => Some(FixedOutputEquivalenceCarrierProof {
+            output_missing_template_resref_rows,
+            output_divergent,
+        }),
+        _ => None,
     }
 }
 
@@ -16468,12 +16590,20 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_resolved_by_following_position_equivalence,
         add_identity_resolved_by_following_position_fixed_output_equivalence = summary
             .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
+        add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows,
+        add_identity_resolved_by_following_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_following_position_fixed_output_divergent,
         add_identity_resolved_by_preceding_position =
             summary.exact_placeable_add_identity_resolved_by_preceding_position,
         add_identity_resolved_by_preceding_position_equivalence =
             summary.exact_placeable_add_identity_resolved_by_preceding_position_equivalence,
         add_identity_resolved_by_preceding_position_fixed_output_equivalence = summary
             .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence,
+        add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_missing_template_resref_rows,
+        add_identity_resolved_by_preceding_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_divergent,
         add_identity_resolved_by_surrounding_position =
             summary.exact_placeable_add_identity_resolved_by_surrounding_position,
         add_identity_resolved_by_surrounding_position_equivalence = summary

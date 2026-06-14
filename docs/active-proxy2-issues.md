@@ -1374,6 +1374,14 @@ Current status:
   `exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence`.
   Next local replay should compare these one-sided counters with remaining
   ambiguous output-unavailable rows and synthetic-carrier skips.
+- 2026-06-14 follow-up one-sided fixed-output carrier blockers: packet bytes are
+  unchanged. One-sided following/preceding fixed-output equivalence now carries
+  the unproven custom-carrier reason through direct, M-frame, and
+  server-dispatch summaries: missing `TemplateResRef` row counts versus
+  concrete divergent carrier-output matches. Focused regressions cover missing
+  resref and divergent-carrier variants. Next local replay should compare
+  these counters against remaining fixed-output-only custom skips before adding
+  any broader synthetic carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
