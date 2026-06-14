@@ -1341,6 +1341,14 @@ Current status:
   server-dispatch traces. Next local replay should compare unavailable-output
   conflicts against missing `TemplateResRef`/module context before treating
   them as true position disagreements.
+- 2026-06-14 follow-up surrounding-position missing-output diagnostics: packet
+  bytes and identity policy are unchanged. The unavailable-output conflict
+  bucket now also counts selected bracketing rows whose custom appearance lacks
+  module `TemplateResRef` proof via
+  `exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows`.
+  Next replay should compare this row count against the broad unavailable
+  conflict count; any remainder needs separate module-context proof before a
+  broader surrounding-position rule is safe.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

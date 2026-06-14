@@ -5956,6 +5956,12 @@ mod diagnostic_tests {
             "both bracketing rows have enough module output proof in this case"
         );
         assert_eq!(
+            summary
+                .exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows,
+            0,
+            "a true output divergence must not be classified as missing TemplateResRef proof"
+        );
+        assert_eq!(
             summary.exact_placeable_add_identity_surrounding_position_conflict_output_divergent, 1,
             "the conflict is a real add-output divergence, not missing TemplateResRef proof"
         );
@@ -6043,9 +6049,11 @@ mod diagnostic_tests {
         ) {
             SurroundingAddPositionIdentityMatch::Conflict {
                 output_unavailable,
+                output_missing_template_resref_rows,
                 output_divergent,
             } => {
                 assert!(output_unavailable);
+                assert_eq!(output_missing_template_resref_rows, 1);
                 assert!(!output_divergent);
             }
             other => panic!("expected missing-output surrounding conflict, got {other:?}"),
@@ -6675,6 +6683,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_surrounding_position_equivalence: u32,
     pub exact_placeable_add_identity_surrounding_position_conflicts: u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_unavailable: u32,
+    pub exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows:
+        u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_add_output_equivalence: u32,
     pub exact_placeable_update_identity_resolved_by_position: u32,
@@ -13937,6 +13947,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             .exact_placeable_add_identity_surrounding_position_conflict_output_unavailable
                             .saturating_add(1);
                 }
+                summary
+                    .exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows =
+                    summary
+                        .exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows
+                        .saturating_add(
+                            selection
+                                .identity_surrounding_position_conflict_output_missing_template_resref_rows,
+                        );
                 if selection.identity_surrounding_position_conflict_output_divergent {
                     summary
                         .exact_placeable_add_identity_surrounding_position_conflict_output_divergent =
@@ -14361,6 +14379,7 @@ struct PlaceableStaticReconciliationSelection<'a> {
     identity_resolved_by_surrounding_position_equivalence: bool,
     identity_surrounding_position_conflict: bool,
     identity_surrounding_position_conflict_output_unavailable: bool,
+    identity_surrounding_position_conflict_output_missing_template_resref_rows: u32,
     identity_surrounding_position_conflict_output_divergent: bool,
     identity_resolved_by_add_output_equivalence: bool,
 }
@@ -14376,6 +14395,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
 ) -> PlaceableStaticReconciliationSelection<'a> {
     let mut surrounding_position_conflict = false;
     let mut surrounding_position_conflict_output_unavailable = false;
+    let mut surrounding_position_conflict_output_missing_template_resref_rows = 0u32;
     let mut surrounding_position_conflict_output_divergent = false;
     if matches!(
         target,
@@ -14399,6 +14419,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_surrounding_position_equivalence: false,
                 identity_surrounding_position_conflict: false,
                 identity_surrounding_position_conflict_output_unavailable: false,
+                identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                 identity_surrounding_position_conflict_output_divergent: false,
                 identity_resolved_by_add_output_equivalence: false,
             };
@@ -14423,6 +14444,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_resolved_by_surrounding_position_equivalence: false,
                 identity_surrounding_position_conflict: false,
                 identity_surrounding_position_conflict_output_unavailable: false,
+                identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                 identity_surrounding_position_conflict_output_divergent: false,
                 identity_resolved_by_add_output_equivalence: false,
             };
@@ -14460,16 +14482,20 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                     identity_resolved_by_surrounding_position_equivalence: output_equivalence,
                     identity_surrounding_position_conflict: false,
                     identity_surrounding_position_conflict_output_unavailable: false,
+                    identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                     identity_surrounding_position_conflict_output_divergent: false,
                     identity_resolved_by_add_output_equivalence: false,
                 };
             }
             SurroundingAddPositionIdentityMatch::Conflict {
                 output_unavailable,
+                output_missing_template_resref_rows,
                 output_divergent,
             } => {
                 surrounding_position_conflict = true;
                 surrounding_position_conflict_output_unavailable = output_unavailable;
+                surrounding_position_conflict_output_missing_template_resref_rows =
+                    output_missing_template_resref_rows;
                 surrounding_position_conflict_output_divergent = output_divergent;
             }
             SurroundingAddPositionIdentityMatch::MissingResolvedSide => {
@@ -14491,6 +14517,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                             identity_resolved_by_surrounding_position_equivalence: false,
                             identity_surrounding_position_conflict: false,
                             identity_surrounding_position_conflict_output_unavailable: false,
+                            identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                             identity_surrounding_position_conflict_output_divergent: false,
                             identity_resolved_by_add_output_equivalence: false,
                         };
@@ -14512,6 +14539,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                             identity_resolved_by_surrounding_position_equivalence: false,
                             identity_surrounding_position_conflict: false,
                             identity_surrounding_position_conflict_output_unavailable: false,
+                            identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                             identity_surrounding_position_conflict_output_divergent: false,
                             identity_resolved_by_add_output_equivalence: false,
                         };
@@ -14539,6 +14567,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                             identity_resolved_by_surrounding_position_equivalence: false,
                             identity_surrounding_position_conflict: false,
                             identity_surrounding_position_conflict_output_unavailable: false,
+                            identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                             identity_surrounding_position_conflict_output_divergent: false,
                             identity_resolved_by_add_output_equivalence: false,
                         };
@@ -14560,6 +14589,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                             identity_resolved_by_surrounding_position_equivalence: false,
                             identity_surrounding_position_conflict: false,
                             identity_surrounding_position_conflict_output_unavailable: false,
+                            identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                             identity_surrounding_position_conflict_output_divergent: false,
                             identity_resolved_by_add_output_equivalence: false,
                         };
@@ -14588,6 +14618,8 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
                 identity_surrounding_position_conflict: surrounding_position_conflict,
                 identity_surrounding_position_conflict_output_unavailable:
                     surrounding_position_conflict_output_unavailable,
+                identity_surrounding_position_conflict_output_missing_template_resref_rows:
+                    surrounding_position_conflict_output_missing_template_resref_rows,
                 identity_surrounding_position_conflict_output_divergent:
                     surrounding_position_conflict_output_divergent,
                 identity_resolved_by_add_output_equivalence: true,
@@ -14609,6 +14641,8 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
         identity_surrounding_position_conflict: surrounding_position_conflict,
         identity_surrounding_position_conflict_output_unavailable:
             surrounding_position_conflict_output_unavailable,
+        identity_surrounding_position_conflict_output_missing_template_resref_rows:
+            surrounding_position_conflict_output_missing_template_resref_rows,
         identity_surrounding_position_conflict_output_divergent:
             surrounding_position_conflict_output_divergent,
         identity_resolved_by_add_output_equivalence: false,
@@ -14813,6 +14847,7 @@ enum SurroundingAddPositionIdentityMatch<'a> {
     },
     Conflict {
         output_unavailable: bool,
+        output_missing_template_resref_rows: u32,
         output_divergent: bool,
     },
 }
@@ -14848,10 +14883,16 @@ fn surrounding_update_position_identity_match_for_add<'a>(
         }
         (Some(_), Some(_)) => SurroundingAddPositionIdentityMatch::Conflict {
             output_unavailable: false,
+            output_missing_template_resref_rows: 0,
             output_divergent: true,
         },
         _ => SurroundingAddPositionIdentityMatch::Conflict {
             output_unavailable: true,
+            output_missing_template_resref_rows: u32::from(
+                placeable_add_output_missing_template_resref_for_module_static_row(following_row),
+            ) + u32::from(
+                placeable_add_output_missing_template_resref_for_module_static_row(preceding_row),
+            ),
             output_divergent: false,
         },
     }
@@ -15137,6 +15178,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
                 identity_resolved_by_surrounding_position_equivalence: false,
                 identity_surrounding_position_conflict: false,
                 identity_surrounding_position_conflict_output_unavailable: false,
+                identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
                 identity_surrounding_position_conflict_output_divergent: false,
                 identity_resolved_by_add_output_equivalence: false,
             },
@@ -15158,6 +15200,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             identity_resolved_by_surrounding_position_equivalence: false,
             identity_surrounding_position_conflict: false,
             identity_surrounding_position_conflict_output_unavailable: false,
+            identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
             identity_surrounding_position_conflict_output_divergent: false,
             identity_resolved_by_add_output_equivalence: false,
         },
@@ -15474,6 +15517,12 @@ fn placeable_add_output_for_module_static_row(
     })
 }
 
+fn placeable_add_output_missing_template_resref_for_module_static_row(
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    is_custom_placeable_appearance(row.appearance) && row.module_template_resref.is_none()
+}
+
 fn module_static_row_matches_verified_add_fixed_fields(
     row: &AreaPlaceableContextRow,
     claim: VerifiedPlaceableAddExactClaim,
@@ -15775,6 +15824,8 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_identity_surrounding_position_conflicts,
         add_identity_surrounding_position_conflict_output_unavailable = summary
             .exact_placeable_add_identity_surrounding_position_conflict_output_unavailable,
+        add_identity_surrounding_position_conflict_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows,
         add_identity_surrounding_position_conflict_output_divergent = summary
             .exact_placeable_add_identity_surrounding_position_conflict_output_divergent,
         add_identity_resolved_by_add_output_equivalence =
@@ -15969,6 +16020,8 @@ fn reconcile_verified_placeable_add_appearance_with_area_context(
             selection.identity_surrounding_position_conflict,
         area_static_identity_surrounding_position_conflict_output_unavailable =
             selection.identity_surrounding_position_conflict_output_unavailable,
+        area_static_identity_surrounding_position_conflict_output_missing_template_resref_rows =
+            selection.identity_surrounding_position_conflict_output_missing_template_resref_rows,
         area_static_identity_surrounding_position_conflict_output_divergent =
             selection.identity_surrounding_position_conflict_output_divergent,
         area_static_identity_resolved_by_add_output_equivalence =
@@ -16649,6 +16702,8 @@ fn reconcile_verified_placeable_add_state_with_area_context(
             selection.identity_surrounding_position_conflict,
         area_static_identity_surrounding_position_conflict_output_unavailable =
             selection.identity_surrounding_position_conflict_output_unavailable,
+        area_static_identity_surrounding_position_conflict_output_missing_template_resref_rows =
+            selection.identity_surrounding_position_conflict_output_missing_template_resref_rows,
         area_static_identity_surrounding_position_conflict_output_divergent =
             selection.identity_surrounding_position_conflict_output_divergent,
         area_static_identity_resolved_by_add_output_equivalence =

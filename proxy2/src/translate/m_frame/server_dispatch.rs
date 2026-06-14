@@ -1025,6 +1025,8 @@ fn trace_live_object_exact_rewrite_summary(
             summary.exact_placeable_add_identity_surrounding_position_conflicts,
         exact_placeable_add_identity_surrounding_position_conflict_output_unavailable = summary
             .exact_placeable_add_identity_surrounding_position_conflict_output_unavailable,
+        exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows,
         exact_placeable_add_identity_surrounding_position_conflict_output_divergent = summary
             .exact_placeable_add_identity_surrounding_position_conflict_output_divergent,
         exact_placeable_add_identity_resolved_by_add_output_equivalence =
