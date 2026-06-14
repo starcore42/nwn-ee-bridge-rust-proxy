@@ -1250,6 +1250,14 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+            synthesized_update_after_add_without_carrier = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier,
+            synthesized_update_after_add_pre_add_normal_rewrite_ready = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_ready,
+            synthesized_update_after_add_pre_add_normal_rewrite_blocked = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked,
+            synthesized_update_after_add_pre_add_custom = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
             synthesized_update_after_following_normal = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
             "server exact placeable fixed-width custom carrier synthesis policy"

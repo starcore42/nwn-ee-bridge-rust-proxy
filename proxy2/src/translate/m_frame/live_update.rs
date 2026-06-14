@@ -126,6 +126,14 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_ready:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
@@ -630,6 +638,30 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_ready =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_ready
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_ready,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal
