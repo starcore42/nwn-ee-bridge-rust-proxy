@@ -1362,6 +1362,18 @@ Current status:
   `area_context_`, `placeable_update`, `cargo check`, formatter, and
   diff-check. Next local replay should compare fixed-output equivalence counts
   against remaining custom carrier conflicts before widening any carrier rule.
+- 2026-06-14 follow-up one-sided position fixed-output equivalence: exact
+  identity-blocked `A/09` adds now also use a single preceding or following
+  same-object `U/09` position mention when its ambiguous same-position static
+  row set has identical fixed `A/09` appearance/state output but missing or
+  divergent full custom-carrier output. The add may reconcile state BOOLs, but
+  custom appearance carriers remain suppressed unless full `TemplateResRef`
+  output is proven. New direct/M-frame/server-dispatch counters split
+  `exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence`
+  and
+  `exact_placeable_add_identity_resolved_by_preceding_position_fixed_output_equivalence`.
+  Next local replay should compare these one-sided counters with remaining
+  ambiguous output-unavailable rows and synthetic-carrier skips.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
