@@ -1504,6 +1504,14 @@ Current status:
   server-dispatch logs. This makes the next local replay able to compare true
   add-only fixed-output rows against pre-add position-only rows without treating
   either as a proven `TemplateResRef` carrier.
+- 2026-06-15 follow-up symmetric position-only fixed-output carrier split:
+  packet bytes are unchanged. Fixed-output unproven custom-carrier summaries now
+  separately count following-position-only and bracketing surrounding-position-only
+  `U/09` proof when no parser-owned appearance update exists, alongside the
+  existing pre-add position-only bucket. Direct live-object, M-frame, and
+  server-dispatch logs now distinguish true add-only fixed-output rows from all
+  position-only fixed-output proofs before any broader custom-carrier synthesis
+  rule is considered.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

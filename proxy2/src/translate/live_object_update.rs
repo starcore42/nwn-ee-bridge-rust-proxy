@@ -6688,6 +6688,16 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output,
+            1,
+            "bracketing position-only U/09 rows still own no custom carrier bytes"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only, 1,
+            "legacy add-only remains the aggregate no-appearance-carrier bucket"
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
             0
         );
@@ -7177,6 +7187,16 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
             1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output,
+            1,
+            "a following position-only U/09 proves fixed output but owns no TemplateResRef carrier"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only, 1,
+            "legacy add-only remains the aggregate no-appearance-carrier bucket"
         );
         assert_eq!(
             summary
@@ -8411,9 +8431,13 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output:
         u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows:
         u32,
@@ -15863,12 +15887,28 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
                                     .saturating_add(1);
                             if selection
+                                .identity_resolved_by_following_position_fixed_output_equivalence
+                            {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output
+                                        .saturating_add(1);
+                            }
+                            if selection
                                 .identity_resolved_by_preceding_position_fixed_output_equivalence
                             {
                                 summary
                                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output =
                                     summary
                                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_position_only_fixed_output
+                                        .saturating_add(1);
+                            }
+                            if selection.identity_surrounding_position_conflict {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output
                                         .saturating_add(1);
                             }
                         }
@@ -16003,6 +16043,15 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             area_static_custom_carrier_unproven_pre_add_position_only_fixed_output =
                                 selection
                                     .identity_resolved_by_preceding_position_fixed_output_equivalence
+                                    && !update_carrier.has_following()
+                                    && !update_carrier.has_pre_add(),
+                            area_static_custom_carrier_unproven_following_position_only_fixed_output =
+                                selection
+                                    .identity_resolved_by_following_position_fixed_output_equivalence
+                                    && !update_carrier.has_following()
+                                    && !update_carrier.has_pre_add(),
+                            area_static_custom_carrier_unproven_surrounding_position_only_fixed_output =
+                                selection.identity_surrounding_position_conflict
                                     && !update_carrier.has_following()
                                     && !update_carrier.has_pre_add(),
                             "server->client exact live-object placeable add custom carrier skipped: position proof covers only fixed A/09 output"
@@ -19093,12 +19142,16 @@ fn trace_exact_placeable_reconciliation_summary(
         add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+        add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output,
         add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output,
         add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output,
+        add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output,
         add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,

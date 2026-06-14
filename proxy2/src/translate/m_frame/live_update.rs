@@ -121,9 +121,13 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output:
         u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows:
         u32,
@@ -586,6 +590,12 @@ impl ExactLiveObjectRewriteSummary {
                     rewrite
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
                 );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output,
+                );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output
                 .saturating_add(
@@ -597,6 +607,12 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_only_fixed_output,
                 );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows
