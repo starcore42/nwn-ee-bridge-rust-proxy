@@ -1462,6 +1462,13 @@ Current status:
   Next replay should compare `with_custom_update` versus `add_only` before
   deciding whether missing `TemplateResRef` proof or synthesis policy is the
   remaining blocker.
+- 2026-06-14 follow-up exact following custom-carrier proof: fixed-output
+  duplicate-position `A/09` adds now treat a following same-object `U/09` that
+  owns both exact position and custom appearance `CResRef` as row identity proof
+  when the carrier matches a module static row's `TemplateResRef`. Mismatched
+  carrier resrefs, pre-add-only carriers, split position/appearance carriers,
+  and add-only fixed-output cases remain suppressed and should be compared in
+  the next local replay before any broader synthetic `U/09` rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
