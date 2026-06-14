@@ -1213,6 +1213,15 @@ fn trace_live_object_exact_rewrite_summary(
             current_record_progress.untouched_position,
         "server live-object payload reached exact EE shape through bounded typed orchestrator"
     );
+    tracing::info!(
+        source = exact_rewrite.source,
+        family = family_name,
+        exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows,
+        exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent,
+        "server exact placeable surrounding fixed-output carrier blockers"
+    );
 }
 
 fn claimed() -> ServerTranslatorOutcome {

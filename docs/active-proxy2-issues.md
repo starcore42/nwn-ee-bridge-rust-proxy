@@ -1392,6 +1392,17 @@ Current status:
   `area_context_`, `exact_placeable_`, and `placeable_update`; next replay
   should compare duplicate-object-id module-backed rows against remaining
   fixed-output-only carrier skips before widening custom-carrier synthesis.
+- 2026-06-14 follow-up surrounding fixed-output carrier detail: packet bytes and
+  reconciliation policy are unchanged. Exact `A/09` surrounding-position
+  fixed-output equivalence now exposes its suppressed custom-carrier blockers
+  separately from broad full-output conflict counters:
+  `exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows`
+  and
+  `exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent`.
+  The fields flow through direct live-object summaries, M-frame aggregation, and
+  server-dispatch trace events. Next replay should compare these against
+  one-sided fixed-output blockers and remaining fixed-width custom skips before
+  adding any broader carrier synthesis rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

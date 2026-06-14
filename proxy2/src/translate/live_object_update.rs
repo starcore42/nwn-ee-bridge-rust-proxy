@@ -6171,6 +6171,16 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_add_identity_surrounding_position_conflicts, 1,
             "the custom carrier output still conflicts even though A/09 fixed fields agree"
         );
@@ -7046,6 +7056,9 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_surrounding_position: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows:
+        u32,
+    pub exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent: u32,
     pub exact_placeable_add_identity_surrounding_position_conflicts: u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_unavailable: u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows:
@@ -14370,6 +14383,21 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         summary
                             .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence
                             .saturating_add(1);
+                    summary
+                        .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows =
+                        summary
+                            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows
+                            .saturating_add(
+                                selection
+                                    .identity_surrounding_position_conflict_output_missing_template_resref_rows,
+                            );
+                    if selection.identity_surrounding_position_conflict_output_divergent {
+                        summary
+                            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent =
+                            summary
+                                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent
+                                .saturating_add(1);
+                    }
                 }
                 if selection.identity_surrounding_position_conflict {
                     summary.exact_placeable_add_identity_surrounding_position_conflicts = summary
@@ -16610,6 +16638,10 @@ fn trace_exact_placeable_reconciliation_summary(
             .exact_placeable_add_identity_resolved_by_surrounding_position_equivalence,
         add_identity_resolved_by_surrounding_position_fixed_output_equivalence = summary
             .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence,
+        add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows = summary
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_missing_template_resref_rows,
+        add_identity_resolved_by_surrounding_position_fixed_output_divergent = summary
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_divergent,
         add_identity_surrounding_position_conflicts =
             summary.exact_placeable_add_identity_surrounding_position_conflicts,
         add_identity_surrounding_position_conflict_output_unavailable = summary
