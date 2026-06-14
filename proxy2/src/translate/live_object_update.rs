@@ -4115,7 +4115,12 @@ mod diagnostic_tests {
         let payload =
             live_object_payload_from_parts(&live, &fragment_bits).expect("mixed U/A payload");
         let claim = claim_payload_if_verified(&payload).expect("mixed U/A claim");
-        let carrier = exact_placeable_update_appearance_carrier_for_add(&claim, object_id, add_end);
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &crate::translate::area::AreaPlaceableContext::default(),
+            &claim,
+            object_id,
+            add_end,
+        );
 
         assert_eq!(carrier.following_kind(), "normal+custom");
         assert_eq!(carrier.pre_add_kind(), "normal+custom");
@@ -5802,6 +5807,164 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_fixed_width_skip_counts_duplicate_output_following_update_carrier() {
+        let object_id = 0x8000_3604u32;
+        let target_resref = *b"plc_dup_carry\0\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let update_mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&update_mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the duplicate module rows.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked conflicts with both duplicate module rows.
+            false, // lockable conflicts with both duplicate module rows.
+            false, // visual payload.
+            false, // EE-only terminal state BOOL.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("exact A/09 followed by duplicate-output U/09 carrier");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let duplicate_row = crate::translate::area::AreaPlaceableContextRow {
+            object_id,
+            appearance: 0xFFFE,
+            module_template_resref: Some(target_resref),
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+            module_state: Some(module_state),
+            ..crate::translate::area::AreaPlaceableContextRow::default()
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![duplicate_row.clone(), duplicate_row],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("following U/09 should carry custom appearance and duplicate-output proof");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 0);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_add_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_add_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position_equivalence, 1,
+            "the add target is selected only because the following position rows emit the same full output"
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position_output_equivalence, 1,
+            "the following update independently proves duplicate-row output equivalence"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence,
+            1,
+            "fixed-width custom skip diagnostics should identify the duplicate-output U/09 carrier"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            1,
+            "the source carrier starts as a normal WORD-only U/09 branch"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0,
+            "an existing following U/09 carrier must suppress synthetic carrier insertion"
+        );
+        assert_eq!(
+            summary.bytes_inserted,
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 + U/09 claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(claim.mentions[0].record_end, add_end);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "A/09 remains fixed-width and packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the following U/09 owns the inserted TemplateResRef branch"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_identity_resolves_by_surrounding_position_output_equivalence() {
         let object_id = 0x8000_3617u32;
         let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
@@ -7211,9 +7374,13 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_module_custom_appearance_skipped: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_skipped: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
@@ -14613,6 +14780,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped
                                 .saturating_add(1);
                         let update_carrier = exact_placeable_update_appearance_carrier_for_add(
+                            area_context,
                             &claim,
                             mention.object_id,
                             mention.record_end,
@@ -14630,6 +14798,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
                                     .saturating_add(1);
+                            if update_carrier.has_following_position_output_equivalence() {
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence =
+                                    summary
+                                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence
+                                        .saturating_add(1);
+                            }
                             if update_carrier.following_custom.is_some() {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update =
@@ -14649,6 +14824,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
                                     .saturating_add(1);
+                            if update_carrier.has_pre_add_position_output_equivalence() {
+                                summary
+                                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence =
+                                    summary
+                                        .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
+                                        .saturating_add(1);
+                            }
                             if update_carrier.pre_add_custom.is_some() {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only =
@@ -16191,6 +16373,43 @@ fn equivalent_module_static_row_matching_verified_update_position_output<'a>(
     claim: VerifiedPlaceableUpdateExactClaim,
 ) -> Option<&'a AreaPlaceableContextRow> {
     let source_position = claim.parser.position?;
+    equivalent_module_static_row_matching_raw_position_update_output(
+        area_context,
+        object_id,
+        source_position.x_raw,
+        source_position.y_raw,
+        source_position.z_raw,
+        |row| placeable_update_owned_output_for_module_static_row(row, claim),
+    )
+}
+
+fn update_mention_resolves_duplicate_position_output(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    mention: &LiveObjectRecordMention,
+) -> bool {
+    let Some(source_position) = mention.position else {
+        return false;
+    };
+    equivalent_module_static_row_matching_raw_position_update_output(
+        area_context,
+        object_id,
+        source_position.x_raw,
+        source_position.y_raw,
+        source_position.z_raw,
+        |row| placeable_update_owned_output_for_module_static_row_and_mention(row, mention),
+    )
+    .is_some()
+}
+
+fn equivalent_module_static_row_matching_raw_position_update_output<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    x_raw: u16,
+    y_raw: u16,
+    z_raw: u32,
+    mut output_for_row: impl FnMut(&'a AreaPlaceableContextRow) -> Option<PlaceableUpdateOwnedOutput>,
+) -> Option<&'a AreaPlaceableContextRow> {
     let overlap = area_context.placeable_overlap_by(|row_object_id| {
         object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
     });
@@ -16200,17 +16419,12 @@ fn equivalent_module_static_row_matching_verified_update_position_output<'a>(
     for matched in overlap.rows() {
         if matched.kind != AreaPlaceableContextRowKind::Static
             || matched.row.module_state.is_none()
-            || !module_static_row_matches_raw_position(
-                matched.row,
-                source_position.x_raw,
-                source_position.y_raw,
-                source_position.z_raw,
-            )
+            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
         {
             continue;
         }
         rows = rows.saturating_add(1);
-        let output = placeable_update_owned_output_for_module_static_row(matched.row, claim)?;
+        let output = output_for_row(matched.row)?;
         if !output.has_non_position_output() {
             return None;
         }
@@ -16225,6 +16439,59 @@ fn equivalent_module_static_row_matching_verified_update_position_output<'a>(
     }
 
     if rows > 1 { selected } else { None }
+}
+
+fn placeable_update_owned_output_for_module_static_row_and_mention(
+    row: &AreaPlaceableContextRow,
+    mention: &LiveObjectRecordMention,
+) -> Option<PlaceableUpdateOwnedOutput> {
+    let orientation = if let Some(orientation) = mention.orientation {
+        match orientation.source {
+            LiveObjectRecordOrientationSource::Scalar => Some(
+                PlaceableUpdateOrientationOutput::Scalar(area_static_row_scalar_orientation(row)?),
+            ),
+            LiveObjectRecordOrientationSource::Vector => {
+                let vector = area_static_row_vector_orientation(row)?;
+                Some(PlaceableUpdateOrientationOutput::Vector {
+                    x_raw: vector.x_raw,
+                    y_raw: vector.y_raw,
+                    z_raw: vector.z_raw,
+                })
+            }
+        }
+    } else {
+        None
+    };
+
+    let appearance = if mention.placeable_appearance_claim.is_some() {
+        let resref = if is_custom_placeable_appearance(row.appearance) {
+            Some(row.module_template_resref?)
+        } else {
+            None
+        };
+        Some(PlaceableUpdateAppearanceOutput {
+            appearance: row.appearance,
+            resref,
+        })
+    } else {
+        None
+    };
+
+    let lock_state = if mention.placeable_state.is_some() {
+        let module_state = row.module_state?;
+        Some(PlaceableUpdateLockOutput {
+            lockable: module_state.lockable,
+            locked: module_state.locked,
+        })
+    } else {
+        None
+    };
+
+    Some(PlaceableUpdateOwnedOutput {
+        orientation,
+        appearance,
+        lock_state,
+    })
 }
 
 fn placeable_update_owned_output_for_module_static_row(
@@ -16639,6 +16906,22 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         self.pre_add_custom.or(self.pre_add_normal)
     }
 
+    fn has_following_position_output_equivalence(self) -> bool {
+        self.following_custom
+            .is_some_and(|record| record.position_output_equivalence)
+            || self
+                .following_normal
+                .is_some_and(|record| record.position_output_equivalence)
+    }
+
+    fn has_pre_add_position_output_equivalence(self) -> bool {
+        self.pre_add_custom
+            .is_some_and(|record| record.position_output_equivalence)
+            || self
+                .pre_add_normal
+                .is_some_and(|record| record.position_output_equivalence)
+    }
+
     fn following_kind(self) -> &'static str {
         match (
             self.following_normal.is_some(),
@@ -16671,10 +16954,14 @@ struct ExactPlaceableUpdateAppearanceCarrierRecord {
     source_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
     fragment_bit_start: usize,
     fragment_bit_end: usize,
+    position_output_equivalence: bool,
 }
 
 impl ExactPlaceableUpdateAppearanceCarrierRecord {
-    fn from_mention(mention: &LiveObjectRecordMention) -> Option<Self> {
+    fn from_mention(
+        mention: &LiveObjectRecordMention,
+        position_output_equivalence: bool,
+    ) -> Option<Self> {
         let claim = mention.placeable_appearance_claim?;
         let appearance = mention.placeable_appearance?;
         Some(Self {
@@ -16686,11 +16973,13 @@ impl ExactPlaceableUpdateAppearanceCarrierRecord {
             source_resref: appearance.resref,
             fragment_bit_start: mention.fragment_bit_start,
             fragment_bit_end: mention.fragment_bit_end,
+            position_output_equivalence,
         })
     }
 }
 
 fn exact_placeable_update_appearance_carrier_for_add(
+    area_context: &AreaPlaceableContext,
     claim: &LiveObjectUpdateClaimSummary,
     object_id: u32,
     add_record_end: usize,
@@ -16706,8 +16995,12 @@ fn exact_placeable_update_appearance_carrier_for_add(
         let Some(appearance_claim) = mention.placeable_appearance_claim else {
             continue;
         };
-        let Some(record) = ExactPlaceableUpdateAppearanceCarrierRecord::from_mention(mention)
-        else {
+        let position_output_equivalence =
+            update_mention_resolves_duplicate_position_output(area_context, object_id, mention);
+        let Some(record) = ExactPlaceableUpdateAppearanceCarrierRecord::from_mention(
+            mention,
+            position_output_equivalence,
+        ) else {
             continue;
         };
         let is_following = mention.record_offset >= add_record_end;
@@ -16783,6 +17076,8 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         following_record_end = following.map(|record| record.record_end),
         following_appearance_offset = following.map(|record| record.appearance_offset),
         following_resref_offset = following.and_then(|record| record.resref_offset),
+        following_position_output_equivalence =
+            carrier.has_following_position_output_equivalence(),
         following_source_appearance = following_source_appearance.as_deref(),
         following_source_resref = ?following.and_then(|record| record.source_resref),
         following_fragment_bit_start = following.map(|record| record.fragment_bit_start),
@@ -16792,6 +17087,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_record_end = pre_add.map(|record| record.record_end),
         pre_add_appearance_offset = pre_add.map(|record| record.appearance_offset),
         pre_add_resref_offset = pre_add.and_then(|record| record.resref_offset),
+        pre_add_position_output_equivalence = carrier.has_pre_add_position_output_equivalence(),
         pre_add_source_appearance = pre_add_source_appearance.as_deref(),
         pre_add_source_resref = ?pre_add.and_then(|record| record.source_resref),
         pre_add_fragment_bit_start = pre_add.map(|record| record.fragment_bit_start),
@@ -17003,12 +17299,16 @@ fn trace_exact_placeable_reconciliation_summary(
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
         add_module_custom_template_resref_fixed_width_with_update =
             summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+        add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence,
         add_module_custom_template_resref_fixed_width_with_normal_update = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
         add_module_custom_template_resref_fixed_width_with_custom_update = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
         add_module_custom_template_resref_fixed_width_pre_add_update_only = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
+        add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence = summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence,
         add_module_custom_template_resref_fixed_width_pre_add_normal_update_only = summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
         add_module_custom_template_resref_fixed_width_pre_add_custom_update_only = summary

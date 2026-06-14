@@ -1419,6 +1419,19 @@ Current status:
   `exact_placeable_update_identity_resolved_by_position_output_equivalence`.
   Next replay should compare this counter against remaining fixed-output custom
   carrier skips before widening synthetic carrier emission.
+- 2026-06-14 follow-up fixed-width custom carrier duplicate-output join: packet
+  bytes and carrier policy are unchanged. Fixed-width custom `A/09` add skips
+  now count whether their following or pre-add appearance-owning `U/09` carrier
+  also resolved duplicate same-position static rows by update-owned output
+  equivalence, via
+  `exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence`
+  and
+  `exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence`.
+  The fields flow through direct live-object, M-frame, and server-dispatch
+  summaries. Verified with focused carrier-output, `exact_placeable_`,
+  `placeable_update`, `cargo check`, formatter, and diff-check. Next replay can
+  compare these joined counters directly against remaining fixed-output custom
+  carrier skips before widening synthetic carrier emission.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
