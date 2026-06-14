@@ -1349,6 +1349,19 @@ Current status:
   Next replay should compare this row count against the broad unavailable
   conflict count; any remainder needs separate module-context proof before a
   broader surrounding-position rule is safe.
+- 2026-06-14 follow-up surrounding-position fixed-output equivalence: exact
+  `A/09` placeable adds can now reconcile parser-owned add-state BOOLs when
+  preceding and following same-object position mentions select different custom
+  static rows whose A/09-visible fixed output (`appearance` WORD plus module
+  state bits) is identical, while their full custom carrier output is still
+  missing or divergent. The bridge records
+  `exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence`,
+  keeps the full-output conflict counters, and deliberately suppresses
+  synthetic `U/09 mask=0x20` carrier emission for this path. Verified with
+  focused `fixed_output_equivalence`, `surrounding_position`, `exact_placeable_`,
+  `area_context_`, `placeable_update`, `cargo check`, formatter, and
+  diff-check. Next local replay should compare fixed-output equivalence counts
+  against remaining custom carrier conflicts before widening any carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

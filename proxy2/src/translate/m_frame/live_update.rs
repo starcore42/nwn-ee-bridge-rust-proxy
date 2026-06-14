@@ -34,6 +34,7 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_identity_resolved_by_preceding_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position: u32,
     pub exact_placeable_add_identity_resolved_by_surrounding_position_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence: u32,
     pub exact_placeable_add_identity_surrounding_position_conflicts: u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_unavailable: u32,
     pub exact_placeable_add_identity_surrounding_position_conflict_output_missing_template_resref_rows:
@@ -163,6 +164,14 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add(
                 rewrite.exact_placeable_add_identity_resolved_by_surrounding_position_equivalence,
             );
+        self
+            .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence =
+            self
+                .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_resolved_by_surrounding_position_fixed_output_equivalence,
+                );
         self.exact_placeable_add_identity_surrounding_position_conflicts = self
             .exact_placeable_add_identity_surrounding_position_conflicts
             .saturating_add(rewrite.exact_placeable_add_identity_surrounding_position_conflicts);
