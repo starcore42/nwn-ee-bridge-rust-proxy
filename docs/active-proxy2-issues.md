@@ -1512,6 +1512,19 @@ Current status:
   server-dispatch logs now distinguish true add-only fixed-output rows from all
   position-only fixed-output proofs before any broader custom-carrier synthesis
   rule is considered.
+- 2026-06-15 follow-up fixed-output carrier blocker source split: packet bytes
+  are unchanged. Unproven fixed-width custom `A/09` carrier diagnostics now keep
+  missing `TemplateResRef` row counts and divergent carrier-output counts per
+  proof source: fixed-field fixed output, following position fixed output,
+  preceding position fixed output, and surrounding position fixed output. The
+  fields flow through direct live-object summaries, M-frame aggregation, and
+  the server-dispatch fixed-output blocker trace; direct summaries emit the new
+  detail as a separate trace event to avoid the existing large summary macro
+  limit. Verified with `fixed_output_equivalence`, `exact_placeable_`,
+  `placeable_update`, `cargo check`, formatter, and diff-check. Next local
+  replay should compare per-source missing-resref versus divergent counts
+  against the position-only/add-only buckets before adding any synthetic
+  custom-carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
