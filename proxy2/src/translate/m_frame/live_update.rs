@@ -122,6 +122,15 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -568,6 +577,46 @@ impl ExactLiveObjectRewriteSummary {
                     rewrite
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
                 );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update = self
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update
+            .saturating_add(
+                rewrite.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update,
+            );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only = self
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
+            .saturating_add(
+                rewrite.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
+            );
         self.exact_placeable_add_module_custom_template_resref_missing = self
             .exact_placeable_add_module_custom_template_resref_missing
             .saturating_add(rewrite.exact_placeable_add_module_custom_template_resref_missing);

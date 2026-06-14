@@ -1452,6 +1452,16 @@ Current status:
   the `server exact placeable surrounding fixed-output carrier blockers` event
   and compare unproven-carrier missing-resref versus divergent counts before
   any broader synthetic carrier rule.
+- 2026-06-14 follow-up fixed-output unproven-carrier location split: packet
+  bytes and carrier policy are unchanged. Fixed-output suppressed custom
+  carriers now report whether an exact parser-owned `U/09` appearance carrier
+  already exists after the add, exists only before the add, or is truly add-only,
+  split into normal/custom update branches through direct live-object, M-frame,
+  and server-dispatch summaries. Verified with focused fixed-output,
+  exact-placeable, placeable-update, `cargo check`, formatter, and diff-check.
+  Next replay should compare `with_custom_update` versus `add_only` before
+  deciding whether missing `TemplateResRef` proof or synthesis policy is the
+  remaining blocker.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

@@ -7019,6 +7019,161 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_following_fixed_output_reports_existing_custom_update_carrier() {
+        let object_id = 0x8000_3622u32;
+        let target_resref = *b"plc_fx_carrier\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let update_mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK;
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&update_mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&target_resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable conflicts with the fixed-output-equivalent rows.
+            false, // trap disarmable already matches.
+            false, // lockable conflicts with the fixed-output-equivalent rows.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("custom A/09 followed by position+appearance U/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    module_template_resref: None,
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    module_template_resref: Some(target_resref),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let original_len = payload.len();
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("following custom U/09 should stay as the only carrier evidence");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(payload.len(), original_len);
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+            0
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only, 0,
+            "the fixed-output blocker already has an exact following custom U/09 carrier"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite fixed-output carrier claim");
+        assert_eq!(claim.mentions.len(), 2);
+        assert_eq!(claim.mentions[0].record_end, add_end);
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            })
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_preceding_position_fixed_output_equivalence_suppresses_carrier() {
         let object_id = 0x8000_361Bu32;
         let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
@@ -7452,6 +7607,15 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -14806,6 +14970,64 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             summary
                                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
                                 .saturating_add(1);
+                        let update_carrier = exact_placeable_update_appearance_carrier_for_add(
+                            area_context,
+                            &claim,
+                            mention.object_id,
+                            mention.record_end,
+                        );
+                        trace_exact_placeable_fixed_width_custom_add_candidate(
+                            area_context,
+                            mention,
+                            row,
+                            add_claim,
+                            update_carrier,
+                        );
+                        if update_carrier.has_following() {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update
+                                    .saturating_add(1);
+                            if update_carrier.following_custom.is_some() {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update
+                                        .saturating_add(1);
+                            } else {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update
+                                        .saturating_add(1);
+                            }
+                        } else if update_carrier.has_pre_add() {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
+                                    .saturating_add(1);
+                            if update_carrier.pre_add_custom.is_some() {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only
+                                        .saturating_add(1);
+                            } else {
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
+                                    summary
+                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only
+                                        .saturating_add(1);
+                            }
+                        } else {
+                            summary
+                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only =
+                                summary
+                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
+                                    .saturating_add(1);
+                        }
                         let mut unproven_missing_template_resref_rows = 0u32;
                         let mut unproven_output_divergent = false;
                         if selection
@@ -17475,6 +17697,25 @@ fn trace_exact_placeable_reconciliation_summary(
         add_module_custom_fixed_width_unproven_carrier_output_divergent =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+        add_module_custom_fixed_width_unproven_carrier_with_update =
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update,
+        add_module_custom_fixed_width_unproven_carrier_with_normal_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update,
+        add_module_custom_fixed_width_unproven_carrier_with_custom_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update,
+        add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+        add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only,
+        add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only,
+        add_module_custom_fixed_width_unproven_carrier_add_only =
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
         add_module_custom_template_resref_missing =
             summary.exact_placeable_add_module_custom_template_resref_missing,
         update_module_custom_template_resref_missing =
