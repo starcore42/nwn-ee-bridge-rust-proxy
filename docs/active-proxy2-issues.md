@@ -1535,6 +1535,18 @@ Current status:
   server-dispatch summary macro was left unchanged. Verified with the fixed-width
   skip and module-custom carrier tests. Next local replay should compare ready
   versus blocked normal carriers before changing synthetic insertion order.
+- 2026-06-15 follow-up fixed-width custom carrier synthesis policy: packet
+  bytes are unchanged. The add-side custom carrier path now uses an explicit
+  `ExactPlaceableCustomCarrierSynthesisPolicy` instead of the broad
+  `!has_following` gate, splitting following custom carriers, following normal
+  carriers the update rewriter can widen, following normal carriers that remain
+  deferred until post-carrier insertion-order proof exists, and the current
+  add/pre-add synthesis-at-add path. The debug carrier trace emits the selected
+  policy, and focused tests pin both rewrite-ready and blocked following-normal
+  rows. Next replay should compare the emitted policy names; if blocked
+  following-normal rows remain, prove from capture/decompile whether a synthetic
+  `U/09 mask=0x20` must be inserted after that following row rather than at the
+  add boundary.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

@@ -3662,6 +3662,17 @@ mod diagnostic_tests {
             }],
             ..crate::translate::area::AreaPlaceableContext::default()
         };
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            pre_claim.mentions[0].record_end,
+        );
+        assert_eq!(
+            carrier.synthesis_policy(),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady,
+            "a following normal U/09 that the update rewriter can widen is the custom carrier"
+        );
 
         let summary = rewrite_update_records_payload_with_area_context_if_possible(
             &mut payload,
@@ -6355,6 +6366,19 @@ mod diagnostic_tests {
             static_rows: vec![selected_duplicate_row, other_duplicate_row],
             ..crate::translate::area::AreaPlaceableContext::default()
         };
+        let pre_claim = claim_payload_if_verified(&payload)
+            .expect("pre-rewrite exact A/09 + blocked following U/09 carrier");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            add_end,
+        );
+        assert_eq!(
+            carrier.synthesis_policy(),
+            ExactPlaceableCustomCarrierSynthesisPolicy::DeferredAfterFollowingNormalRewriteBlocked,
+            "blocked following normal carriers need post-carrier insertion-order proof"
+        );
 
         let summary = rewrite_update_records_payload_with_area_context_if_possible(
             &mut payload,
@@ -16415,6 +16439,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             add_claim,
                             update_carrier,
                         );
+                        let synthesis_policy = update_carrier.synthesis_policy();
                         if update_carrier.has_following() {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
@@ -16502,7 +16527,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
                         }
-                        if !update_carrier.has_following() {
+                        if synthesis_policy.inserts_at_add() {
                             let target_resref = row.module_template_resref?;
                             let bytes_inserted =
                                 synthesize_placeable_custom_appearance_update_after_add(
@@ -19141,6 +19166,47 @@ impl ExactPlaceableUpdateAppearanceCarrier {
             (false, false) => "none",
         }
     }
+
+    fn synthesis_policy(self) -> ExactPlaceableCustomCarrierSynthesisPolicy {
+        if self.following_custom.is_some() {
+            return ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustom;
+        }
+        if let Some(record) = self.following_normal {
+            return if record.custom_rewrite_ready {
+                ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady
+            } else {
+                ExactPlaceableCustomCarrierSynthesisPolicy::DeferredAfterFollowingNormalRewriteBlocked
+            };
+        }
+        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAdd
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactPlaceableCustomCarrierSynthesisPolicy {
+    SuppressedByFollowingCustom,
+    SuppressedByFollowingNormalRewriteReady,
+    DeferredAfterFollowingNormalRewriteBlocked,
+    SynthesizesAfterAdd,
+}
+
+impl ExactPlaceableCustomCarrierSynthesisPolicy {
+    fn inserts_at_add(self) -> bool {
+        matches!(self, Self::SynthesizesAfterAdd)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SuppressedByFollowingCustom => "suppressed-following-custom",
+            Self::SuppressedByFollowingNormalRewriteReady => {
+                "suppressed-following-normal-rewrite-ready"
+            }
+            Self::DeferredAfterFollowingNormalRewriteBlocked => {
+                "deferred-following-normal-rewrite-blocked"
+            }
+            Self::SynthesizesAfterAdd => "synthesizes-after-add",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19337,6 +19403,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_source_resref = ?pre_add.and_then(|record| record.source_resref),
         pre_add_fragment_bit_start = pre_add.map(|record| record.fragment_bit_start),
         pre_add_fragment_bit_end = pre_add.map(|record| record.fragment_bit_end),
+        custom_carrier_synthesis_policy = carrier.synthesis_policy().as_str(),
         "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
     );
 }
