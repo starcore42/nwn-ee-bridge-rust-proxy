@@ -1215,6 +1215,46 @@ fn trace_live_object_exact_rewrite_summary(
             current_record_progress.untouched_position,
         "server live-object payload reached exact EE shape through bounded typed orchestrator"
     );
+    if summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped != 0
+        || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
+            != 0
+    {
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            fixed_width_custom_skipped = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            with_following_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            with_following_normal_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            with_following_normal_update_rewrite_ready = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_ready,
+            with_following_normal_update_rewrite_blocked = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_blocked,
+            with_following_custom_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            pre_add_update_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
+            pre_add_normal_update_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
+            pre_add_normal_update_rewrite_ready = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready,
+            pre_add_normal_update_rewrite_blocked = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked,
+            pre_add_custom_update_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
+            add_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            synthesized_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            synthesized_update_after_add = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+            synthesized_update_after_following_normal = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
+            "server exact placeable fixed-width custom carrier synthesis policy"
+        );
+    }
     tracing::info!(
         source = exact_rewrite.source,
         family = family_name,

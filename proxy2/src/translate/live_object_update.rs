@@ -195,6 +195,28 @@ fn sanitize_live_object_dump_reason(reason: &str) -> String {
 mod diagnostic_tests {
     use super::*;
 
+    fn assert_synthesized_custom_carrier_origins(
+        summary: &LiveObjectUpdateRewriteSummary,
+        after_add: u32,
+        after_following_normal: u32,
+    ) {
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+            after_add
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
+            after_following_normal
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            after_add.saturating_add(after_following_normal)
+        );
+    }
+
     #[test]
     fn declared_length_repair_dump_signature_ignores_only_declared_slot() {
         let mut first = vec![
@@ -4056,6 +4078,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             1
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
         assert_eq!(summary.bytes_inserted, expected_bytes_inserted as u32);
         assert_eq!(
@@ -4366,6 +4389,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             1
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(summary.exact_placeable_add_appearance_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 0);
         assert_eq!(
@@ -5287,6 +5311,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             1
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(
             summary.bytes_inserted,
             (LEGACY_UPDATE_HEADER_BYTES
@@ -5452,6 +5477,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             1
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(
             summary.bytes_inserted,
             (LEGACY_UPDATE_HEADER_BYTES
@@ -6264,6 +6290,7 @@ mod diagnostic_tests {
             0,
             "an existing following U/09 carrier must suppress synthetic carrier insertion"
         );
+        assert_synthesized_custom_carrier_origins(&summary, 0, 0);
         assert_eq!(
             summary.bytes_inserted,
             EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as u32
@@ -6434,6 +6461,7 @@ mod diagnostic_tests {
             1,
             "the bridge emits a custom carrier after the blocked normal carrier"
         );
+        assert_synthesized_custom_carrier_origins(&summary, 0, 1);
         assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
         assert_eq!(
             summary.bytes_inserted,
@@ -8099,6 +8127,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             1
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(
             summary.bytes_inserted,
             (LEGACY_UPDATE_HEADER_BYTES
@@ -8266,6 +8295,7 @@ mod diagnostic_tests {
             1,
             "a pre-add split carrier still needs a post-add U/09 for EE state order"
         );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
         assert_eq!(
             summary.bytes_inserted,
             (LEGACY_UPDATE_HEADER_BYTES
@@ -8748,6 +8778,10 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
@@ -16572,7 +16606,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         fragment_bit_cursor: add_claim.layout.next_bit_cursor,
                                         appearance: row.appearance,
                                         template_resref: target_resref,
-                                        insertion_origin: "after-add",
+                                        insertion_origin:
+                                            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAdd,
                                     }
                                 }
                                 ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingNormal(
@@ -16583,7 +16618,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     fragment_bit_cursor: record.fragment_bit_end,
                                     appearance: row.appearance,
                                     template_resref: target_resref,
-                                    insertion_origin: "after-following-normal",
+                                    insertion_origin:
+                                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
                                 },
                             };
                             pending_custom_update_syntheses.push(pending);
@@ -19481,6 +19517,21 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableCustomAppearanceUpdateInsertionOrigin {
+    AfterAdd,
+    AfterFollowingNormal,
+}
+
+impl PlaceableCustomAppearanceUpdateInsertionOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterAdd => "after-add",
+            Self::AfterFollowingNormal => "after-following-normal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PendingPlaceableCustomAppearanceUpdate {
     original_insert_offset: usize,
@@ -19488,7 +19539,7 @@ struct PendingPlaceableCustomAppearanceUpdate {
     fragment_bit_cursor: usize,
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
-    insertion_origin: &'static str,
+    insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -19546,6 +19597,22 @@ fn apply_pending_placeable_custom_appearance_updates(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
                 .saturating_add(1);
+        match update.insertion_origin {
+            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAdd => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add
+                        .saturating_add(1);
+            }
+            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal
+                        .saturating_add(1);
+            }
+        }
     }
 
     Some(())
@@ -19560,7 +19627,7 @@ fn synthesize_placeable_custom_appearance_update(
     fragment_bit_cursor: usize,
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
-    insertion_origin: &'static str,
+    insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
 ) -> Option<usize> {
     if insert_offset > live_bytes.len() || !is_custom_placeable_appearance(appearance) {
         return None;
@@ -19602,7 +19669,7 @@ fn synthesize_placeable_custom_appearance_update(
         emitted_appearance = format_args!("0x{appearance:04X}"),
         emitted_resref = ?template_resref,
         bytes_inserted,
-        insertion_origin,
+        insertion_origin = insertion_origin.as_str(),
         area_resref = area_context.area_resref.as_str(),
         "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
     );
@@ -19794,6 +19861,12 @@ fn trace_exact_placeable_reconciliation_summary(
         add_module_custom_template_resref_fixed_width_synthesized_update =
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+        add_module_custom_template_resref_fixed_width_synthesized_update_after_add =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+        add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
         add_module_custom_fixed_width_unproven_carrier_skipped =
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
         add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output = summary
