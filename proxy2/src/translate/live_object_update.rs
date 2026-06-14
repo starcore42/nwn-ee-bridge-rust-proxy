@@ -6317,6 +6317,7 @@ mod diagnostic_tests {
         live.extend_from_slice(&object_id.to_le_bytes());
         live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
         live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let normal_carrier_end = live.len();
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         fragment_bits.extend([
@@ -6376,15 +6377,16 @@ mod diagnostic_tests {
         );
         assert_eq!(
             carrier.synthesis_policy(),
-            ExactPlaceableCustomCarrierSynthesisPolicy::DeferredAfterFollowingNormalRewriteBlocked,
-            "blocked following normal carriers need post-carrier insertion-order proof"
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked,
+            "blocked following normal carriers are followed by a synthetic custom carrier"
         );
 
+        let original_live_len = live.len();
         let summary = rewrite_update_records_payload_with_area_context_if_possible(
             &mut payload,
             Some(&area_context),
         )
-        .expect("the selected add-state rewrite should keep the diagnostic summary observable");
+        .expect("the selected add-state rewrite should synthesize a post-carrier custom branch");
         assert_eq!(summary.add_records_examined, 1);
         assert_eq!(summary.update_records_examined, 2);
         assert_eq!(summary.add_records_rewritten, 1);
@@ -6429,15 +6431,27 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
-            0,
-            "packet behavior is unchanged until replay proof identifies the safe insertion point"
+            1,
+            "the bridge emits a custom carrier after the blocked normal carrier"
         );
         assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
-        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+        assert_eq!(
+            summary.new_live_bytes_length,
+            original_live_len
+                + LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
 
         let claim = claim_payload_if_verified(&payload)
-            .expect("post-rewrite exact A/09 + U/09 diagnostic fixture");
-        assert_eq!(claim.mentions.len(), 3);
+            .expect("post-rewrite exact A/09 + normal U/09 + synthesized U/09 fixture");
+        assert_eq!(claim.mentions.len(), 4);
         assert_eq!(claim.mentions[0].record_end, add_end);
         assert_eq!(
             claim.mentions[2].placeable_appearance,
@@ -6446,6 +6460,26 @@ mod diagnostic_tests {
                 resref: None,
             }),
             "the blocked same-object normal carrier remains packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[3].record_offset, normal_carrier_end,
+            "the synthetic carrier is inserted after the blocked normal appearance row"
+        );
+        assert_eq!(
+            claim.mentions[3].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthetic row carries the module TemplateResRef after the packet-authored normal row"
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_start, claim.mentions[2].fragment_bit_end,
+            "the synthetic carrier starts from the verified normal carrier's next cursor"
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_end, claim.mentions[2].fragment_bit_end,
+            "the synthetic appearance-only update consumes no fragment bits"
         );
     }
 
@@ -15859,6 +15893,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
     };
     let mut live_byte_offset_added = 0usize;
     let mut live_byte_offset_removed = 0usize;
+    let mut live_byte_edits = Vec::new();
+    let mut pending_custom_update_syntheses = Vec::new();
     for mention in &claim.mentions {
         if mention.object_type != PLACEABLE_OBJECT_TYPE {
             continue;
@@ -16439,7 +16475,6 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             add_claim,
                             update_carrier,
                         );
-                        let synthesis_policy = update_carrier.synthesis_policy();
                         if update_carrier.has_following() {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
@@ -16527,28 +16562,31 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
                         }
-                        if synthesis_policy.inserts_at_add() {
+                        if let Some(insertion) = update_carrier.synthesis_insertion() {
                             let target_resref = row.module_template_resref?;
-                            let bytes_inserted =
-                                synthesize_placeable_custom_appearance_update_after_add(
-                                    area_context,
-                                    &mut live_bytes,
-                                    &fragment_bits,
-                                    record_end,
-                                    add_claim,
-                                    row.appearance,
-                                    target_resref,
-                                )?;
-                            live_byte_offset_added =
-                                live_byte_offset_added.checked_add(bytes_inserted)?;
-                            summary.bytes_inserted = summary
-                                .bytes_inserted
-                                .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
-                            summary
-                                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
-                                summary
-                                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
-                                    .saturating_add(1);
+                            let pending = match insertion {
+                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd => {
+                                    PendingPlaceableCustomAppearanceUpdate {
+                                        original_insert_offset: mention.record_end,
+                                        object_id: add_claim.object_id,
+                                        fragment_bit_cursor: add_claim.layout.next_bit_cursor,
+                                        appearance: row.appearance,
+                                        template_resref: target_resref,
+                                        insertion_origin: "after-add",
+                                    }
+                                }
+                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingNormal(
+                                    record,
+                                ) => PendingPlaceableCustomAppearanceUpdate {
+                                    original_insert_offset: record.record_end,
+                                    object_id: add_claim.object_id,
+                                    fragment_bit_cursor: record.fragment_bit_end,
+                                    appearance: row.appearance,
+                                    template_resref: target_resref,
+                                    insertion_origin: "after-following-normal",
+                                },
+                            };
+                            pending_custom_update_syntheses.push(pending);
                             custom_update_synthesized = true;
                         }
                     } else {
@@ -16733,6 +16771,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         u32::try_from(appearance_rewrite.bytes_removed).unwrap_or(u32::MAX),
                     );
                 }
+                if appearance_rewrite.bytes_inserted != 0 || appearance_rewrite.bytes_removed != 0 {
+                    live_byte_edits.push(LiveByteOffsetEdit {
+                        original_offset: mention.record_end,
+                        bytes_inserted: appearance_rewrite.bytes_inserted,
+                        bytes_removed: appearance_rewrite.bytes_removed,
+                    });
+                }
                 if position_rewritten {
                     summary.exact_placeable_update_position_rewritten = summary
                         .exact_placeable_update_position_rewritten
@@ -16776,6 +16821,16 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
             }
             _ => {}
         }
+    }
+    if !pending_custom_update_syntheses.is_empty() {
+        apply_pending_placeable_custom_appearance_updates(
+            area_context,
+            &mut live_bytes,
+            &fragment_bits,
+            &live_byte_edits,
+            pending_custom_update_syntheses,
+            &mut summary,
+        )?;
     }
     if summary.add_records_rewritten == 0 && summary.update_records_rewritten == 0 {
         trace_exact_placeable_reconciliation_summary(area_context, &summary, false);
@@ -19175,10 +19230,26 @@ impl ExactPlaceableUpdateAppearanceCarrier {
             return if record.custom_rewrite_ready {
                 ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady
             } else {
-                ExactPlaceableCustomCarrierSynthesisPolicy::DeferredAfterFollowingNormalRewriteBlocked
+                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked
             };
         }
         ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAdd
+    }
+
+    fn synthesis_insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
+        match self.synthesis_policy() {
+            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustom
+            | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady => {
+                None
+            }
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked => {
+                self.following_normal
+                    .map(ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingNormal)
+            }
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAdd => {
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd)
+            }
+        }
     }
 }
 
@@ -19186,27 +19257,29 @@ impl ExactPlaceableUpdateAppearanceCarrier {
 enum ExactPlaceableCustomCarrierSynthesisPolicy {
     SuppressedByFollowingCustom,
     SuppressedByFollowingNormalRewriteReady,
-    DeferredAfterFollowingNormalRewriteBlocked,
+    SynthesizesAfterFollowingNormalRewriteBlocked,
     SynthesizesAfterAdd,
 }
 
 impl ExactPlaceableCustomCarrierSynthesisPolicy {
-    fn inserts_at_add(self) -> bool {
-        matches!(self, Self::SynthesizesAfterAdd)
-    }
-
     fn as_str(self) -> &'static str {
         match self {
             Self::SuppressedByFollowingCustom => "suppressed-following-custom",
             Self::SuppressedByFollowingNormalRewriteReady => {
                 "suppressed-following-normal-rewrite-ready"
             }
-            Self::DeferredAfterFollowingNormalRewriteBlocked => {
-                "deferred-following-normal-rewrite-blocked"
+            Self::SynthesizesAfterFollowingNormalRewriteBlocked => {
+                "synthesizes-after-following-normal-rewrite-blocked"
             }
             Self::SynthesizesAfterAdd => "synthesizes-after-add",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactPlaceableCustomCarrierSynthesisInsertion {
+    AfterAdd,
+    AfterFollowingNormal(ExactPlaceableUpdateAppearanceCarrierRecord),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19408,14 +19481,86 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
     );
 }
 
-fn synthesize_placeable_custom_appearance_update_after_add(
+#[derive(Debug, Clone, Copy)]
+struct PendingPlaceableCustomAppearanceUpdate {
+    original_insert_offset: usize,
+    object_id: u32,
+    fragment_bit_cursor: usize,
+    appearance: u16,
+    template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
+    insertion_origin: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveByteOffsetEdit {
+    original_offset: usize,
+    bytes_inserted: usize,
+    bytes_removed: usize,
+}
+
+fn adjusted_live_byte_offset(
+    original_offset: usize,
+    edits: &[LiveByteOffsetEdit],
+) -> Option<usize> {
+    let mut offset = original_offset;
+    for edit in edits {
+        if edit.original_offset <= original_offset {
+            offset = offset.checked_add(edit.bytes_inserted)?;
+            offset = offset.checked_sub(edit.bytes_removed)?;
+        }
+    }
+    Some(offset)
+}
+
+fn apply_pending_placeable_custom_appearance_updates(
+    area_context: &AreaPlaceableContext,
+    live_bytes: &mut Vec<u8>,
+    fragment_bits: &[bool],
+    edits: &[LiveByteOffsetEdit],
+    pending: Vec<PendingPlaceableCustomAppearanceUpdate>,
+    summary: &mut LiveObjectUpdateRewriteSummary,
+) -> Option<()> {
+    let mut planned = Vec::with_capacity(pending.len());
+    for (sequence, update) in pending.into_iter().enumerate() {
+        let insert_offset = adjusted_live_byte_offset(update.original_insert_offset, edits)?;
+        planned.push((insert_offset, sequence, update));
+    }
+    planned.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+    for (insert_offset, _, update) in planned {
+        let bytes_inserted = synthesize_placeable_custom_appearance_update(
+            area_context,
+            live_bytes,
+            fragment_bits,
+            insert_offset,
+            update.object_id,
+            update.fragment_bit_cursor,
+            update.appearance,
+            update.template_resref,
+            update.insertion_origin,
+        )?;
+        summary.bytes_inserted = summary
+            .bytes_inserted
+            .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
+        summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
+                .saturating_add(1);
+    }
+
+    Some(())
+}
+
+fn synthesize_placeable_custom_appearance_update(
     area_context: &AreaPlaceableContext,
     live_bytes: &mut Vec<u8>,
     fragment_bits: &[bool],
     insert_offset: usize,
-    add_claim: VerifiedPlaceableAddExactClaim,
+    object_id: u32,
+    fragment_bit_cursor: usize,
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
+    insertion_origin: &'static str,
 ) -> Option<usize> {
     if insert_offset > live_bytes.len() || !is_custom_placeable_appearance(appearance) {
         return None;
@@ -19427,7 +19572,7 @@ fn synthesize_placeable_custom_appearance_update_after_add(
             + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
     );
     update.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
-    update.extend_from_slice(&add_claim.object_id.to_le_bytes());
+    update.extend_from_slice(&object_id.to_le_bytes());
     update.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
     update.extend_from_slice(&appearance.to_le_bytes());
     update.extend_from_slice(&template_resref);
@@ -19440,25 +19585,26 @@ fn synthesize_placeable_custom_appearance_update_after_add(
         insert_offset,
         record_end,
         fragment_bits,
-        add_claim.layout.next_bit_cursor,
+        fragment_bit_cursor,
     )?;
-    if update_claim.object_id != add_claim.object_id
+    if update_claim.object_id != object_id
         || update_claim.mask != LEGACY_UPDATE_APPEARANCE_MASK
-        || update_claim.parser.next_bit_cursor != add_claim.layout.next_bit_cursor
+        || update_claim.parser.next_bit_cursor != fragment_bit_cursor
     {
         return None;
     }
 
     tracing::info!(
-        object_id = format_args!("0x{:08X}", add_claim.object_id),
-        add_next_bit_cursor = add_claim.layout.next_bit_cursor,
+        object_id = format_args!("0x{object_id:08X}"),
+        fragment_bit_cursor,
         insert_offset,
         record_end,
         emitted_appearance = format_args!("0x{appearance:04X}"),
         emitted_resref = ?template_resref,
         bytes_inserted,
+        insertion_origin,
         area_resref = area_context.area_resref.as_str(),
-        "server->client exact live-object placeable add custom appearance synthesized as following U/09 update"
+        "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
     );
     Some(bytes_inserted)
 }
