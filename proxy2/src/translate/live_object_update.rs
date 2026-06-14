@@ -4773,6 +4773,97 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_position_output_equivalence_resolves_duplicate_static_rows() {
+        let object_id = 0x8000_3603u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked conflicts with both equivalent module rows.
+            false, // lockable conflicts with both equivalent module rows.
+            false, // visual payload.
+            false, // EE-only terminal state BOOL.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("duplicate-output position+appearance+state U/09 payload");
+        let original_len = payload.len();
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            lockable: true,
+            locked: false,
+            ..crate::translate::area::AreaPlaceableContextState::default()
+        };
+        let duplicate_row = crate::translate::area::AreaPlaceableContextRow {
+            object_id,
+            appearance: 0x0022,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+            module_state: Some(module_state),
+            ..crate::translate::area::AreaPlaceableContextRow::default()
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![duplicate_row.clone(), duplicate_row],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("same-position rows with identical U/09 output should reconcile");
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(summary.exact_placeable_update_identity_blocked, 0);
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position, 1,
+            "the parser-owned position branch supplies the duplicate-row proof"
+        );
+        assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(payload.len(), original_len);
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("rewritten duplicate-output U/09 claims");
+        assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
+
+    #[test]
     fn exact_placeable_summary_counts_identity_blocked_module_custom_rows() {
         let blocked_with_resref_id = 0x8000_3501u32;
         let blocked_missing_resref_id = 0x8000_3502u32;
@@ -15971,6 +16062,38 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             },
             area_rows,
         );
+    } else if matches!(
+        target,
+        AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
+    ) && let Some(row) =
+        equivalent_module_static_row_matching_verified_update_position_output(
+            area_context,
+            object_id,
+            claim,
+        )
+    {
+        return (
+            PlaceableStaticReconciliationSelection {
+                target: AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row),
+                identity_resolved_by_position: true,
+                identity_resolved_by_fixed_fields: false,
+                identity_resolved_by_fixed_field_equivalence: false,
+                identity_resolved_by_following_position: false,
+                identity_resolved_by_following_position_equivalence: false,
+                identity_resolved_by_following_position_fixed_output_equivalence: false,
+                identity_resolved_by_preceding_position: false,
+                identity_resolved_by_preceding_position_equivalence: false,
+                identity_resolved_by_preceding_position_fixed_output_equivalence: false,
+                identity_resolved_by_surrounding_position: false,
+                identity_resolved_by_surrounding_position_equivalence: false,
+                identity_surrounding_position_conflict: false,
+                identity_surrounding_position_conflict_output_unavailable: false,
+                identity_surrounding_position_conflict_output_missing_template_resref_rows: 0,
+                identity_surrounding_position_conflict_output_divergent: false,
+                identity_resolved_by_add_output_equivalence: false,
+            },
+            area_rows,
+        );
     }
 
     (
@@ -16009,6 +16132,129 @@ fn unique_module_static_row_matching_verified_update_position(
         source_position.y_raw,
         source_position.z_raw,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableUpdateOwnedOutput {
+    orientation: Option<PlaceableUpdateOrientationOutput>,
+    appearance: Option<PlaceableUpdateAppearanceOutput>,
+    lock_state: Option<PlaceableUpdateLockOutput>,
+}
+
+impl PlaceableUpdateOwnedOutput {
+    fn has_non_position_output(self) -> bool {
+        self.orientation.is_some() || self.appearance.is_some() || self.lock_state.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableUpdateOrientationOutput {
+    Scalar(u16),
+    Vector { x_raw: u16, y_raw: u16, z_raw: u16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableUpdateAppearanceOutput {
+    appearance: u16,
+    resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableUpdateLockOutput {
+    lockable: bool,
+    locked: bool,
+}
+
+fn equivalent_module_static_row_matching_verified_update_position_output<'a>(
+    area_context: &'a AreaPlaceableContext,
+    object_id: u32,
+    claim: VerifiedPlaceableUpdateExactClaim,
+) -> Option<&'a AreaPlaceableContextRow> {
+    let source_position = claim.parser.position?;
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let mut selected = None;
+    let mut selected_output = None;
+    let mut rows = 0u32;
+    for matched in overlap.rows() {
+        if matched.kind != AreaPlaceableContextRowKind::Static
+            || matched.row.module_state.is_none()
+            || !module_static_row_matches_raw_position(
+                matched.row,
+                source_position.x_raw,
+                source_position.y_raw,
+                source_position.z_raw,
+            )
+        {
+            continue;
+        }
+        rows = rows.saturating_add(1);
+        let output = placeable_update_owned_output_for_module_static_row(matched.row, claim)?;
+        if !output.has_non_position_output() {
+            return None;
+        }
+        if let Some(existing_output) = selected_output {
+            if existing_output != output {
+                return None;
+            }
+        } else {
+            selected_output = Some(output);
+            selected = Some(matched.row);
+        }
+    }
+
+    if rows > 1 { selected } else { None }
+}
+
+fn placeable_update_owned_output_for_module_static_row(
+    row: &AreaPlaceableContextRow,
+    claim: VerifiedPlaceableUpdateExactClaim,
+) -> Option<PlaceableUpdateOwnedOutput> {
+    let orientation = if claim.parser.scalar_orientation.is_some() {
+        Some(PlaceableUpdateOrientationOutput::Scalar(
+            area_static_row_scalar_orientation(row)?,
+        ))
+    } else if claim.parser.vector_orientation.is_some() {
+        let vector = area_static_row_vector_orientation(row)?;
+        Some(PlaceableUpdateOrientationOutput::Vector {
+            x_raw: vector.x_raw,
+            y_raw: vector.y_raw,
+            z_raw: vector.z_raw,
+        })
+    } else {
+        None
+    };
+
+    let appearance = if claim.parser.appearance_offset.is_some() {
+        let resref = if is_custom_placeable_appearance(row.appearance) {
+            Some(row.module_template_resref?)
+        } else {
+            None
+        };
+        Some(PlaceableUpdateAppearanceOutput {
+            appearance: row.appearance,
+            resref,
+        })
+    } else {
+        None
+    };
+
+    let lock_state = if claim.parser.state_bit_cursor.is_some() {
+        let module_state = row.module_state?;
+        Some(PlaceableUpdateLockOutput {
+            lockable: module_state.lockable,
+            locked: module_state.locked,
+        })
+    } else {
+        None
+    };
+
+    Some(PlaceableUpdateOwnedOutput {
+        orientation,
+        appearance,
+        lock_state,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

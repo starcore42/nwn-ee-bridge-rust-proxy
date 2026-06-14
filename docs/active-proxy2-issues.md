@@ -1403,6 +1403,15 @@ Current status:
   server-dispatch trace events. Next replay should compare these against
   one-sided fixed-output blockers and remaining fixed-width custom skips before
   adding any broader carrier synthesis rule.
+- 2026-06-14 follow-up exact `U/09` duplicate-row output equivalence: exact
+  placeable updates that own a parser position branch can now resolve duplicate
+  same-position module-backed static rows when every update-owned non-position
+  output field (`orientation`, `appearance`, or lock bits) is byte/bit-identical
+  across the candidate rows. Position-only `U/09` rows remain diagnostic proof
+  for add-side reconciliation instead of becoming update targets. Verified with
+  focused `exact_placeable_update_position` and full `exact_placeable_`
+  diagnostics using isolated non-incremental target dirs after a rustc
+  incremental-cache panic in the default target.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
