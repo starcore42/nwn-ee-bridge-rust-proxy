@@ -1525,6 +1525,16 @@ Current status:
   replay should compare per-source missing-resref versus divergent counts
   against the position-only/add-only buckets before adding any synthetic
   custom-carrier rule.
+- 2026-06-15 follow-up normal update carrier writability split: packet bytes
+  are unchanged. Fixed-width custom `A/09` carrier diagnostics now classify
+  normal WORD-only `U/09` appearance carriers as custom-rewrite-ready only when
+  the same unique/static or duplicate-position output-equivalence rules used by
+  the update rewriter can emit the EE `TemplateResRef` branch; identity-blocked
+  normal carriers get a separate blocked count. Direct live-object summaries,
+  direct debug traces, and M-frame aggregation carry the split; the oversized
+  server-dispatch summary macro was left unchanged. Verified with the fixed-width
+  skip and module-custom carrier tests. Next local replay should compare ready
+  versus blocked normal carriers before changing synthetic insertion order.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
