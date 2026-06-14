@@ -3709,7 +3709,11 @@ fn mark_area_placeable_context_object_id_confidence(
             (false, true) => AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
             (true, true) => AreaPlaceableContextObjectIdConfidence::AreaObjectAliasDuplicate,
         };
-        if !row.object_id_confidence.is_unique() {
+        if area_alias {
+            // An area-object alias can match unrelated live-object ids after
+            // legacy/external-id normalization. Duplicate static rows remain
+            // identity-blocked by object id, but keep one-to-one module row
+            // authority so later parser-owned position proof can disambiguate.
             row.module_state = None;
             row.module_template_resref = None;
         }
@@ -10790,6 +10794,122 @@ mod public_static_direction_tests {
                 .all(|row| row.module_state.is_none()),
             "module trap/use/lock state requires one-to-one claims for the whole static list"
         );
+    }
+
+    #[test]
+    fn duplicate_static_ids_keep_module_authority_for_later_position_proof() {
+        let first = ModuleAreaPlaceable {
+            tag: "duplicate_static_a".to_string(),
+            appearance: 0xFFFE,
+            template_resref: Some("plc_dup_a".to_string()),
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let second = ModuleAreaPlaceable {
+            tag: "duplicate_static_b".to_string(),
+            appearance: 0xFFFE,
+            template_resref: Some("plc_dup_b".to_string()),
+            x: 30.0,
+            y: 40.0,
+            z: 0.0,
+            bearing: std::f32::consts::FRAC_PI_2,
+            static_object: true,
+            useable: false,
+            trap_flag: false,
+            trap_disarmable: true,
+            lockable: true,
+            locked: true,
+        };
+        let first_direction = static_placeable_direction_from_bearing(first.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let second_direction = static_placeable_direction_from_bearing(second.bearing)
+            .expect("finite GIT bearing should produce a row direction");
+        let info = module_info_with_placeables(vec![first.clone(), second.clone()]);
+        let (mut payload, fragment_offset, scan) =
+            real_area_static_placeable_source_rows_payload_with_count(
+                2,
+                &[
+                    (
+                        first.appearance,
+                        first.x,
+                        first.y,
+                        first.z,
+                        first_direction.0,
+                        first_direction.1,
+                        first_direction.2,
+                    ),
+                    (
+                        second.appearance,
+                        second.x,
+                        second.y,
+                        second.z,
+                        second_direction.0,
+                        second_direction.1,
+                        second_direction.2,
+                    ),
+                ],
+            );
+        let proof = legacy_area_source_tail_exact_read_proof(&payload, fragment_offset, &scan)
+            .expect("two-row source packet should have an exact static cursor proof");
+        let duplicate_object_id = 0x8000_0042;
+        write_area_u32(
+            &mut payload,
+            fragment_offset,
+            proof.static_rows_read_offset + AREA_STATIC_PLACEABLE_ROW_BYTES,
+            duplicate_object_id,
+        )
+        .expect("test static row object id offset should be writable");
+
+        let context = collect_area_post_tile_placeable_context(
+            &payload,
+            fragment_offset,
+            "testarea",
+            0x8000_0001,
+            false,
+            Some(&info),
+        )
+        .expect("duplicate object ids should still expose exact static rows");
+        assert_eq!(context.static_rows.len(), 2);
+        assert!(context.static_rows.iter().all(|row| {
+            row.object_id == duplicate_object_id
+                && row.object_id_confidence
+                    == AreaPlaceableContextObjectIdConfidence::DuplicateObjectId
+        }));
+        assert_eq!(
+            context.static_rows[0].module_state,
+            Some(area_placeable_context_state_from_module_placeable(&first))
+        );
+        assert_eq!(
+            context.static_rows[1].module_state,
+            Some(area_placeable_context_state_from_module_placeable(&second))
+        );
+        assert_eq!(
+            context.static_rows[0].module_template_resref,
+            module_placeable_template_resref_bytes(&first)
+        );
+        assert_eq!(
+            context.static_rows[1].module_template_resref,
+            module_placeable_template_resref_bytes(&second)
+        );
+
+        let overlap = context.placeable_overlap_for_object_id(duplicate_object_id);
+        match overlap.static_reconciliation_target() {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.static_rows, 2);
+                assert_eq!(conflict.module_backed_static_rows, 2);
+                assert_eq!(conflict.unproven_static_rows, 0);
+                assert_eq!(conflict.duplicate_object_id_rows, 2);
+            }
+            other => panic!("duplicate object ids must remain identity-blocked: {other:?}"),
+        }
     }
 }
 

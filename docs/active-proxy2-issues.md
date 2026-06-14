@@ -1382,6 +1382,16 @@ Current status:
   resref and divergent-carrier variants. Next local replay should compare
   these counters against remaining fixed-output-only custom skips before adding
   any broader synthetic carrier rule.
+- 2026-06-14 follow-up duplicate static-object-id module authority: duplicate
+  object ids in the `P/04/01` static-placeable list still leave object-id-only
+  reconciliation identity-blocked, but no longer erase one-to-one module row
+  state/`TemplateResRef` proof. Area-object aliases continue to clear module
+  authority because legacy/external-id normalization can alias unrelated live
+  ids. Verified with
+  `duplicate_static_ids_keep_module_authority_for_later_position_proof`,
+  `area_context_`, `exact_placeable_`, and `placeable_update`; next replay
+  should compare duplicate-object-id module-backed rows against remaining
+  fixed-output-only carrier skips before widening custom-carrier synthesis.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
