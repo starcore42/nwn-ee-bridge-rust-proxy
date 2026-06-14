@@ -1469,6 +1469,24 @@ Current status:
   carrier resrefs, pre-add-only carriers, split position/appearance carriers,
   and add-only fixed-output cases remain suppressed and should be compared in
   the next local replay before any broader synthetic `U/09` rule.
+- 2026-06-14 follow-up exact pre-add custom-carrier proof: fixed-output
+  duplicate-position `A/09` adds now also treat a preceding same-object `U/09`
+  as row identity proof when there is no following post-add position/appearance
+  carrier, that one pre-add row owns both exact position and custom appearance
+  `CResRef`, and the CResRef matches a module static row's `TemplateResRef`.
+  The add still emits a bounded following synthetic `U/09 mask=0x20` carrier
+  after its fixed-width add body; position-only pre-add rows, split
+  position/appearance carriers, and add-only fixed-output cases remain
+  suppressed pending replay counters.
+- 2026-06-14 follow-up split custom-carrier proof: fixed-output
+  duplicate-position `A/09` adds now join exact same-lifecycle `U/09` position
+  rows with separate exact same-object custom-appearance `U/09` rows when the
+  combined raw position plus `CResRef` matches a module static row's
+  `TemplateResRef`. Following split carriers suppress synthetic insertion
+  because the post-add custom branch already exists; pre-add split carriers
+  still synthesize the bounded following `U/09 mask=0x20` so EE state order is
+  restored after the add. Position-only pre-add rows and fixed-output-only
+  add-only ambiguity remain for replay comparison.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
