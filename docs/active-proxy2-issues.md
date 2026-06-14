@@ -1487,6 +1487,16 @@ Current status:
   still synthesize the bounded following `U/09 mask=0x20` so EE state order is
   restored after the add. Position-only pre-add rows and fixed-output-only
   add-only ambiguity remain for replay comparison.
+- 2026-06-15 follow-up add-only fixed-output identity selection: exact
+  duplicate-object `A/09` adds that have no parser-owned position or custom
+  `CResRef` carrier can now select a module static row when every fixed-field
+  matching static row would emit the same add-owned fixed output (`appearance`
+  WORD plus module state bits). This resolves the ambiguous fixed fields but
+  still treats the custom `TemplateResRef` carrier as unproven, splitting
+  missing-resref and divergent-output blockers through direct, M-frame, and
+  server-dispatch summaries. Next local replay should compare these add-only
+  fixed-output counters against position-only pre-add rows before adding any
+  broader synthetic custom-carrier rule.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until

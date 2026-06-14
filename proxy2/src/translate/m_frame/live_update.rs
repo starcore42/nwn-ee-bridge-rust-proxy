@@ -28,6 +28,10 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_update_identity_blocked: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence: u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_missing_template_resref_rows:
+        u32,
+    pub exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_divergent: u32,
     pub exact_placeable_add_identity_resolved_by_following_position: u32,
     pub exact_placeable_add_identity_resolved_by_following_position_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence: u32,
@@ -113,6 +117,8 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_preceding_position_fixed_output:
@@ -174,6 +180,25 @@ impl ExactLiveObjectRewriteSummary {
             .exact_placeable_add_identity_resolved_by_fixed_field_equivalence
             .saturating_add(
                 rewrite.exact_placeable_add_identity_resolved_by_fixed_field_equivalence,
+            );
+        self.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence = self
+            .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence
+            .saturating_add(
+                rewrite
+                    .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence,
+            );
+        self
+            .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_missing_template_resref_rows =
+            self
+                .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_missing_template_resref_rows
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_missing_template_resref_rows,
+                );
+        self.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_divergent = self
+            .exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_divergent
+            .saturating_add(
+                rewrite.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_divergent,
             );
         self.exact_placeable_add_identity_resolved_by_following_position = self
             .exact_placeable_add_identity_resolved_by_following_position
@@ -547,6 +572,12 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add(
                 rewrite.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
             );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
+                );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output
                 .saturating_add(
