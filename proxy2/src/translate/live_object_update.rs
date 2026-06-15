@@ -266,6 +266,7 @@ mod diagnostic_tests {
             0
         );
         assert_synthesized_custom_carrier_batch_reject_classes(summary, 0, 0, 0, 0);
+        assert_synthesized_custom_carrier_batch_reject_focus(summary, 0, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
@@ -311,6 +312,29 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected,
             after_following_normal
+        );
+    }
+
+    fn assert_synthesized_custom_carrier_batch_reject_focus(
+        summary: &LiveObjectUpdateRewriteSummary,
+        before_synthesized_update: u32,
+        inside_synthesized_update: u32,
+        after_synthesized_update: u32,
+    ) {
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_before_synthesized_update_rejected,
+            before_synthesized_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected,
+            inside_synthesized_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected,
+            after_synthesized_update
         );
     }
 
@@ -380,6 +404,75 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
             pre_add_custom
         );
+    }
+
+    fn synthetic_focus_pending(
+        object_id: u32,
+        original_insert_offset: usize,
+    ) -> PendingPlaceableCustomAppearanceUpdate {
+        PendingPlaceableCustomAppearanceUpdate {
+            original_insert_offset,
+            anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                original_record_offset: original_insert_offset.saturating_sub(8),
+                original_record_end: original_insert_offset,
+                opcode: b'A',
+                expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
+                source_appearance: LiveObjectPlaceableAppearance {
+                    appearance: 0x0011,
+                    resref: None,
+                },
+            },
+            object_id,
+            fragment_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            appearance: 0xFFFE,
+            template_resref: *b"plc_custom_add\0\0",
+            insertion_origin:
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+        }
+    }
+
+    #[test]
+    fn synthetic_custom_placeable_batch_reject_focus_uses_final_offsets() {
+        let low = synthetic_focus_pending(0x8000_3401, 10);
+        let high = synthetic_focus_pending(0x8000_3402, 20);
+        let emitted = vec![(20, 0, high, 5), (10, 1, low, 5)];
+
+        let before = focused_placeable_custom_appearance_update_batch_reject(9, &emitted)
+            .expect("reject before staged bytes should still focus the first staged carrier");
+        assert_eq!(
+            before.kind,
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate
+        );
+        assert_eq!(before.insert_offset, 10);
+        assert_eq!(before.update.object_id, 0x8000_3401);
+
+        let inside = focused_placeable_custom_appearance_update_batch_reject(12, &emitted)
+            .expect("reject inside staged bytes should focus that staged carrier");
+        assert_eq!(
+            inside.kind,
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate
+        );
+        assert_eq!(inside.insert_offset, 10);
+        assert_eq!(inside.record_end, 15);
+
+        let between = focused_placeable_custom_appearance_update_batch_reject(24, &emitted)
+            .expect("reject after lower staged bytes should focus the preceding carrier");
+        assert_eq!(
+            between.kind,
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate
+        );
+        assert_eq!(between.insert_offset, 10);
+
+        let after = focused_placeable_custom_appearance_update_batch_reject(30, &emitted)
+            .expect("reject after all staged bytes should focus the nearest prior carrier");
+        assert_eq!(
+            after.kind,
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate
+        );
+        assert_eq!(after.insert_offset, 25);
+        assert_eq!(after.record_end, 30);
     }
 
     #[test]
@@ -723,6 +816,7 @@ mod diagnostic_tests {
             1
         );
         assert_synthesized_custom_carrier_batch_reject_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -796,6 +890,7 @@ mod diagnostic_tests {
             1
         );
         assert_synthesized_custom_carrier_batch_reject_classes(&summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -10056,6 +10151,12 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_before_synthesized_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
@@ -21186,6 +21287,31 @@ impl PlaceableCustomAppearanceUpdateBatchFootprint {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PlaceableCustomAppearanceUpdateBatchRejectFocus {
+    kind: PlaceableCustomAppearanceUpdateBatchRejectFocusKind,
+    insert_offset: usize,
+    record_end: usize,
+    update: PendingPlaceableCustomAppearanceUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableCustomAppearanceUpdateBatchRejectFocusKind {
+    BeforeSynthesizedUpdate,
+    InsideSynthesizedUpdate,
+    AfterSynthesizedUpdate,
+}
+
+impl PlaceableCustomAppearanceUpdateBatchRejectFocusKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeSynthesizedUpdate => "before-synthesized-update",
+            Self::InsideSynthesizedUpdate => "inside-synthesized-update",
+            Self::AfterSynthesizedUpdate => "after-synthesized-update",
+        }
+    }
+}
+
 impl PlaceableCustomAppearanceUpdateBatchClaimReject {
     fn from_claim_reject(reject: LiveObjectPayloadClaimReject) -> Self {
         match reject.stage {
@@ -21285,6 +21411,7 @@ fn record_placeable_custom_appearance_update_batch_claim_reject(
     summary: &mut LiveObjectUpdateRewriteSummary,
     reason: PlaceableCustomAppearanceUpdateBatchClaimReject,
     footprint: PlaceableCustomAppearanceUpdateBatchFootprint,
+    focus: Option<PlaceableCustomAppearanceUpdateBatchRejectFocus>,
 ) {
     summary
         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected =
@@ -21369,6 +21496,31 @@ fn record_placeable_custom_appearance_update_batch_claim_reject(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected
                 .saturating_add(1);
+    }
+    if let Some(focus) = focus {
+        match focus.kind {
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_before_synthesized_update_rejected =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_before_synthesized_update_rejected
+                        .saturating_add(1);
+            }
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected
+                        .saturating_add(1);
+            }
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected
+                        .saturating_add(1);
+            }
+        }
     }
 }
 
@@ -21692,6 +21844,7 @@ fn apply_pending_placeable_custom_appearance_updates(
             summary,
             reason,
             batch_footprint,
+            None,
         );
         tracing::warn!(
             planned_updates = emitted.len(),
@@ -21709,10 +21862,14 @@ fn apply_pending_placeable_custom_appearance_updates(
     };
     if let Err(reject) = claim_payload_if_verified_with_reject(&candidate_payload) {
         let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::from_claim_reject(reject);
+        let batch_reject_focus = reject.offset.and_then(|offset| {
+            focused_placeable_custom_appearance_update_batch_reject(offset, &emitted)
+        });
         record_placeable_custom_appearance_update_batch_claim_reject(
             summary,
             reason,
             batch_footprint,
+            batch_reject_focus,
         );
         tracing::warn!(
             planned_updates = emitted.len(),
@@ -21727,6 +21884,14 @@ fn apply_pending_placeable_custom_appearance_updates(
             claim_reject_offset = reject.offset,
             claim_reject_record_end = reject.record_end,
             claim_reject_bit_cursor = reject.bit_cursor,
+            batch_reject_focus = batch_reject_focus.map(|focus| focus.kind.as_str()),
+            batch_reject_focus_object_id = batch_reject_focus.map(|focus| focus.update.object_id),
+            batch_reject_focus_insert_offset = batch_reject_focus.map(|focus| focus.insert_offset),
+            batch_reject_focus_record_end = batch_reject_focus.map(|focus| focus.record_end),
+            batch_reject_focus_anchor_record =
+                batch_reject_focus.map(|focus| focus.update.anchor.expected_record.as_str()),
+            batch_reject_focus_insertion_origin =
+                batch_reject_focus.map(|focus| focus.update.insertion_origin.as_str()),
             area_resref = area_context.area_resref.as_str(),
             "server->client exact live-object placeable custom appearance synthesis batch rejected"
         );
@@ -21818,6 +21983,60 @@ fn final_synthesized_placeable_custom_appearance_update_offset(
         .map(|&(_, _, _, bytes_inserted)| bytes_inserted)
         .fold(0usize, usize::saturating_add);
     insert_offset.saturating_add(preceding_bytes)
+}
+
+fn focused_placeable_custom_appearance_update_batch_reject(
+    reject_offset: usize,
+    emitted: &[(usize, usize, PendingPlaceableCustomAppearanceUpdate, usize)],
+) -> Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> {
+    let mut focused: Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> = None;
+    for &(insert_offset, sequence, update, bytes_inserted) in emitted {
+        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
+            insert_offset,
+            sequence,
+            emitted,
+        );
+        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+        let kind = if reject_offset < final_insert_offset {
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate
+        } else if reject_offset < record_end {
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate
+        } else {
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate
+        };
+        let candidate = PlaceableCustomAppearanceUpdateBatchRejectFocus {
+            kind,
+            insert_offset: final_insert_offset,
+            record_end,
+            update,
+        };
+        match kind {
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate => {
+                return Some(candidate);
+            }
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate => {
+                if match focused {
+                    Some(current) => final_insert_offset < current.insert_offset,
+                    None => true,
+                } {
+                    focused = Some(candidate);
+                }
+            }
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate => {
+                if match focused {
+                    Some(current) => {
+                        current.kind
+                            != PlaceableCustomAppearanceUpdateBatchRejectFocusKind::AfterSynthesizedUpdate
+                            || record_end > current.record_end
+                    }
+                    None => true,
+                } {
+                    focused = Some(candidate);
+                }
+            }
+        }
+    }
+    focused
 }
 
 fn trace_synthesized_placeable_custom_appearance_update(
@@ -22228,6 +22447,12 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected,
             synthesized_update_batch_claim_after_following_normal_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected,
+            synthesized_update_batch_claim_before_synthesized_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_before_synthesized_update_rejected,
+            synthesized_update_batch_claim_inside_synthesized_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected,
+            synthesized_update_batch_claim_after_synthesized_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
