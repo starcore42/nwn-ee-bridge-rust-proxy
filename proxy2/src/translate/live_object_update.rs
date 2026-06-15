@@ -579,6 +579,60 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn synthetic_custom_placeable_update_exact_claim_requires_target_resref() {
+        let object_id = 0x8000_35D1u32;
+        let target_resref = *b"plc_exact_ok\0\0\0\0";
+        let wrong_resref = *b"plc_exact_bad\0\0\0";
+        let appearance = 0xFFFEu16;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&appearance.to_le_bytes());
+        live.extend_from_slice(&target_resref);
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+
+        assert!(
+            verified_synthesized_placeable_custom_appearance_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+                object_id,
+                appearance,
+                target_resref,
+            ),
+            "the synthetic U/09 row must exact-claim the inserted WORD+CResRef branch"
+        );
+        assert!(
+            !verified_synthesized_placeable_custom_appearance_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+                object_id,
+                appearance,
+                wrong_resref,
+            ),
+            "a parser-valid custom row with the wrong CResRef is not the staged writer output"
+        );
+        assert!(
+            !verified_synthesized_placeable_custom_appearance_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS + 1,
+                object_id,
+                appearance,
+                target_resref,
+            ),
+            "the exact writer proof must retain the caller-owned fragment cursor"
+        );
+    }
+
+    #[test]
     fn pending_synthesized_custom_placeable_update_records_offset_reject_classes() {
         let area_context = crate::translate::area::AreaPlaceableContext::default();
         let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
@@ -22837,22 +22891,62 @@ fn synthesize_placeable_custom_appearance_update(
     let record_end = insert_offset
         .checked_add(bytes_inserted)
         .ok_or(PlaceableCustomAppearanceUpdateSynthesisReject::RecordEndOverflow)?;
-    let update_claim = verified_placeable_update_exact_claim(
+    if verified_placeable_update_exact_claim(
         &candidate,
         insert_offset,
         record_end,
         fragment_bits,
         fragment_bit_cursor,
     )
-    .ok_or(PlaceableCustomAppearanceUpdateSynthesisReject::ExactValidationRejected)?;
-    if update_claim.object_id != object_id
-        || update_claim.mask != LEGACY_UPDATE_APPEARANCE_MASK
-        || update_claim.parser.next_bit_cursor != fragment_bit_cursor
+    .is_none()
     {
+        return Err(PlaceableCustomAppearanceUpdateSynthesisReject::ExactValidationRejected);
+    }
+    if !verified_synthesized_placeable_custom_appearance_update_exact_claim(
+        &candidate,
+        insert_offset,
+        record_end,
+        fragment_bits,
+        fragment_bit_cursor,
+        object_id,
+        appearance,
+        template_resref,
+    ) {
         return Err(PlaceableCustomAppearanceUpdateSynthesisReject::ExactClaimMismatch);
     }
     *live_bytes = candidate;
     Ok(bytes_inserted)
+}
+
+fn verified_synthesized_placeable_custom_appearance_update_exact_claim(
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    fragment_bit_cursor: usize,
+    object_id: u32,
+    appearance: u16,
+    template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
+) -> bool {
+    let Some(claim) = verified_placeable_update_exact_claim(
+        live_bytes,
+        record_offset,
+        record_end,
+        fragment_bits,
+        fragment_bit_cursor,
+    ) else {
+        return false;
+    };
+
+    claim.object_id == object_id
+        && claim.mask == LEGACY_UPDATE_APPEARANCE_MASK
+        && claim.parser.appearance_offset == Some(record_offset + LEGACY_UPDATE_HEADER_BYTES)
+        && claim.parser.next_bit_cursor == fragment_bit_cursor
+        && verified_placeable_update_appearance(live_bytes, claim.parser)
+            == Some(LiveObjectPlaceableAppearance {
+                appearance,
+                resref: Some(template_resref),
+            })
 }
 
 fn trace_exact_placeable_reconciliation_summary(
