@@ -3931,6 +3931,7 @@ mod diagnostic_tests {
             &area_context,
             &pre_claim,
             object_id,
+            pre_claim.mentions[0].record_offset,
             pre_claim.mentions[0].record_end,
         );
         assert_eq!(
@@ -4447,6 +4448,7 @@ mod diagnostic_tests {
             &crate::translate::area::AreaPlaceableContext::default(),
             &claim,
             object_id,
+            add_offset,
             add_end,
         );
 
@@ -4531,6 +4533,195 @@ mod diagnostic_tests {
                 resref_offset: None,
             }),
             "A/09 remains a fixed-width WORD-only add-tail owner"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_add_module_custom_carrier_stops_at_lifecycle_fences() {
+        let object_id = 0x8000_34D9u32;
+        let pre_add_resref = *b"plc_pre_fenced\0\0";
+        let following_resref = *b"plc_post_fence\0\0";
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&pre_add_resref);
+
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&following_resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.push(false); // pre-add D/09 owns one delete BOOL.
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.push(false); // following D/09 owns one delete BOOL.
+        let payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("U/09, D/09, A/09, D/09, U/09 payload");
+        let claim = claim_payload_if_verified(&payload).expect("lifecycle-fenced carrier claim");
+
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &crate::translate::area::AreaPlaceableContext::default(),
+            &claim,
+            object_id,
+            add_offset,
+            add_end,
+        );
+
+        assert_eq!(
+            carrier.following_kind(),
+            "none",
+            "a following U/09 after a same-object A/D fence belongs to a later lifecycle"
+        );
+        assert_eq!(
+            carrier.pre_add_kind(),
+            "none",
+            "a pre-add U/09 before a same-object A/D fence belongs to an earlier lifecycle"
+        );
+        assert_eq!(
+            carrier.synthesis_policy(),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
+        );
+    }
+
+    #[test]
+    fn exact_placeable_add_lifecycle_fenced_custom_update_does_not_suppress_synthesis() {
+        let object_id = 0x8000_34DAu32;
+        let target_resref = *b"plc_target_fen\0\0";
+        let later_resref = *b"plc_later_fen\0\0\0";
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&later_resref);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.push(false); // D/09 placeable delete owns one BOOL.
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("A/09, D/09, lifecycle-fenced custom U/09 payload");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("lifecycle-fenced custom U/09 must not suppress A/09 carrier synthesis");
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update, 0,
+            "the post-delete U/09 is not a carrier for the earlier add"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
+        assert_synthesized_custom_carrier_after_add_reasons(&summary, 1, 0, 0, 0);
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite lifecycle-fenced custom carrier payload should exact-claim");
+        assert_eq!(claim.mentions.len(), 4);
+        assert_eq!(claim.mentions[1].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthetic carrier is inserted at the add boundary"
+        );
+        assert_eq!(claim.mentions[2].opcode, b'D');
+        assert_eq!(claim.mentions[3].opcode, b'U');
+        assert!(
+            claim.mentions[3].record_offset >= claim.mentions[2].record_end,
+            "the later lifecycle's U/09 remains a separate packet-authored row"
+        );
+        assert_eq!(
+            claim.mentions[3].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the later U/09 can still reconcile its own parser-owned appearance branch"
         );
     }
 
@@ -6647,6 +6838,7 @@ mod diagnostic_tests {
             &area_context,
             &pre_claim,
             object_id,
+            pre_claim.mentions[0].record_offset,
             add_end,
         );
         assert_eq!(
@@ -16471,6 +16663,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             area_context,
                             &claim,
                             mention.object_id,
+                            mention.record_offset,
                             mention.record_end,
                         );
                         trace_exact_placeable_fixed_width_custom_add_candidate(
@@ -16764,6 +16957,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             area_context,
                             &claim,
                             mention.object_id,
+                            mention.record_offset,
                             mention.record_end,
                         );
                         trace_exact_placeable_fixed_width_custom_add_candidate(
@@ -17417,6 +17611,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
             area_context,
             claim_summary,
             object_id,
+            add_record_offset,
             add_record_end,
         )
         .has_following()
@@ -17457,6 +17652,7 @@ fn placeable_static_reconciliation_selection_for_add<'a>(
             area_context,
             claim_summary,
             object_id,
+            add_record_offset,
             add_record_end,
         )
         .has_following()
@@ -19676,6 +19872,7 @@ fn exact_placeable_update_appearance_carrier_for_add(
     area_context: &AreaPlaceableContext,
     claim: &LiveObjectUpdateClaimSummary,
     object_id: u32,
+    add_record_offset: usize,
     add_record_end: usize,
 ) -> ExactPlaceableUpdateAppearanceCarrier {
     let mut carrier = ExactPlaceableUpdateAppearanceCarrier::default();
@@ -19701,6 +19898,15 @@ fn exact_placeable_update_appearance_carrier_for_add(
             continue;
         };
         let is_following = mention.record_offset >= add_record_end;
+        if !same_placeable_lifecycle_segment_for_add(
+            claim,
+            object_id,
+            add_record_offset,
+            add_record_end,
+            mention,
+        ) {
+            continue;
+        }
         if is_following && appearance_claim.resref_offset.is_some() {
             keep_nearest_following_update_carrier(&mut carrier.following_custom, record);
         } else if is_following {
@@ -19712,6 +19918,34 @@ fn exact_placeable_update_appearance_carrier_for_add(
         }
     }
     carrier
+}
+
+fn same_placeable_lifecycle_segment_for_add(
+    claim: &LiveObjectUpdateClaimSummary,
+    object_id: u32,
+    add_record_offset: usize,
+    add_record_end: usize,
+    candidate: &LiveObjectRecordMention,
+) -> bool {
+    if candidate.record_offset >= add_record_end {
+        !claim.mentions.iter().any(|mention| {
+            same_placeable_lifecycle_fence(mention, object_id)
+                && mention.record_offset >= add_record_end
+                && mention.record_offset < candidate.record_offset
+        })
+    } else {
+        !claim.mentions.iter().any(|mention| {
+            same_placeable_lifecycle_fence(mention, object_id)
+                && mention.record_end <= add_record_offset
+                && mention.record_end > candidate.record_offset
+        })
+    }
+}
+
+fn same_placeable_lifecycle_fence(mention: &LiveObjectRecordMention, object_id: u32) -> bool {
+    matches!(mention.opcode, b'A' | b'D')
+        && mention.object_type == PLACEABLE_OBJECT_TYPE
+        && object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
 }
 
 fn update_mention_custom_rewrite_ready_for_area_context(
