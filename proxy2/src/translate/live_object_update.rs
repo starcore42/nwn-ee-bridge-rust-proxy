@@ -733,7 +733,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn pending_synthesized_custom_placeable_update_rolls_back_prior_emits() {
+    fn pending_synthesized_custom_placeable_update_keeps_valid_emit_after_later_reject() {
         let low_object_id = 0x8000_34D8u32;
         let high_object_id = 0x8000_34D9u32;
         let target_resref = *b"plc_custom_add\0\0";
@@ -846,7 +846,7 @@ mod diagnostic_tests {
             &mut summary,
         );
 
-        assert_eq!(result, None);
+        assert_eq!(result, Some(()));
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
@@ -860,14 +860,24 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
-            0,
-            "a rolled-back staged carrier must not be counted as emitted"
+            1,
+            "the locally valid synthetic carrier should still commit after the bad sibling is skipped"
         );
-        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(summary.bytes_inserted, 28);
         assert_eq!(
-            live, original_live,
-            "a later synthetic carrier rejection must roll back earlier staged carrier bytes"
+            live.len(),
+            original_live.len() + 28,
+            "only the valid high-offset U/09 carrier should be appended"
         );
+        assert!(live.starts_with(&original_live));
+
+        let mut expected_update = Vec::new();
+        expected_update.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        expected_update.extend_from_slice(&high_object_id.to_le_bytes());
+        expected_update.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        expected_update.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        expected_update.extend_from_slice(&target_resref);
+        assert_eq!(&live[original_live.len()..], expected_update.as_slice());
     }
 
     #[test]
@@ -22077,7 +22087,7 @@ fn apply_pending_placeable_custom_appearance_updates(
                     area_resref = area_context.area_resref.as_str(),
                     "server->client exact live-object placeable custom appearance synthesis rejected"
                 );
-                return None;
+                continue;
             }
         };
         emitted.push((
@@ -22086,6 +22096,9 @@ fn apply_pending_placeable_custom_appearance_updates(
             update,
             bytes_inserted,
         ));
+    }
+    if emitted.is_empty() {
+        return None;
     }
 
     let batch_footprint = PlaceableCustomAppearanceUpdateBatchFootprint::from_emitted(&emitted);
