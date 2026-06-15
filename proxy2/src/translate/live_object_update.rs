@@ -377,6 +377,45 @@ mod diagnostic_tests {
         );
     }
 
+    fn assert_synthesized_custom_carrier_offset_reject_classes(
+        summary: &LiveObjectUpdateRewriteSummary,
+        placeable_add: u32,
+        normal_update: u32,
+        after_add: u32,
+        after_following_normal: u32,
+    ) {
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
+            placeable_add
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+            normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
+            after_add
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected,
+            after_following_normal
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            placeable_add.saturating_add(normal_update)
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            after_add.saturating_add(after_following_normal)
+        );
+    }
+
     fn assert_synthesized_custom_carrier_after_add_reasons(
         summary: &LiveObjectUpdateRewriteSummary,
         without_carrier: u32,
@@ -404,6 +443,35 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
             pre_add_custom
         );
+    }
+
+    fn offset_reject_pending(
+        expected_record: PlaceableCustomAppearanceUpdateAnchorRecord,
+        insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+    ) -> PendingPlaceableCustomAppearanceUpdate {
+        PendingPlaceableCustomAppearanceUpdate {
+            original_insert_offset: 0,
+            anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                original_record_offset: 0,
+                original_record_end: 0,
+                opcode: match expected_record {
+                    PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => b'A',
+                    PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => b'U',
+                },
+                expected_record,
+                fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
+                source_appearance: LiveObjectPlaceableAppearance {
+                    appearance: 0x0011,
+                    resref: None,
+                },
+            },
+            object_id: 0x8000_34D8,
+            fragment_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            appearance: 0xFFFE,
+            template_resref: *b"plc_custom_add\0\0",
+            insertion_origin,
+        }
     }
 
     fn synthetic_focus_pending(
@@ -508,6 +576,79 @@ mod diagnostic_tests {
             .is_none(),
             "even zero-bit U/09 rows cannot start beyond the valid CNW fragment stream"
         );
+    }
+
+    #[test]
+    fn pending_synthesized_custom_placeable_update_records_offset_reject_classes() {
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let edits = vec![LiveByteOffsetEdit {
+            original_offset: 0,
+            bytes_inserted: 0,
+            bytes_removed: 1,
+        }];
+
+        let mut add_live = Vec::new();
+        let mut add_summary = LiveObjectUpdateRewriteSummary::default();
+        let add_result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut add_live,
+            &fragment_bits,
+            &edits,
+            vec![offset_reject_pending(
+                PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            )],
+            &mut add_summary,
+        );
+
+        assert_eq!(add_result, None);
+        assert_eq!(
+            add_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            0,
+            "offset rejects happen before a synthetic carrier is counted as planned"
+        );
+        assert_eq!(
+            add_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+            1
+        );
+        assert_eq!(
+            add_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected,
+            0
+        );
+        assert_eq!(
+            add_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected,
+            0
+        );
+        assert_synthesized_custom_carrier_offset_reject_classes(&add_summary, 1, 0, 1, 0);
+        assert_eq!(add_live, Vec::<u8>::new());
+
+        let mut normal_live = Vec::new();
+        let mut normal_summary = LiveObjectUpdateRewriteSummary::default();
+        let normal_result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut normal_live,
+            &fragment_bits,
+            &edits,
+            vec![offset_reject_pending(
+                PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate,
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+            )],
+            &mut normal_summary,
+        );
+
+        assert_eq!(normal_result, None);
+        assert_eq!(
+            normal_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+            1
+        );
+        assert_synthesized_custom_carrier_offset_reject_classes(&normal_summary, 0, 1, 0, 1);
+        assert_eq!(normal_live, Vec::<u8>::new());
     }
 
     #[test]
@@ -10109,6 +10250,20 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected:
         u32,
@@ -21228,6 +21383,23 @@ struct LiveByteOffsetEdit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableCustomAppearanceUpdatePlanOffsetReject {
+    Insert,
+    AnchorStart,
+    AnchorEnd,
+}
+
+impl PlaceableCustomAppearanceUpdatePlanOffsetReject {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Insert => "insert",
+            Self::AnchorStart => "anchor-start",
+            Self::AnchorEnd => "anchor-end",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaceableCustomAppearanceUpdatePlanAnchorReject {
     Boundary,
     Source,
@@ -21339,6 +21511,71 @@ impl PlaceableCustomAppearanceUpdateBatchClaimReject {
             Self::RecordValidator => "record-validator",
             Self::Cursor => "cursor",
         }
+    }
+}
+
+fn record_placeable_custom_appearance_update_plan_offset_reject(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    reason: PlaceableCustomAppearanceUpdatePlanOffsetReject,
+    expected_record: PlaceableCustomAppearanceUpdateAnchorRecord,
+    insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+) {
+    summary
+        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
+            .saturating_add(1);
+    match reason {
+        PlaceableCustomAppearanceUpdatePlanOffsetReject::Insert => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdatePlanOffsetReject::AnchorStart => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdatePlanOffsetReject::AnchorEnd => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected
+                    .saturating_add(1);
+        }
+    }
+    match expected_record {
+        PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected
+                    .saturating_add(1);
+        }
+    }
+    if insertion_origin.is_after_add() {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected
+                .saturating_add(1);
+    } else {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected
+                .saturating_add(1);
     }
 }
 
@@ -21550,16 +21787,22 @@ fn plan_pending_placeable_custom_appearance_updates(
     for (sequence, update) in pending.into_iter().enumerate() {
         let Some(insert_offset) = adjusted_live_byte_offset(update.original_insert_offset, edits)
         else {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
-                    .saturating_add(1);
+            let reason = PlaceableCustomAppearanceUpdatePlanOffsetReject::Insert;
+            record_placeable_custom_appearance_update_plan_offset_reject(
+                summary,
+                reason,
+                update.anchor.expected_record,
+                update.insertion_origin,
+            );
             tracing::warn!(
                 object_id = format_args!("0x{:08X}", update.object_id),
                 original_insert_offset = update.original_insert_offset,
+                original_anchor_offset = update.anchor.original_record_offset,
+                original_anchor_end = update.anchor.original_record_end,
                 fragment_bit_cursor = update.fragment_bit_cursor,
+                anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis offset adjustment rejected"
             );
             return None;
@@ -21567,36 +21810,44 @@ fn plan_pending_placeable_custom_appearance_updates(
         let Some(anchor_offset) =
             adjusted_live_byte_offset(update.anchor.original_record_offset, edits)
         else {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
-                    .saturating_add(1);
+            let reason = PlaceableCustomAppearanceUpdatePlanOffsetReject::AnchorStart;
+            record_placeable_custom_appearance_update_plan_offset_reject(
+                summary,
+                reason,
+                update.anchor.expected_record,
+                update.insertion_origin,
+            );
             tracing::warn!(
                 object_id = format_args!("0x{:08X}", update.object_id),
                 original_insert_offset = update.original_insert_offset,
                 original_anchor_offset = update.anchor.original_record_offset,
                 original_anchor_end = update.anchor.original_record_end,
                 fragment_bit_cursor = update.fragment_bit_cursor,
+                anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor offset adjustment rejected"
             );
             return None;
         };
         let Some(anchor_end) = adjusted_live_byte_offset(update.anchor.original_record_end, edits)
         else {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
-                    .saturating_add(1);
+            let reason = PlaceableCustomAppearanceUpdatePlanOffsetReject::AnchorEnd;
+            record_placeable_custom_appearance_update_plan_offset_reject(
+                summary,
+                reason,
+                update.anchor.expected_record,
+                update.insertion_origin,
+            );
             tracing::warn!(
                 object_id = format_args!("0x{:08X}", update.object_id),
                 original_insert_offset = update.original_insert_offset,
                 original_anchor_offset = update.anchor.original_record_offset,
                 original_anchor_end = update.anchor.original_record_end,
                 fragment_bit_cursor = update.fragment_bit_cursor,
+                anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor-end offset adjustment rejected"
             );
             return None;
@@ -22391,6 +22642,9 @@ fn trace_exact_placeable_reconciliation_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
             != 0
         || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
+            != 0
+        || summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
             != 0
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
@@ -22405,6 +22659,20 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
             synthesized_update_plan_offset_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            synthesized_update_plan_offset_insert_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+            synthesized_update_plan_offset_anchor_start_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected,
+            synthesized_update_plan_offset_anchor_end_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected,
+            synthesized_update_plan_offset_placeable_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
+            synthesized_update_plan_offset_normal_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+            synthesized_update_plan_offset_after_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
+            synthesized_update_plan_offset_after_following_normal_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected,
             synthesized_update_plan_anchor_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
             synthesized_update_plan_anchor_boundary_rejected = summary

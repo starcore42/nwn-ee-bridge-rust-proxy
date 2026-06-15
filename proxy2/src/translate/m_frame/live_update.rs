@@ -127,6 +127,20 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_boundary_rejected:
@@ -690,6 +704,48 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected

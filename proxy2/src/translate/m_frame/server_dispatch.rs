@@ -1223,6 +1223,9 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
             != 0
         || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
+            != 0
+        || summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
             != 0
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
@@ -1259,6 +1262,20 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
             synthesized_update_plan_offset_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            synthesized_update_plan_offset_insert_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+            synthesized_update_plan_offset_anchor_start_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_start_rejected,
+            synthesized_update_plan_offset_anchor_end_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected,
+            synthesized_update_plan_offset_placeable_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
+            synthesized_update_plan_offset_normal_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+            synthesized_update_plan_offset_after_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
+            synthesized_update_plan_offset_after_following_normal_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected,
             synthesized_update_plan_anchor_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
             synthesized_update_plan_anchor_boundary_rejected = summary
