@@ -511,6 +511,7 @@ mod diagnostic_tests {
             appearance: 0xFFFE,
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin,
+            anchor_rewrite_already_counted: false,
         }
     }
 
@@ -538,6 +539,7 @@ mod diagnostic_tests {
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            anchor_rewrite_already_counted: false,
         }
     }
 
@@ -800,6 +802,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -914,6 +917,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    anchor_rewrite_already_counted: false,
                 },
                 PendingPlaceableCustomAppearanceUpdate {
                     original_insert_offset: high_add_end,
@@ -935,6 +939,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    anchor_rewrite_already_counted: false,
                 },
             ],
             &mut summary,
@@ -957,6 +962,10 @@ mod diagnostic_tests {
             1,
             "the locally valid synthetic carrier should still commit after the bad sibling is skipped"
         );
+        assert_eq!(
+            summary.add_records_rewritten, 1,
+            "only the committed synthetic carrier should count as an add rewrite"
+        );
         assert_eq!(summary.bytes_inserted, 28);
         assert_eq!(
             live.len(),
@@ -972,6 +981,77 @@ mod diagnostic_tests {
         expected_update.extend_from_slice(&0xFFFEu16.to_le_bytes());
         expected_update.extend_from_slice(&target_resref);
         assert_eq!(&live[original_live.len()..], expected_update.as_slice());
+    }
+
+    #[test]
+    fn pending_synthesized_custom_placeable_update_does_not_double_count_rewritten_anchor() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: add_end,
+                anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                    original_record_offset: 0,
+                    original_record_end: add_end,
+                    opcode: b'A',
+                    expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                    fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                    fragment_bit_end: fragment_bits.len(),
+                    source_appearance: LiveObjectPlaceableAppearance {
+                        appearance: 0x0011,
+                        resref: None,
+                    },
+                },
+                object_id,
+                fragment_bit_cursor: fragment_bits.len(),
+                appearance: 0xFFFE,
+                template_resref: target_resref,
+                insertion_origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: true,
+            }],
+            &mut summary,
+        );
+
+        assert_eq!(result, Some(()));
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(
+            summary.add_records_rewritten, 0,
+            "the carrier commits, but the owning add was already counted by its in-place rewrite"
+        );
     }
 
     #[test]
@@ -1030,6 +1110,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1115,6 +1196,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1206,6 +1288,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1295,6 +1378,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1386,6 +1470,7 @@ mod diagnostic_tests {
             template_resref: target_resref,
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            anchor_rewrite_already_counted: false,
         };
 
         let result = apply_pending_placeable_custom_appearance_updates(
@@ -1537,6 +1622,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    anchor_rewrite_already_counted: false,
                 },
                 PendingPlaceableCustomAppearanceUpdate {
                     original_insert_offset: high_add_end,
@@ -1558,6 +1644,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    anchor_rewrite_already_counted: false,
                 },
             ],
             &mut summary,
@@ -1638,6 +1725,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1731,6 +1819,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -1809,6 +1898,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+                anchor_rewrite_already_counted: false,
             }],
             &mut summary,
         );
@@ -18378,7 +18468,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     area_context,
                     mention.object_id,
                 );
-                let mut custom_update_synthesized = false;
+                let mut pending_custom_update_synthesis = None;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
                     && is_custom_placeable_appearance(row.appearance)
@@ -18843,6 +18933,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         appearance: row.appearance,
                                         template_resref: target_resref,
                                         insertion_origin,
+                                        anchor_rewrite_already_counted: false,
                                     }
                                 }
                                 ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingNormal(
@@ -18868,10 +18959,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     template_resref: target_resref,
                                     insertion_origin:
                                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+                                    anchor_rewrite_already_counted: false,
                                 },
                             };
-                            pending_custom_update_syntheses.push(pending);
-                            custom_update_synthesized = true;
+                            pending_custom_update_synthesis = Some(pending);
                         }
                     } else {
                         summary.exact_placeable_add_module_custom_template_resref_missing = summary
@@ -18914,12 +19005,21 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_state_rewritten
                         .saturating_add(1);
                 }
-                if custom_update_synthesized || appearance_rewritten || state_rewritten {
+                let add_record_rewritten_in_place = appearance_rewritten || state_rewritten;
+                let add_record_has_pending_synthesis = pending_custom_update_synthesis.is_some();
+                if add_record_rewritten_in_place {
                     summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
-                } else if matches!(
-                    target,
-                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
-                ) {
+                }
+                if let Some(mut pending) = pending_custom_update_synthesis {
+                    pending.anchor_rewrite_already_counted = add_record_rewritten_in_place;
+                    pending_custom_update_syntheses.push(pending);
+                } else if !add_record_rewritten_in_place
+                    && !add_record_has_pending_synthesis
+                    && matches!(
+                        target,
+                        AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
+                    )
+                {
                     summary.exact_placeable_add_unique_unchanged = summary
                         .exact_placeable_add_unique_unchanged
                         .saturating_add(1);
@@ -21922,6 +22022,7 @@ struct PendingPlaceableCustomAppearanceUpdate {
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
     insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+    anchor_rewrite_already_counted: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22858,6 +22959,9 @@ fn apply_pending_placeable_custom_appearance_updates(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
                 .saturating_add(1);
+        if !update.anchor_rewrite_already_counted {
+            summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
+        }
         if update.insertion_origin.is_after_add() {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add =
