@@ -1279,6 +1279,20 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
             synthesized_update_batch_claim_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+            synthesized_update_batch_payload_build_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected,
+            synthesized_update_batch_claim_header_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected,
+            synthesized_update_batch_claim_declared_length_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected,
+            synthesized_update_batch_claim_fragment_bits_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected,
+            synthesized_update_batch_claim_boundary_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected,
+            synthesized_update_batch_claim_record_validator_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
+            synthesized_update_batch_claim_cursor_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary

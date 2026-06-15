@@ -147,6 +147,20 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
@@ -722,6 +736,48 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update

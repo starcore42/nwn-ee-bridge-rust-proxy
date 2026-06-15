@@ -684,6 +684,16 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
+            1
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             0
         );
@@ -9921,6 +9931,20 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
@@ -10547,24 +10571,112 @@ pub struct LiveObjectAddNameBitRewriteSummary {
     pub new_fragment_bytes: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectPayloadClaimRejectStage {
+    Header,
+    DeclaredLength,
+    FragmentBits,
+    EmptyPayloadFragmentBits,
+    LiveGuiBoundary,
+    SubmessageBoundary,
+    NonAdvancingBoundary,
+    RecordValidator,
+    DeleteFragmentBits,
+    LiveCursor,
+    FragmentCursor,
+}
+
+impl LiveObjectPayloadClaimRejectStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Header => "header",
+            Self::DeclaredLength => "declared-length",
+            Self::FragmentBits => "fragment-bits",
+            Self::EmptyPayloadFragmentBits => "empty-payload-fragment-bits",
+            Self::LiveGuiBoundary => "live-gui-boundary",
+            Self::SubmessageBoundary => "submessage-boundary",
+            Self::NonAdvancingBoundary => "non-advancing-boundary",
+            Self::RecordValidator => "record-validator",
+            Self::DeleteFragmentBits => "delete-fragment-bits",
+            Self::LiveCursor => "live-cursor",
+            Self::FragmentCursor => "fragment-cursor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectPayloadClaimReject {
+    pub stage: LiveObjectPayloadClaimRejectStage,
+    pub offset: Option<usize>,
+    pub record_end: Option<usize>,
+    pub bit_cursor: Option<usize>,
+}
+
+impl LiveObjectPayloadClaimReject {
+    fn new(stage: LiveObjectPayloadClaimRejectStage) -> Self {
+        Self {
+            stage,
+            offset: None,
+            record_end: None,
+            bit_cursor: None,
+        }
+    }
+
+    fn at(
+        stage: LiveObjectPayloadClaimRejectStage,
+        offset: usize,
+        record_end: usize,
+        bit_cursor: usize,
+    ) -> Self {
+        Self {
+            stage,
+            offset: Some(offset),
+            record_end: Some(record_end),
+            bit_cursor: Some(bit_cursor),
+        }
+    }
+}
+
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaimSummary> {
+    claim_payload_if_verified_with_reject(payload).ok()
+}
+
+fn claim_payload_if_verified_with_reject(
+    payload: &[u8],
+) -> Result<LiveObjectUpdateClaimSummary, LiveObjectPayloadClaimReject> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != GAME_OBJECT_UPDATE_MAJOR
         || payload[2] != LIVE_OBJECT_MINOR
     {
-        return None;
+        return Err(LiveObjectPayloadClaimReject::new(
+            LiveObjectPayloadClaimRejectStage::Header,
+        ));
     }
 
-    let declared = usize::try_from(read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    let Some(declared_u32) = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES) else {
+        return Err(LiveObjectPayloadClaimReject::new(
+            LiveObjectPayloadClaimRejectStage::DeclaredLength,
+        ));
+    };
+    let declared = usize::try_from(declared_u32).map_err(|_| {
+        LiveObjectPayloadClaimReject::new(LiveObjectPayloadClaimRejectStage::DeclaredLength)
+    })?;
     if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || declared > payload.len()
         || declared > MAX_REASONABLE_LIVE_PAYLOAD_BYTES
     {
-        return None;
+        return Err(LiveObjectPayloadClaimReject::new(
+            LiveObjectPayloadClaimRejectStage::DeclaredLength,
+        ));
     }
     let fragment = &payload[declared..];
-    let fragment_bits = bits::decode_msb_valid_bits(fragment, CNW_FRAGMENT_HEADER_BITS)?;
+    let Some(fragment_bits) = bits::decode_msb_valid_bits(fragment, CNW_FRAGMENT_HEADER_BITS)
+    else {
+        return Err(LiveObjectPayloadClaimReject::new(
+            LiveObjectPayloadClaimRejectStage::FragmentBits,
+        ));
+    };
 
     let live_bytes = &payload[HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES..declared];
     if live_bytes.is_empty() {
@@ -10576,14 +10688,16 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
         // not a raw passthrough.  Any extra fragment bits still fail here so a
         // malformed or partially-owned live-object stream remains quarantined.
         if fragment_bits.len() == CNW_FRAGMENT_HEADER_BITS {
-            return Some(LiveObjectUpdateClaimSummary {
+            return Ok(LiveObjectUpdateClaimSummary {
                 declared,
                 live_bytes_length: 0,
                 fragment_bytes: fragment.len(),
                 ..Default::default()
             });
         }
-        return None;
+        return Err(LiveObjectPayloadClaimReject::new(
+            LiveObjectPayloadClaimRejectStage::EmptyPayloadFragmentBits,
+        ));
     }
 
     let mut summary = LiveObjectUpdateClaimSummary {
@@ -10615,7 +10729,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 offset.saturating_add(2).min(live_bytes.len()),
                 bit_cursor,
             );
-            return None;
+            return Err(LiveObjectPayloadClaimReject::at(
+                LiveObjectPayloadClaimRejectStage::LiveGuiBoundary,
+                offset,
+                offset.saturating_add(2).min(live_bytes.len()),
+                bit_cursor,
+            ));
         }
         if proven_gui_record_end.is_none()
             && !boundary::looks_like_legacy_live_object_sub_message_boundary(live_bytes, offset)
@@ -10627,7 +10746,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 offset.saturating_add(2).min(live_bytes.len()),
                 bit_cursor,
             );
-            return None;
+            return Err(LiveObjectPayloadClaimReject::at(
+                LiveObjectPayloadClaimRejectStage::SubmessageBoundary,
+                offset,
+                offset.saturating_add(2).min(live_bytes.len()),
+                bit_cursor,
+            ));
         }
 
         let mut record_end = proven_gui_record_end.unwrap_or_else(|| {
@@ -10698,7 +10822,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
                 record_end,
                 bit_cursor,
             );
-            return None;
+            return Err(LiveObjectPayloadClaimReject::at(
+                LiveObjectPayloadClaimRejectStage::NonAdvancingBoundary,
+                offset,
+                record_end,
+                bit_cursor,
+            ));
         }
         if std::env::var_os("HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM").is_some() {
             eprintln!(
@@ -10997,7 +11126,19 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             cursor::legacy_live_delete_fragment_bit_count(live_bytes, offset, record_end)
         {
             if delete_bits > fragment_bits.len().saturating_sub(bit_cursor) {
-                return None;
+                trace_claim_reject(
+                    "delete-fragment-bits-exceed-tail",
+                    live_bytes,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                );
+                return Err(LiveObjectPayloadClaimReject::at(
+                    LiveObjectPayloadClaimRejectStage::DeleteFragmentBits,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                ));
             }
             bit_cursor = bit_cursor.saturating_add(delete_bits);
             summary.delete_records = summary.delete_records.saturating_add(1);
@@ -11022,7 +11163,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             record_end,
             bit_cursor,
         );
-        return None;
+        return Err(LiveObjectPayloadClaimReject::at(
+            LiveObjectPayloadClaimRejectStage::RecordValidator,
+            offset,
+            record_end,
+            bit_cursor,
+        ));
     }
 
     if offset != live_bytes.len() || summary.records_examined == 0 {
@@ -11033,7 +11179,12 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             live_bytes.len(),
             bit_cursor,
         );
-        return None;
+        return Err(LiveObjectPayloadClaimReject::at(
+            LiveObjectPayloadClaimRejectStage::LiveCursor,
+            offset.min(live_bytes.len()),
+            live_bytes.len(),
+            bit_cursor,
+        ));
     }
 
     if bit_cursor != fragment_bits.len() {
@@ -11044,10 +11195,15 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LiveObjectUpdateClaim
             live_bytes.len(),
             bit_cursor,
         );
-        return None;
+        return Err(LiveObjectPayloadClaimReject::at(
+            LiveObjectPayloadClaimRejectStage::FragmentCursor,
+            live_bytes.len(),
+            live_bytes.len(),
+            bit_cursor,
+        ));
     }
 
-    Some(summary)
+    Ok(summary)
 }
 
 pub fn rewrite_add_name_fragment_bits_payload_if_possible(
@@ -20875,6 +21031,47 @@ impl PlaceableCustomAppearanceUpdatePlanAnchorReject {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableCustomAppearanceUpdateBatchClaimReject {
+    PayloadBuild,
+    Header,
+    DeclaredLength,
+    FragmentBits,
+    Boundary,
+    RecordValidator,
+    Cursor,
+}
+
+impl PlaceableCustomAppearanceUpdateBatchClaimReject {
+    fn from_claim_reject(reject: LiveObjectPayloadClaimReject) -> Self {
+        match reject.stage {
+            LiveObjectPayloadClaimRejectStage::Header => Self::Header,
+            LiveObjectPayloadClaimRejectStage::DeclaredLength => Self::DeclaredLength,
+            LiveObjectPayloadClaimRejectStage::FragmentBits
+            | LiveObjectPayloadClaimRejectStage::EmptyPayloadFragmentBits => Self::FragmentBits,
+            LiveObjectPayloadClaimRejectStage::LiveGuiBoundary
+            | LiveObjectPayloadClaimRejectStage::SubmessageBoundary
+            | LiveObjectPayloadClaimRejectStage::NonAdvancingBoundary => Self::Boundary,
+            LiveObjectPayloadClaimRejectStage::RecordValidator => Self::RecordValidator,
+            LiveObjectPayloadClaimRejectStage::DeleteFragmentBits
+            | LiveObjectPayloadClaimRejectStage::LiveCursor
+            | LiveObjectPayloadClaimRejectStage::FragmentCursor => Self::Cursor,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PayloadBuild => "payload-build",
+            Self::Header => "header",
+            Self::DeclaredLength => "declared-length",
+            Self::FragmentBits => "fragment-bits",
+            Self::Boundary => "boundary",
+            Self::RecordValidator => "record-validator",
+            Self::Cursor => "cursor",
+        }
+    }
+}
+
 fn record_placeable_custom_appearance_update_plan_anchor_reject(
     summary: &mut LiveObjectUpdateRewriteSummary,
     reason: PlaceableCustomAppearanceUpdatePlanAnchorReject,
@@ -20933,10 +21130,72 @@ fn record_placeable_custom_appearance_update_plan_anchor_reject(
                 .saturating_add(1);
     } else {
         summary
-            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected =
+        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected =
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected
                 .saturating_add(1);
+    }
+}
+
+fn record_placeable_custom_appearance_update_batch_claim_reject(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    reason: PlaceableCustomAppearanceUpdateBatchClaimReject,
+) {
+    summary
+        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected =
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
+            .saturating_add(1);
+    match reason {
+        PlaceableCustomAppearanceUpdateBatchClaimReject::PayloadBuild => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::Header => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::DeclaredLength => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::FragmentBits => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::Boundary => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::RecordValidator => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateBatchClaimReject::Cursor => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected
+                    .saturating_add(1);
+        }
     }
 }
 
@@ -21253,19 +21512,31 @@ fn apply_pending_placeable_custom_appearance_updates(
         ));
     }
 
-    if live_object_payload_from_parts(&candidate, fragment_bits)
-        .and_then(|payload| claim_payload_if_verified(&payload))
-        .is_none()
-    {
-        summary
-            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected =
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
-                .saturating_add(1);
+    let Some(candidate_payload) = live_object_payload_from_parts(&candidate, fragment_bits) else {
+        let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::PayloadBuild;
+        record_placeable_custom_appearance_update_batch_claim_reject(summary, reason);
         tracing::warn!(
             planned_updates = emitted.len(),
             candidate_live_bytes = candidate.len(),
             fragment_bits = fragment_bits.len(),
+            batch_reject_reason = reason.as_str(),
+            area_resref = area_context.area_resref.as_str(),
+            "server->client exact live-object placeable custom appearance synthesis batch rejected"
+        );
+        return None;
+    };
+    if let Err(reject) = claim_payload_if_verified_with_reject(&candidate_payload) {
+        let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::from_claim_reject(reject);
+        record_placeable_custom_appearance_update_batch_claim_reject(summary, reason);
+        tracing::warn!(
+            planned_updates = emitted.len(),
+            candidate_live_bytes = candidate.len(),
+            fragment_bits = fragment_bits.len(),
+            batch_reject_reason = reason.as_str(),
+            claim_reject_stage = reject.stage.as_str(),
+            claim_reject_offset = reject.offset,
+            claim_reject_record_end = reject.record_end,
+            claim_reject_bit_cursor = reject.bit_cursor,
             area_resref = area_context.area_resref.as_str(),
             "server->client exact live-object placeable custom appearance synthesis batch rejected"
         );
@@ -21745,6 +22016,20 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
             synthesized_update_batch_claim_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+            synthesized_update_batch_payload_build_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_payload_build_rejected,
+            synthesized_update_batch_claim_header_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_header_rejected,
+            synthesized_update_batch_claim_declared_length_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_declared_length_rejected,
+            synthesized_update_batch_claim_fragment_bits_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_fragment_bits_rejected,
+            synthesized_update_batch_claim_boundary_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_boundary_rejected,
+            synthesized_update_batch_claim_record_validator_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
+            synthesized_update_batch_claim_cursor_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
