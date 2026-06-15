@@ -267,6 +267,7 @@ mod diagnostic_tests {
         );
         assert_synthesized_custom_carrier_batch_reject_classes(summary, 0, 0, 0, 0);
         assert_synthesized_custom_carrier_batch_reject_focus(summary, 0, 0, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(summary, 0, 0, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
@@ -335,6 +336,45 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected,
             after_synthesized_update
+        );
+    }
+
+    fn assert_synthesized_custom_carrier_batch_drop_classes(
+        summary: &LiveObjectUpdateRewriteSummary,
+        placeable_add: u32,
+        normal_update: u32,
+        after_add: u32,
+        after_following_normal: u32,
+    ) {
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add,
+            placeable_add
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update,
+            normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add,
+            after_add
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal,
+            after_following_normal
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped,
+            placeable_add.saturating_add(normal_update)
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped,
+            after_add.saturating_add(after_following_normal)
         );
     }
 
@@ -1022,6 +1062,7 @@ mod diagnostic_tests {
         );
         assert_synthesized_custom_carrier_batch_reject_classes(&summary, 1, 0, 1, 0);
         assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 1, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -1096,6 +1137,7 @@ mod diagnostic_tests {
         );
         assert_synthesized_custom_carrier_batch_reject_classes(&summary, 0, 1, 0, 1);
         assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 0, 1, 0, 1);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -10684,6 +10726,16 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
@@ -22205,6 +22257,46 @@ fn record_placeable_custom_appearance_update_batch_claim_reject(
     }
 }
 
+fn record_placeable_custom_appearance_update_batch_claim_row_drop(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    focus: PlaceableCustomAppearanceUpdateBatchRejectFocus,
+) {
+    summary
+        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped =
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped
+            .saturating_add(1);
+    match focus.update.anchor.expected_record {
+        PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update
+                    .saturating_add(1);
+        }
+    }
+    if focus.update.insertion_origin.is_after_add() {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add
+                .saturating_add(1);
+    } else {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal
+                .saturating_add(1);
+    }
+}
+
 fn adjusted_live_byte_offset(
     original_offset: usize,
     edits: &[LiveByteOffsetEdit],
@@ -22616,6 +22708,10 @@ fn apply_pending_placeable_custom_appearance_updates(
             else {
                 return None;
             };
+            record_placeable_custom_appearance_update_batch_claim_row_drop(
+                summary,
+                batch_reject_focus,
+            );
             emitted.remove(rejected_position);
             tracing::warn!(
                 object_id = format_args!("0x{:08X}", batch_reject_focus.update.object_id),
@@ -23319,6 +23415,16 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_inside_synthesized_update_rejected,
             synthesized_update_batch_claim_after_synthesized_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_synthesized_update_rejected,
+            synthesized_update_batch_claim_row_dropped = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped,
+            synthesized_update_batch_claim_row_dropped_placeable_add = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add,
+            synthesized_update_batch_claim_row_dropped_normal_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update,
+            synthesized_update_batch_claim_row_dropped_after_add = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add,
+            synthesized_update_batch_claim_row_dropped_after_following_normal = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
