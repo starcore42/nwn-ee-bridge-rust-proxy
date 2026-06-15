@@ -1250,6 +1250,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
             synthesized_update_plan_offset_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            synthesized_update_plan_anchor_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
             synthesized_update_emit_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
             synthesized_update = summary

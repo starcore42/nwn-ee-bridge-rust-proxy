@@ -127,6 +127,8 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
@@ -644,6 +646,12 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
