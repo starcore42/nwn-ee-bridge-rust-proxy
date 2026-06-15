@@ -262,6 +262,11 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+            0
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
                 .saturating_add(
                     summary
@@ -598,6 +603,93 @@ mod diagnostic_tests {
         assert_eq!(
             live, original_live,
             "a later synthetic carrier rejection must roll back earlier staged carrier bytes"
+        );
+    }
+
+    #[test]
+    fn pending_synthesized_custom_placeable_update_requires_full_payload_claim() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+        live.push(0xFF);
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: add_end,
+                anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                    original_record_offset: 0,
+                    original_record_end: add_end,
+                    opcode: b'A',
+                    expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                    fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                    fragment_bit_end: fragment_bits.len(),
+                    source_appearance: LiveObjectPlaceableAppearance {
+                        appearance: 0xFFFE,
+                        resref: None,
+                    },
+                },
+                object_id,
+                fragment_bit_cursor: fragment_bits.len(),
+                appearance: 0xFFFE,
+                template_resref: target_resref,
+                insertion_origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            }],
+            &mut summary,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0
+        );
+        assert_eq!(
+            live, original_live,
+            "a locally valid synthetic U/09 row must not commit into an unclaimable live-object batch"
         );
     }
 
@@ -9826,6 +9918,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
@@ -21159,6 +21253,25 @@ fn apply_pending_placeable_custom_appearance_updates(
         ));
     }
 
+    if live_object_payload_from_parts(&candidate, fragment_bits)
+        .and_then(|payload| claim_payload_if_verified(&payload))
+        .is_none()
+    {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
+                .saturating_add(1);
+        tracing::warn!(
+            planned_updates = emitted.len(),
+            candidate_live_bytes = candidate.len(),
+            fragment_bits = fragment_bits.len(),
+            area_resref = area_context.area_resref.as_str(),
+            "server->client exact live-object placeable custom appearance synthesis batch rejected"
+        );
+        return None;
+    }
+
     *live_bytes = candidate;
     for &(insert_offset, sequence, update, bytes_inserted) in &emitted {
         let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
@@ -21591,6 +21704,15 @@ fn trace_exact_placeable_reconciliation_summary(
         "server->client exact live-object placeable area/static reconciliation summary"
     );
     if summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned
+            != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
+            != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
+            != 0
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
             != 0
     {
@@ -21621,6 +21743,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected,
             synthesized_update_emit_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            synthesized_update_batch_claim_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary

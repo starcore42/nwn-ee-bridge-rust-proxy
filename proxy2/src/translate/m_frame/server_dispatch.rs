@@ -1216,6 +1216,15 @@ fn trace_live_object_exact_rewrite_summary(
         "server live-object payload reached exact EE shape through bounded typed orchestrator"
     );
     if summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned
+            != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
+            != 0
+        || summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected
+            != 0
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
             != 0
     {
@@ -1268,6 +1277,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_normal_rejected,
             synthesized_update_emit_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            synthesized_update_batch_claim_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
