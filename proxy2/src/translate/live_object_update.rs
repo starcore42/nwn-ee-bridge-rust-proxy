@@ -21437,6 +21437,9 @@ enum PlaceableCustomAppearanceUpdateBatchClaimReject {
     Cursor,
 }
 
+type EmittedPlaceableCustomAppearanceUpdate =
+    (usize, usize, PendingPlaceableCustomAppearanceUpdate, usize);
+
 #[derive(Debug, Clone, Copy, Default)]
 struct PlaceableCustomAppearanceUpdateBatchFootprint {
     placeable_add_anchor: bool,
@@ -21446,9 +21449,7 @@ struct PlaceableCustomAppearanceUpdateBatchFootprint {
 }
 
 impl PlaceableCustomAppearanceUpdateBatchFootprint {
-    fn from_emitted(
-        emitted: &[(usize, usize, PendingPlaceableCustomAppearanceUpdate, usize)],
-    ) -> Self {
+    fn from_emitted(emitted: &[EmittedPlaceableCustomAppearanceUpdate]) -> Self {
         let mut footprint = Self::default();
         for &(_, _, update, _) in emitted {
             match update.anchor.expected_record {
@@ -21473,6 +21474,7 @@ impl PlaceableCustomAppearanceUpdateBatchFootprint {
 struct PlaceableCustomAppearanceUpdateBatchRejectFocus {
     kind: PlaceableCustomAppearanceUpdateBatchRejectFocusKind,
     insert_offset: usize,
+    sequence: usize,
     record_end: usize,
     update: PendingPlaceableCustomAppearanceUpdate,
 }
@@ -22101,65 +22103,116 @@ fn apply_pending_placeable_custom_appearance_updates(
         return None;
     }
 
-    let batch_footprint = PlaceableCustomAppearanceUpdateBatchFootprint::from_emitted(&emitted);
-    let Some(candidate_payload) = live_object_payload_from_parts(&candidate, fragment_bits) else {
-        let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::PayloadBuild;
-        record_placeable_custom_appearance_update_batch_claim_reject(
-            summary,
-            reason,
-            batch_footprint,
-            None,
-        );
-        tracing::warn!(
-            planned_updates = emitted.len(),
-            candidate_live_bytes = candidate.len(),
-            fragment_bits = fragment_bits.len(),
-            batch_reject_reason = reason.as_str(),
-            batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
-            batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
-            batch_has_after_add_origin = batch_footprint.after_add_origin,
-            batch_has_after_following_normal_origin = batch_footprint.after_following_normal_origin,
-            area_resref = area_context.area_resref.as_str(),
-            "server->client exact live-object placeable custom appearance synthesis batch rejected"
-        );
-        return None;
-    };
-    if let Err(reject) = claim_payload_if_verified_with_reject(&candidate_payload) {
-        let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::from_claim_reject(reject);
-        let batch_reject_focus = reject.offset.and_then(|offset| {
-            focused_placeable_custom_appearance_update_batch_reject(offset, &emitted)
-        });
-        record_placeable_custom_appearance_update_batch_claim_reject(
-            summary,
-            reason,
-            batch_footprint,
-            batch_reject_focus,
-        );
-        tracing::warn!(
-            planned_updates = emitted.len(),
-            candidate_live_bytes = candidate.len(),
-            fragment_bits = fragment_bits.len(),
-            batch_reject_reason = reason.as_str(),
-            batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
-            batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
-            batch_has_after_add_origin = batch_footprint.after_add_origin,
-            batch_has_after_following_normal_origin = batch_footprint.after_following_normal_origin,
-            claim_reject_stage = reject.stage.as_str(),
-            claim_reject_offset = reject.offset,
-            claim_reject_record_end = reject.record_end,
-            claim_reject_bit_cursor = reject.bit_cursor,
-            batch_reject_focus = batch_reject_focus.map(|focus| focus.kind.as_str()),
-            batch_reject_focus_object_id = batch_reject_focus.map(|focus| focus.update.object_id),
-            batch_reject_focus_insert_offset = batch_reject_focus.map(|focus| focus.insert_offset),
-            batch_reject_focus_record_end = batch_reject_focus.map(|focus| focus.record_end),
-            batch_reject_focus_anchor_record =
-                batch_reject_focus.map(|focus| focus.update.anchor.expected_record.as_str()),
-            batch_reject_focus_insertion_origin =
-                batch_reject_focus.map(|focus| focus.update.insertion_origin.as_str()),
-            area_resref = area_context.area_resref.as_str(),
-            "server->client exact live-object placeable custom appearance synthesis batch rejected"
-        );
-        return None;
+    loop {
+        let batch_footprint = PlaceableCustomAppearanceUpdateBatchFootprint::from_emitted(&emitted);
+        let Some(candidate_payload) = live_object_payload_from_parts(&candidate, fragment_bits)
+        else {
+            let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::PayloadBuild;
+            record_placeable_custom_appearance_update_batch_claim_reject(
+                summary,
+                reason,
+                batch_footprint,
+                None,
+            );
+            tracing::warn!(
+                planned_updates = emitted.len(),
+                candidate_live_bytes = candidate.len(),
+                fragment_bits = fragment_bits.len(),
+                batch_reject_reason = reason.as_str(),
+                batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
+                batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
+                batch_has_after_add_origin = batch_footprint.after_add_origin,
+                batch_has_after_following_normal_origin =
+                    batch_footprint.after_following_normal_origin,
+                area_resref = area_context.area_resref.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis batch rejected"
+            );
+            return None;
+        };
+        if let Err(reject) = claim_payload_if_verified_with_reject(&candidate_payload) {
+            let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::from_claim_reject(reject);
+            let batch_reject_focus = reject.offset.and_then(|offset| {
+                focused_placeable_custom_appearance_update_batch_reject(offset, &emitted)
+            });
+            record_placeable_custom_appearance_update_batch_claim_reject(
+                summary,
+                reason,
+                batch_footprint,
+                batch_reject_focus,
+            );
+            tracing::warn!(
+                planned_updates = emitted.len(),
+                candidate_live_bytes = candidate.len(),
+                fragment_bits = fragment_bits.len(),
+                batch_reject_reason = reason.as_str(),
+                batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
+                batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
+                batch_has_after_add_origin = batch_footprint.after_add_origin,
+                batch_has_after_following_normal_origin =
+                    batch_footprint.after_following_normal_origin,
+                claim_reject_stage = reject.stage.as_str(),
+                claim_reject_offset = reject.offset,
+                claim_reject_record_end = reject.record_end,
+                claim_reject_bit_cursor = reject.bit_cursor,
+                batch_reject_focus = batch_reject_focus.map(|focus| focus.kind.as_str()),
+                batch_reject_focus_object_id =
+                    batch_reject_focus.map(|focus| focus.update.object_id),
+                batch_reject_focus_insert_offset =
+                    batch_reject_focus.map(|focus| focus.insert_offset),
+                batch_reject_focus_record_end = batch_reject_focus.map(|focus| focus.record_end),
+                batch_reject_focus_anchor_record =
+                    batch_reject_focus.map(|focus| focus.update.anchor.expected_record.as_str()),
+                batch_reject_focus_insertion_origin =
+                    batch_reject_focus.map(|focus| focus.update.insertion_origin.as_str()),
+                area_resref = area_context.area_resref.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis batch rejected"
+            );
+            let Some(batch_reject_focus) = batch_reject_focus else {
+                return None;
+            };
+            if batch_reject_focus.kind
+                != PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate
+            {
+                return None;
+            }
+            let Some(rejected_position) = emitted
+                .iter()
+                .position(|&(_, sequence, _, _)| sequence == batch_reject_focus.sequence)
+            else {
+                return None;
+            };
+            emitted.remove(rejected_position);
+            tracing::warn!(
+                object_id = format_args!("0x{:08X}", batch_reject_focus.update.object_id),
+                fragment_bit_cursor = batch_reject_focus.update.fragment_bit_cursor,
+                insert_offset = batch_reject_focus.insert_offset,
+                record_end = batch_reject_focus.record_end,
+                emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
+                insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                batch_reject_reason = reason.as_str(),
+                claim_reject_stage = reject.stage.as_str(),
+                claim_reject_offset = reject.offset,
+                claim_reject_record_end = reject.record_end,
+                claim_reject_bit_cursor = reject.bit_cursor,
+                area_resref = area_context.area_resref.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis removed rejected batch row"
+            );
+            if emitted.is_empty() {
+                return None;
+            }
+            let Some(rebuilt_candidate) =
+                rebuild_synthesized_placeable_custom_appearance_update_candidate(
+                    live_bytes,
+                    fragment_bits,
+                    &emitted,
+                )
+            else {
+                return None;
+            };
+            candidate = rebuilt_candidate;
+            continue;
+        }
+        break;
     }
 
     *live_bytes = candidate;
@@ -22236,7 +22289,7 @@ fn apply_pending_placeable_custom_appearance_updates(
 fn final_synthesized_placeable_custom_appearance_update_offset(
     insert_offset: usize,
     sequence: usize,
-    emitted: &[(usize, usize, PendingPlaceableCustomAppearanceUpdate, usize)],
+    emitted: &[EmittedPlaceableCustomAppearanceUpdate],
 ) -> usize {
     let preceding_bytes = emitted
         .iter()
@@ -22251,7 +22304,7 @@ fn final_synthesized_placeable_custom_appearance_update_offset(
 
 fn focused_placeable_custom_appearance_update_batch_reject(
     reject_offset: usize,
-    emitted: &[(usize, usize, PendingPlaceableCustomAppearanceUpdate, usize)],
+    emitted: &[EmittedPlaceableCustomAppearanceUpdate],
 ) -> Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> {
     let mut focused: Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> = None;
     for &(insert_offset, sequence, update, bytes_inserted) in emitted {
@@ -22271,6 +22324,7 @@ fn focused_placeable_custom_appearance_update_batch_reject(
         let candidate = PlaceableCustomAppearanceUpdateBatchRejectFocus {
             kind,
             insert_offset: final_insert_offset,
+            sequence,
             record_end,
             update,
         };
@@ -22301,6 +22355,30 @@ fn focused_placeable_custom_appearance_update_batch_reject(
         }
     }
     focused
+}
+
+fn rebuild_synthesized_placeable_custom_appearance_update_candidate(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    emitted: &[EmittedPlaceableCustomAppearanceUpdate],
+) -> Option<Vec<u8>> {
+    let mut candidate = live_bytes.to_vec();
+    for &(insert_offset, _, update, expected_bytes_inserted) in emitted {
+        let bytes_inserted = synthesize_placeable_custom_appearance_update(
+            &mut candidate,
+            fragment_bits,
+            insert_offset,
+            update.object_id,
+            update.fragment_bit_cursor,
+            update.appearance,
+            update.template_resref,
+        )
+        .ok()?;
+        if bytes_inserted != expected_bytes_inserted {
+            return None;
+        }
+    }
+    Some(candidate)
 }
 
 fn trace_synthesized_placeable_custom_appearance_update(
