@@ -594,6 +594,85 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn pending_synthesized_custom_placeable_update_rejects_duplicate_anchor_plan() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+        let pending = PendingPlaceableCustomAppearanceUpdate {
+            original_insert_offset: add_end,
+            anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                original_record_offset: 0,
+                original_record_end: add_end,
+                opcode: b'A',
+                expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                fragment_bit_end: fragment_bits.len(),
+            },
+            object_id,
+            fragment_bit_cursor: fragment_bits.len(),
+            appearance: 0xFFFE,
+            template_resref: target_resref,
+            insertion_origin:
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+        };
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![pending, pending],
+            &mut summary,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            0,
+            "duplicate pending carriers must abort before the batch is counted as planned"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            0
+        );
+        assert_eq!(
+            live, original_live,
+            "duplicate synthetic U/09 plans must reject before byte insertion"
+        );
+    }
+
+    #[test]
     fn pending_synthesized_custom_placeable_update_rejects_custom_update_anchor() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
@@ -20318,7 +20397,7 @@ struct PlaceableCustomAppearanceUpdateInsertionAnchor {
     fragment_bit_end: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PlaceableCustomAppearanceUpdateAnchorRecord {
     PlaceableAdd,
     NormalAppearanceUpdate,
@@ -20369,6 +20448,7 @@ fn plan_pending_placeable_custom_appearance_updates(
     summary: &mut LiveObjectUpdateRewriteSummary,
 ) -> Option<Vec<PlannedPlaceableCustomAppearanceUpdate>> {
     let mut planned = Vec::with_capacity(pending.len());
+    let mut planned_boundaries = HashSet::new();
     for (sequence, update) in pending.into_iter().enumerate() {
         let Some(insert_offset) = adjusted_live_byte_offset(update.original_insert_offset, edits)
         else {
@@ -20452,6 +20532,36 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 insertion_origin = update.insertion_origin.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor validation rejected"
+            );
+            return None;
+        }
+        let plan_boundary = (
+            insert_offset,
+            anchor_offset,
+            anchor_end,
+            update.anchor.expected_record,
+            update.object_id,
+            update.fragment_bit_cursor,
+        );
+        if !planned_boundaries.insert(plan_boundary) {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected
+                    .saturating_add(1);
+            tracing::warn!(
+                object_id = format_args!("0x{:08X}", update.object_id),
+                original_insert_offset = update.original_insert_offset,
+                insert_offset,
+                original_anchor_offset = update.anchor.original_record_offset,
+                original_anchor_end = update.anchor.original_record_end,
+                anchor_offset,
+                anchor_end,
+                anchor_opcode = format_args!("0x{:02X}", update.anchor.opcode),
+                anchor_expected_record = update.anchor.expected_record.as_str(),
+                fragment_bit_cursor = update.fragment_bit_cursor,
+                insertion_origin = update.insertion_origin.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis duplicate anchor rejected"
             );
             return None;
         }
