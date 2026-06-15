@@ -1293,6 +1293,14 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
             synthesized_update_batch_claim_cursor_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
+            synthesized_update_batch_claim_placeable_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected,
+            synthesized_update_batch_claim_normal_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected,
+            synthesized_update_batch_claim_after_add_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected,
+            synthesized_update_batch_claim_after_following_normal_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary

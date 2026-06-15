@@ -161,6 +161,14 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
@@ -778,6 +786,30 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_cursor_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
