@@ -386,6 +386,136 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn pending_synthesized_custom_placeable_update_rolls_back_prior_emits() {
+        let low_object_id = 0x8000_34D8u32;
+        let high_object_id = 0x8000_34D9u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = Vec::new();
+
+        let low_add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&low_object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let low_add_end = live.len();
+
+        let high_add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&high_object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let high_add_end = live.len();
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let low_bit_start = fragment_bits.len();
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let low_bit_end = fragment_bits.len();
+        let high_bit_start = fragment_bits.len();
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let high_bit_end = fragment_bits.len();
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![
+                PendingPlaceableCustomAppearanceUpdate {
+                    original_insert_offset: low_add_end,
+                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                        original_record_offset: low_add_offset,
+                        original_record_end: low_add_end,
+                        opcode: b'A',
+                        expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                        fragment_bit_start: low_bit_start,
+                        fragment_bit_end: low_bit_end,
+                    },
+                    object_id: low_object_id,
+                    fragment_bit_cursor: low_bit_end,
+                    appearance: 0x0011,
+                    template_resref: target_resref,
+                    insertion_origin:
+                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                },
+                PendingPlaceableCustomAppearanceUpdate {
+                    original_insert_offset: high_add_end,
+                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                        original_record_offset: high_add_offset,
+                        original_record_end: high_add_end,
+                        opcode: b'A',
+                        expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                        fragment_bit_start: high_bit_start,
+                        fragment_bit_end: high_bit_end,
+                    },
+                    object_id: high_object_id,
+                    fragment_bit_cursor: high_bit_end,
+                    appearance: 0xFFFE,
+                    template_resref: target_resref,
+                    insertion_origin:
+                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                },
+            ],
+            &mut summary,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            2
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0,
+            "a rolled-back staged carrier must not be counted as emitted"
+        );
+        assert_eq!(summary.bytes_inserted, 0);
+        assert_eq!(
+            live, original_live,
+            "a later synthetic carrier rejection must roll back earlier staged carrier bytes"
+        );
+    }
+
+    #[test]
     fn pending_synthesized_custom_placeable_update_records_anchor_reject() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
@@ -20415,18 +20545,18 @@ fn apply_pending_placeable_custom_appearance_updates(
         summary,
     )?;
 
+    let mut candidate = live_bytes.clone();
+    let mut emitted = Vec::with_capacity(planned.len());
     for planned_update in planned {
         let update = planned_update.update;
         let bytes_inserted = match synthesize_placeable_custom_appearance_update(
-            area_context,
-            live_bytes,
+            &mut candidate,
             fragment_bits,
             planned_update.insert_offset,
             update.object_id,
             update.fragment_bit_cursor,
             update.appearance,
             update.template_resref,
-            update.insertion_origin,
         ) {
             Ok(bytes_inserted) => bytes_inserted,
             Err(reason) => {
@@ -20448,6 +20578,29 @@ fn apply_pending_placeable_custom_appearance_updates(
                 return None;
             }
         };
+        emitted.push((
+            planned_update.insert_offset,
+            planned_update.sequence,
+            update,
+            bytes_inserted,
+        ));
+    }
+
+    *live_bytes = candidate;
+    for &(insert_offset, sequence, update, bytes_inserted) in &emitted {
+        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
+            insert_offset,
+            sequence,
+            &emitted,
+        );
+        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+        trace_synthesized_placeable_custom_appearance_update(
+            area_context,
+            update,
+            final_insert_offset,
+            record_end,
+            bytes_inserted,
+        );
         summary.bytes_inserted = summary
             .bytes_inserted
             .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
@@ -20504,6 +20657,43 @@ fn apply_pending_placeable_custom_appearance_updates(
     Some(())
 }
 
+fn final_synthesized_placeable_custom_appearance_update_offset(
+    insert_offset: usize,
+    sequence: usize,
+    emitted: &[(usize, usize, PendingPlaceableCustomAppearanceUpdate, usize)],
+) -> usize {
+    let preceding_bytes = emitted
+        .iter()
+        .filter(|&&(other_insert_offset, other_sequence, _, _)| {
+            other_insert_offset < insert_offset
+                || (other_insert_offset == insert_offset && other_sequence < sequence)
+        })
+        .map(|&(_, _, _, bytes_inserted)| bytes_inserted)
+        .fold(0usize, usize::saturating_add);
+    insert_offset.saturating_add(preceding_bytes)
+}
+
+fn trace_synthesized_placeable_custom_appearance_update(
+    area_context: &AreaPlaceableContext,
+    update: PendingPlaceableCustomAppearanceUpdate,
+    insert_offset: usize,
+    record_end: usize,
+    bytes_inserted: usize,
+) {
+    tracing::info!(
+        object_id = format_args!("0x{:08X}", update.object_id),
+        fragment_bit_cursor = update.fragment_bit_cursor,
+        insert_offset,
+        record_end,
+        emitted_appearance = format_args!("0x{:04X}", update.appearance),
+        emitted_resref = ?update.template_resref,
+        bytes_inserted,
+        insertion_origin = update.insertion_origin.as_str(),
+        area_resref = area_context.area_resref.as_str(),
+        "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
+    );
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaceableCustomAppearanceUpdateSynthesisReject {
     InsertOffsetOutOfBounds,
@@ -20526,7 +20716,6 @@ impl PlaceableCustomAppearanceUpdateSynthesisReject {
 }
 
 fn synthesize_placeable_custom_appearance_update(
-    area_context: &AreaPlaceableContext,
     live_bytes: &mut Vec<u8>,
     fragment_bits: &[bool],
     insert_offset: usize,
@@ -20534,7 +20723,6 @@ fn synthesize_placeable_custom_appearance_update(
     fragment_bit_cursor: usize,
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
-    insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
 ) -> Result<usize, PlaceableCustomAppearanceUpdateSynthesisReject> {
     if insert_offset > live_bytes.len() {
         return Err(PlaceableCustomAppearanceUpdateSynthesisReject::InsertOffsetOutOfBounds);
@@ -20575,19 +20763,6 @@ fn synthesize_placeable_custom_appearance_update(
         return Err(PlaceableCustomAppearanceUpdateSynthesisReject::ExactClaimMismatch);
     }
     *live_bytes = candidate;
-
-    tracing::info!(
-        object_id = format_args!("0x{object_id:08X}"),
-        fragment_bit_cursor,
-        insert_offset,
-        record_end,
-        emitted_appearance = format_args!("0x{appearance:04X}"),
-        emitted_resref = ?template_resref,
-        bytes_inserted,
-        insertion_origin = insertion_origin.as_str(),
-        area_resref = area_context.area_resref.as_str(),
-        "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
-    );
     Ok(bytes_inserted)
 }
 
