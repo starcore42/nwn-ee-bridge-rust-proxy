@@ -217,6 +217,11 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            after_add.saturating_add(after_following_normal)
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
                 .saturating_add(
                     summary
@@ -299,7 +304,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn synthesized_custom_placeable_update_is_transactional_on_cursor_reject() {
+    fn pending_synthesized_custom_placeable_update_records_validation_reject() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
         let area_context = crate::translate::area::AreaPlaceableContext::default();
@@ -307,20 +312,36 @@ mod diagnostic_tests {
         let mut live = vec![b'D', PLACEABLE_OBJECT_TYPE];
         live.extend_from_slice(&object_id.to_le_bytes());
         let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
 
-        let result = synthesize_placeable_custom_appearance_update(
+        let result = apply_pending_placeable_custom_appearance_updates(
             &area_context,
             &mut live,
             &fragment_bits,
-            0,
-            object_id,
-            CNW_FRAGMENT_HEADER_BITS + 1,
-            0xFFFE,
-            target_resref,
-            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            &[],
+            vec![PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: 0,
+                object_id,
+                fragment_bit_cursor: CNW_FRAGMENT_HEADER_BITS + 1,
+                appearance: 0xFFFE,
+                template_resref: target_resref,
+                insertion_origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            }],
+            &mut summary,
         );
 
         assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            1
+        );
         assert_eq!(
             live, original_live,
             "failed synthetic U/09 validation must not leave inserted bytes behind"
@@ -8892,6 +8913,12 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
@@ -19720,6 +19747,13 @@ struct PendingPlaceableCustomAppearanceUpdate {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct PlannedPlaceableCustomAppearanceUpdate {
+    insert_offset: usize,
+    sequence: usize,
+    update: PendingPlaceableCustomAppearanceUpdate,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct LiveByteOffsetEdit {
     original_offset: usize,
     bytes_inserted: usize,
@@ -19740,6 +19774,49 @@ fn adjusted_live_byte_offset(
     Some(offset)
 }
 
+fn plan_pending_placeable_custom_appearance_updates(
+    edits: &[LiveByteOffsetEdit],
+    pending: Vec<PendingPlaceableCustomAppearanceUpdate>,
+    summary: &mut LiveObjectUpdateRewriteSummary,
+) -> Option<Vec<PlannedPlaceableCustomAppearanceUpdate>> {
+    let mut planned = Vec::with_capacity(pending.len());
+    for (sequence, update) in pending.into_iter().enumerate() {
+        let Some(insert_offset) = adjusted_live_byte_offset(update.original_insert_offset, edits)
+        else {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
+                    .saturating_add(1);
+            tracing::warn!(
+                object_id = format_args!("0x{:08X}", update.object_id),
+                original_insert_offset = update.original_insert_offset,
+                fragment_bit_cursor = update.fragment_bit_cursor,
+                insertion_origin = update.insertion_origin.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis offset adjustment rejected"
+            );
+            return None;
+        };
+        planned.push(PlannedPlaceableCustomAppearanceUpdate {
+            insert_offset,
+            sequence,
+            update,
+        });
+    }
+    summary
+        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned =
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned
+            .saturating_add(u32::try_from(planned.len()).unwrap_or(u32::MAX));
+    planned.sort_by(|left, right| {
+        right
+            .insert_offset
+            .cmp(&left.insert_offset)
+            .then_with(|| right.sequence.cmp(&left.sequence))
+    });
+    Some(planned)
+}
+
 fn apply_pending_placeable_custom_appearance_updates(
     area_context: &AreaPlaceableContext,
     live_bytes: &mut Vec<u8>,
@@ -19748,25 +19825,41 @@ fn apply_pending_placeable_custom_appearance_updates(
     pending: Vec<PendingPlaceableCustomAppearanceUpdate>,
     summary: &mut LiveObjectUpdateRewriteSummary,
 ) -> Option<()> {
-    let mut planned = Vec::with_capacity(pending.len());
-    for (sequence, update) in pending.into_iter().enumerate() {
-        let insert_offset = adjusted_live_byte_offset(update.original_insert_offset, edits)?;
-        planned.push((insert_offset, sequence, update));
-    }
-    planned.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    let planned = plan_pending_placeable_custom_appearance_updates(edits, pending, summary)?;
 
-    for (insert_offset, _, update) in planned {
-        let bytes_inserted = synthesize_placeable_custom_appearance_update(
+    for planned_update in planned {
+        let update = planned_update.update;
+        let bytes_inserted = match synthesize_placeable_custom_appearance_update(
             area_context,
             live_bytes,
             fragment_bits,
-            insert_offset,
+            planned_update.insert_offset,
             update.object_id,
             update.fragment_bit_cursor,
             update.appearance,
             update.template_resref,
             update.insertion_origin,
-        )?;
+        ) {
+            Ok(bytes_inserted) => bytes_inserted,
+            Err(reason) => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
+                        .saturating_add(1);
+                tracing::warn!(
+                    object_id = format_args!("0x{:08X}", update.object_id),
+                    fragment_bit_cursor = update.fragment_bit_cursor,
+                    insert_offset = planned_update.insert_offset,
+                    emitted_appearance = format_args!("0x{:04X}", update.appearance),
+                    insertion_origin = update.insertion_origin.as_str(),
+                    reject_reason = reason.as_str(),
+                    area_resref = area_context.area_resref.as_str(),
+                    "server->client exact live-object placeable custom appearance synthesis rejected"
+                );
+                return None;
+            }
+        };
         summary.bytes_inserted = summary
             .bytes_inserted
             .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
@@ -19823,6 +19916,27 @@ fn apply_pending_placeable_custom_appearance_updates(
     Some(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceableCustomAppearanceUpdateSynthesisReject {
+    InsertOffsetOutOfBounds,
+    NonCustomAppearance,
+    RecordEndOverflow,
+    ExactValidationRejected,
+    ExactClaimMismatch,
+}
+
+impl PlaceableCustomAppearanceUpdateSynthesisReject {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InsertOffsetOutOfBounds => "insert-offset-out-of-bounds",
+            Self::NonCustomAppearance => "non-custom-appearance",
+            Self::RecordEndOverflow => "record-end-overflow",
+            Self::ExactValidationRejected => "exact-validation-rejected",
+            Self::ExactClaimMismatch => "exact-claim-mismatch",
+        }
+    }
+}
+
 fn synthesize_placeable_custom_appearance_update(
     area_context: &AreaPlaceableContext,
     live_bytes: &mut Vec<u8>,
@@ -19833,9 +19947,12 @@ fn synthesize_placeable_custom_appearance_update(
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
     insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
-) -> Option<usize> {
-    if insert_offset > live_bytes.len() || !is_custom_placeable_appearance(appearance) {
-        return None;
+) -> Result<usize, PlaceableCustomAppearanceUpdateSynthesisReject> {
+    if insert_offset > live_bytes.len() {
+        return Err(PlaceableCustomAppearanceUpdateSynthesisReject::InsertOffsetOutOfBounds);
+    }
+    if !is_custom_placeable_appearance(appearance) {
+        return Err(PlaceableCustomAppearanceUpdateSynthesisReject::NonCustomAppearance);
     }
 
     let mut update = Vec::with_capacity(
@@ -19852,19 +19969,22 @@ fn synthesize_placeable_custom_appearance_update(
     let bytes_inserted = update.len();
     let mut candidate = live_bytes.clone();
     candidate.splice(insert_offset..insert_offset, update.iter().copied());
-    let record_end = insert_offset.checked_add(bytes_inserted)?;
+    let record_end = insert_offset
+        .checked_add(bytes_inserted)
+        .ok_or(PlaceableCustomAppearanceUpdateSynthesisReject::RecordEndOverflow)?;
     let update_claim = verified_placeable_update_exact_claim(
         &candidate,
         insert_offset,
         record_end,
         fragment_bits,
         fragment_bit_cursor,
-    )?;
+    )
+    .ok_or(PlaceableCustomAppearanceUpdateSynthesisReject::ExactValidationRejected)?;
     if update_claim.object_id != object_id
         || update_claim.mask != LEGACY_UPDATE_APPEARANCE_MASK
         || update_claim.parser.next_bit_cursor != fragment_bit_cursor
     {
-        return None;
+        return Err(PlaceableCustomAppearanceUpdateSynthesisReject::ExactClaimMismatch);
     }
     *live_bytes = candidate;
 
@@ -19880,7 +20000,7 @@ fn synthesize_placeable_custom_appearance_update(
         area_resref = area_context.area_resref.as_str(),
         "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
     );
-    Some(bytes_inserted)
+    Ok(bytes_inserted)
 }
 
 fn trace_exact_placeable_reconciliation_summary(
@@ -20143,6 +20263,12 @@ fn trace_exact_placeable_reconciliation_summary(
             exact_placeable_reconciliation_emitted = emitted,
             fixed_width_custom_skipped = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            synthesized_update_planned = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            synthesized_update_plan_offset_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            synthesized_update_emit_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary

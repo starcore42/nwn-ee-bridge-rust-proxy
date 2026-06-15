@@ -123,6 +123,12 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add:
         u32,
@@ -627,6 +633,24 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add(
                 rewrite.exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+                );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
                 .saturating_add(

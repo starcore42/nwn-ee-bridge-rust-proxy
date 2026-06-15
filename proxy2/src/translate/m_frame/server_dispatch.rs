@@ -1246,6 +1246,12 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
             add_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
+            synthesized_update_planned = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            synthesized_update_plan_offset_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
+            synthesized_update_emit_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
             synthesized_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
             synthesized_update_after_add = summary
