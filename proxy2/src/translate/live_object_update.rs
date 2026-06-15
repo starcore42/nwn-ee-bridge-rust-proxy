@@ -1150,6 +1150,96 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn pending_synthesized_custom_placeable_update_drops_after_focused_batch_row() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+        live.extend_from_slice(&[b'D', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: add_end,
+                anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                    original_record_offset: 0,
+                    original_record_end: add_end,
+                    opcode: b'A',
+                    expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                    fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                    fragment_bit_end: fragment_bits.len(),
+                    source_appearance: LiveObjectPlaceableAppearance {
+                        appearance: 0x0011,
+                        resref: None,
+                    },
+                },
+                object_id,
+                fragment_bit_cursor: fragment_bits.len(),
+                appearance: 0xFFFE,
+                template_resref: target_resref,
+                insertion_origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            }],
+            &mut summary,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
+            1
+        );
+        assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 0, 1);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 1, 0);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0
+        );
+        assert_eq!(
+            live, original_live,
+            "an after-focused batch reject may drop the staged row, but still cannot commit an unclaimable original suffix"
+        );
+    }
+
+    #[test]
     fn pending_synthesized_custom_placeable_update_records_anchor_reject() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
@@ -22698,7 +22788,7 @@ fn apply_pending_placeable_custom_appearance_updates(
                 return None;
             };
             if batch_reject_focus.kind
-                != PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate
+                == PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate
             {
                 return None;
             }
