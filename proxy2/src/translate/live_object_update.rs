@@ -6357,6 +6357,74 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_appearance_rewrite_rejects_stale_cursor_without_mutating() {
+        let object_id = 0x8000_3600u32;
+        let target_resref = *b"plc_exact_guard\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        let original_live = live.clone();
+        let record_end = live.len();
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let update_claim = verified_placeable_update_exact_claim(
+            &live,
+            0,
+            record_end,
+            &fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("source normal U/09 appearance row should exact-claim");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    ..crate::translate::area::AreaPlaceableContextState::default()
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+        let (selection, area_rows, _) = placeable_static_reconciliation_selection_for_update(
+            &area_context,
+            object_id,
+            update_claim,
+        );
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+        let rewrite = reconcile_verified_placeable_update_appearance_with_area_context(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            0,
+            record_end,
+            fragment_bits.len() + 1,
+            update_claim,
+            selection,
+            &area_rows,
+            &mut summary,
+        )
+        .expect("stale cursor should be isolated, not fatal");
+
+        assert!(!rewrite.changed);
+        assert_eq!(rewrite.bytes_inserted, 0);
+        assert_eq!(rewrite.bytes_removed, 0);
+        assert_eq!(
+            summary.exact_placeable_update_appearance_exact_rejected, 1,
+            "row-local exact validation should report the stale cursor reject"
+        );
+        assert_eq!(
+            live, original_live,
+            "a rejected row-local appearance rewrite must leave the source row untouched"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_position_resolves_light_static_identity_for_custom_rewrite() {
         let object_id = 0x8000_3601u32;
         let compact_static_id = 0x0000_3601u32;
@@ -10619,6 +10687,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_state_rewritten: u32,
     pub exact_placeable_update_position_rewritten: u32,
     pub exact_placeable_update_appearance_rewritten: u32,
+    pub exact_placeable_update_appearance_exact_rejected: u32,
     pub exact_placeable_update_orientation_rewritten: u32,
     pub exact_placeable_update_state_rewritten: u32,
     pub masks_translated: u32,
@@ -18761,11 +18830,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     reconcile_verified_placeable_update_appearance_with_area_context(
                         area_context,
                         &mut live_bytes,
+                        &fragment_bits,
                         record_offset,
                         record_end,
+                        mention.fragment_bit_start,
                         update_claim,
                         selection,
                         &area_rows,
+                        &mut summary,
                     )?;
                 if appearance_rewrite.bytes_inserted != 0 {
                     live_byte_offset_added =
@@ -23012,6 +23084,15 @@ fn trace_exact_placeable_reconciliation_summary(
         update_state_rewritten = summary.exact_placeable_update_state_rewritten,
         "server->client exact live-object placeable area/static reconciliation summary"
     );
+    if summary.exact_placeable_update_appearance_exact_rejected != 0 {
+        tracing::debug!(
+            area_resref = area_context.area_resref.as_str(),
+            exact_placeable_reconciliation_emitted = emitted,
+            update_appearance_exact_rejected =
+                summary.exact_placeable_update_appearance_exact_rejected,
+            "server->client exact live-object placeable update appearance row exact rejects"
+        );
+    }
     if summary.exact_placeable_add_module_custom_template_resref_fixed_width_skipped != 0
         || summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned
@@ -23371,11 +23452,14 @@ fn reconcile_verified_placeable_update_position_with_area_context(
 fn reconcile_verified_placeable_update_appearance_with_area_context(
     area_context: &AreaPlaceableContext,
     live_bytes: &mut Vec<u8>,
+    fragment_bits: &[bool],
     record_offset: usize,
     record_end: usize,
+    fragment_bit_start: usize,
     claim: VerifiedPlaceableUpdateExactClaim,
     selection: PlaceableStaticReconciliationSelection<'_>,
     area_rows: &str,
+    summary: &mut LiveObjectUpdateRewriteSummary,
 ) -> Option<PlaceableAppearanceRewrite> {
     let Some(appearance_offset) = claim.parser.appearance_offset else {
         return Some(PlaceableAppearanceRewrite::default());
@@ -23413,18 +23497,45 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
             return Some(PlaceableAppearanceRewrite::default());
         }
 
-        write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+        let mut candidate = live_bytes.clone();
+        write_u16_le(&mut candidate, appearance_offset, area_appearance)?;
         let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
         let bytes_inserted = if source_is_custom {
             let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-            live_bytes
+            candidate
                 .get_mut(resref_start..resref_end)?
                 .copy_from_slice(&target_resref);
             0
         } else {
-            live_bytes.splice(resref_start..resref_start, target_resref.iter().copied());
+            candidate.splice(resref_start..resref_start, target_resref.iter().copied());
             EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
         };
+        let rewritten_record_end = record_end.checked_add(bytes_inserted)?;
+        if !verified_rewritten_placeable_update_appearance_record(
+            &candidate,
+            fragment_bits,
+            record_offset,
+            rewritten_record_end,
+            fragment_bit_start,
+            claim,
+            area_appearance,
+            Some(target_resref),
+        ) {
+            record_verified_placeable_update_appearance_exact_reject(
+                summary,
+                area_context,
+                claim,
+                record_offset,
+                rewritten_record_end,
+                fragment_bit_start,
+                source_appearance,
+                source_resref,
+                area_appearance,
+                Some(target_resref),
+            );
+            return Some(PlaceableAppearanceRewrite::default());
+        }
+        *live_bytes = candidate;
         tracing::info!(
             object_id = format_args!("0x{:08X}", claim.object_id),
             record_offset,
@@ -23454,7 +23565,8 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         return Some(PlaceableAppearanceRewrite::default());
     }
 
-    write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+    let mut candidate = live_bytes.clone();
+    write_u16_le(&mut candidate, appearance_offset, area_appearance)?;
     let mut bytes_removed = 0usize;
     if source_is_custom {
         let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
@@ -23462,9 +23574,35 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         if resref_end > record_end {
             return None;
         }
-        live_bytes.drain(resref_start..resref_end);
+        candidate.drain(resref_start..resref_end);
         bytes_removed = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
     }
+    let rewritten_record_end = record_end.checked_sub(bytes_removed)?;
+    if !verified_rewritten_placeable_update_appearance_record(
+        &candidate,
+        fragment_bits,
+        record_offset,
+        rewritten_record_end,
+        fragment_bit_start,
+        claim,
+        area_appearance,
+        None,
+    ) {
+        record_verified_placeable_update_appearance_exact_reject(
+            summary,
+            area_context,
+            claim,
+            record_offset,
+            rewritten_record_end,
+            fragment_bit_start,
+            source_appearance,
+            source_resref,
+            area_appearance,
+            None,
+        );
+        return Some(PlaceableAppearanceRewrite::default());
+    }
+    *live_bytes = candidate;
     tracing::info!(
         object_id = format_args!("0x{:08X}", claim.object_id),
         record_offset,
@@ -23487,6 +23625,68 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         bytes_inserted: 0,
         bytes_removed,
     })
+}
+
+fn verified_rewritten_placeable_update_appearance_record(
+    live_bytes: &[u8],
+    fragment_bits: &[bool],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bit_start: usize,
+    source_claim: VerifiedPlaceableUpdateExactClaim,
+    target_appearance: u16,
+    target_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+) -> bool {
+    verified_placeable_update_exact_claim(
+        live_bytes,
+        record_offset,
+        record_end,
+        fragment_bits,
+        fragment_bit_start,
+    )
+    .is_some_and(|claim| {
+        claim.object_id == source_claim.object_id
+            && claim.mask == source_claim.mask
+            && claim.parser.appearance_offset == source_claim.parser.appearance_offset
+            && claim.parser.next_bit_cursor == source_claim.parser.next_bit_cursor
+            && verified_placeable_update_appearance(live_bytes, claim.parser)
+                == Some(LiveObjectPlaceableAppearance {
+                    appearance: target_appearance,
+                    resref: target_resref,
+                })
+    })
+}
+
+fn record_verified_placeable_update_appearance_exact_reject(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    area_context: &AreaPlaceableContext,
+    claim: VerifiedPlaceableUpdateExactClaim,
+    record_offset: usize,
+    record_end: usize,
+    fragment_bit_start: usize,
+    source_appearance: u16,
+    source_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+    target_appearance: u16,
+    target_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+) {
+    summary.exact_placeable_update_appearance_exact_rejected = summary
+        .exact_placeable_update_appearance_exact_rejected
+        .saturating_add(1);
+    tracing::warn!(
+        object_id = format_args!("0x{:08X}", claim.object_id),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{:08X}", claim.mask),
+        fragment_bit_start,
+        source_appearance = format_args!("0x{source_appearance:04X}"),
+        source_resref = ?source_resref,
+        emitted_appearance = format_args!("0x{target_appearance:04X}"),
+        emitted_resref = ?target_resref,
+        appearance_offset = ?claim.parser.appearance_offset,
+        next_bit_cursor = claim.parser.next_bit_cursor,
+        area_resref = area_context.area_resref.as_str(),
+        "server->client exact live-object placeable update appearance rewrite rejected by exact row validator"
+    );
 }
 
 #[derive(Debug, Clone, Copy, Default)]

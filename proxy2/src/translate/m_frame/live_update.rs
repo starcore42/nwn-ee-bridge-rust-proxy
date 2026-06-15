@@ -261,6 +261,7 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_state_rewritten: u32,
     pub exact_placeable_update_position_rewritten: u32,
     pub exact_placeable_update_appearance_rewritten: u32,
+    pub exact_placeable_update_appearance_exact_rejected: u32,
     pub exact_placeable_update_orientation_rewritten: u32,
     pub exact_placeable_update_state_rewritten: u32,
 }
@@ -1136,6 +1137,9 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_appearance_rewritten = self
             .exact_placeable_update_appearance_rewritten
             .saturating_add(rewrite.exact_placeable_update_appearance_rewritten);
+        self.exact_placeable_update_appearance_exact_rejected = self
+            .exact_placeable_update_appearance_exact_rejected
+            .saturating_add(rewrite.exact_placeable_update_appearance_exact_rejected);
         self.exact_placeable_update_orientation_rewritten = self
             .exact_placeable_update_orientation_rewritten
             .saturating_add(rewrite.exact_placeable_update_orientation_rewritten);
