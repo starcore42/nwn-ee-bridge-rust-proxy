@@ -111,6 +111,10 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_blocked:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update: u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence:
         u32,
@@ -121,6 +125,10 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned:
@@ -652,6 +660,18 @@ impl ExactLiveObjectRewriteSummary {
                 rewrite
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
             );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked,
+                );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
                 .saturating_add(
@@ -687,6 +707,18 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_add_only = self
             .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
