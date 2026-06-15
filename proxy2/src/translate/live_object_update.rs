@@ -4642,6 +4642,10 @@ mod diagnostic_tests {
             summary.exact_placeable_update_module_custom_appearance_skipped,
             0
         );
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_rewritten,
+            1
+        );
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 2);
         assert_eq!(
             summary.bytes_inserted,
@@ -6504,6 +6508,10 @@ mod diagnostic_tests {
         );
         assert_eq!(summary.exact_placeable_update_position_rewritten, 0);
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_update_module_custom_appearance_rewritten,
+            1
+        );
         assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
         assert_eq!(
             summary.bytes_inserted,
@@ -10683,6 +10691,7 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
     pub exact_placeable_update_source_custom_appearance_rewritten: u32,
+    pub exact_placeable_update_module_custom_appearance_rewritten: u32,
     pub exact_placeable_add_appearance_rewritten: u32,
     pub exact_placeable_add_state_rewritten: u32,
     pub exact_placeable_update_position_rewritten: u32,
@@ -18764,6 +18773,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     .appearance_offset
                     .and_then(|appearance_offset| read_u16_le(&live_bytes, appearance_offset))
                     .is_some_and(is_custom_placeable_appearance);
+                let module_custom_update_target = match selection.target {
+                    AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
+                        update_claim.parser.appearance_offset.is_some()
+                            && is_custom_placeable_appearance(row.appearance)
+                            && row.module_template_resref.is_some()
+                    }
+                    _ => false,
+                };
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     selection.target
                     && update_claim.parser.appearance_offset.is_some()
@@ -18872,6 +18889,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     if source_custom_appearance {
                         summary.exact_placeable_update_source_custom_appearance_rewritten = summary
                             .exact_placeable_update_source_custom_appearance_rewritten
+                            .saturating_add(1);
+                    }
+                    if module_custom_update_target {
+                        summary.exact_placeable_update_module_custom_appearance_rewritten = summary
+                            .exact_placeable_update_module_custom_appearance_rewritten
                             .saturating_add(1);
                     }
                 }
@@ -23084,6 +23106,15 @@ fn trace_exact_placeable_reconciliation_summary(
         update_state_rewritten = summary.exact_placeable_update_state_rewritten,
         "server->client exact live-object placeable area/static reconciliation summary"
     );
+    if summary.exact_placeable_update_module_custom_appearance_rewritten != 0 {
+        tracing::debug!(
+            area_resref = area_context.area_resref.as_str(),
+            exact_placeable_reconciliation_emitted = emitted,
+            update_module_custom_appearance_rewritten =
+                summary.exact_placeable_update_module_custom_appearance_rewritten,
+            "server->client exact live-object placeable update module-custom appearance rewrites"
+        );
+    }
     if summary.exact_placeable_update_appearance_exact_rejected != 0 {
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
@@ -23114,6 +23145,8 @@ fn trace_exact_placeable_reconciliation_summary(
             exact_placeable_reconciliation_emitted = emitted,
             fixed_width_custom_skipped = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
+            update_module_custom_rewritten =
+                summary.exact_placeable_update_module_custom_appearance_rewritten,
             with_following_custom_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
             with_following_custom_update_rewrite_ready = summary

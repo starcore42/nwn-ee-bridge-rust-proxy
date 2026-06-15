@@ -1215,6 +1215,15 @@ fn trace_live_object_exact_rewrite_summary(
             current_record_progress.untouched_position,
         "server live-object payload reached exact EE shape through bounded typed orchestrator"
     );
+    if summary.exact_placeable_update_module_custom_appearance_rewritten != 0 {
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            exact_placeable_update_module_custom_appearance_rewritten =
+                summary.exact_placeable_update_module_custom_appearance_rewritten,
+            "server live-object exact placeable update module-custom appearance rewrites"
+        );
+    }
     if summary.exact_placeable_update_appearance_exact_rejected != 0 {
         tracing::info!(
             source = exact_rewrite.source,

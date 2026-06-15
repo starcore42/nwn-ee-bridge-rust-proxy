@@ -257,6 +257,7 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
     pub exact_placeable_update_source_custom_appearance_rewritten: u32,
+    pub exact_placeable_update_module_custom_appearance_rewritten: u32,
     pub exact_placeable_add_appearance_rewritten: u32,
     pub exact_placeable_add_state_rewritten: u32,
     pub exact_placeable_update_position_rewritten: u32,
@@ -1125,6 +1126,9 @@ impl ExactLiveObjectRewriteSummary {
         self.exact_placeable_update_source_custom_appearance_rewritten = self
             .exact_placeable_update_source_custom_appearance_rewritten
             .saturating_add(rewrite.exact_placeable_update_source_custom_appearance_rewritten);
+        self.exact_placeable_update_module_custom_appearance_rewritten = self
+            .exact_placeable_update_module_custom_appearance_rewritten
+            .saturating_add(rewrite.exact_placeable_update_module_custom_appearance_rewritten);
         self.exact_placeable_add_appearance_rewritten = self
             .exact_placeable_add_appearance_rewritten
             .saturating_add(rewrite.exact_placeable_add_appearance_rewritten);
