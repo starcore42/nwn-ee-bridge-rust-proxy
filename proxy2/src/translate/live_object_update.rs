@@ -1152,7 +1152,7 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn pending_synthesized_custom_placeable_update_rejects_duplicate_anchor_plan() {
+    fn pending_synthesized_custom_placeable_update_skips_duplicate_anchor_plan() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
         let area_context = crate::translate::area::AreaPlaceableContext::default();
@@ -1211,12 +1211,12 @@ mod diagnostic_tests {
             &mut summary,
         );
 
-        assert_eq!(result, None);
+        assert_eq!(result, Some(()));
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
-            0,
-            "duplicate pending carriers must abort before the batch is counted as planned"
+            1,
+            "one verified carrier plan should survive a duplicate sibling"
         );
         assert_eq!(
             summary
@@ -1245,9 +1245,170 @@ mod diagnostic_tests {
             0
         );
         assert_eq!(
-            live, original_live,
-            "duplicate synthetic U/09 plans must reject before byte insertion"
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1,
+            "the duplicate guard must suppress the duplicate row, not the verified original carrier"
         );
+        assert_eq!(summary.bytes_inserted, 28);
+        assert_eq!(live.len(), original_live.len() + 28);
+        assert!(live.starts_with(&original_live));
+
+        let mut expected_update = Vec::new();
+        expected_update.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        expected_update.extend_from_slice(&object_id.to_le_bytes());
+        expected_update.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        expected_update.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        expected_update.extend_from_slice(&target_resref);
+        assert_eq!(&live[original_live.len()..], expected_update.as_slice());
+    }
+
+    #[test]
+    fn pending_synthesized_custom_placeable_update_keeps_valid_plan_after_source_reject() {
+        let low_object_id = 0x8000_34D8u32;
+        let high_object_id = 0x8000_34D9u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = Vec::new();
+
+        let low_add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&low_object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let low_add_end = live.len();
+
+        let high_add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&high_object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let high_add_end = live.len();
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let low_bit_start = fragment_bits.len();
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let low_bit_end = fragment_bits.len();
+        let high_bit_start = fragment_bits.len();
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot.
+            true,  // useable.
+            false, // trap disarmable.
+            true,  // lockable.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard.
+        ]);
+        let high_bit_end = fragment_bits.len();
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![
+                PendingPlaceableCustomAppearanceUpdate {
+                    original_insert_offset: low_add_end,
+                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                        original_record_offset: low_add_offset,
+                        original_record_end: low_add_end,
+                        opcode: b'A',
+                        expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                        fragment_bit_start: low_bit_start,
+                        fragment_bit_end: low_bit_end,
+                        source_appearance: LiveObjectPlaceableAppearance {
+                            appearance: 0x0022,
+                            resref: None,
+                        },
+                    },
+                    object_id: low_object_id,
+                    fragment_bit_cursor: low_bit_end,
+                    appearance: 0xFFFE,
+                    template_resref: target_resref,
+                    insertion_origin:
+                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                },
+                PendingPlaceableCustomAppearanceUpdate {
+                    original_insert_offset: high_add_end,
+                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                        original_record_offset: high_add_offset,
+                        original_record_end: high_add_end,
+                        opcode: b'A',
+                        expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                        fragment_bit_start: high_bit_start,
+                        fragment_bit_end: high_bit_end,
+                        source_appearance: LiveObjectPlaceableAppearance {
+                            appearance: 0x0011,
+                            resref: None,
+                        },
+                    },
+                    object_id: high_object_id,
+                    fragment_bit_cursor: high_bit_end,
+                    appearance: 0xFFFE,
+                    template_resref: target_resref,
+                    insertion_origin:
+                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                },
+            ],
+            &mut summary,
+        );
+
+        assert_eq!(result, Some(()));
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_source_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(summary.bytes_inserted, 28);
+        assert_eq!(live.len(), original_live.len() + 28);
+        assert!(live.starts_with(&original_live));
+
+        let mut expected_update = Vec::new();
+        expected_update.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        expected_update.extend_from_slice(&high_object_id.to_le_bytes());
+        expected_update.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        expected_update.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        expected_update.extend_from_slice(&target_resref);
+        assert_eq!(&live[original_live.len()..], expected_update.as_slice());
     }
 
     #[test]
@@ -21817,7 +21978,7 @@ fn plan_pending_placeable_custom_appearance_updates(
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis offset adjustment rejected"
             );
-            return None;
+            continue;
         };
         let Some(anchor_offset) =
             adjusted_live_byte_offset(update.anchor.original_record_offset, edits)
@@ -21840,7 +22001,7 @@ fn plan_pending_placeable_custom_appearance_updates(
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor offset adjustment rejected"
             );
-            return None;
+            continue;
         };
         let Some(anchor_end) = adjusted_live_byte_offset(update.anchor.original_record_end, edits)
         else {
@@ -21862,7 +22023,7 @@ fn plan_pending_placeable_custom_appearance_updates(
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor-end offset adjustment rejected"
             );
-            return None;
+            continue;
         };
         if insert_offset != anchor_end {
             record_placeable_custom_appearance_update_plan_anchor_reject(
@@ -21892,7 +22053,7 @@ fn plan_pending_placeable_custom_appearance_updates(
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Boundary.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor validation rejected"
             );
-            return None;
+            continue;
         }
         if !verified_placeable_custom_appearance_update_insertion_anchor(
             live_bytes,
@@ -21928,7 +22089,7 @@ fn plan_pending_placeable_custom_appearance_updates(
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Source.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor validation rejected"
             );
-            return None;
+            continue;
         }
         let plan_boundary = (
             insert_offset,
@@ -21961,13 +22122,16 @@ fn plan_pending_placeable_custom_appearance_updates(
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Duplicate.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis duplicate anchor rejected"
             );
-            return None;
+            continue;
         }
         planned.push(PlannedPlaceableCustomAppearanceUpdate {
             insert_offset,
             sequence,
             update,
         });
+    }
+    if planned.is_empty() {
+        return None;
     }
     summary
         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned =
