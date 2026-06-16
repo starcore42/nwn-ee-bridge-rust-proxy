@@ -252,6 +252,11 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected,
+            0
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_add_rejected,
             0
         );
@@ -270,9 +275,9 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
             0
         );
-        assert_synthesized_custom_carrier_batch_reject_classes(summary, 0, 0, 0, 0);
+        assert_synthesized_custom_carrier_batch_reject_classes(summary, 0, 0, 0, 0, 0, 0);
         assert_synthesized_custom_carrier_batch_reject_focus(summary, 0, 0, 0);
-        assert_synthesized_custom_carrier_batch_drop_classes(summary, 0, 0, 0, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(summary, 0, 0, 0, 0, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_without_carrier
@@ -296,8 +301,10 @@ mod diagnostic_tests {
         summary: &LiveObjectUpdateRewriteSummary,
         placeable_add: u32,
         normal_update: u32,
+        custom_update: u32,
         after_add: u32,
         after_following_normal: u32,
+        after_following_custom: u32,
     ) {
         assert_eq!(
             summary
@@ -308,6 +315,11 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected,
             normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected,
+            custom_update
         );
         assert_eq!(
             summary
@@ -322,7 +334,7 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_custom_rejected,
-            0
+            after_following_custom
         );
     }
 
@@ -353,8 +365,10 @@ mod diagnostic_tests {
         summary: &LiveObjectUpdateRewriteSummary,
         placeable_add: u32,
         normal_update: u32,
+        custom_update: u32,
         after_add: u32,
         after_following_normal: u32,
+        after_following_custom: u32,
     ) {
         assert_eq!(
             summary
@@ -365,6 +379,11 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update,
             normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update,
+            custom_update
         );
         assert_eq!(
             summary
@@ -379,17 +398,21 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_custom,
-            0
+            after_following_custom
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped,
-            placeable_add.saturating_add(normal_update)
+            placeable_add
+                .saturating_add(normal_update)
+                .saturating_add(custom_update)
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped,
-            after_add.saturating_add(after_following_normal)
+            after_add
+                .saturating_add(after_following_normal)
+                .saturating_add(after_following_custom)
         );
     }
 
@@ -397,8 +420,10 @@ mod diagnostic_tests {
         summary: &LiveObjectUpdateRewriteSummary,
         placeable_add: u32,
         normal_update: u32,
+        custom_update: u32,
         after_add: u32,
         after_following_normal: u32,
+        after_following_custom: u32,
     ) {
         assert_eq!(
             summary
@@ -409,6 +434,11 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected,
             normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected,
+            custom_update
         );
         assert_eq!(
             summary
@@ -423,17 +453,21 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_following_custom_rejected,
-            0
+            after_following_custom
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
-            placeable_add.saturating_add(normal_update)
+            placeable_add
+                .saturating_add(normal_update)
+                .saturating_add(custom_update)
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
-            after_add.saturating_add(after_following_normal)
+            after_add
+                .saturating_add(after_following_normal)
+                .saturating_add(after_following_custom)
         );
     }
 
@@ -441,8 +475,10 @@ mod diagnostic_tests {
         summary: &LiveObjectUpdateRewriteSummary,
         placeable_add: u32,
         normal_update: u32,
+        custom_update: u32,
         after_add: u32,
         after_following_normal: u32,
+        after_following_custom: u32,
     ) {
         assert_eq!(
             summary
@@ -453,6 +489,11 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
             normal_update
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected,
+            custom_update
         );
         assert_eq!(
             summary
@@ -467,17 +508,21 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_custom_rejected,
-            0
+            after_following_custom
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
-            placeable_add.saturating_add(normal_update)
+            placeable_add
+                .saturating_add(normal_update)
+                .saturating_add(custom_update)
         );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_rejected,
-            after_add.saturating_add(after_following_normal)
+            after_add
+                .saturating_add(after_following_normal)
+                .saturating_add(after_following_custom)
         );
     }
 
@@ -788,7 +833,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_anchor_end_rejected,
             0
         );
-        assert_synthesized_custom_carrier_offset_reject_classes(&add_summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_offset_reject_classes(&add_summary, 1, 0, 0, 1, 0, 0);
         assert_eq!(add_live, Vec::<u8>::new());
 
         let mut normal_live = Vec::new();
@@ -811,8 +856,31 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
             1
         );
-        assert_synthesized_custom_carrier_offset_reject_classes(&normal_summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_offset_reject_classes(&normal_summary, 0, 1, 0, 0, 1, 0);
         assert_eq!(normal_live, Vec::<u8>::new());
+
+        let mut custom_live = Vec::new();
+        let mut custom_summary = LiveObjectUpdateRewriteSummary::default();
+        let custom_result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut custom_live,
+            &fragment_bits,
+            &edits,
+            vec![offset_reject_pending(
+                PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate,
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingCustom,
+            )],
+            &mut custom_summary,
+        );
+
+        assert_eq!(custom_result, None);
+        assert_eq!(
+            custom_summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_insert_rejected,
+            1
+        );
+        assert_synthesized_custom_carrier_offset_reject_classes(&custom_summary, 0, 0, 1, 0, 0, 1);
+        assert_eq!(custom_live, Vec::<u8>::new());
     }
 
     #[test]
@@ -1209,9 +1277,9 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_record_validator_rejected,
             1
         );
-        assert_synthesized_custom_carrier_batch_reject_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_reject_classes(&summary, 1, 0, 0, 1, 0, 0);
         assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
-        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 0, 1, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -1285,9 +1353,9 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
             1
         );
-        assert_synthesized_custom_carrier_batch_reject_classes(&summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_batch_reject_classes(&summary, 0, 1, 0, 0, 1, 0);
         assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 1, 0);
-        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 0, 1, 0, 0, 1, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -1358,26 +1426,8 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_rejected,
             1
         );
-        assert_eq!(
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected,
-            0
-        );
-        assert_eq!(
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_custom_rejected,
-            1
-        );
-        assert_eq!(
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_normal,
-            0
-        );
-        assert_eq!(
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_following_custom,
-            1
-        );
+        assert_synthesized_custom_carrier_batch_reject_classes(&summary, 0, 0, 1, 0, 0, 1);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 0, 0, 1, 0, 0, 1);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -1468,7 +1518,7 @@ mod diagnostic_tests {
             1
         );
         assert_synthesized_custom_carrier_batch_reject_focus(&summary, 0, 0, 1);
-        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_batch_drop_classes(&summary, 1, 0, 0, 1, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -1567,7 +1617,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             0
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 1, 0);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 0, 1, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
@@ -1667,7 +1717,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             1
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 1, 0, 0, 1, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_emit_rejected,
@@ -1774,7 +1824,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             2
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 2, 0, 2, 0);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 2, 0, 0, 2, 0, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
@@ -2009,7 +2059,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             0
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 0, 0, 1, 0);
         assert_eq!(
             live, original_live,
             "wrong-branch anchors must reject before byte insertion"
@@ -2103,7 +2153,7 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             0
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 1, 0, 1, 0);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 1, 0, 0, 1, 0, 0);
         assert_eq!(
             live, original_live,
             "stale source-appearance anchors must reject before byte insertion"
@@ -2182,10 +2232,91 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
             0
         );
-        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 0, 1);
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 1, 0, 0, 1, 0);
         assert_eq!(
             live, original_live,
             "stale normal-update anchors must reject before byte insertion"
+        );
+    }
+
+    #[test]
+    fn pending_synthesized_custom_placeable_update_rejects_stale_custom_update_anchor_appearance() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let stale_resref = *b"plc_stale_add\0\0\0";
+        let area_context = crate::translate::area::AreaPlaceableContext::default();
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&stale_resref);
+        let update_end = live.len();
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let original_live = live.clone();
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        let result = apply_pending_placeable_custom_appearance_updates(
+            &area_context,
+            &mut live,
+            &fragment_bits,
+            &[],
+            vec![PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: update_end,
+                anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                    original_record_offset: 0,
+                    original_record_end: update_end,
+                    opcode: b'U',
+                    expected_record:
+                        PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate,
+                    fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+                    fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
+                    source_appearance: LiveObjectPlaceableAppearance {
+                        appearance: 0xFFFE,
+                        resref: Some(target_resref),
+                    },
+                },
+                object_id,
+                fragment_bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+                appearance: 0xFFFE,
+                template_resref: target_resref,
+                insertion_origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingCustom,
+                anchor_rewrite_already_counted: false,
+            }],
+            &mut summary,
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_rejected,
+            1,
+            "custom U/09 anchors must still expose the exact WORD+CResRef source selected for synthesis"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_boundary_rejected,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_source_rejected,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_duplicate_rejected,
+            0
+        );
+        assert_synthesized_custom_carrier_anchor_reject_classes(&summary, 0, 0, 1, 0, 0, 1);
+        assert_eq!(
+            live, original_live,
+            "stale custom-update anchors must reject before byte insertion"
         );
     }
 
@@ -11300,6 +11431,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_following_normal_rejected:
@@ -11317,6 +11450,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_placeable_add_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_add_rejected:
         u32,
@@ -11346,6 +11481,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_following_normal_rejected:
@@ -11363,6 +11500,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add:
         u32,
@@ -22698,6 +22837,7 @@ type EmittedPlaceableCustomAppearanceUpdate =
 struct PlaceableCustomAppearanceUpdateBatchFootprint {
     placeable_add_anchor: bool,
     normal_update_anchor: bool,
+    custom_update_anchor: bool,
     after_add_origin: bool,
     after_following_normal_origin: bool,
     after_following_custom_origin: bool,
@@ -22711,9 +22851,11 @@ impl PlaceableCustomAppearanceUpdateBatchFootprint {
                 PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => {
                     footprint.placeable_add_anchor = true;
                 }
-                PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
-                | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+                PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
                     footprint.normal_update_anchor = true;
+                }
+                PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+                    footprint.custom_update_anchor = true;
                 }
             }
             match update.insertion_origin {
@@ -22831,12 +22973,18 @@ fn record_placeable_custom_appearance_update_plan_offset_reject(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
-        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected =
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected
                     .saturating_add(1);
         }
     }
@@ -22903,12 +23051,18 @@ fn record_placeable_custom_appearance_update_plan_anchor_reject(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_placeable_add_rejected
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
-        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected =
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected
                     .saturating_add(1);
         }
     }
@@ -23009,6 +23163,13 @@ fn record_placeable_custom_appearance_update_batch_claim_reject(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected
                 .saturating_add(1);
     }
+    if footprint.custom_update_anchor {
+        summary
+            .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected =
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected
+                .saturating_add(1);
+    }
     if footprint.after_add_origin {
         summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected =
@@ -23074,12 +23235,18 @@ fn record_placeable_custom_appearance_update_batch_claim_row_drop(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
-        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update =
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update
+                    .saturating_add(1);
+        }
+        PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update
                     .saturating_add(1);
         }
     }
@@ -23576,6 +23743,7 @@ fn apply_pending_placeable_custom_appearance_updates(
                 batch_reject_reason = reason.as_str(),
                 batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
                 batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
+                batch_has_custom_update_anchor = batch_footprint.custom_update_anchor,
                 batch_has_after_add_origin = batch_footprint.after_add_origin,
                 batch_has_after_following_normal_origin =
                     batch_footprint.after_following_normal_origin,
@@ -23604,6 +23772,7 @@ fn apply_pending_placeable_custom_appearance_updates(
                 batch_reject_reason = reason.as_str(),
                 batch_has_placeable_add_anchor = batch_footprint.placeable_add_anchor,
                 batch_has_normal_update_anchor = batch_footprint.normal_update_anchor,
+                batch_has_custom_update_anchor = batch_footprint.custom_update_anchor,
                 batch_has_after_add_origin = batch_footprint.after_add_origin,
                 batch_has_after_following_normal_origin =
                     batch_footprint.after_following_normal_origin,
@@ -24390,6 +24559,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
             synthesized_update_plan_offset_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+            synthesized_update_plan_offset_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected,
             synthesized_update_plan_offset_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
             synthesized_update_plan_offset_after_following_normal_rejected = summary
@@ -24408,6 +24579,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_placeable_add_rejected,
             synthesized_update_plan_anchor_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected,
+            synthesized_update_plan_anchor_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected,
             synthesized_update_plan_anchor_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_add_rejected,
             synthesized_update_plan_anchor_after_following_normal_rejected = summary
@@ -24436,6 +24609,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected,
             synthesized_update_batch_claim_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected,
+            synthesized_update_batch_claim_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected,
             synthesized_update_batch_claim_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected,
             synthesized_update_batch_claim_after_following_normal_rejected = summary
@@ -24454,6 +24629,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add,
             synthesized_update_batch_claim_row_dropped_normal_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update,
+            synthesized_update_batch_claim_row_dropped_custom_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update,
             synthesized_update_batch_claim_row_dropped_after_add = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add,
             synthesized_update_batch_claim_row_dropped_after_following_normal = summary

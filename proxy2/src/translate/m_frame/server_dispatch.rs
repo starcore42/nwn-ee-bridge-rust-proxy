@@ -1298,6 +1298,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected,
             synthesized_update_plan_offset_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected,
+            synthesized_update_plan_offset_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_custom_update_rejected,
             synthesized_update_plan_offset_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_after_add_rejected,
             synthesized_update_plan_offset_after_following_normal_rejected = summary
@@ -1316,6 +1318,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_placeable_add_rejected,
             synthesized_update_plan_anchor_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected,
+            synthesized_update_plan_anchor_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_custom_update_rejected,
             synthesized_update_plan_anchor_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_after_add_rejected,
             synthesized_update_plan_anchor_after_following_normal_rejected = summary
@@ -1344,6 +1348,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_placeable_add_rejected,
             synthesized_update_batch_claim_normal_update_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_normal_update_rejected,
+            synthesized_update_batch_claim_custom_update_rejected = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_custom_update_rejected,
             synthesized_update_batch_claim_after_add_rejected = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_after_add_rejected,
             synthesized_update_batch_claim_after_following_normal_rejected = summary
@@ -1362,6 +1368,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add,
             synthesized_update_batch_claim_row_dropped_normal_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update,
+            synthesized_update_batch_claim_row_dropped_custom_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_custom_update,
             synthesized_update_batch_claim_row_dropped_after_add = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_after_add,
             synthesized_update_batch_claim_row_dropped_after_following_normal = summary
