@@ -612,6 +612,48 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn synthetic_custom_placeable_final_row_guard_uses_exact_writer_output() {
+        let object_id = 0x8000_34D8u32;
+        let target_resref = *b"plc_custom_add\0\0";
+        let stale_resref = *b"plc_stale_add\0\0\0";
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&stale_resref);
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let pending = synthetic_focus_pending(object_id, 0);
+        let emitted = vec![(0, 0, pending, live.len())];
+
+        let focus =
+            invalid_synthesized_placeable_custom_appearance_update(&live, &fragment_bits, &emitted)
+                .expect("parser-valid but stale-resref carrier must fail final writer proof");
+
+        assert_eq!(
+            focus.kind,
+            PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate
+        );
+        assert_eq!(focus.insert_offset, 0);
+        assert_eq!(focus.record_end, live.len());
+        assert_eq!(focus.update.object_id, object_id);
+        assert_eq!(focus.update.template_resref, target_resref);
+
+        live.splice(
+            LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_APPEARANCE_WORD_READ_BYTES..live.len(),
+            target_resref.iter().copied(),
+        );
+        assert!(
+            invalid_synthesized_placeable_custom_appearance_update(
+                &live,
+                &fragment_bits,
+                &emitted,
+            )
+            .is_none(),
+            "the same U/09 row is accepted once the final bytes match the staged writer output"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_rejects_fragment_cursor_past_valid_bits() {
         let object_id = 0x8000_34D8u32;
         let target_resref = *b"plc_custom_add\0\0";
@@ -23391,6 +23433,56 @@ fn apply_pending_placeable_custom_appearance_updates(
             candidate = rebuilt_candidate;
             continue;
         }
+        if let Some(batch_reject_focus) = invalid_synthesized_placeable_custom_appearance_update(
+            &candidate,
+            fragment_bits,
+            &emitted,
+        ) {
+            let reason = PlaceableCustomAppearanceUpdateBatchClaimReject::RecordValidator;
+            record_placeable_custom_appearance_update_batch_claim_reject(
+                summary,
+                reason,
+                batch_footprint,
+                Some(batch_reject_focus),
+            );
+            let Some(rejected_position) = emitted
+                .iter()
+                .position(|&(_, sequence, _, _)| sequence == batch_reject_focus.sequence)
+            else {
+                return None;
+            };
+            record_placeable_custom_appearance_update_batch_claim_row_drop(
+                summary,
+                batch_reject_focus,
+            );
+            emitted.remove(rejected_position);
+            tracing::warn!(
+                object_id = format_args!("0x{:08X}", batch_reject_focus.update.object_id),
+                fragment_bit_cursor = batch_reject_focus.update.fragment_bit_cursor,
+                insert_offset = batch_reject_focus.insert_offset,
+                record_end = batch_reject_focus.record_end,
+                emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
+                insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                batch_reject_reason = reason.as_str(),
+                batch_reject_focus = batch_reject_focus.kind.as_str(),
+                area_resref = area_context.area_resref.as_str(),
+                "server->client exact live-object placeable custom appearance synthesis final row rejected"
+            );
+            if emitted.is_empty() {
+                return None;
+            }
+            let Some(rebuilt_candidate) =
+                rebuild_synthesized_placeable_custom_appearance_update_candidate(
+                    live_bytes,
+                    fragment_bits,
+                    &emitted,
+                )
+            else {
+                return None;
+            };
+            candidate = rebuilt_candidate;
+            continue;
+        }
         break;
     }
 
@@ -23544,6 +23636,41 @@ fn focused_placeable_custom_appearance_update_batch_reject(
         }
     }
     focused
+}
+
+fn invalid_synthesized_placeable_custom_appearance_update(
+    candidate: &[u8],
+    fragment_bits: &[bool],
+    emitted: &[EmittedPlaceableCustomAppearanceUpdate],
+) -> Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> {
+    for &(insert_offset, sequence, update, bytes_inserted) in emitted {
+        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
+            insert_offset,
+            sequence,
+            emitted,
+        );
+        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+        if verified_synthesized_placeable_custom_appearance_update_exact_claim(
+            candidate,
+            final_insert_offset,
+            record_end,
+            fragment_bits,
+            update.fragment_bit_cursor,
+            update.object_id,
+            update.appearance,
+            update.template_resref,
+        ) {
+            continue;
+        }
+        return Some(PlaceableCustomAppearanceUpdateBatchRejectFocus {
+            kind: PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate,
+            insert_offset: final_insert_offset,
+            sequence,
+            record_end,
+            update,
+        });
+    }
+    None
 }
 
 fn rebuild_synthesized_placeable_custom_appearance_update_candidate(
