@@ -220,6 +220,8 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
@@ -1006,6 +1008,12 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom,
                 );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped = self
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped

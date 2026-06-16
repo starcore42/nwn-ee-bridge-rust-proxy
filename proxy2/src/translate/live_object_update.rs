@@ -496,7 +496,8 @@ mod diagnostic_tests {
                 original_record_end: 0,
                 opcode: match expected_record {
                     PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => b'A',
-                    PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => b'U',
+                    PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
+                    | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => b'U',
                 },
                 expected_record,
                 fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
@@ -5416,7 +5417,7 @@ mod diagnostic_tests {
             pre_claim.mentions[0].record_end,
         );
         assert_eq!(
-            carrier.synthesis_policy(),
+            carrier.synthesis_policy(&area_context.static_rows[0]),
             ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady,
             "a following normal U/09 that the update rewriter can widen is the custom carrier"
         );
@@ -6111,7 +6112,7 @@ mod diagnostic_tests {
             "a pre-add U/09 before a same-object A/D fence belongs to an earlier lifecycle"
         );
         assert_eq!(
-            carrier.synthesis_policy(),
+            carrier.synthesis_policy(&crate::translate::area::AreaPlaceableContextRow::default()),
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
         );
     }
@@ -8416,7 +8417,7 @@ mod diagnostic_tests {
             add_end,
         );
         assert_eq!(
-            carrier.synthesis_policy(),
+            carrier.synthesis_policy(&area_context.static_rows[0]),
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked,
             "blocked following normal carriers are followed by a synthetic custom carrier"
         );
@@ -10052,6 +10053,199 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_synthesizes_after_blocked_following_custom_carrier() {
+        let object_id = 0x8000_3628u32;
+        let stale_resref = *b"plc_stale_car\0\0\0";
+        let target_resref = *b"plc_fixed_car\0\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let stale_custom_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&stale_resref);
+        let stale_custom_end = live.len();
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("A/09 with following position and stale custom carrier payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    module_template_resref: Some(target_resref),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    x: 30.0,
+                    y: 40.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    module_template_resref: Some(*b"plc_other_car\0\0\0"),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact stale custom carrier");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            pre_claim.mentions[0].record_offset,
+            add_end,
+        );
+        assert_eq!(
+            carrier.synthesis_policy(&area_context.static_rows[0]),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked,
+            "the stale following custom U/09 exists, but cannot be rewritten to the position-selected target"
+        );
+
+        let original_live_len = live.len();
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("blocked stale custom carrier should be followed by a synthetic replacement");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
+            0
+        );
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+        assert_eq!(summary.new_live_bytes_length, original_live_len + 28);
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite exact stale custom plus replacement carrier payload");
+        assert_eq!(claim.mentions.len(), 4);
+        assert_eq!(claim.mentions[2].record_offset, stale_custom_offset);
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(stale_resref),
+            }),
+            "the stale packet-authored custom U/09 remains unchanged"
+        );
+        assert_eq!(
+            claim.mentions[3].record_offset, stale_custom_end,
+            "the replacement carrier is inserted immediately after the stale custom row"
+        );
+        assert_eq!(
+            claim.mentions[3].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the synthetic row becomes the last same-lifecycle custom appearance state"
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_start, claim.mentions[2].fragment_bit_end,
+            "the synthetic custom replacement inherits the verified custom row cursor"
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_end, claim.mentions[2].fragment_bit_end,
+            "the appearance-only replacement consumes no fragment bits"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_pre_add_custom_update_carrier_resolves_fixed_output_identity() {
         let object_id = 0x8000_3624u32;
         let target_resref = *b"plc_pre_carry\0\0\0";
@@ -10929,6 +11123,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
@@ -18908,7 +19104,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
                         }
-                        if let Some(insertion) = update_carrier.synthesis_insertion() {
+                        if let Some(insertion) = update_carrier.synthesis_insertion(row) {
                             let target_resref = row.module_template_resref?;
                             let pending = match insertion {
                                 ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
@@ -18959,6 +19155,31 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     template_resref: target_resref,
                                     insertion_origin:
                                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
+                                    anchor_rewrite_already_counted: false,
+                                },
+                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingCustom(
+                                    record,
+                                ) => PendingPlaceableCustomAppearanceUpdate {
+                                    original_insert_offset: record.record_end,
+                                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                                        original_record_offset: record.record_offset,
+                                        original_record_end: record.record_end,
+                                        opcode: b'U',
+                                        expected_record:
+                                            PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate,
+                                        fragment_bit_start: record.fragment_bit_start,
+                                        fragment_bit_end: record.fragment_bit_end,
+                                        source_appearance: LiveObjectPlaceableAppearance {
+                                            appearance: record.source_appearance,
+                                            resref: record.source_resref,
+                                        },
+                                    },
+                                    object_id: add_claim.object_id,
+                                    fragment_bit_cursor: record.fragment_bit_end,
+                                    appearance: row.appearance,
+                                    template_resref: target_resref,
+                                    insertion_origin:
+                                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingCustom,
                                     anchor_rewrite_already_counted: false,
                                 },
                             };
@@ -21644,9 +21865,26 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         }
     }
 
-    fn synthesis_policy(self) -> ExactPlaceableCustomCarrierSynthesisPolicy {
-        if self.following_custom.is_some() {
-            return ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustom;
+    fn following_custom_matches_module_row(self, row: &AreaPlaceableContextRow) -> bool {
+        self.following_custom.is_some_and(|record| {
+            record.source_appearance == row.appearance
+                && record.source_resref.is_some()
+                && record.source_resref == row.module_template_resref
+        })
+    }
+
+    fn synthesis_policy(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> ExactPlaceableCustomCarrierSynthesisPolicy {
+        if let Some(record) = self.following_custom {
+            return if record.custom_rewrite_ready {
+                ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
+            } else if self.following_custom_matches_module_row(row) {
+                ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
+            } else {
+                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked
+            };
         }
         if let Some(record) = self.following_normal {
             return if record.custom_rewrite_ready {
@@ -21668,11 +21906,19 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
     }
 
-    fn synthesis_insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
-        match self.synthesis_policy() {
-            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustom
+    fn synthesis_insertion(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
+        match self.synthesis_policy(row) {
+            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
+            | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
             | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady => {
                 None
+            }
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked => {
+                self.following_custom
+                    .map(ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingCustom)
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked => {
                 self.following_normal
@@ -21704,7 +21950,9 @@ impl ExactPlaceableUpdateAppearanceCarrier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableCustomCarrierSynthesisPolicy {
-    SuppressedByFollowingCustom,
+    SuppressedByFollowingCustomRewriteReady,
+    SuppressedByFollowingCustomMatchingTarget,
+    SynthesizesAfterFollowingCustomRewriteBlocked,
     SuppressedByFollowingNormalRewriteReady,
     SynthesizesAfterFollowingNormalRewriteBlocked,
     SynthesizesAfterAddWithoutCarrier,
@@ -21716,7 +21964,15 @@ enum ExactPlaceableCustomCarrierSynthesisPolicy {
 impl ExactPlaceableCustomCarrierSynthesisPolicy {
     fn as_str(self) -> &'static str {
         match self {
-            Self::SuppressedByFollowingCustom => "suppressed-following-custom",
+            Self::SuppressedByFollowingCustomRewriteReady => {
+                "suppressed-following-custom-rewrite-ready"
+            }
+            Self::SuppressedByFollowingCustomMatchingTarget => {
+                "suppressed-following-custom-matching-target"
+            }
+            Self::SynthesizesAfterFollowingCustomRewriteBlocked => {
+                "synthesizes-after-following-custom-rewrite-blocked"
+            }
             Self::SuppressedByFollowingNormalRewriteReady => {
                 "suppressed-following-normal-rewrite-ready"
             }
@@ -21739,6 +21995,7 @@ impl ExactPlaceableCustomCarrierSynthesisPolicy {
 enum ExactPlaceableCustomCarrierSynthesisInsertion {
     AfterAdd(PlaceableCustomAppearanceUpdateInsertionOrigin),
     AfterFollowingNormal(ExactPlaceableUpdateAppearanceCarrierRecord),
+    AfterFollowingCustom(ExactPlaceableUpdateAppearanceCarrierRecord),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21953,6 +22210,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
             carrier.has_following_position_output_equivalence(),
         following_custom_rewrite_ready = carrier.following_custom_rewrite_ready(),
         following_custom_rewrite_blocked = carrier.following_custom_rewrite_blocked(),
+        following_custom_matches_module_row = carrier.following_custom_matches_module_row(row),
         following_normal_custom_rewrite_ready =
             carrier.following_normal_custom_rewrite_ready(),
         following_normal_custom_rewrite_blocked =
@@ -21977,7 +22235,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_source_resref = ?pre_add.and_then(|record| record.source_resref),
         pre_add_fragment_bit_start = pre_add.map(|record| record.fragment_bit_start),
         pre_add_fragment_bit_end = pre_add.map(|record| record.fragment_bit_end),
-        custom_carrier_synthesis_policy = carrier.synthesis_policy().as_str(),
+        custom_carrier_synthesis_policy = carrier.synthesis_policy(row).as_str(),
         "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
     );
 }
@@ -21989,6 +22247,7 @@ enum PlaceableCustomAppearanceUpdateInsertionOrigin {
     AfterAddPreAddNormalRewriteBlocked,
     AfterAddPreAddCustom,
     AfterFollowingNormal,
+    AfterFollowingCustom,
 }
 
 impl PlaceableCustomAppearanceUpdateInsertionOrigin {
@@ -21999,6 +22258,7 @@ impl PlaceableCustomAppearanceUpdateInsertionOrigin {
             Self::AfterAddPreAddNormalRewriteBlocked => "after-add-pre-add-normal-rewrite-blocked",
             Self::AfterAddPreAddCustom => "after-add-pre-add-custom",
             Self::AfterFollowingNormal => "after-following-normal",
+            Self::AfterFollowingCustom => "after-following-custom",
         }
     }
 
@@ -22042,6 +22302,7 @@ struct PlaceableCustomAppearanceUpdateInsertionAnchor {
 enum PlaceableCustomAppearanceUpdateAnchorRecord {
     PlaceableAdd,
     NormalAppearanceUpdate,
+    CustomAppearanceUpdate,
 }
 
 impl PlaceableCustomAppearanceUpdateAnchorRecord {
@@ -22049,6 +22310,7 @@ impl PlaceableCustomAppearanceUpdateAnchorRecord {
         match self {
             Self::PlaceableAdd => "placeable-add",
             Self::NormalAppearanceUpdate => "normal-appearance-update",
+            Self::CustomAppearanceUpdate => "custom-appearance-update",
         }
     }
 }
@@ -22131,7 +22393,8 @@ impl PlaceableCustomAppearanceUpdateBatchFootprint {
                 PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => {
                     footprint.placeable_add_anchor = true;
                 }
-                PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+                PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
+                | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
                     footprint.normal_update_anchor = true;
                 }
             }
@@ -22243,7 +22506,8 @@ fn record_placeable_custom_appearance_update_plan_offset_reject(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_placeable_add_rejected
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
+        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_offset_normal_update_rejected =
                 summary
@@ -22308,7 +22572,8 @@ fn record_placeable_custom_appearance_update_plan_anchor_reject(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_placeable_add_rejected
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
+        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_plan_anchor_normal_update_rejected =
                 summary
@@ -22465,7 +22730,8 @@ fn record_placeable_custom_appearance_update_batch_claim_row_drop(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_placeable_add
                     .saturating_add(1);
         }
-        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate => {
+        PlaceableCustomAppearanceUpdateAnchorRecord::NormalAppearanceUpdate
+        | PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_batch_claim_row_dropped_normal_update =
                 summary
@@ -22758,6 +23024,29 @@ fn verified_placeable_custom_appearance_update_insertion_anchor(
                     && claim.parser.next_bit_cursor == update.anchor.fragment_bit_end
             })
         }
+        PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate => {
+            if update.anchor.opcode != b'U' {
+                return false;
+            }
+            verified_placeable_update_exact_claim(
+                live_bytes,
+                anchor_offset,
+                anchor_end,
+                fragment_bits,
+                update.anchor.fragment_bit_start,
+            )
+            .is_some_and(|claim| {
+                claim.object_id == update.object_id
+                    && (claim.mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0
+                    && verified_placeable_update_appearance(live_bytes, claim.parser).is_some_and(
+                        |appearance| {
+                            appearance == update.anchor.source_appearance
+                                && appearance.resref.is_some()
+                        },
+                    )
+                    && claim.parser.next_bit_cursor == update.anchor.fragment_bit_end
+            })
+        }
     }
 }
 
@@ -23003,6 +23292,13 @@ fn apply_pending_placeable_custom_appearance_updates(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
                     summary
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal
+                        .saturating_add(1);
+            }
+            PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingCustom => {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom
                         .saturating_add(1);
             }
         }
@@ -23633,6 +23929,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
             synthesized_update_after_following_normal = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
+            synthesized_update_after_following_custom = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom,
             "server->client exact live-object placeable fixed-width custom carrier synthesis policy"
         );
     }
