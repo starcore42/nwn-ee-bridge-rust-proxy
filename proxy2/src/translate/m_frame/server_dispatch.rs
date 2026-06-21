@@ -1404,6 +1404,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_blocked,
             synthesized_update_after_add_pre_add_custom = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_match = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_match,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_mismatch = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_mismatch,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_match = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_match,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable,
             synthesized_update_after_add_following_normal_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch,
             synthesized_update_after_add_following_custom_rewrite_target_mismatch = summary
