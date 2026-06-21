@@ -266,6 +266,8 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable:
+        u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom:
@@ -1194,6 +1196,12 @@ impl ExactLiveObjectRewriteSummary {
                 .saturating_add(
                     rewrite
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
                 );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal

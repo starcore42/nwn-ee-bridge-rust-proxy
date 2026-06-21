@@ -1420,6 +1420,8 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch,
             synthesized_update_after_add_following_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
             synthesized_update_after_following_normal = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
             synthesized_update_after_following_custom = summary

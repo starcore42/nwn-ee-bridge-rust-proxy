@@ -300,6 +300,10 @@ mod diagnostic_tests {
                 .saturating_add(
                     summary
                         .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
+                )
+                .saturating_add(
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
                 ),
             after_add
         );
@@ -9438,9 +9442,15 @@ mod diagnostic_tests {
         );
         assert_eq!(
             stale_custom.synthesis_policy(&add_row),
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked,
-            "a blocked following custom row with no alternate rewrite target is still repaired after that row"
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable,
+            "a blocked following custom row with a different explicit custom output is a later state change, not the add's carrier"
         );
+        assert!(matches!(
+            stale_custom.synthesis_insertion(&add_row),
+            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
+                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
+            ))
+        ));
     }
 
     #[test]
@@ -11476,7 +11486,6 @@ mod diagnostic_tests {
         live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
         live.extend_from_slice(&0xFFFEu16.to_le_bytes());
         live.extend_from_slice(&stale_resref);
-        let stale_custom_end = live.len();
 
         let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         fragment_bits.extend([
@@ -11546,8 +11555,8 @@ mod diagnostic_tests {
         );
         assert_eq!(
             carrier.synthesis_policy(&area_context.static_rows[0]),
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked,
-            "the stale following custom U/09 exists, but cannot be rewritten to the position-selected target"
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable,
+            "the stale following custom U/09 is explicit later state, not the add's carrier"
         );
 
         let original_live_len = live.len();
@@ -11601,6 +11610,16 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_custom,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
             1
         );
         assert_eq!(
@@ -11619,34 +11638,34 @@ mod diagnostic_tests {
         let claim = claim_payload_if_verified(&payload)
             .expect("post-rewrite exact stale custom plus replacement carrier payload");
         assert_eq!(claim.mentions.len(), 4);
-        assert_eq!(claim.mentions[2].record_offset, stale_custom_offset);
         assert_eq!(
-            claim.mentions[2].placeable_appearance,
-            Some(LiveObjectPlaceableAppearance {
-                appearance: 0xFFFE,
-                resref: Some(stale_resref),
-            }),
-            "the stale packet-authored custom U/09 remains unchanged"
+            claim.mentions[1].record_offset, add_end,
+            "the add target carrier is inserted at the add boundary"
         );
         assert_eq!(
-            claim.mentions[3].record_offset, stale_custom_end,
-            "the replacement carrier is inserted immediately after the stale custom row"
-        );
-        assert_eq!(
-            claim.mentions[3].placeable_appearance,
+            claim.mentions[1].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
                 appearance: 0xFFFE,
                 resref: Some(target_resref),
             }),
-            "the synthetic row becomes the last same-lifecycle custom appearance state"
+            "the add row still gets its module custom carrier"
+        );
+        assert_eq!(claim.mentions[3].record_offset, stale_custom_offset + 28);
+        assert_eq!(
+            claim.mentions[3].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(stale_resref),
+            }),
+            "the later packet-authored custom U/09 remains final state"
         );
         assert_eq!(
-            claim.mentions[3].fragment_bit_start, claim.mentions[2].fragment_bit_end,
-            "the synthetic custom replacement inherits the verified custom row cursor"
+            claim.mentions[1].fragment_bit_start, claim.mentions[0].fragment_bit_end,
+            "the synthetic add carrier inherits the verified add cursor"
         );
         assert_eq!(
-            claim.mentions[3].fragment_bit_end, claim.mentions[2].fragment_bit_end,
-            "the appearance-only replacement consumes no fragment bits"
+            claim.mentions[1].fragment_bit_end, claim.mentions[0].fragment_bit_end,
+            "the appearance-only add carrier consumes no fragment bits"
         );
     }
 
@@ -12574,6 +12593,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal:
         u32,
@@ -20514,31 +20535,6 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal,
                                     anchor_rewrite_already_counted: false,
                                 },
-                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingCustom(
-                                    record,
-                                ) => PendingPlaceableCustomAppearanceUpdate {
-                                    original_insert_offset: record.record_end,
-                                    anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
-                                        original_record_offset: record.record_offset,
-                                        original_record_end: record.record_end,
-                                        opcode: b'U',
-                                        expected_record:
-                                            PlaceableCustomAppearanceUpdateAnchorRecord::CustomAppearanceUpdate,
-                                        fragment_bit_start: record.fragment_bit_start,
-                                        fragment_bit_end: record.fragment_bit_end,
-                                        source_appearance: LiveObjectPlaceableAppearance {
-                                            appearance: record.source_appearance,
-                                            resref: record.source_resref,
-                                        },
-                                    },
-                                    object_id: add_claim.object_id,
-                                    fragment_bit_cursor: record.fragment_bit_end,
-                                    appearance: row.appearance,
-                                    template_resref: target_resref,
-                                    insertion_origin:
-                                        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingCustom,
-                                    anchor_rewrite_already_counted: false,
-                                },
                             };
                             pending_custom_update_synthesis = Some(pending);
                         }
@@ -23277,7 +23273,7 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                             if selected.matches_module_row(row) {
                                 ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
                             } else {
-                                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked
+                                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable
                             }
                         }
                     }
@@ -23340,14 +23336,6 @@ impl ExactPlaceableUpdateAppearanceCarrier {
             | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady => {
                 None
             }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingCustomRewriteBlocked => {
-                match self.selected_following()? {
-                    SelectedExactPlaceableUpdateAppearanceCarrier::Custom(record) => {
-                        Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterFollowingCustom(record))
-                    }
-                    SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => None,
-                }
-            }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterFollowingNormalRewriteBlocked => {
                 match self.selected_following()? {
                     SelectedExactPlaceableUpdateAppearanceCarrier::Normal(record) => {
@@ -23359,6 +23347,11 @@ impl ExactPlaceableUpdateAppearanceCarrier {
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                ))
+            }
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
                 ))
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch => {
@@ -23477,8 +23470,8 @@ impl ExactPlaceableCustomCarrierRewriteTargetState {
 enum ExactPlaceableCustomCarrierSynthesisPolicy {
     SuppressedByFollowingCustomRewriteReady,
     SuppressedByFollowingCustomMatchingTarget,
-    SynthesizesAfterFollowingCustomRewriteBlocked,
     SynthesizesAfterAddFollowingCustomRewriteTargetMismatch,
+    SynthesizesAfterAddFollowingCustomTargetUnavailable,
     SuppressedByFollowingNormalRewriteReady,
     SynthesizesAfterFollowingNormalRewriteBlocked,
     SynthesizesAfterAddFollowingNormalRewriteTargetMismatch,
@@ -23500,11 +23493,11 @@ impl ExactPlaceableCustomCarrierSynthesisPolicy {
             Self::SuppressedByFollowingCustomMatchingTarget => {
                 "suppressed-following-custom-matching-target"
             }
-            Self::SynthesizesAfterFollowingCustomRewriteBlocked => {
-                "synthesizes-after-following-custom-rewrite-blocked"
-            }
             Self::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch => {
                 "synthesizes-after-add-following-custom-rewrite-target-mismatch"
+            }
+            Self::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
+                "synthesizes-after-add-following-custom-target-unavailable"
             }
             Self::SuppressedByFollowingNormalRewriteReady => {
                 "suppressed-following-normal-rewrite-ready"
@@ -23542,7 +23535,6 @@ impl ExactPlaceableCustomCarrierSynthesisPolicy {
 enum ExactPlaceableCustomCarrierSynthesisInsertion {
     AfterAdd(PlaceableCustomAppearanceUpdateInsertionOrigin),
     AfterFollowingNormal(ExactPlaceableUpdateAppearanceCarrierRecord),
-    AfterFollowingCustom(ExactPlaceableUpdateAppearanceCarrierRecord),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23853,6 +23845,7 @@ enum PlaceableCustomAppearanceUpdateInsertionOrigin {
     AfterAddPreAddCustomTargetUnavailable,
     AfterAddFollowingNormalRewriteTargetMismatch,
     AfterAddFollowingCustomRewriteTargetMismatch,
+    AfterAddFollowingCustomTargetUnavailable,
     AfterFollowingNormal,
     AfterFollowingCustom,
 }
@@ -23881,6 +23874,9 @@ impl PlaceableCustomAppearanceUpdateInsertionOrigin {
             Self::AfterAddFollowingCustomRewriteTargetMismatch => {
                 "after-add-following-custom-rewrite-target-mismatch"
             }
+            Self::AfterAddFollowingCustomTargetUnavailable => {
+                "after-add-following-custom-target-unavailable"
+            }
             Self::AfterFollowingNormal => "after-following-normal",
             Self::AfterFollowingCustom => "after-following-custom",
         }
@@ -23898,6 +23894,7 @@ impl PlaceableCustomAppearanceUpdateInsertionOrigin {
                 | Self::AfterAddPreAddCustomTargetUnavailable
                 | Self::AfterAddFollowingNormalRewriteTargetMismatch
                 | Self::AfterAddFollowingCustomRewriteTargetMismatch
+                | Self::AfterAddFollowingCustomTargetUnavailable
         )
     }
 
@@ -25264,6 +25261,13 @@ fn count_committed_placeable_custom_appearance_update_origin(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch
                     .saturating_add(1);
         }
+        PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable
+                    .saturating_add(1);
+        }
         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterFollowingNormal => {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal =
@@ -26177,6 +26181,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch,
             synthesized_update_after_add_following_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
             synthesized_update_after_following_normal = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_following_normal,
             synthesized_update_after_following_custom = summary
