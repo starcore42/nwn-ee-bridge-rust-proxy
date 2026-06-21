@@ -22797,8 +22797,19 @@ impl SelectedExactPlaceableUpdateAppearanceCarrier {
         }
     }
 
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Normal(_) => "normal",
+            Self::Custom(_) => "custom",
+        }
+    }
+
     fn is_custom(self) -> bool {
         matches!(self, Self::Custom(_))
+    }
+
+    fn custom_rewrite_ready(self) -> bool {
+        self.record().custom_rewrite_ready
     }
 
     fn matches_module_row(self, row: &AreaPlaceableContextRow) -> bool {
@@ -23084,6 +23095,11 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         following_source_resref = ?following.and_then(|selected| selected.record().source_resref),
         following_fragment_bit_start = following.map(|selected| selected.record().fragment_bit_start),
         following_fragment_bit_end = following.map(|selected| selected.record().fragment_bit_end),
+        selected_following_carrier_kind = following.map(|selected| selected.kind()),
+        selected_following_custom_rewrite_ready =
+            following.is_some_and(|selected| selected.custom_rewrite_ready()),
+        selected_following_custom_rewrite_blocked =
+            following.is_some_and(|selected| !selected.custom_rewrite_ready()),
         pre_add_carrier_kind = carrier.pre_add_kind(),
         pre_add_record_offset = pre_add.map(|selected| selected.record().record_offset),
         pre_add_record_end = pre_add.map(|selected| selected.record().record_end),
@@ -23100,6 +23116,11 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_source_resref = ?pre_add.and_then(|selected| selected.record().source_resref),
         pre_add_fragment_bit_start = pre_add.map(|selected| selected.record().fragment_bit_start),
         pre_add_fragment_bit_end = pre_add.map(|selected| selected.record().fragment_bit_end),
+        selected_pre_add_carrier_kind = pre_add.map(|selected| selected.kind()),
+        selected_pre_add_custom_rewrite_ready =
+            pre_add.is_some_and(|selected| selected.custom_rewrite_ready()),
+        selected_pre_add_custom_rewrite_blocked =
+            pre_add.is_some_and(|selected| !selected.custom_rewrite_ready()),
         custom_carrier_synthesis_policy = carrier.synthesis_policy(row).as_str(),
         "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
     );
@@ -25000,18 +25021,34 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_skipped,
             update_module_custom_rewritten =
                 summary.exact_placeable_update_module_custom_appearance_rewritten,
+            with_following_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
             with_following_custom_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
             with_following_custom_update_rewrite_ready = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready,
             with_following_custom_update_rewrite_blocked = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_blocked,
+            with_following_normal_update = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
+            with_following_normal_update_rewrite_ready = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_ready,
+            with_following_normal_update_rewrite_blocked = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_blocked,
+            pre_add_update_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
             pre_add_custom_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
             pre_add_custom_update_rewrite_ready = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready,
             pre_add_custom_update_rewrite_blocked = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked,
+            pre_add_normal_update_only = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
+            pre_add_normal_update_rewrite_ready = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready,
+            pre_add_normal_update_rewrite_blocked = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked,
             synthesized_update_planned = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
             synthesized_update_plan_offset_rejected = summary
