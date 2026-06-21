@@ -1284,12 +1284,20 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready,
             pre_add_normal_update_rewrite_blocked = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked,
+            pre_add_normal_update_rewrite_target_mismatch = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_target_mismatch,
+            pre_add_normal_update_rewrite_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable,
             pre_add_custom_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
             pre_add_custom_update_rewrite_ready = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready,
             pre_add_custom_update_rewrite_blocked = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked,
+            pre_add_custom_update_rewrite_target_mismatch = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_target_mismatch,
+            pre_add_custom_update_rewrite_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable,
             add_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             synthesized_update_planned = summary
