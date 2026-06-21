@@ -6271,6 +6271,178 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_selects_latest_pre_add_appearance_carrier() {
+        let object_id = 0x8000_3635u32;
+        let target_resref = *b"plc_pre_latest\0\0";
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&target_resref);
+        let custom_pre_add_offset = 0usize;
+
+        let normal_pre_add_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches the module-backed row.
+            false, // trap disarmable already matches.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("custom U/09 + normal U/09 + A/09 payload");
+        let pre_claim = claim_payload_if_verified(&payload)
+            .expect("pre-rewrite exact custom U/09 + normal U/09 + A/09 claim");
+
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            static_rows: vec![crate::translate::area::AreaPlaceableContextRow {
+                object_id,
+                appearance: 0xFFFE,
+                module_template_resref: Some(target_resref),
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                    static_object: true,
+                    useable: true,
+                    trap_flag: false,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                }),
+                ..crate::translate::area::AreaPlaceableContextRow::default()
+            }],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            pre_claim.mentions[2].record_offset,
+            pre_claim.mentions[2].record_end,
+        );
+        assert_eq!(
+            carrier.pre_add_kind(),
+            "normal+custom",
+            "both pre-add carrier branches remain visible for diagnostics"
+        );
+        assert_eq!(
+            carrier
+                .selected_pre_add()
+                .map(|selected| selected.record().record_offset),
+            Some(normal_pre_add_offset),
+            "the later pre-add normal row overwrites the earlier matching custom row"
+        );
+        assert_eq!(
+            carrier.synthesis_policy(&area_context.static_rows[0]),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteReady,
+            "pre-add classification follows the latest row, not custom branch priority"
+        );
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("latest pre-add normal U/09 should rewrite and the A/09 should synthesize");
+        let expected_bytes_inserted = EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+            + LEGACY_UPDATE_HEADER_BYTES
+            + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+            + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
+            0,
+            "the older matching custom row is not the selected pre-add state"
+        );
+        assert_synthesized_custom_carrier_origins(&summary, 1, 0);
+        assert_synthesized_custom_carrier_after_add_reasons(&summary, 0, 1, 0, 0);
+        assert_eq!(summary.bytes_inserted, expected_bytes_inserted as u32);
+
+        let claim = claim_payload_if_verified(&payload).expect(
+            "post-rewrite exact custom U/09 + rewritten normal U/09 + A/09 + synthetic U/09 claim",
+        );
+        assert_eq!(claim.mentions.len(), 4);
+        assert_eq!(claim.mentions[0].record_offset, custom_pre_add_offset);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the older custom row remains valid but is overwritten by the later normal row"
+        );
+        assert_eq!(claim.mentions[1].record_offset, normal_pre_add_offset);
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "the latest pre-add normal row can be widened for its own parser-owned branch"
+        );
+        assert_eq!(
+            claim.mentions[2].record_offset,
+            add_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+        assert_eq!(
+            claim.mentions[3].record_offset,
+            live.len() + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_start, claim.mentions[2].fragment_bit_end,
+            "the synthesized post-add carrier still starts from the add-owned cursor"
+        );
+        assert_eq!(
+            claim.mentions[3].fragment_bit_end, claim.mentions[2].fragment_bit_end,
+            "the synthesized post-add carrier consumes no fragment bits"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_module_custom_carrier_retains_nearest_update_details() {
         let object_id = 0x8000_34D8u32;
         let pre_add_resref = *b"plc_pre_update\0\0";
@@ -6401,9 +6573,9 @@ mod diagnostic_tests {
         assert_eq!(
             carrier
                 .selected_pre_add()
-                .map(|record| record.record_offset),
+                .map(|selected| selected.record().record_offset),
             Some(pre_add_custom_offset),
-            "pre-add rows are logged as evidence but do not carry the add"
+            "the latest pre-add appearance row is the actionable parser-owned evidence"
         );
 
         let add_mention = claim
@@ -19333,13 +19505,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update
                                         .saturating_add(1);
                             }
-                        } else if update_carrier.has_pre_add() {
+                        } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
                             summary
                                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
                                 summary
                                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
                                     .saturating_add(1);
-                            if update_carrier.pre_add_custom.is_some() {
+                            if selected_pre_add.is_custom() {
                                 summary
                                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
                                     summary
@@ -19662,36 +19834,36 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                             .saturating_add(1);
                                 }
                             }
-                        } else if update_carrier.has_pre_add() {
+                        } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
                             summary
                                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
                                     .saturating_add(1);
-                            if update_carrier.has_pre_add_position_output_equivalence() {
+                            if selected_pre_add.record().position_output_equivalence {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence =
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
                                         .saturating_add(1);
                             }
-                            if update_carrier.pre_add_custom.is_some() {
+                            if selected_pre_add.is_custom() {
                                 summary
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only =
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only
                                         .saturating_add(1);
-                                if update_carrier.pre_add_custom_rewrite_ready() {
+                                if selected_pre_add.record().custom_rewrite_ready {
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready =
-                                        summary
+                                    summary
                                             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready
                                             .saturating_add(1);
                                 }
-                                if update_carrier.pre_add_custom_rewrite_blocked() {
+                                if !selected_pre_add.record().custom_rewrite_ready {
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked =
-                                        summary
+                                    summary
                                             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_blocked
                                             .saturating_add(1);
                                 }
@@ -19701,17 +19873,17 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only
                                         .saturating_add(1);
-                                if update_carrier.pre_add_normal_custom_rewrite_ready() {
+                                if selected_pre_add.record().custom_rewrite_ready {
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready =
-                                        summary
+                                    summary
                                             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_ready
                                             .saturating_add(1);
                                 }
-                                if update_carrier.pre_add_normal_custom_rewrite_blocked() {
+                                if !selected_pre_add.record().custom_rewrite_ready {
                                     summary
                                         .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked =
-                                        summary
+                                    summary
                                             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_blocked
                                             .saturating_add(1);
                                 }
@@ -22422,8 +22594,27 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         }
     }
 
-    fn selected_pre_add(self) -> Option<ExactPlaceableUpdateAppearanceCarrierRecord> {
-        self.pre_add_custom.or(self.pre_add_normal)
+    fn selected_pre_add(self) -> Option<SelectedExactPlaceableUpdateAppearanceCarrier> {
+        match (self.pre_add_normal, self.pre_add_custom) {
+            (Some(normal), Some(custom)) => {
+                if custom.record_offset >= normal.record_offset {
+                    Some(SelectedExactPlaceableUpdateAppearanceCarrier::Custom(
+                        custom,
+                    ))
+                } else {
+                    Some(SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
+                        normal,
+                    ))
+                }
+            }
+            (Some(normal), None) => Some(SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
+                normal,
+            )),
+            (None, Some(custom)) => Some(SelectedExactPlaceableUpdateAppearanceCarrier::Custom(
+                custom,
+            )),
+            (None, None) => None,
+        }
     }
 
     fn has_following_position_output_equivalence(self) -> bool {
@@ -22452,11 +22643,8 @@ impl ExactPlaceableUpdateAppearanceCarrier {
     }
 
     fn has_pre_add_position_output_equivalence(self) -> bool {
-        self.pre_add_custom
-            .is_some_and(|record| record.position_output_equivalence)
-            || self
-                .pre_add_normal
-                .is_some_and(|record| record.position_output_equivalence)
+        self.selected_pre_add()
+            .is_some_and(|selected| selected.record().position_output_equivalence)
     }
 
     fn pre_add_custom_rewrite_ready(self) -> bool {
@@ -22529,14 +22717,18 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 }
             };
         }
-        if self.pre_add_custom.is_some() {
-            return ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustom;
-        }
-        if let Some(record) = self.pre_add_normal {
-            return if record.custom_rewrite_ready {
-                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteReady
-            } else {
-                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteBlocked
+        if let Some(selected) = self.selected_pre_add() {
+            return match selected {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+                    ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustom
+                }
+                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(record) => {
+                    if record.custom_rewrite_ready {
+                        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteReady
+                    } else {
+                        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteBlocked
+                    }
+                }
             };
         }
         ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
@@ -22860,7 +23052,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
     let following_source_appearance =
         following.map(|selected| format!("0x{:04X}", selected.record().source_appearance));
     let pre_add_source_appearance =
-        pre_add.map(|record| format!("0x{:04X}", record.source_appearance));
+        pre_add.map(|selected| format!("0x{:04X}", selected.record().source_appearance));
     tracing::debug!(
         area_resref = area_context.area_resref.as_str(),
         object_id = format_args!("0x{:08X}", mention.object_id),
@@ -22893,10 +23085,10 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         following_fragment_bit_start = following.map(|selected| selected.record().fragment_bit_start),
         following_fragment_bit_end = following.map(|selected| selected.record().fragment_bit_end),
         pre_add_carrier_kind = carrier.pre_add_kind(),
-        pre_add_record_offset = pre_add.map(|record| record.record_offset),
-        pre_add_record_end = pre_add.map(|record| record.record_end),
-        pre_add_appearance_offset = pre_add.map(|record| record.appearance_offset),
-        pre_add_resref_offset = pre_add.and_then(|record| record.resref_offset),
+        pre_add_record_offset = pre_add.map(|selected| selected.record().record_offset),
+        pre_add_record_end = pre_add.map(|selected| selected.record().record_end),
+        pre_add_appearance_offset = pre_add.map(|selected| selected.record().appearance_offset),
+        pre_add_resref_offset = pre_add.and_then(|selected| selected.record().resref_offset),
         pre_add_position_output_equivalence = carrier.has_pre_add_position_output_equivalence(),
         pre_add_custom_rewrite_ready = carrier.pre_add_custom_rewrite_ready(),
         pre_add_custom_rewrite_blocked = carrier.pre_add_custom_rewrite_blocked(),
@@ -22905,9 +23097,9 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_normal_custom_rewrite_blocked =
             carrier.pre_add_normal_custom_rewrite_blocked(),
         pre_add_source_appearance = pre_add_source_appearance.as_deref(),
-        pre_add_source_resref = ?pre_add.and_then(|record| record.source_resref),
-        pre_add_fragment_bit_start = pre_add.map(|record| record.fragment_bit_start),
-        pre_add_fragment_bit_end = pre_add.map(|record| record.fragment_bit_end),
+        pre_add_source_resref = ?pre_add.and_then(|selected| selected.record().source_resref),
+        pre_add_fragment_bit_start = pre_add.map(|selected| selected.record().fragment_bit_start),
+        pre_add_fragment_bit_end = pre_add.map(|selected| selected.record().fragment_bit_end),
         custom_carrier_synthesis_policy = carrier.synthesis_policy(row).as_str(),
         "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
     );
