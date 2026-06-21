@@ -1266,6 +1266,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_target_mismatch,
             with_following_normal_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable,
+            with_following_normal_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            with_following_normal_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            with_following_normal_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            with_following_normal_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             with_following_custom_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
             with_following_custom_update_rewrite_ready = summary
@@ -1276,6 +1288,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_target_mismatch,
             with_following_custom_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable,
+            with_following_custom_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            with_following_custom_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            with_following_custom_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            with_following_custom_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             pre_add_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
             pre_add_normal_update_only = summary
@@ -1288,6 +1312,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_target_mismatch,
             pre_add_normal_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable,
+            pre_add_normal_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            pre_add_normal_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            pre_add_normal_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .missing_position,
+            pre_add_normal_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             pre_add_custom_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only,
             pre_add_custom_update_rewrite_ready = summary
@@ -1298,6 +1334,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_target_mismatch,
             pre_add_custom_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable,
+            pre_add_custom_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            pre_add_custom_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            pre_add_custom_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .missing_position,
+            pre_add_custom_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             add_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_add_only,
             synthesized_update_planned = summary

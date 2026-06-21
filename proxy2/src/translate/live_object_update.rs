@@ -9548,7 +9548,7 @@ mod diagnostic_tests {
                     custom_rewrite_ready: false,
                     custom_rewrite_target: None,
                     custom_rewrite_target_unavailable_reason: Some(
-                        ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
+                        ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition,
                     ),
                     ..base_record
                 },
@@ -9636,6 +9636,18 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
+            0
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update,
             3
         );
@@ -9657,6 +9669,18 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             1
         );
     }
@@ -9800,6 +9824,12 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             1
         );
     }
@@ -12390,6 +12420,48 @@ mod diagnostic_tests {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
+    pub no_appearance_claim: u32,
+    pub unique_module_target_unavailable: u32,
+    pub missing_position: u32,
+    pub position_output_unavailable: u32,
+}
+
+impl ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
+    fn count_reason(&mut self, reason: ExactPlaceableCustomCarrierRewriteTargetUnavailableReason) {
+        match reason {
+            ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::NoAppearanceClaim => {
+                self.no_appearance_claim = self.no_appearance_claim.saturating_add(1);
+            }
+            ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::UniqueModuleTargetUnavailable => {
+                self.unique_module_target_unavailable =
+                    self.unique_module_target_unavailable.saturating_add(1);
+            }
+            ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition => {
+                self.missing_position = self.missing_position.saturating_add(1);
+            }
+            ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable => {
+                self.position_output_unavailable =
+                    self.position_output_unavailable.saturating_add(1);
+            }
+        }
+    }
+
+    pub(crate) fn saturating_add_assign(&mut self, other: Self) {
+        self.no_appearance_claim = self
+            .no_appearance_claim
+            .saturating_add(other.no_appearance_claim);
+        self.unique_module_target_unavailable = self
+            .unique_module_target_unavailable
+            .saturating_add(other.unique_module_target_unavailable);
+        self.missing_position = self.missing_position.saturating_add(other.missing_position);
+        self.position_output_unavailable = self
+            .position_output_unavailable
+            .saturating_add(other.position_output_unavailable);
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateRewriteSummary {
     pub old_declared: u32,
@@ -12497,6 +12569,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_ready:
         u32,
@@ -12506,6 +12580,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence:
         u32,
@@ -12519,6 +12595,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_ready:
@@ -12529,6 +12607,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned:
         u32,
@@ -25408,6 +25488,7 @@ fn count_exact_placeable_custom_carrier_target_state(
     summary: &mut LiveObjectUpdateRewriteSummary,
     scope: ExactPlaceableCustomCarrierCounterScope,
     state: ExactPlaceableCustomCarrierRewriteTargetState,
+    unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
 ) {
     match scope {
         ExactPlaceableCustomCarrierCounterScope::FollowingNormal => {
@@ -25420,7 +25501,10 @@ fn count_exact_placeable_custom_carrier_target_state(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_target_mismatch,
                 &mut summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable,
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons,
                 state,
+                unavailable_reason,
             );
         }
         ExactPlaceableCustomCarrierCounterScope::FollowingCustom => {
@@ -25433,7 +25517,10 @@ fn count_exact_placeable_custom_carrier_target_state(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_target_mismatch,
                 &mut summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable,
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
                 state,
+                unavailable_reason,
             );
         }
         ExactPlaceableCustomCarrierCounterScope::PreAddNormal => {
@@ -25446,7 +25533,10 @@ fn count_exact_placeable_custom_carrier_target_state(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_target_mismatch,
                 &mut summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable,
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons,
                 state,
+                unavailable_reason,
             );
         }
         ExactPlaceableCustomCarrierCounterScope::PreAddCustom => {
@@ -25459,7 +25549,10 @@ fn count_exact_placeable_custom_carrier_target_state(
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_target_mismatch,
                 &mut summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable,
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons,
                 state,
+                unavailable_reason,
             );
         }
     }
@@ -25470,7 +25563,9 @@ fn count_exact_placeable_custom_carrier_target_state_counters(
     blocked: &mut u32,
     target_mismatch: &mut u32,
     target_unavailable: &mut u32,
+    target_unavailable_reasons: &mut ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     state: ExactPlaceableCustomCarrierRewriteTargetState,
+    unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
 ) {
     match state {
         ExactPlaceableCustomCarrierRewriteTargetState::MatchesModuleRow => {
@@ -25483,6 +25578,9 @@ fn count_exact_placeable_custom_carrier_target_state_counters(
         ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable => {
             *blocked = blocked.saturating_add(1);
             *target_unavailable = target_unavailable.saturating_add(1);
+            if let Some(reason) = unavailable_reason {
+                target_unavailable_reasons.count_reason(reason);
+            }
         }
     }
 }
@@ -25521,10 +25619,12 @@ fn count_exact_placeable_fixed_width_following_carrier(
             ExactPlaceableCustomCarrierCounterScope::FollowingNormal
         }
     };
+    let record = selected_following.record();
     count_exact_placeable_custom_carrier_target_state(
         summary,
         scope,
         selected_following.custom_rewrite_target_state(row),
+        record.custom_rewrite_target_unavailable_reason,
     );
 }
 
@@ -25552,10 +25652,12 @@ fn count_exact_placeable_fixed_width_pre_add_carrier(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only
                     .saturating_add(1);
+            let record = selected_pre_add.record();
             count_exact_placeable_custom_carrier_target_state(
                 summary,
                 ExactPlaceableCustomCarrierCounterScope::PreAddCustom,
                 selected_pre_add.custom_rewrite_target_state(row),
+                record.custom_rewrite_target_unavailable_reason,
             );
         }
         SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
@@ -25564,10 +25666,12 @@ fn count_exact_placeable_fixed_width_pre_add_carrier(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only
                     .saturating_add(1);
+            let record = selected_pre_add.record();
             count_exact_placeable_custom_carrier_target_state(
                 summary,
                 ExactPlaceableCustomCarrierCounterScope::PreAddNormal,
                 selected_pre_add.custom_rewrite_target_state(row),
+                record.custom_rewrite_target_unavailable_reason,
             );
         }
     }
@@ -26140,6 +26244,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_target_mismatch,
             with_following_custom_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable,
+            with_following_custom_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            with_following_custom_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            with_following_custom_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            with_following_custom_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             with_following_normal_update = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update,
             with_following_normal_update_rewrite_ready = summary
@@ -26150,6 +26266,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_target_mismatch,
             with_following_normal_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable,
+            with_following_normal_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            with_following_normal_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            with_following_normal_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .missing_position,
+            with_following_normal_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             pre_add_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only,
             pre_add_custom_update_only = summary
@@ -26162,6 +26290,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_target_mismatch,
             pre_add_custom_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable,
+            pre_add_custom_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            pre_add_custom_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            pre_add_custom_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .missing_position,
+            pre_add_custom_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             pre_add_normal_update_only = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only,
             pre_add_normal_update_rewrite_ready = summary
@@ -26172,6 +26312,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_target_mismatch,
             pre_add_normal_update_rewrite_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable,
+            pre_add_normal_update_rewrite_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .no_appearance_claim,
+            pre_add_normal_update_rewrite_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .unique_module_target_unavailable,
+            pre_add_normal_update_rewrite_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .missing_position,
+            pre_add_normal_update_rewrite_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_planned = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_planned,
             synthesized_update_plan_offset_rejected = summary
