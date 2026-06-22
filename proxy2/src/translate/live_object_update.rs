@@ -3190,6 +3190,78 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn rewrite_bit_ledger_inserts_appearance_promoted_bits_before_following_update() {
+        let mut live = vec![0; 32];
+        live[0] = b'P';
+        live[1] = CREATURE_OBJECT_TYPE;
+        live[16] = b'U';
+        live[17] = CREATURE_OBJECT_TYPE;
+
+        let appearance_source_bits = [true];
+        let appearance_emitted_bits = [true, false, false];
+        let promoted_bits = [false, true];
+        let following_update_tail_bits = [
+            true, true, false, true, false, false, true, false, true, false,
+        ];
+        let mut source_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        source_bits.extend_from_slice(&appearance_source_bits);
+        source_bits.extend_from_slice(&following_update_tail_bits);
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend_from_slice(&appearance_emitted_bits);
+        fragment_bits.extend_from_slice(&promoted_bits);
+        fragment_bits.extend_from_slice(&following_update_tail_bits);
+
+        let appearance_start = CNW_FRAGMENT_HEADER_BITS;
+        let appearance_end = appearance_start + appearance_emitted_bits.len();
+        let update_end = appearance_end + promoted_bits.len() + following_update_tail_bits.len();
+        let appearance_commit = LiveObjectRewriteBitLedgerCommit {
+            offset: 0,
+            record_end: 16,
+            emitted_bit_start: appearance_start,
+            emitted_bit_end: appearance_end,
+            bits_inserted: appearance_emitted_bits.len() - appearance_source_bits.len(),
+            bits_removed: 0,
+            family: "creature-appearance-rewrite",
+        };
+        let update_commit = LiveObjectRewriteBitLedgerCommit {
+            offset: 16,
+            record_end: 32,
+            emitted_bit_start: appearance_end,
+            emitted_bit_end: update_end,
+            bits_inserted: 0,
+            bits_removed: 0,
+            family: "creature-update-exact",
+        };
+
+        let mut missing_promoted = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        assert!(missing_promoted.commit_record(&live, appearance_commit));
+        assert!(
+            !missing_promoted.commit_record(&live, update_commit),
+            "without the appearance-adjacent source insert, the following U/5 row over-claims the source snapshot"
+        );
+
+        let mut ledger = LiveObjectRewriteBitLedger::with_source_bits(&source_bits);
+        assert!(ledger.commit_record(&live, appearance_commit));
+        assert!(ledger.insert_promoted_source_bits_from_fragment(
+            &fragment_bits,
+            appearance_end,
+            promoted_bits.len(),
+        ));
+        assert!(ledger.commit_record(&live, update_commit));
+
+        let entries = ledger.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].family, "creature-appearance-rewrite");
+        assert_eq!(entries[0].source_bit_end, appearance_start + 1);
+        assert_eq!(entries[1].source_bit_start, appearance_start + 1);
+        assert_eq!(
+            entries[1].source_bit_end,
+            source_bits.len() + promoted_bits.len()
+        );
+        assert_eq!(ledger.source_bit_cursor(), entries[1].source_bit_end);
+    }
+
+    #[test]
     fn rewrite_bit_ledger_rejects_source_span_past_snapshot() {
         let mut live = vec![0; 8];
         live[0] = b'A';
@@ -19114,9 +19186,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     "live-object creature-P rewrite state: offset={offset} record_end={record_end} bit_cursor={bit_cursor} bit_cursor_reliable={bit_cursor_reliable} already_ee={creature_appearance_already_ee_shaped} verified_ee={creature_appearance_verified_ee_shaped} legacy_end={creature_appearance_legacy_end:?}"
                 );
             }
+            let creature_appearance_start_bit_cursor = bit_cursor;
             let original_fragment_bits_for_tail_repair = fragment_bits.clone();
             let mut appearance_bits_inserted_for_tail_repair = 0usize;
             let mut appearance_bits_removed_for_tail_repair = 0usize;
+            let mut creature_appearance_bits_inserted_for_ledger = 0usize;
+            let mut creature_appearance_bits_removed_for_ledger = 0usize;
+            let mut creature_appearance_rewritten_for_ledger = false;
             let mut appearance_tail_fragment_bits_adjusted = false;
             let legacy_appearance_rewrite_candidate = bit_cursor_reliable
                 && !creature_appearance_verified_ee_shaped
@@ -19144,11 +19220,18 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 {
                     appearance_bits_inserted_for_tail_repair = appearance_rewrite.bits_inserted;
                     appearance_bits_removed_for_tail_repair = appearance_rewrite.bits_removed;
+                    creature_appearance_bits_inserted_for_ledger =
+                        creature_appearance_bits_inserted_for_ledger
+                            .saturating_add(appearance_rewrite.bits_inserted);
+                    creature_appearance_bits_removed_for_ledger =
+                        creature_appearance_bits_removed_for_ledger
+                            .saturating_add(appearance_rewrite.bits_removed);
                     if appearance_rewrite.bits_inserted != 0
                         || appearance_rewrite.bits_removed != 0
                         || appearance_rewrite.bytes_inserted != 0
                         || appearance_rewrite.bytes_removed != 0
                     {
+                        creature_appearance_rewritten_for_ledger = true;
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -19189,6 +19272,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     appearance_bits_removed_for_tail_repair =
                         appearance_bits_removed_for_tail_repair
                             .saturating_add(appearance_rewrite.bits_removed);
+                    creature_appearance_bits_inserted_for_ledger =
+                        creature_appearance_bits_inserted_for_ledger
+                            .saturating_add(appearance_rewrite.bits_inserted);
+                    creature_appearance_bits_removed_for_ledger =
+                        creature_appearance_bits_removed_for_ledger
+                            .saturating_add(appearance_rewrite.bits_removed);
+                    creature_appearance_rewritten_for_ledger = true;
                     changed = true;
                     summary.bits_inserted = summary.bits_inserted.saturating_add(
                         u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -19214,6 +19304,13 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         appearance_bits_removed_for_tail_repair =
                             appearance_bits_removed_for_tail_repair
                                 .saturating_add(appearance_rewrite.bits_removed);
+                        creature_appearance_bits_inserted_for_ledger =
+                            creature_appearance_bits_inserted_for_ledger
+                                .saturating_add(appearance_rewrite.bits_inserted);
+                        creature_appearance_bits_removed_for_ledger =
+                            creature_appearance_bits_removed_for_ledger
+                                .saturating_add(appearance_rewrite.bits_removed);
+                        creature_appearance_rewritten_for_ledger = true;
                         changed = true;
                         summary.bits_inserted = summary.bits_inserted.saturating_add(
                             u32::try_from(appearance_rewrite.bits_inserted).unwrap_or(u32::MAX),
@@ -19246,6 +19343,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     summary.bytes_removed = summary.bytes_removed.saturating_add(
                         u32::try_from(removal.bytes_removed).unwrap_or(u32::MAX),
                     );
+                    creature_appearance_rewritten_for_ledger = true;
                     appearance_tail_fragment_bits_adjusted = true;
                 }
             } else if creature::advance_verified_noop_creature_appearance_record(
@@ -19291,6 +19389,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             record_end = ee_shape_end;
                             bit_cursor = ee_shape_cursor;
                             bit_cursor_reliable = true;
+                            creature_appearance_rewritten_for_ledger = true;
                             appearance_tail_fragment_bits_adjusted = true;
                             repaired_tail = true;
                         } else if fragment_spans::
@@ -19321,6 +19420,33 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 }
             }
             if bit_cursor_reliable {
+                if !rewrite_bit_ledger.commit_record(
+                    &live_bytes,
+                    LiveObjectRewriteBitLedgerCommit {
+                        offset,
+                        record_end,
+                        emitted_bit_start: creature_appearance_start_bit_cursor,
+                        emitted_bit_end: bit_cursor,
+                        bits_inserted: creature_appearance_bits_inserted_for_ledger,
+                        bits_removed: creature_appearance_bits_removed_for_ledger,
+                        family: if creature_appearance_rewritten_for_ledger {
+                            "creature-appearance-rewrite"
+                        } else {
+                            "creature-appearance-exact"
+                        },
+                    },
+                ) {
+                    trace_update_rewrite_cursor_unreliable(
+                        "creature-appearance-ledger-commit-invalid",
+                        &live_bytes,
+                        offset,
+                        record_end,
+                        creature_appearance_start_bit_cursor,
+                    );
+                    bit_cursor_reliable = false;
+                    offset = record_end.max(offset + 1);
+                    continue;
+                }
                 if let Some(promotion) =
                     fragment_spans::promote_appearance_following_creature_update_span_for_ee(
                         &mut live_bytes,
@@ -19330,6 +19456,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     )
                 {
                     changed = true;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                        &fragment_bits,
+                        bit_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-appearance-following-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     summary.interleaved_fragment_spans_promoted = summary
                         .interleaved_fragment_spans_promoted
                         .saturating_add(1);
@@ -19358,6 +19500,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         )
                     {
                         changed = true;
+                        if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                            &fragment_bits,
+                            bit_cursor,
+                            promotion.bits_promoted,
+                        ) {
+                            trace_update_rewrite_cursor_unreliable(
+                                "creature-appearance-following-item-promoted-source-ledger-insert-invalid",
+                                &live_bytes,
+                                offset,
+                                record_end,
+                                bit_cursor,
+                            );
+                            bit_cursor_reliable = false;
+                            offset = record_end.max(offset + 1);
+                            continue;
+                        }
                         summary.interleaved_fragment_spans_promoted = summary
                             .interleaved_fragment_spans_promoted
                             .saturating_add(1);
