@@ -1259,6 +1259,8 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
         let unresolved_target_unavailable = summary
             .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons();
+        let unresolved_target_unavailable_by_scope = summary
+            .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope();
         tracing::info!(
             source = exact_rewrite.source,
             family = family_name,
@@ -1552,6 +1554,78 @@ fn trace_live_object_exact_rewrite_summary(
                 unresolved_target_unavailable.missing_position,
             target_unavailable_unresolved_position_output_unavailable =
                 unresolved_target_unavailable.position_output_unavailable,
+            target_unavailable_unresolved_following_normal =
+                unresolved_target_unavailable_by_scope.following_normal.total(),
+            target_unavailable_unresolved_following_normal_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .no_appearance_claim,
+            target_unavailable_unresolved_following_normal_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_following_normal_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .missing_position,
+            target_unavailable_unresolved_following_normal_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .position_output_unavailable,
+            target_unavailable_unresolved_following_custom =
+                unresolved_target_unavailable_by_scope.following_custom.total(),
+            target_unavailable_unresolved_following_custom_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .no_appearance_claim,
+            target_unavailable_unresolved_following_custom_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_following_custom_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .missing_position,
+            target_unavailable_unresolved_following_custom_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .position_output_unavailable,
+            target_unavailable_unresolved_pre_add_normal =
+                unresolved_target_unavailable_by_scope.pre_add_normal.total(),
+            target_unavailable_unresolved_pre_add_normal_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .no_appearance_claim,
+            target_unavailable_unresolved_pre_add_normal_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_pre_add_normal_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .missing_position,
+            target_unavailable_unresolved_pre_add_normal_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .position_output_unavailable,
+            target_unavailable_unresolved_pre_add_custom =
+                unresolved_target_unavailable_by_scope.pre_add_custom.total(),
+            target_unavailable_unresolved_pre_add_custom_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .no_appearance_claim,
+            target_unavailable_unresolved_pre_add_custom_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_pre_add_custom_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .missing_position,
+            target_unavailable_unresolved_pre_add_custom_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .position_output_unavailable,
             "server exact placeable fixed-width custom carrier target-unavailable resolution"
         );
     }

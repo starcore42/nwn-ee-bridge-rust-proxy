@@ -10070,6 +10070,16 @@ mod diagnostic_tests {
             summary.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
         let unresolved =
             summary.exact_placeable_custom_carrier_unresolved_target_unavailable_reasons();
+        let selected_by_scope =
+            summary.exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope();
+        let committed_by_scope =
+            summary.exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope();
+        let satisfied_by_scope =
+            summary.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope();
+        let uncommitted_by_scope = summary
+            .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope();
+        let unresolved_by_scope =
+            summary.exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope();
 
         assert_eq!(selected.total(), 8);
         assert_eq!(committed.total(), 5);
@@ -10083,9 +10093,65 @@ mod diagnostic_tests {
         assert_eq!(uncommitted.total(), 4);
         assert_eq!(unresolved.no_appearance_claim, 0);
         assert_eq!(unresolved.unique_module_target_unavailable, 0);
-        assert_eq!(unresolved.missing_position, 0);
-        assert_eq!(unresolved.position_output_unavailable, 1);
-        assert_eq!(unresolved.total(), 1);
+        assert_eq!(unresolved.missing_position, 1);
+        assert_eq!(unresolved.position_output_unavailable, 3);
+        assert_eq!(unresolved.total(), 4);
+
+        assert_eq!(selected_by_scope.following_normal.missing_position, 2);
+        assert_eq!(
+            selected_by_scope
+                .following_normal
+                .position_output_unavailable,
+            1
+        );
+        assert_eq!(selected_by_scope.following_custom.no_appearance_claim, 1);
+        assert_eq!(
+            selected_by_scope.pre_add_normal.position_output_unavailable,
+            3
+        );
+        assert_eq!(
+            selected_by_scope
+                .pre_add_custom
+                .unique_module_target_unavailable,
+            1
+        );
+        assert_eq!(committed_by_scope.following_normal.missing_position, 1);
+        assert_eq!(
+            committed_by_scope.following_custom.no_appearance_claim, 2,
+            "following-custom commits saturate only their own selected scope"
+        );
+        assert_eq!(
+            satisfied_by_scope
+                .following_custom
+                .position_output_unavailable,
+            2
+        );
+        assert_eq!(
+            satisfied_by_scope.total_reasons().total(),
+            3,
+            "matching following-custom carriers are still reported as satisfied evidence"
+        );
+        assert_eq!(uncommitted_by_scope.following_normal.missing_position, 1);
+        assert_eq!(
+            uncommitted_by_scope
+                .following_normal
+                .position_output_unavailable,
+            1
+        );
+        assert_eq!(
+            uncommitted_by_scope
+                .pre_add_normal
+                .position_output_unavailable,
+            2
+        );
+        assert_eq!(unresolved_by_scope.following_normal.total(), 2);
+        assert_eq!(
+            unresolved_by_scope.following_custom.total(),
+            0,
+            "the satisfied matching carrier clears only following-custom target-unavailable evidence"
+        );
+        assert_eq!(unresolved_by_scope.pre_add_normal.total(), 2);
+        assert_eq!(unresolved_by_scope.pre_add_custom.total(), 0);
     }
 
     #[test]
@@ -12547,6 +12613,34 @@ impl ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+    pub following_normal: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub following_custom: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub pre_add_normal: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub pre_add_custom: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+}
+
+impl ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+    pub(crate) fn saturating_sub(self, other: Self) -> Self {
+        Self {
+            following_normal: self.following_normal.saturating_sub(other.following_normal),
+            following_custom: self.following_custom.saturating_sub(other.following_custom),
+            pre_add_normal: self.pre_add_normal.saturating_sub(other.pre_add_normal),
+            pre_add_custom: self.pre_add_custom.saturating_sub(other.pre_add_custom),
+        }
+    }
+
+    pub(crate) fn total_reasons(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
+        let mut reasons = ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default();
+        reasons.saturating_add_assign(self.following_normal);
+        reasons.saturating_add_assign(self.following_custom);
+        reasons.saturating_add_assign(self.pre_add_normal);
+        reasons.saturating_add_assign(self.pre_add_custom);
+        reasons
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateRewriteSummary {
     pub old_declared: u32,
@@ -12885,66 +12979,88 @@ pub struct LiveObjectUpdateRewriteSummary {
 }
 
 impl LiveObjectUpdateRewriteSummary {
+    pub(crate) fn exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons,
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
+            pre_add_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons,
+            pre_add_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons,
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons,
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons,
+            pre_add_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons,
+            pre_add_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons,
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons,
+            ..ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary::default()
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope()
+            .saturating_sub(
+                self.exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope(),
+            )
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope()
+            .saturating_sub(
+                self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope(),
+            )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_selected_target_unavailable_reasons(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        let mut reasons = ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default();
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons,
-        );
-        reasons
+        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_committed_target_unavailable_reasons(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        let mut reasons = ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default();
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons,
-        );
-        reasons
+        self.exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons
+        self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons()
-            .saturating_sub(
-                self.exact_placeable_custom_carrier_committed_target_unavailable_reasons(),
-            )
+        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_unresolved_target_unavailable_reasons(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons()
-            .saturating_sub(
-                self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(),
-            )
+        self.exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 }
 
@@ -26363,6 +26479,8 @@ fn trace_exact_placeable_reconciliation_summary(
             .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
         let unresolved_target_unavailable = summary
             .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons();
+        let unresolved_target_unavailable_by_scope = summary
+            .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope();
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
             exact_placeable_reconciliation_emitted = emitted,
@@ -26656,6 +26774,78 @@ fn trace_exact_placeable_reconciliation_summary(
                 unresolved_target_unavailable.missing_position,
             target_unavailable_unresolved_position_output_unavailable =
                 unresolved_target_unavailable.position_output_unavailable,
+            target_unavailable_unresolved_following_normal =
+                unresolved_target_unavailable_by_scope.following_normal.total(),
+            target_unavailable_unresolved_following_normal_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .no_appearance_claim,
+            target_unavailable_unresolved_following_normal_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_following_normal_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .missing_position,
+            target_unavailable_unresolved_following_normal_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_normal
+                    .position_output_unavailable,
+            target_unavailable_unresolved_following_custom =
+                unresolved_target_unavailable_by_scope.following_custom.total(),
+            target_unavailable_unresolved_following_custom_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .no_appearance_claim,
+            target_unavailable_unresolved_following_custom_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_following_custom_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .missing_position,
+            target_unavailable_unresolved_following_custom_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .following_custom
+                    .position_output_unavailable,
+            target_unavailable_unresolved_pre_add_normal =
+                unresolved_target_unavailable_by_scope.pre_add_normal.total(),
+            target_unavailable_unresolved_pre_add_normal_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .no_appearance_claim,
+            target_unavailable_unresolved_pre_add_normal_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_pre_add_normal_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .missing_position,
+            target_unavailable_unresolved_pre_add_normal_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_normal
+                    .position_output_unavailable,
+            target_unavailable_unresolved_pre_add_custom =
+                unresolved_target_unavailable_by_scope.pre_add_custom.total(),
+            target_unavailable_unresolved_pre_add_custom_no_appearance_claim =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .no_appearance_claim,
+            target_unavailable_unresolved_pre_add_custom_unique_module_target_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .unique_module_target_unavailable,
+            target_unavailable_unresolved_pre_add_custom_missing_position =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .missing_position,
+            target_unavailable_unresolved_pre_add_custom_position_output_unavailable =
+                unresolved_target_unavailable_by_scope
+                    .pre_add_custom
+                    .position_output_unavailable,
             "server->client exact live-object placeable fixed-width custom carrier target-unavailable resolution"
         );
     }

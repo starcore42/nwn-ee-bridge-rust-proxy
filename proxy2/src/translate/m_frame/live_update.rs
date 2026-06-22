@@ -332,70 +332,88 @@ pub struct ExactLiveObjectRewriteSummary {
 }
 
 impl ExactLiveObjectRewriteSummary {
+    pub(crate) fn exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons,
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
+            pre_add_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons,
+            pre_add_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons,
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons,
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons,
+            pre_add_normal: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons,
+            pre_add_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons,
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_custom: self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons,
+            ..live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary::default()
+        }
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope()
+            .saturating_sub(
+                self.exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope(),
+            )
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope()
+            .saturating_sub(
+                self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope(),
+            )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_selected_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        let mut reasons =
-            live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default(
-            );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only_custom_rewrite_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only_custom_rewrite_unavailable_reasons,
-        );
-        reasons
+        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_committed_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        let mut reasons =
-            live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default(
-            );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons,
-        );
-        reasons.saturating_add_assign(
-            self.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons,
-        );
-        reasons
+        self.exact_placeable_custom_carrier_committed_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons
+        self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_custom_carrier_selected_target_unavailable_reasons()
-            .saturating_sub(
-                self.exact_placeable_custom_carrier_committed_target_unavailable_reasons(),
-            )
+        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     pub(crate) fn exact_placeable_custom_carrier_unresolved_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons()
-            .saturating_sub(
-                self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(),
-            )
+        self.exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope()
+            .total_reasons()
     }
 
     fn record_update(&mut self, changed: bool) {
