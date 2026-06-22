@@ -5825,6 +5825,11 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         handoff.sequence_handoff_blocker(),
         "unowned-emitted-source-gap"
     );
+    assert_eq!(
+        handoff.source_decision(),
+        super::LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
+        "compact sequence evidence must still reject the shifted cursor until a source owner is proven"
+    );
     assert_eq!(handoff.neighbor_delta, 2);
     assert_eq!(handoff.neighbor_bit_start, failure.bit_cursor + 2);
     assert_eq!(handoff.emitted_gap_bits, 2);

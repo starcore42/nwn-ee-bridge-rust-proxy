@@ -2606,6 +2606,8 @@ mod diagnostic_tests {
                         &[false, true],
                     ),
                     sequence_kind: LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
+                    source_decision:
+                        LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
                 }),
                 contiguous_tail: Some(contiguous_tail),
                 source_window: Some(source_window),
@@ -2633,6 +2635,9 @@ mod diagnostic_tests {
         ));
         assert!(report.contains(
             "item_handoff_sequence=item-create-to-item-update claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
+        ));
+        assert!(report.contains(
+            "item_handoff_source_decision=blocked-unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
         ));
         assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
@@ -4062,6 +4067,58 @@ mod diagnostic_tests {
             LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorInsideLedgerRow,
             "a validating neighbor must not hide that the inherited cursor overlaps the prior row"
         );
+    }
+
+    #[test]
+    fn item_handoff_source_decision_requires_bounded_sequence_and_source_tail() {
+        let no_window = LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
+            LiveObjectUpdateItemHandoffSequenceKind::NoSourceWindow,
+            LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+        );
+        assert_eq!(
+            no_window,
+            LiveObjectUpdateItemHandoffSourceDecision::NoSourceWindow
+        );
+        assert!(!no_window.claimable_handoff());
+        assert_eq!(no_window.handoff_blocker(), "no-source-window");
+
+        let unclassified =
+            LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
+                LiveObjectUpdateItemHandoffSequenceKind::Unclassified,
+                LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+            );
+        assert_eq!(
+            unclassified,
+            LiveObjectUpdateItemHandoffSourceDecision::UnclassifiedSequence
+        );
+        assert!(!unclassified.claimable_handoff());
+        assert_eq!(
+            unclassified.handoff_blocker(),
+            "unclassified-handoff-sequence"
+        );
+
+        let claimable = LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
+            LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+            LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+        );
+        assert_eq!(
+            claimable,
+            LiveObjectUpdateItemHandoffSourceDecision::ClaimableContiguousTail
+        );
+        assert!(claimable.claimable_handoff());
+        assert_eq!(claimable.handoff_blocker(), "none");
+
+        let blocked = LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
+            LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
+        );
+        assert_eq!(
+            blocked,
+            LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap
+        );
+        assert!(!blocked.claimable_handoff());
+        assert_eq!(blocked.as_str(), "blocked-unowned-emitted-source-gap");
+        assert_eq!(blocked.handoff_blocker(), "unowned-emitted-source-gap");
     }
 
     #[test]
@@ -13777,6 +13834,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub source_gap_bit_end: usize,
     pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     pub sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
+    pub source_decision: LiveObjectUpdateItemHandoffSourceDecision,
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -14026,17 +14084,111 @@ impl LiveObjectUpdateItemHandoffSequenceKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSourceDecision {
+    NoSourceWindow,
+    UnclassifiedSequence,
+    ClaimableContiguousTail,
+    BlockedNoLedger,
+    BlockedBeforeLedgerRow,
+    BlockedInsidePreviousRow,
+    BlockedUnownedEmittedGap,
+    BlockedUnownedSourceGap,
+    BlockedUnownedEmittedAndSourceGap,
+}
+
+impl LiveObjectUpdateItemHandoffSourceDecision {
+    pub fn from_sequence_and_source_owner(
+        sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
+        source_owner: LiveObjectUpdateItemCursorSourceOwner,
+    ) -> Self {
+        if !sequence_kind.has_bounded_predecessor() {
+            return match sequence_kind {
+                LiveObjectUpdateItemHandoffSequenceKind::NoSourceWindow => Self::NoSourceWindow,
+                LiveObjectUpdateItemHandoffSequenceKind::Unclassified => Self::UnclassifiedSequence,
+                LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate
+                | LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate => {
+                    unreachable!("bounded handoff sequence rejected by has_bounded_predecessor")
+                }
+            };
+        }
+
+        match sequence_kind {
+            LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate
+            | LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate => {
+                match source_owner {
+                    LiveObjectUpdateItemCursorSourceOwner::NoLedger => Self::BlockedNoLedger,
+                    LiveObjectUpdateItemCursorSourceOwner::BeforeLedgerRow => {
+                        Self::BlockedBeforeLedgerRow
+                    }
+                    LiveObjectUpdateItemCursorSourceOwner::InsidePreviousRow => {
+                        Self::BlockedInsidePreviousRow
+                    }
+                    LiveObjectUpdateItemCursorSourceOwner::ContiguousTail => {
+                        Self::ClaimableContiguousTail
+                    }
+                    LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedGap => {
+                        Self::BlockedUnownedEmittedGap
+                    }
+                    LiveObjectUpdateItemCursorSourceOwner::UnownedSourceGap => {
+                        Self::BlockedUnownedSourceGap
+                    }
+                    LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap => {
+                        Self::BlockedUnownedEmittedAndSourceGap
+                    }
+                }
+            }
+            LiveObjectUpdateItemHandoffSequenceKind::NoSourceWindow
+            | LiveObjectUpdateItemHandoffSequenceKind::Unclassified => {
+                unreachable!("unbounded handoff sequence handled before source-owner dispatch")
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSourceWindow => "no-source-window",
+            Self::UnclassifiedSequence => "unclassified-handoff-sequence",
+            Self::ClaimableContiguousTail => "claimable-contiguous-tail",
+            Self::BlockedNoLedger => "blocked-no-ledger",
+            Self::BlockedBeforeLedgerRow => "blocked-before-ledger-row",
+            Self::BlockedInsidePreviousRow => "blocked-inside-previous-row",
+            Self::BlockedUnownedEmittedGap => "blocked-unowned-emitted-gap",
+            Self::BlockedUnownedSourceGap => "blocked-unowned-source-gap",
+            Self::BlockedUnownedEmittedAndSourceGap => "blocked-unowned-emitted-source-gap",
+        }
+    }
+
+    pub fn claimable_handoff(self) -> bool {
+        matches!(self, Self::ClaimableContiguousTail)
+    }
+
+    pub fn handoff_blocker(self) -> &'static str {
+        match self {
+            Self::ClaimableContiguousTail => "none",
+            Self::NoSourceWindow => "no-source-window",
+            Self::UnclassifiedSequence => "unclassified-handoff-sequence",
+            Self::BlockedNoLedger => "no-ledger",
+            Self::BlockedBeforeLedgerRow => "before-ledger-row",
+            Self::BlockedInsidePreviousRow => "inside-previous-row",
+            Self::BlockedUnownedEmittedGap => "unowned-emitted-gap",
+            Self::BlockedUnownedSourceGap => "unowned-source-gap",
+            Self::BlockedUnownedEmittedAndSourceGap => "unowned-emitted-source-gap",
+        }
+    }
+}
+
 impl LiveObjectUpdateItemHandoffEvidence {
     pub fn sequence_claimable_handoff(&self) -> bool {
-        self.sequence_kind.has_bounded_predecessor() && self.source_owner.claimable_handoff()
+        self.source_decision.claimable_handoff()
     }
 
     pub fn sequence_handoff_blocker(&self) -> &'static str {
-        if self.sequence_kind.has_bounded_predecessor() {
-            self.source_owner.handoff_blocker()
-        } else {
-            "unclassified-handoff-sequence"
-        }
+        self.source_decision.handoff_blocker()
+    }
+
+    pub fn source_decision(&self) -> LiveObjectUpdateItemHandoffSourceDecision {
+        self.source_decision
     }
 }
 
@@ -30410,6 +30562,11 @@ impl LiveObjectItemUpdateCursorFailure {
                         && entry.marker == ITEM_OBJECT_TYPE
                 })
         });
+        let source_decision =
+            LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
+                sequence_kind,
+                neighbor.source_owner,
+            );
 
         LiveObjectUpdateItemHandoffEvidence {
             previous_offset: neighbor.previous_offset,
@@ -30437,6 +30594,7 @@ impl LiveObjectItemUpdateCursorFailure {
             source_gap_bit_end: neighbor.source_gap_bit_end,
             source_gap_values: neighbor.source_gap_values,
             sequence_kind,
+            source_decision,
         }
     }
 }
@@ -32229,6 +32387,13 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.sequence_kind.as_str(),
                 handoff.sequence_claimable_handoff(),
                 handoff.sequence_handoff_blocker()
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_source_decision={} claimable_handoff={} handoff_blocker={}",
+                handoff.source_decision.as_str(),
+                handoff.source_decision.claimable_handoff(),
+                handoff.source_decision.handoff_blocker()
             );
             let _ = writeln!(
                 &mut out,
