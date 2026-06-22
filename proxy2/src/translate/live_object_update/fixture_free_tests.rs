@@ -5830,6 +5830,11 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         super::LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
         "compact sequence evidence must still reject the shifted cursor until a source owner is proven"
     );
+    assert_eq!(
+        handoff.source_contract(),
+        super::LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate,
+        "compact source evidence should require the exact tail9 U/10 source/emitted width contract"
+    );
     let sequence_context = handoff.sequence_context();
     let carrier_row = sequence_context
         .carrier_row
@@ -5848,6 +5853,16 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         carrier_row.bit_end.is_some(),
         "carrier update must be a bounded source-window row, not a guessed handoff owner"
     );
+    assert_eq!(
+        carrier_row.bit_delta,
+        Some(super::COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS),
+        "compact tail9 U/10 emits the EE scalar-orientation/state contract"
+    );
+    assert_eq!(
+        carrier_row.source_bits.bit_count,
+        super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+        "compact tail9 U/10 owns only the capture-backed source bits"
+    );
     let previous_row = sequence_context
         .previous_row
         .expect("compact handoff evidence should retain the typed A/6 row");
@@ -5855,6 +5870,11 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(previous_row.marker, super::ITEM_OBJECT_TYPE);
     assert_eq!(previous_row.claim_family, "item-create");
     assert!(previous_row.bit_end.is_some());
+    assert_eq!(
+        previous_row.bit_end,
+        Some(failure.bit_cursor),
+        "typed A/6 must hand off exactly to the failed U/6 cursor before the unowned +2 neighbor"
+    );
     let focus_row = sequence_context
         .focus_row
         .expect("compact handoff evidence should retain the failed U/6 row");

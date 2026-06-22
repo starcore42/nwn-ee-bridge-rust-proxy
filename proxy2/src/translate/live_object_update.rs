@@ -145,6 +145,12 @@ const EE_UPDATE_APPEARANCE_RESREF_READ_BYTES: usize = 16;
 const CUSTOM_PLACEABLE_APPEARANCE_MIN: u16 = 0xFFFE;
 const EE_UPDATE_SCALE_STATE_READ_BYTES: usize = 6;
 const LEGACY_UPDATE_STATE_FRAGMENT_BITS: usize = 5;
+const COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS: usize =
+    LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1;
+const COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS: usize = LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+    + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+    + LEGACY_UPDATE_STATE_FRAGMENT_BITS
+    + 1;
 const LEGACY_COMPACT_PLACEABLE_ADD_SOURCE_BITS: usize = 4;
 const EE_PLACEABLE_ADD_DIRECT_EMPTY_GUARD_BITS: usize = 11;
 const EE_PLACEABLE_ADD_LEGACY_GUARD_INSERTED_BITS: usize = 1;
@@ -2606,6 +2612,8 @@ mod diagnostic_tests {
                         &[false, true],
                     ),
                     sequence_kind: LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
+                    source_contract:
+                        LiveObjectUpdateItemHandoffSourceContract::ItemCreateToItemUpdate,
                     source_decision:
                         LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
                     sequence_context: LiveObjectUpdateItemHandoffSequenceContext::default(),
@@ -2637,6 +2645,7 @@ mod diagnostic_tests {
         assert!(report.contains(
             "item_handoff_sequence=item-create-to-item-update claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
         ));
+        assert!(report.contains("item_handoff_source_contract=item-create-to-item-update"));
         assert!(report.contains(
             "item_handoff_source_decision=blocked-unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
         ));
@@ -4123,6 +4132,136 @@ mod diagnostic_tests {
         assert!(!blocked.claimable_handoff());
         assert_eq!(blocked.as_str(), "blocked-unowned-emitted-source-gap");
         assert_eq!(blocked.handoff_blocker(), "unowned-emitted-source-gap");
+    }
+
+    #[test]
+    fn item_handoff_source_contract_requires_exact_compact_tail9_carrier_width() {
+        fn handoff_row(
+            opcode: u8,
+            marker: u8,
+            object_id: Option<u32>,
+            update_mask: Option<u32>,
+            bit_start: usize,
+            bit_end: Option<usize>,
+            source_bit_start: usize,
+            source_bit_count: usize,
+            claim_family: &'static str,
+        ) -> LiveObjectUpdateItemHandoffSequenceRowEvidence {
+            let source_bits = vec![false; source_bit_count];
+            LiveObjectUpdateItemHandoffSequenceRowEvidence {
+                offset: 0,
+                record_end: 0,
+                opcode,
+                marker,
+                object_id,
+                update_mask,
+                bit_start,
+                bit_end,
+                bit_delta: bit_end.map(|end| end.saturating_sub(bit_start)),
+                source_bits: live_object_rewrite_bit_slice_evidence(
+                    source_bit_start,
+                    source_bit_start + source_bit_count,
+                    &source_bits,
+                ),
+                claim_family,
+            }
+        }
+
+        let carrier = handoff_row(
+            b'U',
+            DOOR_OBJECT_TYPE,
+            Some(0x8000_0004),
+            Some(0xFFFF_FFF7),
+            CNW_FRAGMENT_HEADER_BITS,
+            Some(CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS),
+            CNW_FRAGMENT_HEADER_BITS,
+            COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+            "update",
+        );
+        let previous = handoff_row(
+            b'A',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            None,
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS,
+            Some(CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS + 6),
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+            5,
+            "item-create",
+        );
+        let focus = handoff_row(
+            b'U',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            Some(0xFFFF_FFF3),
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS + 6,
+            None,
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
+            16,
+            "unclaimed",
+        );
+        let exact_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: Some(carrier),
+            previous_row: Some(previous),
+            focus_row: Some(focus),
+        };
+        let exact_contract = live_object_item_handoff_source_contract(
+            LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+            exact_context,
+        );
+        assert_eq!(
+            exact_contract,
+            LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate
+        );
+        assert_eq!(
+            exact_contract.as_str(),
+            "compact-tail9-door-update-item-create-to-item-update"
+        );
+        let blocked =
+            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_and_source_owner(
+                exact_contract,
+                LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
+            );
+        assert_eq!(
+            blocked,
+            LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap
+        );
+
+        let loose_carrier = handoff_row(
+            b'U',
+            DOOR_OBJECT_TYPE,
+            Some(0x8000_0004),
+            Some(0xFFFF_FFF7),
+            CNW_FRAGMENT_HEADER_BITS,
+            Some(CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS - 1),
+            CNW_FRAGMENT_HEADER_BITS,
+            COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+            "update",
+        );
+        let loose_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: Some(loose_carrier),
+            previous_row: Some(previous),
+            focus_row: Some(focus),
+        };
+        let loose_contract = live_object_item_handoff_source_contract(
+            LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+            loose_context,
+        );
+        assert_eq!(
+            loose_contract,
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a broad door-update predecessor is not the compact tail9 handoff contract without exact source/emitted widths"
+        );
+        let loose_decision =
+            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_and_source_owner(
+                loose_contract,
+                LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+            );
+        assert_eq!(
+            loose_decision,
+            LiveObjectUpdateItemHandoffSourceDecision::UnclassifiedSourceContract
+        );
+        assert!(!loose_decision.claimable_handoff());
     }
 
     #[test]
@@ -13838,6 +13977,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub source_gap_bit_end: usize,
     pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     pub sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
+    pub source_contract: LiveObjectUpdateItemHandoffSourceContract,
     pub source_decision: LiveObjectUpdateItemHandoffSourceDecision,
     pub sequence_context: LiveObjectUpdateItemHandoffSequenceContext,
 }
@@ -14112,9 +14252,38 @@ impl LiveObjectUpdateItemHandoffSequenceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSourceContract {
+    NoSourceWindow,
+    Unclassified,
+    ItemCreateToItemUpdate,
+    CompactTail9DoorUpdateItemCreateToItemUpdate,
+}
+
+impl LiveObjectUpdateItemHandoffSourceContract {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSourceWindow => "no-source-window",
+            Self::Unclassified => "unclassified",
+            Self::ItemCreateToItemUpdate => "item-create-to-item-update",
+            Self::CompactTail9DoorUpdateItemCreateToItemUpdate => {
+                "compact-tail9-door-update-item-create-to-item-update"
+            }
+        }
+    }
+
+    pub fn has_bounded_source_contract(self) -> bool {
+        matches!(
+            self,
+            Self::ItemCreateToItemUpdate | Self::CompactTail9DoorUpdateItemCreateToItemUpdate
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateItemHandoffSourceDecision {
     NoSourceWindow,
     UnclassifiedSequence,
+    UnclassifiedSourceContract,
     ClaimableContiguousTail,
     BlockedNoLedger,
     BlockedBeforeLedgerRow,
@@ -14172,10 +14341,47 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
         }
     }
 
+    pub fn from_source_contract_and_source_owner(
+        source_contract: LiveObjectUpdateItemHandoffSourceContract,
+        source_owner: LiveObjectUpdateItemCursorSourceOwner,
+    ) -> Self {
+        if !source_contract.has_bounded_source_contract() {
+            return match source_contract {
+                LiveObjectUpdateItemHandoffSourceContract::NoSourceWindow => Self::NoSourceWindow,
+                LiveObjectUpdateItemHandoffSourceContract::Unclassified => {
+                    Self::UnclassifiedSourceContract
+                }
+                LiveObjectUpdateItemHandoffSourceContract::ItemCreateToItemUpdate
+                | LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate => {
+                    unreachable!("bounded source contract rejected by has_bounded_source_contract")
+                }
+            };
+        }
+
+        match source_owner {
+            LiveObjectUpdateItemCursorSourceOwner::NoLedger => Self::BlockedNoLedger,
+            LiveObjectUpdateItemCursorSourceOwner::BeforeLedgerRow => Self::BlockedBeforeLedgerRow,
+            LiveObjectUpdateItemCursorSourceOwner::InsidePreviousRow => {
+                Self::BlockedInsidePreviousRow
+            }
+            LiveObjectUpdateItemCursorSourceOwner::ContiguousTail => Self::ClaimableContiguousTail,
+            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedGap => {
+                Self::BlockedUnownedEmittedGap
+            }
+            LiveObjectUpdateItemCursorSourceOwner::UnownedSourceGap => {
+                Self::BlockedUnownedSourceGap
+            }
+            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap => {
+                Self::BlockedUnownedEmittedAndSourceGap
+            }
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoSourceWindow => "no-source-window",
             Self::UnclassifiedSequence => "unclassified-handoff-sequence",
+            Self::UnclassifiedSourceContract => "unclassified-source-contract",
             Self::ClaimableContiguousTail => "claimable-contiguous-tail",
             Self::BlockedNoLedger => "blocked-no-ledger",
             Self::BlockedBeforeLedgerRow => "blocked-before-ledger-row",
@@ -14195,6 +14401,7 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
             Self::ClaimableContiguousTail => "none",
             Self::NoSourceWindow => "no-source-window",
             Self::UnclassifiedSequence => "unclassified-handoff-sequence",
+            Self::UnclassifiedSourceContract => "unclassified-source-contract",
             Self::BlockedNoLedger => "no-ledger",
             Self::BlockedBeforeLedgerRow => "before-ledger-row",
             Self::BlockedInsidePreviousRow => "inside-previous-row",
@@ -14216,6 +14423,10 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn source_decision(&self) -> LiveObjectUpdateItemHandoffSourceDecision {
         self.source_decision
+    }
+
+    pub fn source_contract(&self) -> LiveObjectUpdateItemHandoffSourceContract {
+        self.source_contract
     }
 
     pub fn sequence_context(&self) -> LiveObjectUpdateItemHandoffSequenceContext {
@@ -30593,11 +30804,6 @@ impl LiveObjectItemUpdateCursorFailure {
                         && entry.marker == ITEM_OBJECT_TYPE
                 })
         });
-        let source_decision =
-            LiveObjectUpdateItemHandoffSourceDecision::from_sequence_and_source_owner(
-                sequence_kind,
-                neighbor.source_owner,
-            );
         let sequence_context = live_object_item_handoff_sequence_context(
             self.source_window,
             self.offset,
@@ -30605,6 +30811,13 @@ impl LiveObjectItemUpdateCursorFailure {
             neighbor.previous_offset,
             neighbor.previous_record_end,
         );
+        let source_contract =
+            live_object_item_handoff_source_contract(sequence_kind, sequence_context);
+        let source_decision =
+            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_and_source_owner(
+                source_contract,
+                neighbor.source_owner,
+            );
 
         LiveObjectUpdateItemHandoffEvidence {
             previous_offset: neighbor.previous_offset,
@@ -30632,6 +30845,7 @@ impl LiveObjectItemUpdateCursorFailure {
             source_gap_bit_end: neighbor.source_gap_bit_end,
             source_gap_values: neighbor.source_gap_values,
             sequence_kind,
+            source_contract,
             source_decision,
             sequence_context,
         }
@@ -31258,6 +31472,84 @@ fn live_object_item_handoff_sequence_context(
         previous_row,
         focus_row: Some(live_object_item_handoff_sequence_row(focus)),
     }
+}
+
+fn live_object_item_handoff_source_contract(
+    sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
+    context: LiveObjectUpdateItemHandoffSequenceContext,
+) -> LiveObjectUpdateItemHandoffSourceContract {
+    match sequence_kind {
+        LiveObjectUpdateItemHandoffSequenceKind::NoSourceWindow => {
+            return LiveObjectUpdateItemHandoffSourceContract::NoSourceWindow;
+        }
+        LiveObjectUpdateItemHandoffSequenceKind::Unclassified => {
+            return LiveObjectUpdateItemHandoffSourceContract::Unclassified;
+        }
+        LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate => {}
+        LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate => {}
+    }
+
+    if !live_object_item_handoff_context_has_bounded_item_create_to_update(context) {
+        return LiveObjectUpdateItemHandoffSourceContract::Unclassified;
+    }
+
+    if sequence_kind == LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate {
+        return LiveObjectUpdateItemHandoffSourceContract::ItemCreateToItemUpdate;
+    }
+
+    if context
+        .carrier_row
+        .is_some_and(live_object_item_handoff_row_is_compact_tail9_door_update)
+    {
+        LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate
+    } else {
+        LiveObjectUpdateItemHandoffSourceContract::Unclassified
+    }
+}
+
+fn live_object_item_handoff_context_has_bounded_item_create_to_update(
+    context: LiveObjectUpdateItemHandoffSequenceContext,
+) -> bool {
+    let Some(previous) = context.previous_row else {
+        return false;
+    };
+    let Some(focus) = context.focus_row else {
+        return false;
+    };
+    live_object_item_handoff_row_is_bounded_item_create(previous)
+        && focus.opcode == b'U'
+        && focus.marker == ITEM_OBJECT_TYPE
+        && live_object_item_handoff_rows_match_object(previous, focus)
+        && previous.bit_end == Some(focus.bit_start)
+}
+
+fn live_object_item_handoff_row_is_compact_tail9_door_update(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    row.opcode == b'U'
+        && row.marker == DOOR_OBJECT_TYPE
+        && matches!(row.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
+        && row.bit_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS)
+        && row.source_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS
+        && row.claim_family == "update"
+}
+
+fn live_object_item_handoff_row_is_bounded_item_create(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    row.opcode == b'A'
+        && row.marker == ITEM_OBJECT_TYPE
+        && row.bit_end.is_some()
+        && matches!(row.claim_family, "item-create" | "item-add")
+}
+
+fn live_object_item_handoff_rows_match_object(
+    left: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+    right: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    left.object_id
+        .zip(right.object_id)
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn live_object_item_handoff_sequence_row(
@@ -32491,6 +32783,11 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.sequence_kind.as_str(),
                 handoff.sequence_claimable_handoff(),
                 handoff.sequence_handoff_blocker()
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_source_contract={}",
+                handoff.source_contract.as_str()
             );
             let _ = writeln!(
                 &mut out,
