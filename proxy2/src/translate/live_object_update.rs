@@ -17881,7 +17881,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
             bit_cursor_reliable,
         );
 
-        if let Some((bytes_removed, bits_promoted)) =
+        if let Some(removal) =
             remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
                 &mut live_bytes,
                 offset,
@@ -17891,19 +17891,33 @@ fn rewrite_update_records_payload_with_area_context_inner(
             )
         {
             changed = true;
+            // Midstream `W` storage is source-owned read-buffer data promoted
+            // into the shared fragment stream after the ledger snapshot.
+            if !rewrite_bit_ledger.insert_source_bits_at_cursor(&removal.promoted_bits) {
+                trace_update_rewrite_cursor_unreliable(
+                    "work-remaining-promoted-source-ledger-insert-invalid",
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    bit_cursor,
+                );
+                bit_cursor_reliable = false;
+                offset = record_end.max(offset + 1);
+                continue;
+            }
             summary.bytes_removed = summary
                 .bytes_removed
-                .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
-            if bits_promoted != 0 {
+                .saturating_add(u32::try_from(removal.bytes_removed).unwrap_or(u32::MAX));
+            if !removal.promoted_bits.is_empty() {
                 summary.interleaved_fragment_spans_promoted = summary
                     .interleaved_fragment_spans_promoted
                     .saturating_add(1);
                 summary.interleaved_fragment_bytes_promoted = summary
                     .interleaved_fragment_bytes_promoted
-                    .saturating_add(u32::try_from(bytes_removed).unwrap_or(u32::MAX));
+                    .saturating_add(u32::try_from(removal.bytes_removed).unwrap_or(u32::MAX));
                 summary.interleaved_fragment_bits_promoted = summary
                     .interleaved_fragment_bits_promoted
-                    .saturating_add(u32::try_from(bits_promoted).unwrap_or(u32::MAX));
+                    .saturating_add(u32::try_from(removal.promoted_bits.len()).unwrap_or(u32::MAX));
             }
             terminal_work_remaining_fragment_storage_record = None;
         }
@@ -18435,6 +18449,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             )
                         {
                             changed = true;
+                            if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                                &fragment_bits,
+                                bit_cursor,
+                                promotion.bits_promoted,
+                            ) {
+                                trace_update_rewrite_cursor_unreliable(
+                                    "creature-add-trailing-prefix-source-ledger-insert-invalid",
+                                    &live_bytes,
+                                    offset,
+                                    record_end,
+                                    bit_cursor,
+                                );
+                                bit_cursor_reliable = false;
+                                offset = record_end.max(offset + 1);
+                                continue;
+                            }
                             record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                             last_verified_record_allows_trailing_fragment_promotion = false;
                         }
@@ -18707,6 +18737,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             )
                         {
                             changed = true;
+                            if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                                &fragment_bits,
+                                bit_cursor,
+                                promotion.bits_promoted,
+                            ) {
+                                trace_update_rewrite_cursor_unreliable(
+                                    "creature-add-trailing-prefix-source-ledger-insert-invalid",
+                                    &live_bytes,
+                                    offset,
+                                    record_end,
+                                    bit_cursor,
+                                );
+                                bit_cursor_reliable = false;
+                                offset = record_end.max(offset + 1);
+                                continue;
+                            }
                             record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                             last_verified_record_allows_trailing_fragment_promotion = false;
                         }
@@ -18895,6 +18941,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                             )
                         {
                             changed = true;
+                            if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                                &fragment_bits,
+                                bit_cursor,
+                                promotion.bits_promoted,
+                            ) {
+                                trace_update_rewrite_cursor_unreliable(
+                                    "boundary-collision-prefix-source-ledger-insert-invalid",
+                                    &live_bytes,
+                                    offset,
+                                    record_end,
+                                    bit_cursor,
+                                );
+                                bit_cursor_reliable = false;
+                                offset = record_end.max(offset + 1);
+                                continue;
+                            }
                             record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                             last_verified_record_allows_trailing_fragment_promotion = false;
                             continue;
@@ -18966,6 +19028,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     )
                 {
                     changed = true;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                        &fragment_bits,
+                        bit_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-add-trailing-prefix-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     record_trailing_fragment_prefix_promotion(&mut summary, promotion);
                     last_verified_record_allows_trailing_fragment_promotion = false;
                 }
@@ -19705,6 +19783,23 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         .bits_inserted
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     bit_cursor = promotion.end_bit_cursor;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment_relative(
+                        &fragment_bits,
+                        promotion.start_bit_cursor,
+                        promotion.insertion_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-effect-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.insertion_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     terminal_promoted_fragment_trim_cursor =
                         promoted_fragment_storage_trim_cursor(
                             promotion.start_bit_cursor,
@@ -19770,6 +19865,23 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment_relative(
+                        &fragment_bits,
+                        promotion.start_bit_cursor,
+                        promotion.insertion_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-large-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.insertion_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     terminal_promoted_fragment_trim_cursor =
                         promoted_fragment_storage_trim_cursor(
                             promotion.start_bit_cursor,
@@ -19838,6 +19950,23 @@ fn rewrite_update_records_payload_with_area_context_inner(
                         .saturating_add(u32::try_from(promotion.bits_promoted).unwrap_or(u32::MAX));
                     let promoted_creature_mask = read_u32_le(&live_bytes, offset + 6);
                     bit_cursor = promotion.end_bit_cursor;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment_relative(
+                        &fragment_bits,
+                        promotion.start_bit_cursor,
+                        promotion.insertion_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "creature-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            promotion.insertion_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     terminal_promoted_fragment_trim_cursor = promoted_fragment_storage_trim_cursor(
                         promotion.start_bit_cursor,
                         promotion.end_bit_cursor,
@@ -20006,6 +20135,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     changed = true;
                     gui_promoted_for_ledger =
                         promotion.bytes_promoted != 0 || promotion.bits_promoted != 0;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                        &fragment_bits,
+                        bit_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "live-gui-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     summary.interleaved_fragment_spans_promoted = summary
                         .interleaved_fragment_spans_promoted
                         .saturating_add(1);
@@ -20174,6 +20319,22 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     changed = true;
                     inventory_promoted_for_ledger =
                         promotion.bytes_promoted != 0 || promotion.bits_promoted != 0;
+                    if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                        &fragment_bits,
+                        bit_cursor,
+                        promotion.bits_promoted,
+                    ) {
+                        trace_update_rewrite_cursor_unreliable(
+                            "inventory-promoted-source-ledger-insert-invalid",
+                            &live_bytes,
+                            offset,
+                            record_end,
+                            bit_cursor,
+                        );
+                        bit_cursor_reliable = false;
+                        offset = record_end.max(offset + 1);
+                        continue;
+                    }
                     summary.interleaved_fragment_spans_promoted = summary
                         .interleaved_fragment_spans_promoted
                         .saturating_add(1);
@@ -20575,6 +20736,20 @@ fn rewrite_update_records_payload_with_area_context_inner(
             )
         {
             changed = true;
+            if !rewrite_bit_ledger.insert_promoted_source_bits_from_fragment(
+                &fragment_bits,
+                bit_cursor,
+                promotion.bits_promoted,
+            ) {
+                trace_update_rewrite_cursor_unreliable(
+                    "terminal-trailing-prefix-source-ledger-insert-invalid",
+                    &live_bytes,
+                    last_verified_record_end,
+                    live_bytes.len(),
+                    bit_cursor,
+                );
+                bit_cursor_reliable = false;
+            }
             summary.interleaved_fragment_spans_promoted = summary
                 .interleaved_fragment_spans_promoted
                 .saturating_add(1);
@@ -28990,13 +29165,18 @@ fn verified_work_remaining_record_legal_end(live_bytes: &[u8], offset: usize) ->
     .then_some(legal_end)
 }
 
+struct WorkRemainingFragmentStorageRemoval {
+    bytes_removed: usize,
+    promoted_bits: Vec<bool>,
+}
+
 fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_ee(
     live_bytes: &mut Vec<u8>,
     offset: usize,
     record_end: &mut usize,
     fragment_bits: &mut Vec<bool>,
     bit_cursor: usize,
-) -> Option<(usize, usize)> {
+) -> Option<WorkRemainingFragmentStorageRemoval> {
     // Only the top-level live-object boundary loop may call this. `W`-shaped
     // bytes inside appearance, GUI, inventory, or item bodies remain owned by
     // those nested record parsers.
@@ -29017,7 +29197,7 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
         return None;
     }
 
-    let mut bits_promoted = 0usize;
+    let mut promoted_source_bits = Vec::new();
     if work_remaining_midstream_span_should_promote_bits(live_bytes, *record_end) {
         // Diamond sub_44F160 / EE sub_1407B85A0 stop after `W current total`.
         // This bounded CNW span is storage for the following bit-owning row.
@@ -29029,8 +29209,8 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
             return None;
         }
         promoted_bits.drain(0..CNW_FRAGMENT_HEADER_BITS);
-        bits_promoted = promoted_bits.len();
         bits::insert_msb_bits(fragment_bits, bit_cursor, &promoted_bits)?;
+        promoted_source_bits = promoted_bits;
     }
 
     let removed = *record_end - legal_end;
@@ -29043,7 +29223,10 @@ fn remove_midstream_work_remaining_fragment_storage_after_top_level_record_for_e
     );
     live_bytes.drain(legal_end..*record_end);
     *record_end = legal_end;
-    Some((removed, bits_promoted))
+    Some(WorkRemainingFragmentStorageRemoval {
+        bytes_removed: removed,
+        promoted_bits: promoted_source_bits,
+    })
 }
 
 fn work_remaining_midstream_span_should_promote_bits(
@@ -29377,6 +29560,70 @@ impl LiveObjectRewriteBitLedger {
             source_bits: source_bits.to_vec(),
             entries: Vec::new(),
         }
+    }
+
+    fn insert_source_bits_at_cursor(&mut self, source_bits: &[bool]) -> bool {
+        self.insert_source_bits_at(self.source_bit_cursor, source_bits)
+    }
+
+    fn insert_source_bits_at(&mut self, source_bit_cursor: usize, source_bits: &[bool]) -> bool {
+        if source_bits.is_empty() {
+            return true;
+        }
+        if source_bit_cursor < self.source_bit_cursor || source_bit_cursor > self.source_bits.len()
+        {
+            return false;
+        }
+        self.source_bits.splice(
+            source_bit_cursor..source_bit_cursor,
+            source_bits.iter().copied(),
+        );
+        true
+    }
+
+    fn insert_promoted_source_bits_from_fragment(
+        &mut self,
+        fragment_bits: &[bool],
+        bit_cursor: usize,
+        bits_promoted: usize,
+    ) -> bool {
+        if bits_promoted == 0 {
+            return true;
+        }
+        let Some(end) = bit_cursor.checked_add(bits_promoted) else {
+            return false;
+        };
+        let Some(promoted_bits) = fragment_bits.get(bit_cursor..end) else {
+            return false;
+        };
+        self.insert_source_bits_at_cursor(promoted_bits)
+    }
+
+    fn insert_promoted_source_bits_from_fragment_relative(
+        &mut self,
+        fragment_bits: &[bool],
+        record_start_bit_cursor: usize,
+        promoted_bit_cursor: usize,
+        bits_promoted: usize,
+    ) -> bool {
+        if bits_promoted == 0 {
+            return true;
+        }
+        let Some(prefix_source_delta) = promoted_bit_cursor.checked_sub(record_start_bit_cursor)
+        else {
+            return false;
+        };
+        let Some(source_bit_cursor) = self.source_bit_cursor.checked_add(prefix_source_delta)
+        else {
+            return false;
+        };
+        let Some(end) = promoted_bit_cursor.checked_add(bits_promoted) else {
+            return false;
+        };
+        let Some(promoted_bits) = fragment_bits.get(promoted_bit_cursor..end) else {
+            return false;
+        };
+        self.insert_source_bits_at(source_bit_cursor, promoted_bits)
     }
 
     fn commit_record(

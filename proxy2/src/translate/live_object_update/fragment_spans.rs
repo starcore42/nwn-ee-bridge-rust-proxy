@@ -70,6 +70,7 @@ pub(super) struct PromotedCreatureUpdateFragmentSpan {
     pub bytes_promoted: usize,
     pub bits_promoted: usize,
     pub start_bit_cursor: usize,
+    pub insertion_cursor: usize,
     pub end_bit_cursor: usize,
 }
 
@@ -243,6 +244,7 @@ pub(super) fn promote_creature_update_interleaved_fragment_span_for_ee(
         bytes_promoted: old_record_end.saturating_sub(read_end),
         bits_promoted: promoted_bits.len(),
         start_bit_cursor: proof.start_bit_cursor,
+        insertion_cursor,
         end_bit_cursor: proof.end_bit_cursor,
     })
 }
@@ -359,6 +361,7 @@ pub(super) fn promote_effect_only_creature_update_following_gui_fragment_span_fo
         bytes_promoted: span_end.saturating_sub(read_end),
         bits_promoted: promoted_bits.len(),
         start_bit_cursor: bit_cursor,
+        insertion_cursor: proof_cursor,
         end_bit_cursor: proof_cursor,
     })
 }
@@ -409,6 +412,7 @@ pub(super) fn promote_legacy_creature_update_large_interleaved_fragment_span_for
         bytes_promoted: span_bytes,
         bits_promoted: promoted_bits.len(),
         start_bit_cursor: bit_cursor,
+        insertion_cursor: end_bit_cursor,
         end_bit_cursor,
     })
 }
