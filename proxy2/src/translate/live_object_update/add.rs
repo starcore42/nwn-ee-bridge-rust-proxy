@@ -228,6 +228,23 @@ mod tests {
         live
     }
 
+    fn ee_placeable_add_tlk_name(optional_object_id: Option<u32>) -> Vec<u8> {
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+        live.push(1);
+        live.extend_from_slice(&0x0100_75D6u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        if let Some(object_id) = optional_object_id {
+            live.extend_from_slice(&object_id.to_le_bytes());
+        }
+        live.extend_from_slice(
+            &super::super::visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES,
+        );
+        live
+    }
+
     #[test]
     fn placeable_add_fragment_layout_ties_state_cursor_to_optional_branch() {
         let live = ee_placeable_add(Some(0x8000_1234));
@@ -270,8 +287,34 @@ mod tests {
         assert!(
             verified_ee_placeable_add_fragment_layout(&live, 0, live.len(), &tlk_inner_branch, 0,)
                 .is_none(),
-            "unimplemented inner locstring branch must not shift the state cursor"
+            "a TLK selector bit over inline CExoString bytes must not shift the state cursor"
         );
+
+        let tlk_live = ee_placeable_add_tlk_name(Some(0x8000_1234));
+        let tlk_layout = verified_ee_placeable_add_fragment_layout(
+            &tlk_live,
+            0,
+            tlk_live.len(),
+            &tlk_inner_branch,
+            0,
+        )
+        .expect("TLK locstring placeable add should own the exact name branch");
+        assert_eq!(tlk_layout.post_name_bit, 2);
+        assert_eq!(tlk_layout.next_bit_cursor, tlk_inner_branch.len());
+        assert!(tlk_layout.byte_layout.optional_object_id);
+
+        let mut cursor = 0usize;
+        assert!(
+            advance_verified_add_record(
+                &tlk_live,
+                0,
+                tlk_live.len(),
+                &tlk_inner_branch,
+                &mut cursor,
+            ),
+            "full add verifier must accept the decompile-shaped TLK branch"
+        );
+        assert_eq!(cursor, tlk_inner_branch.len());
 
         let mut nonneutral_final_guard = bits;
         nonneutral_final_guard[layout.post_name_bit + 9] = true;
@@ -336,10 +379,38 @@ pub(super) struct VerifiedEePlaceableAddFragmentLayout {
     pub(super) next_bit_cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EePlaceableAddNameMode {
+    DirectOrInlineCExoString,
+    TlkLocStringRef,
+}
+
 pub(super) fn verified_ee_placeable_add_layout(
     bytes: &[u8],
     offset: usize,
     record_end: usize,
+) -> Option<VerifiedEePlaceableAddLayout> {
+    verified_ee_placeable_add_layout_for_name_mode(
+        bytes,
+        offset,
+        record_end,
+        EePlaceableAddNameMode::DirectOrInlineCExoString,
+    )
+    .or_else(|| {
+        verified_ee_placeable_add_layout_for_name_mode(
+            bytes,
+            offset,
+            record_end,
+            EePlaceableAddNameMode::TlkLocStringRef,
+        )
+    })
+}
+
+fn verified_ee_placeable_add_layout_for_name_mode(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    name_mode: EePlaceableAddNameMode,
 ) -> Option<VerifiedEePlaceableAddLayout> {
     if offset + 6 > record_end
         || record_end > bytes.len()
@@ -349,8 +420,14 @@ pub(super) fn verified_ee_placeable_add_layout(
         return None;
     }
     let name_offset = offset + 6;
-    let tail_offset =
-        locstring::inline_cexo_string_end(bytes, name_offset).unwrap_or(name_offset + 4);
+    let tail_offset = match name_mode {
+        EePlaceableAddNameMode::DirectOrInlineCExoString => {
+            locstring::inline_cexo_string_end(bytes, name_offset).unwrap_or(name_offset + 4)
+        }
+        EePlaceableAddNameMode::TlkLocStringRef => {
+            locstring::tlk_locstring_ref_end(bytes, name_offset)?
+        }
+    };
     let base_tail_end = tail_offset.checked_add(1 + 2 + 2)?;
     if base_tail_end > record_end || base_tail_end > bytes.len() {
         return None;
@@ -411,26 +488,28 @@ pub(super) fn verified_ee_placeable_add_fragment_layout(
     }
 
     let outer_locstring = fragment_bits.get(bit_cursor).copied()?;
-    let destination_name_inner_bits = if outer_locstring {
+    let (destination_name_inner_bits, name_mode) = if outer_locstring {
         let inner_client_tlk = fragment_bits.get(bit_cursor + 1).copied()?;
         if inner_client_tlk {
             // EE `sub_1407A7800` routes outer=true into the locstring helper.
-            // The bridge currently emits only the decompile-confirmed inline
-            // CExoString/empty-name form: outer=true, inner=false. A true
-            // inner bit would select the TLK/object-table branch and requires
-            // a different typed byte parser, so exact validation must reject it.
-            return None;
+            // A true inner bit selects the TLK/object-table branch, whose byte
+            // side is exactly BYTE client-TLK selector + DWORD token. Keep the
+            // branch tied to that byte parser so a stale helper bit cannot
+            // borrow the first post-name state BOOL.
+            (1, EePlaceableAddNameMode::TlkLocStringRef)
+        } else {
+            (1, EePlaceableAddNameMode::DirectOrInlineCExoString)
         }
-        1
     } else {
-        0
+        (0, EePlaceableAddNameMode::DirectOrInlineCExoString)
     };
     let post_name_bit = bit_cursor.checked_add(1 + destination_name_inner_bits)?;
     if fragment_bits.len() <= post_name_bit + 9 {
         return None;
     }
 
-    let byte_layout = verified_ee_placeable_add_layout(bytes, offset, record_end)?;
+    let byte_layout =
+        verified_ee_placeable_add_layout_for_name_mode(bytes, offset, record_end, name_mode)?;
     let optional_object_id = fragment_bits.get(post_name_bit + 1).copied()?;
     if optional_object_id != byte_layout.optional_object_id {
         return None;
