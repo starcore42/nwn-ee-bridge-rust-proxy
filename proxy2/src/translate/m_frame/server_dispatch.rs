@@ -1253,8 +1253,12 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_custom_carrier_selected_target_unavailable_reasons();
         let committed_target_unavailable = summary
             .exact_placeable_custom_carrier_committed_target_unavailable_reasons();
+        let satisfied_target_unavailable = summary
+            .exact_placeable_custom_carrier_satisfied_target_unavailable_reasons();
         let uncommitted_target_unavailable = summary
             .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
+        let unresolved_target_unavailable = summary
+            .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons();
         tracing::info!(
             source = exact_rewrite.source,
             family = family_name,
@@ -1522,6 +1526,33 @@ fn trace_live_object_exact_rewrite_summary(
             target_unavailable_uncommitted_position_output_unavailable =
                 uncommitted_target_unavailable.position_output_unavailable,
             "server exact placeable fixed-width custom carrier synthesis policy"
+        );
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            target_unavailable_selected = selected_target_unavailable.total(),
+            target_unavailable_committed = committed_target_unavailable.total(),
+            target_unavailable_uncommitted = uncommitted_target_unavailable.total(),
+            target_unavailable_satisfied_by_matching_following_custom =
+                satisfied_target_unavailable.total(),
+            target_unavailable_satisfied_by_matching_following_custom_no_appearance_claim =
+                satisfied_target_unavailable.no_appearance_claim,
+            target_unavailable_satisfied_by_matching_following_custom_unique_module_target_unavailable =
+                satisfied_target_unavailable.unique_module_target_unavailable,
+            target_unavailable_satisfied_by_matching_following_custom_missing_position =
+                satisfied_target_unavailable.missing_position,
+            target_unavailable_satisfied_by_matching_following_custom_position_output_unavailable =
+                satisfied_target_unavailable.position_output_unavailable,
+            target_unavailable_unresolved = unresolved_target_unavailable.total(),
+            target_unavailable_unresolved_no_appearance_claim =
+                unresolved_target_unavailable.no_appearance_claim,
+            target_unavailable_unresolved_unique_module_target_unavailable =
+                unresolved_target_unavailable.unique_module_target_unavailable,
+            target_unavailable_unresolved_missing_position =
+                unresolved_target_unavailable.missing_position,
+            target_unavailable_unresolved_position_output_unavailable =
+                unresolved_target_unavailable.position_output_unavailable,
+            "server exact placeable fixed-width custom carrier target-unavailable resolution"
         );
     }
     tracing::info!(

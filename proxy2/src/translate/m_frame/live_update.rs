@@ -127,6 +127,10 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons:
         live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier:
+        u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons:
+        live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only: u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence:
         u32,
@@ -370,12 +374,27 @@ impl ExactLiveObjectRewriteSummary {
         reasons
     }
 
+    pub(crate) fn exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
         self.exact_placeable_custom_carrier_selected_target_unavailable_reasons()
             .saturating_sub(
                 self.exact_placeable_custom_carrier_committed_target_unavailable_reasons(),
+            )
+    }
+
+    pub(crate) fn exact_placeable_custom_carrier_unresolved_target_unavailable_reasons(
+        &self,
+    ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
+        self.exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons()
+            .saturating_sub(
+                self.exact_placeable_custom_carrier_satisfied_target_unavailable_reasons(),
             )
     }
 
@@ -818,6 +837,17 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add_assign(
                 rewrite
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_reasons,
+            );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier =
+            self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier,
+                );
+        self.exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons
+            .saturating_add_assign(
+                rewrite
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons,
             );
         self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
             self.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
