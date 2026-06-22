@@ -1442,20 +1442,68 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_mismatch,
             synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_pre_add_custom_rewrite_target_match = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_match,
             synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch,
             synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_following_normal_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch,
             synthesized_update_after_add_following_normal_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_following_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
             synthesized_update_after_add_following_custom_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             "server exact placeable fixed-width custom carrier synthesis policy"
         );
     }

@@ -528,6 +528,7 @@ mod diagnostic_tests {
             appearance: 0xFFFE,
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin,
+            insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         }
     }
@@ -556,6 +557,7 @@ mod diagnostic_tests {
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         }
     }
@@ -884,6 +886,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -999,6 +1002,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
                 PendingPlaceableCustomAppearanceUpdate {
@@ -1021,6 +1025,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
             ],
@@ -1119,6 +1124,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: true,
             }],
             &mut summary,
@@ -1192,6 +1198,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -1278,6 +1285,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -1356,6 +1364,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -1442,6 +1451,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -1532,6 +1542,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -1624,6 +1635,7 @@ mod diagnostic_tests {
             template_resref: target_resref,
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         };
 
@@ -1738,6 +1750,7 @@ mod diagnostic_tests {
             template_resref: target_resref,
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         };
         let mut divergent_pending = pending;
@@ -1870,6 +1883,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
                 PendingPlaceableCustomAppearanceUpdate {
@@ -1892,6 +1906,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
             ],
@@ -1973,6 +1988,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -2067,6 +2083,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -2146,6 +2163,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -2227,6 +2245,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
             &mut summary,
@@ -9328,9 +9347,11 @@ mod diagnostic_tests {
         );
         assert!(matches!(
             normal_mismatch.synthesis_insertion(&add_row),
-            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
-            ))
+            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                unavailable_reason: None,
+            })
         ));
 
         let matching_normal = ExactPlaceableUpdateAppearanceCarrier {
@@ -9377,9 +9398,11 @@ mod diagnostic_tests {
         );
         assert!(matches!(
             custom_mismatch.synthesis_insertion(&add_row),
-            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
-            ))
+            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                unavailable_reason: None,
+            })
         ));
 
         let stale_custom = ExactPlaceableUpdateAppearanceCarrier {
@@ -9409,9 +9432,12 @@ mod diagnostic_tests {
         );
         assert!(matches!(
             stale_custom.synthesis_insertion(&add_row),
-            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
-            ))
+            Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                origin:
+                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
+                unavailable_reason:
+                    Some(ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable),
+            })
         ));
     }
 
@@ -9876,14 +9902,18 @@ mod diagnostic_tests {
         let mut summary = LiveObjectUpdateRewriteSummary::default();
         for (carrier, expected_policy, expected_origin) in cases {
             assert_eq!(carrier.synthesis_policy(&add_row), expected_policy);
-            assert!(matches!(
-                carrier.synthesis_insertion(&add_row),
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(origin))
-                    if origin == expected_origin
-            ));
+            let Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                origin,
+                unavailable_reason,
+            }) = carrier.synthesis_insertion(&add_row)
+            else {
+                panic!("expected add-boundary carrier synthesis insertion");
+            };
+            assert_eq!(origin, expected_origin);
             count_committed_placeable_custom_appearance_update_origin(
                 &mut summary,
                 expected_origin,
+                unavailable_reason,
             );
         }
 
@@ -9925,6 +9955,18 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .missing_position,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
+            1
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_match,
             1
         );
@@ -9937,6 +9979,18 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable,
             1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .missing_position,
+            0
         );
     }
 
@@ -12618,20 +12672,28 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_match:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch:
         u32,
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable:
         u32,
+    pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons:
+        ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
@@ -20517,9 +20579,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         if let Some(insertion) = update_carrier.synthesis_insertion(row) {
                             let target_resref = row.module_template_resref?;
                             let pending = match insertion {
-                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                                    insertion_origin,
-                                ) => {
+                                ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                                    origin,
+                                    unavailable_reason,
+                                } => {
                                     PendingPlaceableCustomAppearanceUpdate {
                                         original_insert_offset: mention.record_end,
                                         anchor:
@@ -20538,7 +20601,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         fragment_bit_cursor: add_claim.layout.next_bit_cursor,
                                         appearance: row.appearance,
                                         template_resref: target_resref,
-                                        insertion_origin,
+                                        insertion_origin: origin,
+                                        insertion_target_unavailable_reason: unavailable_reason,
                                         anchor_rewrite_already_counted: false,
                                     }
                                 }
@@ -23344,59 +23408,82 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 None
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
-                ))
+                let unavailable_reason = self
+                    .selected_following()
+                    .and_then(|selected| selected.record().custom_rewrite_target_unavailable_reason);
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
+                    unavailable_reason,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable,
-                ))
+                let unavailable_reason = self
+                    .selected_following()
+                    .and_then(|selected| selected.record().custom_rewrite_target_unavailable_reason);
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable,
+                    unavailable_reason,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalMatchingTarget => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalMatchingTarget,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalMatchingTarget,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalRewriteTargetMismatch,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalRewriteTargetMismatch,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable,
-                ))
+                let unavailable_reason = self
+                    .selected_pre_add()
+                    .and_then(|selected| selected.record().custom_rewrite_target_unavailable_reason);
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable,
+                    unavailable_reason,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomMatchingTarget => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomRewriteTargetMismatch,
-                ))
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomRewriteTargetMismatch,
+                    unavailable_reason: None,
+                })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd(
-                    PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable,
-                ))
+                let unavailable_reason = self
+                    .selected_pre_add()
+                    .and_then(|selected| selected.record().custom_rewrite_target_unavailable_reason);
+                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable,
+                    unavailable_reason,
+                })
             }
         }
     }
@@ -23578,7 +23665,10 @@ impl ExactPlaceableCustomCarrierSynthesisPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableCustomCarrierSynthesisInsertion {
-    AfterAdd(PlaceableCustomAppearanceUpdateInsertionOrigin),
+    AfterAdd {
+        origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+        unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23983,6 +24073,8 @@ struct PendingPlaceableCustomAppearanceUpdate {
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
     insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+    insertion_target_unavailable_reason:
+        Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
     anchor_rewrite_already_counted: bool,
 }
 
@@ -25148,7 +25240,11 @@ fn apply_pending_placeable_custom_appearance_updates(
         if !update.anchor_rewrite_already_counted {
             summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
         }
-        count_committed_placeable_custom_appearance_update_origin(summary, update.insertion_origin);
+        count_committed_placeable_custom_appearance_update_origin(
+            summary,
+            update.insertion_origin,
+            update.insertion_target_unavailable_reason,
+        );
     }
 
     Some(())
@@ -25157,6 +25253,7 @@ fn apply_pending_placeable_custom_appearance_updates(
 fn count_committed_placeable_custom_appearance_update_origin(
     summary: &mut LiveObjectUpdateRewriteSummary,
     origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+    unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
 ) {
     if origin.is_after_add() {
         summary
@@ -25208,6 +25305,11 @@ fn count_committed_placeable_custom_appearance_update_origin(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable
                     .saturating_add(1);
+            count_committed_placeable_custom_appearance_update_unavailable_reason(
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons,
+                unavailable_reason,
+            );
         }
         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget => {
             summary
@@ -25244,6 +25346,11 @@ fn count_committed_placeable_custom_appearance_update_origin(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable
                     .saturating_add(1);
+            count_committed_placeable_custom_appearance_update_unavailable_reason(
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons,
+                unavailable_reason,
+            );
         }
         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch => {
             summary
@@ -25258,6 +25365,11 @@ fn count_committed_placeable_custom_appearance_update_origin(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable
                     .saturating_add(1);
+            count_committed_placeable_custom_appearance_update_unavailable_reason(
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons,
+                unavailable_reason,
+            );
         }
         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch => {
             summary
@@ -25272,7 +25384,21 @@ fn count_committed_placeable_custom_appearance_update_origin(
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable
                     .saturating_add(1);
+            count_committed_placeable_custom_appearance_update_unavailable_reason(
+                &mut summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons,
+                unavailable_reason,
+            );
         }
+    }
+}
+
+fn count_committed_placeable_custom_appearance_update_unavailable_reason(
+    summary: &mut ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+) {
+    if let Some(reason) = unavailable_reason {
+        summary.count_reason(reason);
     }
 }
 
@@ -25623,6 +25749,9 @@ fn trace_synthesized_placeable_custom_appearance_update(
         emitted_resref = ?update.template_resref,
         bytes_inserted,
         insertion_origin = update.insertion_origin.as_str(),
+        insertion_target_unavailable_reason = update
+            .insertion_target_unavailable_reason
+            .map(|reason| reason.as_str()),
         area_resref = area_context.area_resref.as_str(),
         "server->client exact live-object placeable add custom appearance synthesized as U/09 update"
     );
@@ -26215,20 +26344,68 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_mismatch,
             synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_normal_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_pre_add_custom_rewrite_target_match = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_match,
             synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_mismatch,
             synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_pre_add_custom_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_following_normal_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_mismatch,
             synthesized_update_after_add_following_normal_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_following_normal_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_normal_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             synthesized_update_after_add_following_custom_rewrite_target_mismatch = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_mismatch,
             synthesized_update_after_add_following_custom_rewrite_target_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_no_appearance_claim = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .no_appearance_claim,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_unique_module_target_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .unique_module_target_unavailable,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_missing_position = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .missing_position,
+            synthesized_update_after_add_following_custom_rewrite_target_unavailable_position_output_unavailable = summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
+                .position_output_unavailable,
             "server->client exact live-object placeable fixed-width custom carrier synthesis policy"
         );
     }
