@@ -5815,6 +5815,16 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(handoff.focus_record_end, failure.record_end);
     assert_eq!(handoff.focus_bit_cursor, failure.bit_cursor);
     assert_eq!(handoff.focus_update_mask, Some(0xFFFF_FFF3));
+    assert_eq!(
+        handoff.sequence_kind,
+        super::LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+        "handoff evidence should identify the compact U/10 -> A/6 -> U/6 sequence"
+    );
+    assert!(!handoff.sequence_claimable_handoff());
+    assert_eq!(
+        handoff.sequence_handoff_blocker(),
+        "unowned-emitted-source-gap"
+    );
     assert_eq!(handoff.neighbor_delta, 2);
     assert_eq!(handoff.neighbor_bit_start, failure.bit_cursor + 2);
     assert_eq!(handoff.emitted_gap_bits, 2);

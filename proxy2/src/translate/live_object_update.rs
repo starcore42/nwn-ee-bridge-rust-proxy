@@ -2605,6 +2605,7 @@ mod diagnostic_tests {
                         24,
                         &[false, true],
                     ),
+                    sequence_kind: LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
                 }),
                 contiguous_tail: Some(contiguous_tail),
                 source_window: Some(source_window),
@@ -2629,6 +2630,9 @@ mod diagnostic_tests {
         ));
         assert!(report.contains(
             "item_handoff_source_owner=unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
+        ));
+        assert!(report.contains(
+            "item_handoff_sequence=item-create-to-item-update claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
         ));
         assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
@@ -13772,6 +13776,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub source_gap_bit_start: usize,
     pub source_gap_bit_end: usize,
     pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -13991,6 +13996,46 @@ impl LiveObjectUpdateItemCursorSourceOwner {
             Self::UnownedEmittedGap => "unowned-emitted-gap",
             Self::UnownedSourceGap => "unowned-source-gap",
             Self::UnownedEmittedAndSourceGap => "unowned-emitted-source-gap",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSequenceKind {
+    NoSourceWindow,
+    Unclassified,
+    ItemCreateToItemUpdate,
+    DoorUpdateItemCreateToItemUpdate,
+}
+
+impl LiveObjectUpdateItemHandoffSequenceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSourceWindow => "no-source-window",
+            Self::Unclassified => "unclassified",
+            Self::ItemCreateToItemUpdate => "item-create-to-item-update",
+            Self::DoorUpdateItemCreateToItemUpdate => "door-update-item-create-to-item-update",
+        }
+    }
+
+    pub fn has_bounded_predecessor(self) -> bool {
+        matches!(
+            self,
+            Self::ItemCreateToItemUpdate | Self::DoorUpdateItemCreateToItemUpdate
+        )
+    }
+}
+
+impl LiveObjectUpdateItemHandoffEvidence {
+    pub fn sequence_claimable_handoff(&self) -> bool {
+        self.sequence_kind.has_bounded_predecessor() && self.source_owner.claimable_handoff()
+    }
+
+    pub fn sequence_handoff_blocker(&self) -> &'static str {
+        if self.sequence_kind.has_bounded_predecessor() {
+            self.source_owner.handoff_blocker()
+        } else {
+            "unclassified-handoff-sequence"
         }
     }
 }
@@ -30345,6 +30390,13 @@ impl LiveObjectItemUpdateCursorFailure {
         self,
         neighbor: LiveObjectItemUpdateUnownedNeighbor,
     ) -> LiveObjectUpdateItemHandoffEvidence {
+        let sequence_kind = live_object_item_handoff_sequence_kind(
+            self.source_window,
+            self.offset,
+            self.record_end,
+            neighbor.previous_offset,
+            neighbor.previous_record_end,
+        );
         let focus_entry = self.source_window.and_then(|source_window| {
             source_window
                 .entries
@@ -30384,6 +30436,7 @@ impl LiveObjectItemUpdateCursorFailure {
             source_gap_bit_start: neighbor.source_gap_bit_start,
             source_gap_bit_end: neighbor.source_gap_bit_end,
             source_gap_values: neighbor.source_gap_values,
+            sequence_kind,
         }
     }
 }
@@ -30913,6 +30966,82 @@ fn live_object_source_window_evidence(
         neighbors_retained: neighbor_claims.len().saturating_sub(neighbor_retain_start),
         neighbors,
     })
+}
+
+fn live_object_item_handoff_sequence_kind(
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+    focus_offset: usize,
+    focus_record_end: usize,
+    previous_offset: usize,
+    previous_record_end: usize,
+) -> LiveObjectUpdateItemHandoffSequenceKind {
+    let Some(source_window) = source_window else {
+        return LiveObjectUpdateItemHandoffSequenceKind::NoSourceWindow;
+    };
+    let entries = source_window
+        .entries
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let Some(focus_index) = entries.iter().position(|entry| {
+        entry.offset == focus_offset
+            && entry.record_end == focus_record_end
+            && entry.opcode == b'U'
+            && entry.marker == ITEM_OBJECT_TYPE
+    }) else {
+        return LiveObjectUpdateItemHandoffSequenceKind::Unclassified;
+    };
+    let Some(previous_index) = focus_index.checked_sub(1) else {
+        return LiveObjectUpdateItemHandoffSequenceKind::Unclassified;
+    };
+    let previous = entries[previous_index];
+    let focus = entries[focus_index];
+    if previous.offset != previous_offset
+        || previous.record_end != previous_record_end
+        || !live_object_source_window_entry_is_bounded_item_create(previous)
+        || !live_object_source_window_entries_match_object(previous, focus)
+    {
+        return LiveObjectUpdateItemHandoffSequenceKind::Unclassified;
+    }
+
+    if previous_index
+        .checked_sub(1)
+        .and_then(|door_index| entries.get(door_index).copied())
+        .is_some_and(live_object_source_window_entry_is_bounded_door_update)
+    {
+        LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate
+    } else {
+        LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate
+    }
+}
+
+fn live_object_source_window_entry_is_bounded_item_create(
+    entry: LiveObjectUpdateSourceWindowEntryEvidence,
+) -> bool {
+    entry.opcode == b'A'
+        && entry.marker == ITEM_OBJECT_TYPE
+        && entry.bit_end.is_some()
+        && matches!(entry.claim_family, "item-create" | "item-add")
+}
+
+fn live_object_source_window_entry_is_bounded_door_update(
+    entry: LiveObjectUpdateSourceWindowEntryEvidence,
+) -> bool {
+    entry.opcode == b'U'
+        && entry.marker == DOOR_OBJECT_TYPE
+        && matches!(entry.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
+        && entry.bit_end.is_some()
+        && entry.claim_family == "update"
+}
+
+fn live_object_source_window_entries_match_object(
+    left: LiveObjectUpdateSourceWindowEntryEvidence,
+    right: LiveObjectUpdateSourceWindowEntryEvidence,
+) -> bool {
+    left.object_id
+        .zip(right.object_id)
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn live_object_source_window_row_bit_claim(
@@ -32093,6 +32222,13 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.source_owner.as_str(),
                 handoff.source_owner.claimable_handoff(),
                 handoff.source_owner.handoff_blocker()
+            );
+            let _ = writeln!(
+                &mut out,
+                "item_handoff_sequence={} claimable_handoff={} handoff_blocker={}",
+                handoff.sequence_kind.as_str(),
+                handoff.sequence_claimable_handoff(),
+                handoff.sequence_handoff_blocker()
             );
             let _ = writeln!(
                 &mut out,
