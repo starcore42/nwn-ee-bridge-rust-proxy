@@ -1249,18 +1249,15 @@ fn trace_live_object_exact_rewrite_summary(
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
             != 0
     {
-        let selected_target_unavailable = summary
-            .exact_placeable_custom_carrier_selected_target_unavailable_reasons();
-        let committed_target_unavailable = summary
-            .exact_placeable_custom_carrier_committed_target_unavailable_reasons();
-        let satisfied_target_unavailable = summary
-            .exact_placeable_custom_carrier_satisfied_target_unavailable_reasons();
-        let uncommitted_target_unavailable = summary
-            .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
-        let unresolved_target_unavailable = summary
-            .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons();
-        let unresolved_target_unavailable_by_scope = summary
-            .exact_placeable_custom_carrier_unresolved_target_unavailable_reasons_by_scope();
+        let target_unavailable_resolution =
+            summary.exact_placeable_custom_carrier_target_unavailable_resolution();
+        let selected_target_unavailable = target_unavailable_resolution.selected();
+        let committed_target_unavailable = target_unavailable_resolution.committed();
+        let satisfied_target_unavailable = target_unavailable_resolution.satisfied();
+        let uncommitted_target_unavailable = target_unavailable_resolution.uncommitted();
+        let unresolved_target_unavailable = target_unavailable_resolution.unresolved();
+        let unresolved_target_unavailable_by_scope =
+            target_unavailable_resolution.unresolved_by_scope;
         tracing::info!(
             source = exact_rewrite.source,
             family = family_name,
