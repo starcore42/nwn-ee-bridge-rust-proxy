@@ -9547,10 +9547,28 @@ mod diagnostic_tests {
             following_normal: Some(record),
             ..ExactPlaceableUpdateAppearanceCarrier::default()
         };
+        let synthesis_decision = carrier.synthesis_decision(&row_without_custom_output);
+        assert_eq!(
+            synthesis_decision.policy(),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable,
+            "the unified synthesis decision owns the same policy used by the pending writer"
+        );
+        let synthesis_selection = synthesis_decision
+            .selection()
+            .expect("the decision should retain the selected normal carrier");
+        assert_eq!(
+            synthesis_selection.scope(),
+            ExactPlaceableCustomCarrierCounterScope::FollowingNormal
+        );
+        assert_eq!(
+            synthesis_selection.target_decision(),
+            decision,
+            "the selected scope, counters, and pending writer share one target decision"
+        );
         let Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
             origin,
             unavailable_reason,
-        }) = carrier.synthesis_insertion(&row_without_custom_output)
+        }) = synthesis_decision.insertion()
         else {
             panic!(
                 "a following normal row without a module target should request add-boundary synthesis"
@@ -21003,17 +21021,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             add_claim,
                             update_carrier,
                         );
-                        if let Some(selected_following) = update_carrier.selected_following() {
-                            count_exact_placeable_fixed_width_following_carrier(
+                        let synthesis_decision = update_carrier.synthesis_decision(row);
+                        if let Some(selection) = synthesis_decision.selection() {
+                            count_exact_placeable_fixed_width_carrier_selection(
                                 &mut summary,
-                                selected_following,
-                                row,
-                            );
-                        } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
-                            count_exact_placeable_fixed_width_pre_add_carrier(
-                                &mut summary,
-                                selected_pre_add,
-                                row,
+                                selection,
                             );
                         } else {
                             summary
@@ -21022,7 +21034,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_template_resref_fixed_width_add_only
                                     .saturating_add(1);
                         }
-                        if let Some(insertion) = update_carrier.synthesis_insertion(row) {
+                        if let Some(insertion) = synthesis_decision.insertion() {
                             let target_resref = row.module_template_resref?;
                             let pending = match insertion {
                                 ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
@@ -23772,22 +23784,32 @@ impl ExactPlaceableUpdateAppearanceCarrier {
             .is_some_and(|selected| selected.matches_module_row(row))
     }
 
-    fn synthesis_policy(
+    fn synthesis_decision(
         self,
         row: &AreaPlaceableContextRow,
-    ) -> ExactPlaceableCustomCarrierSynthesisPolicy {
+    ) -> ExactPlaceableCustomCarrierSynthesisDecision {
         if let Some(selected) = self.selected_following() {
-            return match selected {
-                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(record) => {
-                    match record.custom_rewrite_target_decision(row).state() {
+            let scope = match selected {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+                    ExactPlaceableCustomCarrierCounterScope::FollowingCustom
+                }
+                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+                    ExactPlaceableCustomCarrierCounterScope::FollowingNormal
+                }
+            };
+            let selection =
+                ExactPlaceableCustomCarrierSynthesisSelection::new(scope, selected, row);
+            let policy = match selected {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+                    match selection.target_decision().state() {
                         ExactPlaceableCustomCarrierRewriteTargetState::MatchesModuleRow => {
-                        ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
+                            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
                         }
                         ExactPlaceableCustomCarrierRewriteTargetState::TargetMismatch => {
-                        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch
+                            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch
                         }
                         ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable => {
-                            if selected.matches_module_row(row) {
+                            if selection.source_matches_module_row() {
                                 ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
                             } else {
                                 ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable
@@ -23795,13 +23817,13 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                         }
                     }
                 }
-                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(record) => {
-                    match record.custom_rewrite_target_decision(row).state() {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+                    match selection.target_decision().state() {
                         ExactPlaceableCustomCarrierRewriteTargetState::MatchesModuleRow => {
-                        ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady
+                            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady
                         }
                         ExactPlaceableCustomCarrierRewriteTargetState::TargetMismatch => {
-                        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch
+                            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch
                         }
                         ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable => {
                             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable
@@ -23809,11 +23831,22 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                     }
                 }
             };
+            return ExactPlaceableCustomCarrierSynthesisDecision::with_selection(policy, selection);
         }
         if let Some(selected) = self.selected_pre_add() {
-            return match selected {
-                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(record) => {
-                    match record.custom_rewrite_target_decision(row).state() {
+            let scope = match selected {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+                    ExactPlaceableCustomCarrierCounterScope::PreAddCustom
+                }
+                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+                    ExactPlaceableCustomCarrierCounterScope::PreAddNormal
+                }
+            };
+            let selection =
+                ExactPlaceableCustomCarrierSynthesisSelection::new(scope, selected, row);
+            let policy = match selected {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+                    match selection.target_decision().state() {
                         ExactPlaceableCustomCarrierRewriteTargetState::MatchesModuleRow => {
                             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomMatchingTarget
                         }
@@ -23825,8 +23858,8 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                         }
                     }
                 }
-                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(record) => {
-                    match record.custom_rewrite_target_decision(row).state() {
+                SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+                    match selection.target_decision().state() {
                         ExactPlaceableCustomCarrierRewriteTargetState::MatchesModuleRow => {
                             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalMatchingTarget
                         }
@@ -23839,15 +23872,63 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                     }
                 }
             };
+            return ExactPlaceableCustomCarrierSynthesisDecision::with_selection(policy, selection);
         }
-        ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
+        ExactPlaceableCustomCarrierSynthesisDecision::without_carrier()
+    }
+
+    fn synthesis_policy(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> ExactPlaceableCustomCarrierSynthesisPolicy {
+        self.synthesis_decision(row).policy()
     }
 
     fn synthesis_insertion(
         self,
         row: &AreaPlaceableContextRow,
     ) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
-        match self.synthesis_policy(row) {
+        self.synthesis_decision(row).insertion()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactPlaceableCustomCarrierSynthesisDecision {
+    policy: ExactPlaceableCustomCarrierSynthesisPolicy,
+    selection: Option<ExactPlaceableCustomCarrierSynthesisSelection>,
+}
+
+impl ExactPlaceableCustomCarrierSynthesisDecision {
+    fn without_carrier() -> Self {
+        Self {
+            policy: ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier,
+            selection: None,
+        }
+    }
+
+    fn with_selection(
+        policy: ExactPlaceableCustomCarrierSynthesisPolicy,
+        selection: ExactPlaceableCustomCarrierSynthesisSelection,
+    ) -> Self {
+        Self {
+            policy,
+            selection: Some(selection),
+        }
+    }
+
+    fn policy(self) -> ExactPlaceableCustomCarrierSynthesisPolicy {
+        self.policy
+    }
+
+    fn selection(self) -> Option<ExactPlaceableCustomCarrierSynthesisSelection> {
+        self.selection
+    }
+
+    fn insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
+        let unavailable_reason = self
+            .selection
+            .and_then(|selection| selection.target_decision().unavailable_reason());
+        match self.policy {
             ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
             | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
             | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady => {
@@ -23860,13 +23941,6 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
-                let unavailable_reason = self
-                    .selected_following()
-                    .and_then(|selected| {
-                        selected
-                            .custom_rewrite_target_decision(row)
-                            .unavailable_reason()
-                    });
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
                     unavailable_reason,
@@ -23879,13 +23953,6 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable => {
-                let unavailable_reason = self
-                    .selected_following()
-                    .and_then(|selected| {
-                        selected
-                            .custom_rewrite_target_decision(row)
-                            .unavailable_reason()
-                    });
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable,
                     unavailable_reason,
@@ -23910,13 +23977,6 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalTargetUnavailable => {
-                let unavailable_reason = self
-                    .selected_pre_add()
-                    .and_then(|selected| {
-                        selected
-                            .custom_rewrite_target_decision(row)
-                            .unavailable_reason()
-                    });
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable,
                     unavailable_reason,
@@ -23935,19 +23995,59 @@ impl ExactPlaceableUpdateAppearanceCarrier {
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomTargetUnavailable => {
-                let unavailable_reason = self
-                    .selected_pre_add()
-                    .and_then(|selected| {
-                        selected
-                            .custom_rewrite_target_decision(row)
-                            .unavailable_reason()
-                    });
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable,
                     unavailable_reason,
                 })
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactPlaceableCustomCarrierSynthesisSelection {
+    scope: ExactPlaceableCustomCarrierCounterScope,
+    carrier: SelectedExactPlaceableUpdateAppearanceCarrier,
+    target_decision: ExactPlaceableCustomCarrierRewriteTargetDecision,
+    source_matches_module_row: bool,
+}
+
+impl ExactPlaceableCustomCarrierSynthesisSelection {
+    fn new(
+        scope: ExactPlaceableCustomCarrierCounterScope,
+        carrier: SelectedExactPlaceableUpdateAppearanceCarrier,
+        row: &AreaPlaceableContextRow,
+    ) -> Self {
+        Self {
+            scope,
+            carrier,
+            target_decision: carrier.custom_rewrite_target_decision(row),
+            source_matches_module_row: carrier.matches_module_row(row),
+        }
+    }
+
+    fn scope(self) -> ExactPlaceableCustomCarrierCounterScope {
+        self.scope
+    }
+
+    fn carrier(self) -> SelectedExactPlaceableUpdateAppearanceCarrier {
+        self.carrier
+    }
+
+    fn target_decision(self) -> ExactPlaceableCustomCarrierRewriteTargetDecision {
+        self.target_decision
+    }
+
+    fn source_matches_module_row(self) -> bool {
+        self.source_matches_module_row
+    }
+
+    fn satisfies_target_unavailable_by_matching_source(self) -> bool {
+        self.scope == ExactPlaceableCustomCarrierCounterScope::FollowingCustom
+            && self.carrier.is_custom()
+            && self.target_decision.state()
+                == ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable
+            && self.source_matches_module_row
     }
 }
 
@@ -24442,6 +24542,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
 
     let following = carrier.selected_following();
     let pre_add = carrier.selected_pre_add();
+    let synthesis_decision = carrier.synthesis_decision(row);
     let following_target_decision =
         following.map(|selected| selected.custom_rewrite_target_decision(row));
     let pre_add_target_decision =
@@ -24527,7 +24628,9 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
                 .map(|reason| reason.as_str()),
         selected_pre_add_custom_rewrite_target_matches_module_row =
             pre_add.is_some_and(|selected| selected.custom_rewrite_target_matches_module_row(row)),
-        custom_carrier_synthesis_policy = carrier.synthesis_policy(row).as_str(),
+        custom_carrier_synthesis_policy = synthesis_decision.policy().as_str(),
+        custom_carrier_synthesis_selected_scope =
+            synthesis_decision.selection().map(|selection| selection.scope().as_str()),
         "server->client exact live-object placeable add fixed-width custom appearance carrier candidate"
     );
 }
@@ -26041,6 +26144,17 @@ enum ExactPlaceableCustomCarrierCounterScope {
     PreAddCustom,
 }
 
+impl ExactPlaceableCustomCarrierCounterScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FollowingNormal => "following-normal",
+            Self::FollowingCustom => "following-custom",
+            Self::PreAddNormal => "pre-add-normal",
+            Self::PreAddCustom => "pre-add-custom",
+        }
+    }
+}
+
 fn count_exact_placeable_custom_carrier_target_state(
     summary: &mut LiveObjectUpdateRewriteSummary,
     scope: ExactPlaceableCustomCarrierCounterScope,
@@ -26141,38 +26255,122 @@ fn count_exact_placeable_fixed_width_following_carrier(
     selected_following: SelectedExactPlaceableUpdateAppearanceCarrier,
     row: &AreaPlaceableContextRow,
 ) {
-    summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update = summary
-        .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
-        .saturating_add(1);
-    if selected_following.record().position_output_equivalence {
-        summary
-            .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence =
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence
-                .saturating_add(1);
-    }
-
     let scope = match selected_following {
         SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update
-                    .saturating_add(1);
             ExactPlaceableCustomCarrierCounterScope::FollowingCustom
         }
         SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+            ExactPlaceableCustomCarrierCounterScope::FollowingNormal
+        }
+    };
+    let selection =
+        ExactPlaceableCustomCarrierSynthesisSelection::new(scope, selected_following, row);
+    count_exact_placeable_fixed_width_carrier_selection(summary, selection);
+}
+
+fn count_exact_placeable_fixed_width_pre_add_carrier(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    selected_pre_add: SelectedExactPlaceableUpdateAppearanceCarrier,
+    row: &AreaPlaceableContextRow,
+) {
+    let scope = match selected_pre_add {
+        SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
+            ExactPlaceableCustomCarrierCounterScope::PreAddCustom
+        }
+        SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
+            ExactPlaceableCustomCarrierCounterScope::PreAddNormal
+        }
+    };
+    let selection =
+        ExactPlaceableCustomCarrierSynthesisSelection::new(scope, selected_pre_add, row);
+    count_exact_placeable_fixed_width_carrier_selection(summary, selection);
+}
+
+fn count_exact_placeable_fixed_width_carrier_selection(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    selection: ExactPlaceableCustomCarrierSynthesisSelection,
+) {
+    let record = selection.carrier().record();
+    match selection.scope() {
+        ExactPlaceableCustomCarrierCounterScope::FollowingNormal => {
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
+                    .saturating_add(1);
+            if record.position_output_equivalence {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence
+                        .saturating_add(1);
+            }
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update =
                 summary
                     .exact_placeable_add_module_custom_template_resref_fixed_width_with_normal_update
                     .saturating_add(1);
-            ExactPlaceableCustomCarrierCounterScope::FollowingNormal
         }
-    };
-    let target_decision = selected_following.custom_rewrite_target_decision(row);
-    count_exact_placeable_custom_carrier_target_state(summary, scope, target_decision);
-    if selected_following.satisfies_target_unavailable_by_matching_source(row, target_decision) {
+        ExactPlaceableCustomCarrierCounterScope::FollowingCustom => {
+            summary.exact_placeable_add_module_custom_template_resref_fixed_width_with_update =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update
+                    .saturating_add(1);
+            if record.position_output_equivalence {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_with_update_position_output_equivalence
+                        .saturating_add(1);
+            }
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update
+                    .saturating_add(1);
+        }
+        ExactPlaceableCustomCarrierCounterScope::PreAddNormal => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
+                    .saturating_add(1);
+            if record.position_output_equivalence {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
+                        .saturating_add(1);
+            }
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only
+                    .saturating_add(1);
+        }
+        ExactPlaceableCustomCarrierCounterScope::PreAddCustom => {
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
+                    .saturating_add(1);
+            if record.position_output_equivalence {
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence =
+                    summary
+                        .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
+                        .saturating_add(1);
+            }
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only =
+                summary
+                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only
+                    .saturating_add(1);
+        }
+    }
+
+    let target_decision = selection.target_decision();
+    count_exact_placeable_custom_carrier_target_state(summary, selection.scope(), target_decision);
+    if selection.satisfies_target_unavailable_by_matching_source() {
         summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier =
             summary
@@ -26182,51 +26380,6 @@ fn count_exact_placeable_fixed_width_following_carrier(
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier_reasons
                 .count_reason(reason);
-        }
-    }
-}
-
-fn count_exact_placeable_fixed_width_pre_add_carrier(
-    summary: &mut LiveObjectUpdateRewriteSummary,
-    selected_pre_add: SelectedExactPlaceableUpdateAppearanceCarrier,
-    row: &AreaPlaceableContextRow,
-) {
-    summary.exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only =
-        summary
-            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only
-            .saturating_add(1);
-    if selected_pre_add.record().position_output_equivalence {
-        summary
-            .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence =
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence
-                .saturating_add(1);
-    }
-
-    match selected_pre_add {
-        SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_) => {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_custom_update_only
-                    .saturating_add(1);
-            count_exact_placeable_custom_carrier_target_state(
-                summary,
-                ExactPlaceableCustomCarrierCounterScope::PreAddCustom,
-                selected_pre_add.custom_rewrite_target_decision(row),
-            );
-        }
-        SelectedExactPlaceableUpdateAppearanceCarrier::Normal(_) => {
-            summary
-                .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only =
-                summary
-                    .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_normal_update_only
-                    .saturating_add(1);
-            count_exact_placeable_custom_carrier_target_state(
-                summary,
-                ExactPlaceableCustomCarrierCounterScope::PreAddNormal,
-                selected_pre_add.custom_rewrite_target_decision(row),
-            );
         }
     }
 }
