@@ -10390,6 +10390,8 @@ mod diagnostic_tests {
             .position_output_unavailable = 2;
 
         let resolution = summary.exact_placeable_custom_carrier_target_unavailable_resolution();
+        let scoped = resolution.scoped();
+        let total = scoped.total();
         let selected = resolution.selected();
         let committed = resolution.committed();
         let satisfied = resolution.satisfied();
@@ -10401,6 +10403,11 @@ mod diagnostic_tests {
         let uncommitted_by_scope = resolution.uncommitted_by_scope;
         let unresolved_by_scope = resolution.unresolved_by_scope;
 
+        assert_eq!(total.selected, selected);
+        assert_eq!(total.committed, committed);
+        assert_eq!(total.satisfied, satisfied);
+        assert_eq!(total.uncommitted, uncommitted);
+        assert_eq!(total.unresolved, unresolved);
         assert_eq!(selected.total(), 8);
         assert_eq!(committed.total(), 5);
         assert_eq!(satisfied.missing_position, 1);
@@ -10419,6 +10426,10 @@ mod diagnostic_tests {
 
         assert_eq!(selected_by_scope.following_normal.missing_position, 2);
         assert_eq!(
+            scoped.following_normal.selected,
+            selected_by_scope.following_normal
+        );
+        assert_eq!(
             selected_by_scope
                 .following_normal
                 .position_output_unavailable,
@@ -10426,8 +10437,16 @@ mod diagnostic_tests {
         );
         assert_eq!(selected_by_scope.following_custom.no_appearance_claim, 1);
         assert_eq!(
+            scoped.following_custom.selected,
+            selected_by_scope.following_custom
+        );
+        assert_eq!(
             selected_by_scope.pre_add_normal.position_output_unavailable,
             3
+        );
+        assert_eq!(
+            scoped.pre_add_normal.selected,
+            selected_by_scope.pre_add_normal
         );
         assert_eq!(
             selected_by_scope
@@ -10435,16 +10454,28 @@ mod diagnostic_tests {
                 .unique_module_target_unavailable,
             1
         );
+        assert_eq!(
+            scoped.pre_add_custom.selected,
+            selected_by_scope.pre_add_custom
+        );
         assert_eq!(committed_by_scope.following_normal.missing_position, 1);
         assert_eq!(
             committed_by_scope.following_custom.no_appearance_claim, 2,
             "following-custom commits saturate only their own selected scope"
         );
         assert_eq!(
+            scoped.following_custom.committed,
+            committed_by_scope.following_custom
+        );
+        assert_eq!(
             satisfied_by_scope
                 .following_custom
                 .position_output_unavailable,
             2
+        );
+        assert_eq!(
+            scoped.following_custom.satisfied,
+            satisfied_by_scope.following_custom
         );
         assert_eq!(
             satisfied_by_scope.total_reasons().total(),
@@ -10466,12 +10497,29 @@ mod diagnostic_tests {
         );
         assert_eq!(unresolved_by_scope.following_normal.total(), 2);
         assert_eq!(
+            scoped.following_normal.unresolved,
+            unresolved_by_scope.following_normal
+        );
+        assert_eq!(
             unresolved_by_scope.following_custom.total(),
             0,
             "the satisfied matching carrier clears only following-custom target-unavailable evidence"
         );
+        assert_eq!(
+            scoped.following_custom.unresolved.total(),
+            0,
+            "the scoped resolver must keep following-custom satisfaction scope-local"
+        );
         assert_eq!(unresolved_by_scope.pre_add_normal.total(), 2);
+        assert_eq!(
+            scoped.pre_add_normal.unresolved,
+            unresolved_by_scope.pre_add_normal
+        );
         assert_eq!(unresolved_by_scope.pre_add_custom.total(), 0);
+        assert_eq!(
+            scoped.pre_add_custom.unresolved,
+            unresolved_by_scope.pre_add_custom
+        );
     }
 
     #[test]
@@ -12962,6 +13010,60 @@ impl ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableCustomCarrierTargetUnavailableScopeResolution {
+    pub selected: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub committed: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub satisfied: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub uncommitted: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    pub unresolved: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+}
+
+impl ExactPlaceableCustomCarrierTargetUnavailableScopeResolution {
+    fn from_reasons(
+        selected: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+        committed: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+        satisfied: ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
+    ) -> Self {
+        let uncommitted = selected.saturating_sub(committed);
+        let unresolved = uncommitted.saturating_sub(satisfied);
+        Self {
+            selected,
+            committed,
+            satisfied,
+            uncommitted,
+            unresolved,
+        }
+    }
+
+    fn saturating_add_assign(&mut self, other: Self) {
+        self.selected.saturating_add_assign(other.selected);
+        self.committed.saturating_add_assign(other.committed);
+        self.satisfied.saturating_add_assign(other.satisfied);
+        self.uncommitted.saturating_add_assign(other.uncommitted);
+        self.unresolved.saturating_add_assign(other.unresolved);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
+    pub following_normal: ExactPlaceableCustomCarrierTargetUnavailableScopeResolution,
+    pub following_custom: ExactPlaceableCustomCarrierTargetUnavailableScopeResolution,
+    pub pre_add_normal: ExactPlaceableCustomCarrierTargetUnavailableScopeResolution,
+    pub pre_add_custom: ExactPlaceableCustomCarrierTargetUnavailableScopeResolution,
+}
+
+impl ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
+    pub(crate) fn total(self) -> ExactPlaceableCustomCarrierTargetUnavailableScopeResolution {
+        let mut total = ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::default();
+        total.saturating_add_assign(self.following_normal);
+        total.saturating_add_assign(self.following_custom);
+        total.saturating_add_assign(self.pre_add_normal);
+        total.saturating_add_assign(self.pre_add_custom);
+        total
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExactPlaceableCustomCarrierTargetUnavailableResolution {
     pub selected_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
     pub committed_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
@@ -12988,23 +13090,52 @@ impl ExactPlaceableCustomCarrierTargetUnavailableResolution {
     }
 
     pub(crate) fn selected(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.selected_by_scope.total_reasons()
+        self.scoped().total().selected
     }
 
     pub(crate) fn committed(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.committed_by_scope.total_reasons()
+        self.scoped().total().committed
     }
 
     pub(crate) fn satisfied(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.satisfied_by_scope.total_reasons()
+        self.scoped().total().satisfied
     }
 
     pub(crate) fn uncommitted(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.uncommitted_by_scope.total_reasons()
+        self.scoped().total().uncommitted
     }
 
     pub(crate) fn unresolved(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.unresolved_by_scope.total_reasons()
+        self.scoped().total().unresolved
+    }
+
+    pub(crate) fn scoped(self) -> ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
+            following_normal:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    self.selected_by_scope.following_normal,
+                    self.committed_by_scope.following_normal,
+                    self.satisfied_by_scope.following_normal,
+                ),
+            following_custom:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    self.selected_by_scope.following_custom,
+                    self.committed_by_scope.following_custom,
+                    self.satisfied_by_scope.following_custom,
+                ),
+            pre_add_normal:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    self.selected_by_scope.pre_add_normal,
+                    self.committed_by_scope.pre_add_normal,
+                    self.satisfied_by_scope.pre_add_normal,
+                ),
+            pre_add_custom:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    self.selected_by_scope.pre_add_custom,
+                    self.committed_by_scope.pre_add_custom,
+                    self.satisfied_by_scope.pre_add_custom,
+                ),
+        }
     }
 }
 
@@ -27375,13 +27506,17 @@ fn trace_exact_placeable_reconciliation_summary(
     {
         let target_unavailable_resolution =
             summary.exact_placeable_custom_carrier_target_unavailable_resolution();
-        let selected_target_unavailable = target_unavailable_resolution.selected();
-        let committed_target_unavailable = target_unavailable_resolution.committed();
-        let satisfied_target_unavailable = target_unavailable_resolution.satisfied();
-        let uncommitted_target_unavailable = target_unavailable_resolution.uncommitted();
-        let unresolved_target_unavailable = target_unavailable_resolution.unresolved();
-        let unresolved_target_unavailable_by_scope =
-            target_unavailable_resolution.unresolved_by_scope;
+        let scoped_target_unavailable = target_unavailable_resolution.scoped();
+        let total_target_unavailable = scoped_target_unavailable.total();
+        let selected_target_unavailable = total_target_unavailable.selected;
+        let committed_target_unavailable = total_target_unavailable.committed;
+        let satisfied_target_unavailable = total_target_unavailable.satisfied;
+        let uncommitted_target_unavailable = total_target_unavailable.uncommitted;
+        let unresolved_target_unavailable = total_target_unavailable.unresolved;
+        let following_normal_target_unavailable = scoped_target_unavailable.following_normal;
+        let following_custom_target_unavailable = scoped_target_unavailable.following_custom;
+        let pre_add_normal_target_unavailable = scoped_target_unavailable.pre_add_normal;
+        let pre_add_custom_target_unavailable = scoped_target_unavailable.pre_add_custom;
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
             exact_placeable_reconciliation_emitted = emitted,
@@ -27676,76 +27811,76 @@ fn trace_exact_placeable_reconciliation_summary(
             target_unavailable_unresolved_position_output_unavailable =
                 unresolved_target_unavailable.position_output_unavailable,
             target_unavailable_unresolved_following_normal =
-                unresolved_target_unavailable_by_scope.following_normal.total(),
+                following_normal_target_unavailable.unresolved.total(),
             target_unavailable_unresolved_following_normal_no_appearance_claim =
-                unresolved_target_unavailable_by_scope
-                    .following_normal
+                following_normal_target_unavailable
+                    .unresolved
                     .no_appearance_claim,
             target_unavailable_unresolved_following_normal_unique_module_target_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .following_normal
+                following_normal_target_unavailable
+                    .unresolved
                     .unique_module_target_unavailable,
             target_unavailable_unresolved_following_normal_missing_position =
-                unresolved_target_unavailable_by_scope
-                    .following_normal
+                following_normal_target_unavailable
+                    .unresolved
                     .missing_position,
             target_unavailable_unresolved_following_normal_position_output_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .following_normal
+                following_normal_target_unavailable
+                    .unresolved
                     .position_output_unavailable,
             target_unavailable_unresolved_following_custom =
-                unresolved_target_unavailable_by_scope.following_custom.total(),
+                following_custom_target_unavailable.unresolved.total(),
             target_unavailable_unresolved_following_custom_no_appearance_claim =
-                unresolved_target_unavailable_by_scope
-                    .following_custom
+                following_custom_target_unavailable
+                    .unresolved
                     .no_appearance_claim,
             target_unavailable_unresolved_following_custom_unique_module_target_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .following_custom
+                following_custom_target_unavailable
+                    .unresolved
                     .unique_module_target_unavailable,
             target_unavailable_unresolved_following_custom_missing_position =
-                unresolved_target_unavailable_by_scope
-                    .following_custom
+                following_custom_target_unavailable
+                    .unresolved
                     .missing_position,
             target_unavailable_unresolved_following_custom_position_output_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .following_custom
+                following_custom_target_unavailable
+                    .unresolved
                     .position_output_unavailable,
             target_unavailable_unresolved_pre_add_normal =
-                unresolved_target_unavailable_by_scope.pre_add_normal.total(),
+                pre_add_normal_target_unavailable.unresolved.total(),
             target_unavailable_unresolved_pre_add_normal_no_appearance_claim =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_normal
+                pre_add_normal_target_unavailable
+                    .unresolved
                     .no_appearance_claim,
             target_unavailable_unresolved_pre_add_normal_unique_module_target_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_normal
+                pre_add_normal_target_unavailable
+                    .unresolved
                     .unique_module_target_unavailable,
             target_unavailable_unresolved_pre_add_normal_missing_position =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_normal
+                pre_add_normal_target_unavailable
+                    .unresolved
                     .missing_position,
             target_unavailable_unresolved_pre_add_normal_position_output_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_normal
+                pre_add_normal_target_unavailable
+                    .unresolved
                     .position_output_unavailable,
             target_unavailable_unresolved_pre_add_custom =
-                unresolved_target_unavailable_by_scope.pre_add_custom.total(),
+                pre_add_custom_target_unavailable.unresolved.total(),
             target_unavailable_unresolved_pre_add_custom_no_appearance_claim =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_custom
+                pre_add_custom_target_unavailable
+                    .unresolved
                     .no_appearance_claim,
             target_unavailable_unresolved_pre_add_custom_unique_module_target_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_custom
+                pre_add_custom_target_unavailable
+                    .unresolved
                     .unique_module_target_unavailable,
             target_unavailable_unresolved_pre_add_custom_missing_position =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_custom
+                pre_add_custom_target_unavailable
+                    .unresolved
                     .missing_position,
             target_unavailable_unresolved_pre_add_custom_position_output_unavailable =
-                unresolved_target_unavailable_by_scope
-                    .pre_add_custom
+                pre_add_custom_target_unavailable
+                    .unresolved
                     .position_output_unavailable,
             "server->client exact live-object placeable fixed-width custom carrier target-unavailable resolution"
         );
