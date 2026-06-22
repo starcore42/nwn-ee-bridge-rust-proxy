@@ -23991,124 +23991,55 @@ impl ExactPlaceableUpdateAppearanceCarrier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExactPlaceableCustomCarrierSynthesisDecision {
-    policy: ExactPlaceableCustomCarrierSynthesisPolicy,
-    selection: Option<ExactPlaceableCustomCarrierSynthesisSelection>,
+enum ExactPlaceableCustomCarrierSynthesisDecision {
+    WithoutCarrier,
+    WithCarrier(ExactPlaceableCustomCarrierSynthesisSelection),
 }
 
 impl ExactPlaceableCustomCarrierSynthesisDecision {
     fn without_carrier() -> Self {
-        Self {
-            policy: ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier,
-            selection: None,
-        }
+        Self::WithoutCarrier
     }
 
     fn from_selection(selection: ExactPlaceableCustomCarrierSynthesisSelection) -> Self {
-        Self {
-            policy: ExactPlaceableCustomCarrierSynthesisPolicy::from_selection(selection),
-            selection: Some(selection),
-        }
+        Self::WithCarrier(selection)
     }
 
     fn policy(self) -> ExactPlaceableCustomCarrierSynthesisPolicy {
-        self.policy
+        match self {
+            Self::WithoutCarrier => {
+                ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier
+            }
+            Self::WithCarrier(selection) => {
+                ExactPlaceableCustomCarrierSynthesisPolicy::from_selection(selection)
+            }
+        }
     }
 
     fn selection(self) -> Option<ExactPlaceableCustomCarrierSynthesisSelection> {
-        self.selection
+        match self {
+            Self::WithoutCarrier => None,
+            Self::WithCarrier(selection) => Some(selection),
+        }
     }
 
     fn insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
+        let policy = self.policy();
+        let origin = policy.insertion_origin()?;
         let insertion_carrier = self
-            .selection
+            .selection()
             .map(PlaceableCustomAppearanceUpdateInsertionCarrier::from_selection);
-        let unavailable_reason =
-            insertion_carrier.and_then(|carrier| carrier.target_decision.unavailable_reason());
-        match self.policy {
-            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
-            | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
-            | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingNormalRewriteReady => {
-                None
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
-                    unavailable_reason,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable,
-                    unavailable_reason,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalMatchingTarget => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalMatchingTarget,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalRewriteTargetMismatch,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable,
-                    unavailable_reason,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomMatchingTarget => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomRewriteTargetMismatch => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomRewriteTargetMismatch,
-                    unavailable_reason: None,
-                    insertion_carrier,
-                })
-            }
-            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomTargetUnavailable => {
-                Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
-                    origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable,
-                    unavailable_reason,
-                    insertion_carrier,
-                })
-            }
-        }
+        let unavailable_reason = policy
+            .carries_target_unavailable_reason()
+            .then(|| {
+                insertion_carrier.and_then(|carrier| carrier.target_decision.unavailable_reason())
+            })
+            .flatten();
+        Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
+            origin,
+            unavailable_reason,
+            insertion_carrier,
+        })
     }
 }
 
@@ -24453,6 +24384,57 @@ impl ExactPlaceableCustomCarrierSynthesisPolicy {
                 "synthesizes-after-add-pre-add-custom-target-unavailable"
             }
         }
+    }
+
+    fn insertion_origin(self) -> Option<PlaceableCustomAppearanceUpdateInsertionOrigin> {
+        match self {
+            Self::SuppressedByFollowingCustomRewriteReady
+            | Self::SuppressedByFollowingCustomMatchingTarget
+            | Self::SuppressedByFollowingNormalRewriteReady => None,
+            Self::SynthesizesAfterAddFollowingCustomRewriteTargetMismatch => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch)
+            }
+            Self::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable)
+            }
+            Self::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch)
+            }
+            Self::SynthesizesAfterAddFollowingNormalTargetUnavailable => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable)
+            }
+            Self::SynthesizesAfterAddWithoutCarrier => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier)
+            }
+            Self::SynthesizesAfterAddPreAddNormalMatchingTarget => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalMatchingTarget)
+            }
+            Self::SynthesizesAfterAddPreAddNormalRewriteTargetMismatch => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalRewriteTargetMismatch)
+            }
+            Self::SynthesizesAfterAddPreAddNormalTargetUnavailable => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable)
+            }
+            Self::SynthesizesAfterAddPreAddCustomMatchingTarget => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget)
+            }
+            Self::SynthesizesAfterAddPreAddCustomRewriteTargetMismatch => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomRewriteTargetMismatch)
+            }
+            Self::SynthesizesAfterAddPreAddCustomTargetUnavailable => {
+                Some(PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable)
+            }
+        }
+    }
+
+    fn carries_target_unavailable_reason(self) -> bool {
+        matches!(
+            self,
+            Self::SynthesizesAfterAddFollowingCustomTargetUnavailable
+                | Self::SynthesizesAfterAddFollowingNormalTargetUnavailable
+                | Self::SynthesizesAfterAddPreAddNormalTargetUnavailable
+                | Self::SynthesizesAfterAddPreAddCustomTargetUnavailable
+        )
     }
 }
 
