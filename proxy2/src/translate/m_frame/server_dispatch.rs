@@ -1249,6 +1249,12 @@ fn trace_live_object_exact_rewrite_summary(
         || summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
             != 0
     {
+        let selected_target_unavailable = summary
+            .exact_placeable_custom_carrier_selected_target_unavailable_reasons();
+        let committed_target_unavailable = summary
+            .exact_placeable_custom_carrier_committed_target_unavailable_reasons();
+        let uncommitted_target_unavailable = summary
+            .exact_placeable_custom_carrier_uncommitted_target_unavailable_reasons();
         tracing::info!(
             source = exact_rewrite.source,
             family = family_name,
@@ -1504,6 +1510,17 @@ fn trace_live_object_exact_rewrite_summary(
             synthesized_update_after_add_following_custom_rewrite_target_unavailable_position_output_unavailable = summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons
                 .position_output_unavailable,
+            target_unavailable_selected = selected_target_unavailable.total(),
+            target_unavailable_committed = committed_target_unavailable.total(),
+            target_unavailable_uncommitted = uncommitted_target_unavailable.total(),
+            target_unavailable_uncommitted_no_appearance_claim =
+                uncommitted_target_unavailable.no_appearance_claim,
+            target_unavailable_uncommitted_unique_module_target_unavailable =
+                uncommitted_target_unavailable.unique_module_target_unavailable,
+            target_unavailable_uncommitted_missing_position =
+                uncommitted_target_unavailable.missing_position,
+            target_unavailable_uncommitted_position_output_unavailable =
+                uncommitted_target_unavailable.position_output_unavailable,
             "server exact placeable fixed-width custom carrier synthesis policy"
         );
     }
