@@ -5830,6 +5830,43 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         super::LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
         "compact sequence evidence must still reject the shifted cursor until a source owner is proven"
     );
+    let sequence_context = handoff.sequence_context();
+    let carrier_row = sequence_context
+        .carrier_row
+        .expect("compact handoff evidence should retain the preceding carrier update row");
+    assert_eq!(carrier_row.opcode, b'U');
+    assert_eq!(carrier_row.marker, super::DOOR_OBJECT_TYPE);
+    assert!(
+        matches!(
+            carrier_row.update_mask,
+            Some(0xFFFF_FFF7) | Some(0x0000_0017)
+        ),
+        "carrier row should preserve the compact door-update mask shape"
+    );
+    assert_eq!(carrier_row.claim_family, "update");
+    assert!(
+        carrier_row.bit_end.is_some(),
+        "carrier update must be a bounded source-window row, not a guessed handoff owner"
+    );
+    let previous_row = sequence_context
+        .previous_row
+        .expect("compact handoff evidence should retain the typed A/6 row");
+    assert_eq!(previous_row.opcode, b'A');
+    assert_eq!(previous_row.marker, super::ITEM_OBJECT_TYPE);
+    assert_eq!(previous_row.claim_family, "item-create");
+    assert!(previous_row.bit_end.is_some());
+    let focus_row = sequence_context
+        .focus_row
+        .expect("compact handoff evidence should retain the failed U/6 row");
+    assert_eq!(focus_row.opcode, b'U');
+    assert_eq!(focus_row.marker, super::ITEM_OBJECT_TYPE);
+    assert_eq!(focus_row.object_id, previous_row.object_id);
+    assert_eq!(focus_row.update_mask, Some(0xFFFF_FFF3));
+    assert_eq!(focus_row.bit_start, failure.bit_cursor);
+    assert_eq!(
+        focus_row.bit_end, None,
+        "the failing U/6 row remains unclaimed until a source owner is proven"
+    );
     assert_eq!(handoff.neighbor_delta, 2);
     assert_eq!(handoff.neighbor_bit_start, failure.bit_cursor + 2);
     assert_eq!(handoff.emitted_gap_bits, 2);

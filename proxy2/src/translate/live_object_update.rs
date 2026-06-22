@@ -2608,6 +2608,7 @@ mod diagnostic_tests {
                     sequence_kind: LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
                     source_decision:
                         LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
+                    sequence_context: LiveObjectUpdateItemHandoffSequenceContext::default(),
                 }),
                 contiguous_tail: Some(contiguous_tail),
                 source_window: Some(source_window),
@@ -2639,6 +2640,9 @@ mod diagnostic_tests {
         assert!(report.contains(
             "item_handoff_source_decision=blocked-unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap"
         ));
+        assert!(report.contains("item_handoff_sequence_carrier=none"));
+        assert!(report.contains("item_handoff_sequence_previous=none"));
+        assert!(report.contains("item_handoff_sequence_focus=none"));
         assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
@@ -13835,6 +13839,29 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
     pub sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
     pub source_decision: LiveObjectUpdateItemHandoffSourceDecision,
+    pub sequence_context: LiveObjectUpdateItemHandoffSequenceContext,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffSequenceContext {
+    pub carrier_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+    pub previous_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+    pub focus_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffSequenceRowEvidence {
+    pub offset: usize,
+    pub record_end: usize,
+    pub opcode: u8,
+    pub marker: u8,
+    pub object_id: Option<u32>,
+    pub update_mask: Option<u32>,
+    pub bit_start: usize,
+    pub bit_end: Option<usize>,
+    pub bit_delta: Option<usize>,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub claim_family: &'static str,
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -14189,6 +14216,10 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn source_decision(&self) -> LiveObjectUpdateItemHandoffSourceDecision {
         self.source_decision
+    }
+
+    pub fn sequence_context(&self) -> LiveObjectUpdateItemHandoffSequenceContext {
+        self.sequence_context
     }
 }
 
@@ -30567,6 +30598,13 @@ impl LiveObjectItemUpdateCursorFailure {
                 sequence_kind,
                 neighbor.source_owner,
             );
+        let sequence_context = live_object_item_handoff_sequence_context(
+            self.source_window,
+            self.offset,
+            self.record_end,
+            neighbor.previous_offset,
+            neighbor.previous_record_end,
+        );
 
         LiveObjectUpdateItemHandoffEvidence {
             previous_offset: neighbor.previous_offset,
@@ -30595,6 +30633,7 @@ impl LiveObjectItemUpdateCursorFailure {
             source_gap_values: neighbor.source_gap_values,
             sequence_kind,
             source_decision,
+            sequence_context,
         }
     }
 }
@@ -31171,6 +31210,71 @@ fn live_object_item_handoff_sequence_kind(
         LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate
     } else {
         LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate
+    }
+}
+
+fn live_object_item_handoff_sequence_context(
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+    focus_offset: usize,
+    focus_record_end: usize,
+    previous_offset: usize,
+    previous_record_end: usize,
+) -> LiveObjectUpdateItemHandoffSequenceContext {
+    let Some(source_window) = source_window else {
+        return LiveObjectUpdateItemHandoffSequenceContext::default();
+    };
+    let entries = source_window
+        .entries
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let Some(focus_index) = entries.iter().position(|entry| {
+        entry.offset == focus_offset
+            && entry.record_end == focus_record_end
+            && entry.opcode == b'U'
+            && entry.marker == ITEM_OBJECT_TYPE
+    }) else {
+        return LiveObjectUpdateItemHandoffSequenceContext::default();
+    };
+    let focus = entries[focus_index];
+    let previous_index = focus_index.checked_sub(1).filter(|index| {
+        let previous = entries[*index];
+        previous.offset == previous_offset
+            && previous.record_end == previous_record_end
+            && live_object_source_window_entry_is_bounded_item_create(previous)
+            && live_object_source_window_entries_match_object(previous, focus)
+    });
+    let previous_row =
+        previous_index.map(|index| live_object_item_handoff_sequence_row(entries[index]));
+    let carrier_row = previous_index
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|index| entries.get(index).copied())
+        .filter(|entry| live_object_source_window_entry_is_bounded_door_update(*entry))
+        .map(live_object_item_handoff_sequence_row);
+
+    LiveObjectUpdateItemHandoffSequenceContext {
+        carrier_row,
+        previous_row,
+        focus_row: Some(live_object_item_handoff_sequence_row(focus)),
+    }
+}
+
+fn live_object_item_handoff_sequence_row(
+    entry: LiveObjectUpdateSourceWindowEntryEvidence,
+) -> LiveObjectUpdateItemHandoffSequenceRowEvidence {
+    LiveObjectUpdateItemHandoffSequenceRowEvidence {
+        offset: entry.offset,
+        record_end: entry.record_end,
+        opcode: entry.opcode,
+        marker: entry.marker,
+        object_id: entry.object_id,
+        update_mask: entry.update_mask,
+        bit_start: entry.bit_start,
+        bit_end: entry.bit_end,
+        bit_delta: entry.bit_delta,
+        source_bits: entry.source_bits,
+        claim_family: entry.claim_family,
     }
 }
 
@@ -32395,6 +32499,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.source_decision.claimable_handoff(),
                 handoff.source_decision.handoff_blocker()
             );
+            write_item_handoff_sequence_context(&mut out, handoff.sequence_context);
             let _ = writeln!(
                 &mut out,
                 "item_handoff_emitted_gap=bits={} range={}..{} values={}",
@@ -32568,6 +32673,54 @@ fn write_source_window_evidence(
             )
         );
     }
+}
+
+fn write_item_handoff_sequence_context(
+    out: &mut String,
+    context: LiveObjectUpdateItemHandoffSequenceContext,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        out,
+        "item_handoff_sequence_carrier={}",
+        format_item_handoff_sequence_row(context.carrier_row)
+    );
+    let _ = writeln!(
+        out,
+        "item_handoff_sequence_previous={}",
+        format_item_handoff_sequence_row(context.previous_row)
+    );
+    let _ = writeln!(
+        out,
+        "item_handoff_sequence_focus={}",
+        format_item_handoff_sequence_row(context.focus_row)
+    );
+}
+
+fn format_item_handoff_sequence_row(
+    row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+) -> String {
+    let Some(row) = row else {
+        return "none".to_string();
+    };
+    let bits = row
+        .bit_end
+        .map(|bit_end| format!("{}..{bit_end}", row.bit_start))
+        .unwrap_or_else(|| format!("{}..unclaimed", row.bit_start));
+    format!(
+        "{}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={}",
+        row.offset,
+        row.record_end,
+        format_live_object_byte(row.opcode),
+        format_live_object_byte(row.marker),
+        format_optional_u32_hex(row.object_id),
+        format_optional_u32_hex(row.update_mask),
+        bits,
+        format_optional_usize(row.bit_delta),
+        row.claim_family,
+        format_rewrite_bit_slice_evidence(row.source_bits)
+    )
 }
 
 fn write_item_cursor_ledger_evidence(
