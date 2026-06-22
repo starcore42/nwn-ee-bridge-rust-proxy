@@ -9439,6 +9439,47 @@ mod diagnostic_tests {
                     Some(ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable),
             })
         ));
+        assert!(
+            !stale_custom
+                .selected_following()
+                .unwrap()
+                .satisfies_target_unavailable_by_matching_source(
+                    &add_row,
+                    ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable,
+                ),
+            "a stale explicit custom source must not clear unresolved target-unavailable evidence"
+        );
+
+        let satisfied_custom = ExactPlaceableUpdateAppearanceCarrier {
+            following_custom: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
+                custom_rewrite_ready: false,
+                custom_rewrite_target: None,
+                custom_rewrite_target_unavailable_reason: Some(
+                    ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
+                ),
+                ..following_custom
+            }),
+            ..ExactPlaceableUpdateAppearanceCarrier::default()
+        };
+        let selected_satisfied = satisfied_custom.selected_following().unwrap();
+        assert_eq!(
+            selected_satisfied.custom_rewrite_target_state(&add_row),
+            ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable,
+            "the writer target can be unavailable while the source custom row still matches the module row"
+        );
+        assert!(
+            selected_satisfied.satisfies_target_unavailable_by_matching_source(
+                &add_row,
+                ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable,
+            ),
+            "a same-source following custom row is packet-authored satisfaction for the add carrier"
+        );
+        assert_eq!(
+            satisfied_custom.synthesis_policy(&add_row),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget,
+            "a matching following custom source suppresses add-boundary synthesis even when it cannot be retargeted"
+        );
+        assert!(satisfied_custom.synthesis_insertion(&add_row).is_none());
     }
 
     #[test]
@@ -23838,6 +23879,16 @@ impl SelectedExactPlaceableUpdateAppearanceCarrier {
             Self::Normal(_) => false,
         }
     }
+
+    fn satisfies_target_unavailable_by_matching_source(
+        self,
+        row: &AreaPlaceableContextRow,
+        target_state: ExactPlaceableCustomCarrierRewriteTargetState,
+    ) -> bool {
+        matches!(self, Self::Custom(_))
+            && target_state == ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable
+            && self.matches_module_row(row)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25934,12 +25985,7 @@ fn count_exact_placeable_fixed_width_following_carrier(
         target_state,
         record.custom_rewrite_target_unavailable_reason,
     );
-    if matches!(
-        selected_following,
-        SelectedExactPlaceableUpdateAppearanceCarrier::Custom(_)
-    ) && target_state == ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable
-        && selected_following.matches_module_row(row)
-    {
+    if selected_following.satisfies_target_unavailable_by_matching_source(row, target_state) {
         summary
             .exact_placeable_add_module_custom_template_resref_fixed_width_with_custom_update_custom_rewrite_unavailable_satisfied_by_matching_carrier =
             summary
