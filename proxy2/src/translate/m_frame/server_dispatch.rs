@@ -1257,7 +1257,7 @@ fn trace_live_object_exact_rewrite_summary(
         let uncommitted_target_unavailable = target_unavailable_resolution.uncommitted();
         let unresolved_target_unavailable = target_unavailable_resolution.unresolved();
         let unresolved_target_unavailable_by_scope =
-            target_unavailable_resolution.unresolved_by_scope;
+            target_unavailable_resolution.unresolved_by_scope();
         tracing::info!(
             source = exact_rewrite.source,
             family = family_name,

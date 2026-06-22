@@ -10397,11 +10397,11 @@ mod diagnostic_tests {
         let satisfied = resolution.satisfied();
         let uncommitted = resolution.uncommitted();
         let unresolved = resolution.unresolved();
-        let selected_by_scope = resolution.selected_by_scope;
-        let committed_by_scope = resolution.committed_by_scope;
-        let satisfied_by_scope = resolution.satisfied_by_scope;
-        let uncommitted_by_scope = resolution.uncommitted_by_scope;
-        let unresolved_by_scope = resolution.unresolved_by_scope;
+        let selected_by_scope = resolution.selected_by_scope();
+        let committed_by_scope = resolution.committed_by_scope();
+        let satisfied_by_scope = resolution.satisfied_by_scope();
+        let uncommitted_by_scope = resolution.uncommitted_by_scope();
+        let unresolved_by_scope = resolution.unresolved_by_scope();
 
         assert_eq!(total.selected, selected);
         assert_eq!(total.committed, committed);
@@ -12990,15 +12990,6 @@ pub struct ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
 }
 
 impl ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
-    pub(crate) fn saturating_sub(self, other: Self) -> Self {
-        Self {
-            following_normal: self.following_normal.saturating_sub(other.following_normal),
-            following_custom: self.following_custom.saturating_sub(other.following_custom),
-            pre_add_normal: self.pre_add_normal.saturating_sub(other.pre_add_normal),
-            pre_add_custom: self.pre_add_custom.saturating_sub(other.pre_add_custom),
-        }
-    }
-
     pub(crate) fn total_reasons(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
         let mut reasons = ExactPlaceableCustomCarrierTargetUnavailableReasonSummary::default();
         reasons.saturating_add_assign(self.following_normal);
@@ -13053,6 +13044,39 @@ pub struct ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
 }
 
 impl ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
+    fn from_reason_summaries(
+        selected_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
+        committed_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
+        satisfied_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
+    ) -> Self {
+        Self {
+            following_normal:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    selected_by_scope.following_normal,
+                    committed_by_scope.following_normal,
+                    satisfied_by_scope.following_normal,
+                ),
+            following_custom:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    selected_by_scope.following_custom,
+                    committed_by_scope.following_custom,
+                    satisfied_by_scope.following_custom,
+                ),
+            pre_add_normal:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    selected_by_scope.pre_add_normal,
+                    committed_by_scope.pre_add_normal,
+                    satisfied_by_scope.pre_add_normal,
+                ),
+            pre_add_custom:
+                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
+                    selected_by_scope.pre_add_custom,
+                    committed_by_scope.pre_add_custom,
+                    satisfied_by_scope.pre_add_custom,
+                ),
+        }
+    }
+
     pub(crate) fn total(self) -> ExactPlaceableCustomCarrierTargetUnavailableScopeResolution {
         let mut total = ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::default();
         total.saturating_add_assign(self.following_normal);
@@ -13061,15 +13085,66 @@ impl ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
         total.saturating_add_assign(self.pre_add_custom);
         total
     }
+
+    pub(crate) fn selected(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.following_normal.selected,
+            following_custom: self.following_custom.selected,
+            pre_add_normal: self.pre_add_normal.selected,
+            pre_add_custom: self.pre_add_custom.selected,
+        }
+    }
+
+    pub(crate) fn committed(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.following_normal.committed,
+            following_custom: self.following_custom.committed,
+            pre_add_normal: self.pre_add_normal.committed,
+            pre_add_custom: self.pre_add_custom.committed,
+        }
+    }
+
+    pub(crate) fn satisfied(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.following_normal.satisfied,
+            following_custom: self.following_custom.satisfied,
+            pre_add_normal: self.pre_add_normal.satisfied,
+            pre_add_custom: self.pre_add_custom.satisfied,
+        }
+    }
+
+    pub(crate) fn uncommitted(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.following_normal.uncommitted,
+            following_custom: self.following_custom.uncommitted,
+            pre_add_normal: self.pre_add_normal.uncommitted,
+            pre_add_custom: self.pre_add_custom.uncommitted,
+        }
+    }
+
+    pub(crate) fn unresolved(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+            following_normal: self.following_normal.unresolved,
+            following_custom: self.following_custom.unresolved,
+            pre_add_normal: self.pre_add_normal.unresolved,
+            pre_add_custom: self.pre_add_custom.unresolved,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExactPlaceableCustomCarrierTargetUnavailableResolution {
-    pub selected_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
-    pub committed_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
-    pub satisfied_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
-    pub uncommitted_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
-    pub unresolved_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
+    scoped: ExactPlaceableCustomCarrierScopedTargetUnavailableResolution,
 }
 
 impl ExactPlaceableCustomCarrierTargetUnavailableResolution {
@@ -13078,64 +13153,72 @@ impl ExactPlaceableCustomCarrierTargetUnavailableResolution {
         committed_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
         satisfied_by_scope: ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary,
     ) -> Self {
-        let uncommitted_by_scope = selected_by_scope.saturating_sub(committed_by_scope);
-        let unresolved_by_scope = uncommitted_by_scope.saturating_sub(satisfied_by_scope);
         Self {
-            selected_by_scope,
-            committed_by_scope,
-            satisfied_by_scope,
-            uncommitted_by_scope,
-            unresolved_by_scope,
+            scoped:
+                ExactPlaceableCustomCarrierScopedTargetUnavailableResolution::from_reason_summaries(
+                    selected_by_scope,
+                    committed_by_scope,
+                    satisfied_by_scope,
+                ),
         }
     }
 
     pub(crate) fn selected(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.scoped().total().selected
+        self.total().selected
     }
 
     pub(crate) fn committed(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.scoped().total().committed
+        self.total().committed
     }
 
     pub(crate) fn satisfied(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.scoped().total().satisfied
+        self.total().satisfied
     }
 
     pub(crate) fn uncommitted(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.scoped().total().uncommitted
+        self.total().uncommitted
     }
 
     pub(crate) fn unresolved(self) -> ExactPlaceableCustomCarrierTargetUnavailableReasonSummary {
-        self.scoped().total().unresolved
+        self.total().unresolved
     }
 
     pub(crate) fn scoped(self) -> ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
-        ExactPlaceableCustomCarrierScopedTargetUnavailableResolution {
-            following_normal:
-                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
-                    self.selected_by_scope.following_normal,
-                    self.committed_by_scope.following_normal,
-                    self.satisfied_by_scope.following_normal,
-                ),
-            following_custom:
-                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
-                    self.selected_by_scope.following_custom,
-                    self.committed_by_scope.following_custom,
-                    self.satisfied_by_scope.following_custom,
-                ),
-            pre_add_normal:
-                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
-                    self.selected_by_scope.pre_add_normal,
-                    self.committed_by_scope.pre_add_normal,
-                    self.satisfied_by_scope.pre_add_normal,
-                ),
-            pre_add_custom:
-                ExactPlaceableCustomCarrierTargetUnavailableScopeResolution::from_reasons(
-                    self.selected_by_scope.pre_add_custom,
-                    self.committed_by_scope.pre_add_custom,
-                    self.satisfied_by_scope.pre_add_custom,
-                ),
-        }
+        self.scoped
+    }
+
+    pub(crate) fn total(self) -> ExactPlaceableCustomCarrierTargetUnavailableScopeResolution {
+        self.scoped.total()
+    }
+
+    pub(crate) fn selected_by_scope(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.scoped.selected()
+    }
+
+    pub(crate) fn committed_by_scope(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.scoped.committed()
+    }
+
+    pub(crate) fn satisfied_by_scope(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.scoped.satisfied()
+    }
+
+    pub(crate) fn uncommitted_by_scope(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.scoped.uncommitted()
+    }
+
+    pub(crate) fn unresolved_by_scope(
+        self,
+    ) -> ExactPlaceableCustomCarrierScopedTargetUnavailableReasonSummary {
+        self.scoped.unresolved()
     }
 }
 
