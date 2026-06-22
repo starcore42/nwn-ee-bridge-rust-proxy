@@ -528,6 +528,7 @@ mod diagnostic_tests {
             appearance: 0xFFFE,
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin,
+            insertion_carrier: None,
             insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         }
@@ -557,6 +558,7 @@ mod diagnostic_tests {
             template_resref: *b"plc_custom_add\0\0",
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_carrier: None,
             insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         }
@@ -904,6 +906,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1020,6 +1023,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_carrier: None,
                     insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
@@ -1043,6 +1047,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_carrier: None,
                     insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
@@ -1142,6 +1147,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: true,
             }],
@@ -1216,6 +1222,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1303,6 +1310,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1382,6 +1390,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1469,6 +1478,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1560,6 +1570,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -1653,6 +1664,7 @@ mod diagnostic_tests {
             template_resref: target_resref,
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_carrier: None,
             insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         };
@@ -1768,6 +1780,7 @@ mod diagnostic_tests {
             template_resref: target_resref,
             insertion_origin:
                 PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+            insertion_carrier: None,
             insertion_target_unavailable_reason: None,
             anchor_rewrite_already_counted: false,
         };
@@ -1901,6 +1914,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_carrier: None,
                     insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
@@ -1924,6 +1938,7 @@ mod diagnostic_tests {
                     template_resref: target_resref,
                     insertion_origin:
                         PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                    insertion_carrier: None,
                     insertion_target_unavailable_reason: None,
                     anchor_rewrite_already_counted: false,
                 },
@@ -2006,6 +2021,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -2101,6 +2117,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -2181,6 +2198,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -2263,6 +2281,7 @@ mod diagnostic_tests {
                 template_resref: target_resref,
                 insertion_origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
+                insertion_carrier: None,
                 insertion_target_unavailable_reason: None,
                 anchor_rewrite_already_counted: false,
             }],
@@ -9369,6 +9388,7 @@ mod diagnostic_tests {
                 origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
                 unavailable_reason: None,
+                insertion_carrier: Some(_),
             })
         ));
 
@@ -9420,6 +9440,7 @@ mod diagnostic_tests {
                 origin:
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
                 unavailable_reason: None,
+                insertion_carrier: Some(_),
             })
         ));
 
@@ -9455,6 +9476,7 @@ mod diagnostic_tests {
                     PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
                 unavailable_reason:
                     Some(ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable),
+                insertion_carrier: Some(_),
             })
         ));
         assert!(
@@ -9568,6 +9590,7 @@ mod diagnostic_tests {
         let Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
             origin,
             unavailable_reason,
+            insertion_carrier,
         }) = synthesis_decision.insertion()
         else {
             panic!(
@@ -9583,6 +9606,30 @@ mod diagnostic_tests {
             Some(
                 ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::UniqueModuleTargetUnavailable
             )
+        );
+        let insertion_carrier = insertion_carrier
+            .expect("the pending insertion should retain the selected carrier row");
+        assert_eq!(
+            insertion_carrier.scope,
+            ExactPlaceableCustomCarrierCounterScope::FollowingNormal
+        );
+        assert_eq!(insertion_carrier.record_offset, record.record_offset);
+        assert_eq!(insertion_carrier.record_end, record.record_end);
+        assert_eq!(
+            insertion_carrier.appearance_offset,
+            record.appearance_offset
+        );
+        assert_eq!(insertion_carrier.resref_offset, record.resref_offset);
+        assert_eq!(
+            insertion_carrier.source_appearance,
+            LiveObjectPlaceableAppearance {
+                appearance: record.source_appearance,
+                resref: record.source_resref,
+            }
+        );
+        assert_eq!(
+            insertion_carrier.target_decision, decision,
+            "pending synthetic rows keep the exact carrier decision that selected their origin"
         );
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
@@ -10098,11 +10145,16 @@ mod diagnostic_tests {
             let Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                 origin,
                 unavailable_reason,
+                insertion_carrier,
             }) = carrier.synthesis_insertion(&add_row)
             else {
                 panic!("expected add-boundary carrier synthesis insertion");
             };
             assert_eq!(origin, expected_origin);
+            assert!(
+                insertion_carrier.is_some(),
+                "all policy cases in this table are selected-carrier syntheses"
+            );
             count_committed_placeable_custom_appearance_update_origin(
                 &mut summary,
                 expected_origin,
@@ -21040,6 +21092,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                                     origin,
                                     unavailable_reason,
+                                    insertion_carrier,
                                 } => {
                                     PendingPlaceableCustomAppearanceUpdate {
                                         original_insert_offset: mention.record_end,
@@ -21060,6 +21113,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                         appearance: row.appearance,
                                         template_resref: target_resref,
                                         insertion_origin: origin,
+                                        insertion_carrier,
                                         insertion_target_unavailable_reason: unavailable_reason,
                                         anchor_rewrite_already_counted: false,
                                     }
@@ -23925,9 +23979,11 @@ impl ExactPlaceableCustomCarrierSynthesisDecision {
     }
 
     fn insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
-        let unavailable_reason = self
+        let insertion_carrier = self
             .selection
-            .and_then(|selection| selection.target_decision().unavailable_reason());
+            .map(PlaceableCustomAppearanceUpdateInsertionCarrier::from_selection);
+        let unavailable_reason =
+            insertion_carrier.and_then(|carrier| carrier.target_decision.unavailable_reason());
         match self.policy {
             ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomRewriteReady
             | ExactPlaceableCustomCarrierSynthesisPolicy::SuppressedByFollowingCustomMatchingTarget
@@ -23938,66 +23994,77 @@ impl ExactPlaceableCustomCarrierSynthesisDecision {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomRewriteTargetMismatch,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingCustomTargetUnavailable => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingCustomTargetUnavailable,
                     unavailable_reason,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalRewriteTargetMismatch => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalRewriteTargetMismatch,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddFollowingNormalTargetUnavailable => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddFollowingNormalTargetUnavailable,
                     unavailable_reason,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddWithoutCarrier => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddWithoutCarrier,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalMatchingTarget => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalMatchingTarget,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalRewriteTargetMismatch => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalRewriteTargetMismatch,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddNormalTargetUnavailable => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddNormalTargetUnavailable,
                     unavailable_reason,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomMatchingTarget => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomMatchingTarget,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomRewriteTargetMismatch => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomRewriteTargetMismatch,
                     unavailable_reason: None,
+                    insertion_carrier,
                 })
             }
             ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomTargetUnavailable => {
                 Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
                     origin: PlaceableCustomAppearanceUpdateInsertionOrigin::AfterAddPreAddCustomTargetUnavailable,
                     unavailable_reason,
+                    insertion_carrier,
                 })
             }
         }
@@ -24289,6 +24356,7 @@ enum ExactPlaceableCustomCarrierSynthesisInsertion {
     AfterAdd {
         origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
         unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+        insertion_carrier: Option<PlaceableCustomAppearanceUpdateInsertionCarrier>,
     },
 }
 
@@ -24710,9 +24778,100 @@ struct PendingPlaceableCustomAppearanceUpdate {
     appearance: u16,
     template_resref: [u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES],
     insertion_origin: PlaceableCustomAppearanceUpdateInsertionOrigin,
+    insertion_carrier: Option<PlaceableCustomAppearanceUpdateInsertionCarrier>,
     insertion_target_unavailable_reason:
         Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
     anchor_rewrite_already_counted: bool,
+}
+
+impl PendingPlaceableCustomAppearanceUpdate {
+    fn insertion_carrier_scope(self) -> Option<&'static str> {
+        self.insertion_carrier.map(|carrier| carrier.scope.as_str())
+    }
+
+    fn insertion_carrier_record_offset(self) -> Option<usize> {
+        self.insertion_carrier.map(|carrier| carrier.record_offset)
+    }
+
+    fn insertion_carrier_record_end(self) -> Option<usize> {
+        self.insertion_carrier.map(|carrier| carrier.record_end)
+    }
+
+    fn insertion_carrier_appearance_offset(self) -> Option<usize> {
+        self.insertion_carrier
+            .map(|carrier| carrier.appearance_offset)
+    }
+
+    fn insertion_carrier_resref_offset(self) -> Option<usize> {
+        self.insertion_carrier
+            .and_then(|carrier| carrier.resref_offset)
+    }
+
+    fn insertion_carrier_fragment_bit_start(self) -> Option<usize> {
+        self.insertion_carrier
+            .map(|carrier| carrier.fragment_bit_start)
+    }
+
+    fn insertion_carrier_fragment_bit_end(self) -> Option<usize> {
+        self.insertion_carrier
+            .map(|carrier| carrier.fragment_bit_end)
+    }
+
+    fn insertion_carrier_source_appearance(self) -> Option<u16> {
+        self.insertion_carrier
+            .map(|carrier| carrier.source_appearance.appearance)
+    }
+
+    fn insertion_carrier_source_resref(
+        self,
+    ) -> Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]> {
+        self.insertion_carrier
+            .and_then(|carrier| carrier.source_appearance.resref)
+    }
+
+    fn insertion_carrier_target_state(self) -> Option<&'static str> {
+        self.insertion_carrier
+            .map(|carrier| carrier.target_decision.state().as_str())
+    }
+
+    fn insertion_carrier_target_unavailable_reason(self) -> Option<&'static str> {
+        self.insertion_carrier
+            .and_then(|carrier| carrier.target_decision.unavailable_reason())
+            .map(|reason| reason.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaceableCustomAppearanceUpdateInsertionCarrier {
+    scope: ExactPlaceableCustomCarrierCounterScope,
+    record_offset: usize,
+    record_end: usize,
+    appearance_offset: usize,
+    resref_offset: Option<usize>,
+    fragment_bit_start: usize,
+    fragment_bit_end: usize,
+    source_appearance: LiveObjectPlaceableAppearance,
+    target_decision: ExactPlaceableCustomCarrierRewriteTargetDecision,
+}
+
+impl PlaceableCustomAppearanceUpdateInsertionCarrier {
+    fn from_selection(selection: ExactPlaceableCustomCarrierSynthesisSelection) -> Self {
+        let record = selection.carrier().record();
+        Self {
+            scope: selection.scope(),
+            record_offset: record.record_offset,
+            record_end: record.record_end,
+            appearance_offset: record.appearance_offset,
+            resref_offset: record.resref_offset,
+            fragment_bit_start: record.fragment_bit_start,
+            fragment_bit_end: record.fragment_bit_end,
+            source_appearance: LiveObjectPlaceableAppearance {
+                appearance: record.source_appearance,
+                resref: record.source_resref,
+            },
+            target_decision: selection.target_decision(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -25300,6 +25459,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25326,6 +25496,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25351,6 +25532,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25383,6 +25575,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 anchor_source_resref = ?update.anchor.source_appearance.resref,
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25422,6 +25625,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 anchor_source_resref = ?update.anchor.source_appearance.resref,
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25459,6 +25673,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                 emitted_appearance = format_args!("0x{:04X}", update.appearance),
                 emitted_resref = ?update.template_resref,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_carrier_scope = update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = update
                     .insertion_target_unavailable_reason
                     .map(|reason| reason.as_str()),
@@ -25502,6 +25727,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                                 format_args!("0x{:04X}", previous.update.appearance),
                             emitted_resref = ?previous.update.template_resref,
                             insertion_origin = previous.update.insertion_origin.as_str(),
+                            insertion_carrier_scope = previous.update.insertion_carrier_scope(),
+                            insertion_carrier_record_offset = previous.update.insertion_carrier_record_offset(),
+                            insertion_carrier_record_end = previous.update.insertion_carrier_record_end(),
+                            insertion_carrier_appearance_offset = previous.update.insertion_carrier_appearance_offset(),
+                            insertion_carrier_resref_offset = previous.update.insertion_carrier_resref_offset(),
+                            insertion_carrier_fragment_bit_start = previous.update.insertion_carrier_fragment_bit_start(),
+                            insertion_carrier_fragment_bit_end = previous.update.insertion_carrier_fragment_bit_end(),
+                            insertion_carrier_source_appearance = previous.update.insertion_carrier_source_appearance(),
+                            insertion_carrier_source_resref = ?previous.update.insertion_carrier_source_resref(),
+                            insertion_carrier_target_state = previous.update.insertion_carrier_target_state(),
+                            insertion_carrier_target_unavailable_reason = previous.update.insertion_carrier_target_unavailable_reason(),
                             insertion_target_unavailable_reason = previous
                                 .update
                                 .insertion_target_unavailable_reason
@@ -25529,6 +25765,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                     prior_emitted_appearance = format_args!("0x{:04X}", existing.output.appearance),
                     prior_emitted_resref = ?existing.output.template_resref,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_carrier_scope = update.insertion_carrier_scope(),
+                    insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                    insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                    insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                    insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                    insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                    insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                    insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                    insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                    insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                    insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                     insertion_target_unavailable_reason = update
                         .insertion_target_unavailable_reason
                         .map(|reason| reason.as_str()),
@@ -25549,6 +25796,17 @@ fn plan_pending_placeable_custom_appearance_updates(
                     anchor_expected_record = update.anchor.expected_record.as_str(),
                     fragment_bit_cursor = update.fragment_bit_cursor,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_carrier_scope = update.insertion_carrier_scope(),
+                    insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                    insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                    insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                    insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                    insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                    insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                    insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                    insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                    insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                    insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                     insertion_target_unavailable_reason = update
                         .insertion_target_unavailable_reason
                         .map(|reason| reason.as_str()),
@@ -25729,6 +25987,17 @@ fn apply_pending_placeable_custom_appearance_updates(
                     emitted_appearance = format_args!("0x{:04X}", update.appearance),
                     emitted_resref = ?update.template_resref,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_carrier_scope = update.insertion_carrier_scope(),
+                    insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+                    insertion_carrier_record_end = update.insertion_carrier_record_end(),
+                    insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+                    insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+                    insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+                    insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+                    insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+                    insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+                    insertion_carrier_target_state = update.insertion_carrier_target_state(),
+                    insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
                     insertion_target_unavailable_reason = update
                         .insertion_target_unavailable_reason
                         .map(|reason| reason.as_str()),
@@ -25809,6 +26078,28 @@ fn apply_pending_placeable_custom_appearance_updates(
                     batch_reject_focus.map(|focus| focus.update.anchor.expected_record.as_str()),
                 batch_reject_focus_insertion_origin =
                     batch_reject_focus.map(|focus| focus.update.insertion_origin.as_str()),
+                batch_reject_focus_insertion_carrier_scope = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_scope()),
+                batch_reject_focus_insertion_carrier_record_offset = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_record_offset()),
+                batch_reject_focus_insertion_carrier_record_end = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_record_end()),
+                batch_reject_focus_insertion_carrier_appearance_offset = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_appearance_offset()),
+                batch_reject_focus_insertion_carrier_resref_offset = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_resref_offset()),
+                batch_reject_focus_insertion_carrier_fragment_bit_start = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_fragment_bit_start()),
+                batch_reject_focus_insertion_carrier_fragment_bit_end = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_fragment_bit_end()),
+                batch_reject_focus_insertion_carrier_source_appearance = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_source_appearance()),
+                batch_reject_focus_insertion_carrier_source_resref = ?batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_source_resref()),
+                batch_reject_focus_insertion_carrier_target_state = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_target_state()),
+                batch_reject_focus_insertion_carrier_target_unavailable_reason = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_carrier_target_unavailable_reason()),
                 batch_reject_focus_insertion_target_unavailable_reason = batch_reject_focus
                     .and_then(|focus| focus.update.insertion_target_unavailable_reason)
                     .map(|reason| reason.as_str()),
@@ -25855,6 +26146,17 @@ fn apply_pending_placeable_custom_appearance_updates(
                 emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
                 emitted_resref = ?batch_reject_focus.update.template_resref,
                 insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                insertion_carrier_scope = batch_reject_focus.update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = batch_reject_focus.update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = batch_reject_focus.update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = batch_reject_focus.update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = batch_reject_focus.update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = batch_reject_focus.update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = batch_reject_focus.update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = batch_reject_focus.update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?batch_reject_focus.update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = batch_reject_focus.update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = batch_reject_focus.update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = batch_reject_focus
                     .update
                     .insertion_target_unavailable_reason
@@ -25926,6 +26228,17 @@ fn apply_pending_placeable_custom_appearance_updates(
                 emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
                 emitted_resref = ?batch_reject_focus.update.template_resref,
                 insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                insertion_carrier_scope = batch_reject_focus.update.insertion_carrier_scope(),
+                insertion_carrier_record_offset = batch_reject_focus.update.insertion_carrier_record_offset(),
+                insertion_carrier_record_end = batch_reject_focus.update.insertion_carrier_record_end(),
+                insertion_carrier_appearance_offset = batch_reject_focus.update.insertion_carrier_appearance_offset(),
+                insertion_carrier_resref_offset = batch_reject_focus.update.insertion_carrier_resref_offset(),
+                insertion_carrier_fragment_bit_start = batch_reject_focus.update.insertion_carrier_fragment_bit_start(),
+                insertion_carrier_fragment_bit_end = batch_reject_focus.update.insertion_carrier_fragment_bit_end(),
+                insertion_carrier_source_appearance = batch_reject_focus.update.insertion_carrier_source_appearance(),
+                insertion_carrier_source_resref = ?batch_reject_focus.update.insertion_carrier_source_resref(),
+                insertion_carrier_target_state = batch_reject_focus.update.insertion_carrier_target_state(),
+                insertion_carrier_target_unavailable_reason = batch_reject_focus.update.insertion_carrier_target_unavailable_reason(),
                 insertion_target_unavailable_reason = batch_reject_focus
                     .update
                     .insertion_target_unavailable_reason
@@ -26532,6 +26845,17 @@ fn trace_synthesized_placeable_custom_appearance_update(
         emitted_resref = ?update.template_resref,
         bytes_inserted,
         insertion_origin = update.insertion_origin.as_str(),
+        insertion_carrier_scope = update.insertion_carrier_scope(),
+        insertion_carrier_record_offset = update.insertion_carrier_record_offset(),
+        insertion_carrier_record_end = update.insertion_carrier_record_end(),
+        insertion_carrier_appearance_offset = update.insertion_carrier_appearance_offset(),
+        insertion_carrier_resref_offset = update.insertion_carrier_resref_offset(),
+        insertion_carrier_fragment_bit_start = update.insertion_carrier_fragment_bit_start(),
+        insertion_carrier_fragment_bit_end = update.insertion_carrier_fragment_bit_end(),
+        insertion_carrier_source_appearance = update.insertion_carrier_source_appearance(),
+        insertion_carrier_source_resref = ?update.insertion_carrier_source_resref(),
+        insertion_carrier_target_state = update.insertion_carrier_target_state(),
+        insertion_carrier_target_unavailable_reason = update.insertion_carrier_target_unavailable_reason(),
         insertion_target_unavailable_reason = update
             .insertion_target_unavailable_reason
             .map(|reason| reason.as_str()),
