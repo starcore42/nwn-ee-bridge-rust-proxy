@@ -8993,7 +8993,8 @@ mod diagnostic_tests {
                 .selected_following()
                 .unwrap()
                 .record()
-                .custom_rewrite_target_unavailable_reason,
+                .custom_rewrite_target_resolution
+                .unavailable_reason(),
             Some(ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition),
             "the selected appearance-only U/09 has no parser-owned position proof for choosing a custom target"
         );
@@ -9363,9 +9364,8 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: false,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(later_target),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(later_target),
         };
 
         let normal_mismatch = ExactPlaceableUpdateAppearanceCarrier {
@@ -9394,7 +9394,8 @@ mod diagnostic_tests {
 
         let matching_normal = ExactPlaceableUpdateAppearanceCarrier {
             following_normal: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
-                custom_rewrite_target: Some(add_target),
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
                 ..following_normal
             }),
             ..ExactPlaceableUpdateAppearanceCarrier::default()
@@ -9417,7 +9418,8 @@ mod diagnostic_tests {
             resref_offset: Some(52),
             source_appearance: 0xFFFE,
             source_resref: Some(add_resref),
-            custom_rewrite_target: Some(later_target),
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(later_target),
             ..following_normal
         };
         let custom_mismatch = ExactPlaceableUpdateAppearanceCarrier {
@@ -9447,9 +9449,8 @@ mod diagnostic_tests {
         let stale_custom = ExactPlaceableUpdateAppearanceCarrier {
             following_custom: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
                 source_resref: Some(later_resref),
-                custom_rewrite_ready: false,
-                custom_rewrite_target: None,
-                custom_rewrite_target_unavailable_reason: Some(
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                     ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                 ),
                 ..following_custom
@@ -9495,9 +9496,8 @@ mod diagnostic_tests {
 
         let satisfied_custom = ExactPlaceableUpdateAppearanceCarrier {
             following_custom: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
-                custom_rewrite_ready: false,
-                custom_rewrite_target: None,
-                custom_rewrite_target_unavailable_reason: Some(
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                     ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                 ),
                 ..following_custom
@@ -9552,9 +9552,8 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: false,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(add_target),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
         };
         let custom_record = ExactPlaceableUpdateAppearanceCarrierRecord {
             resref_offset: Some(52),
@@ -9565,9 +9564,8 @@ mod diagnostic_tests {
         let following_normal = SelectedExactPlaceableUpdateAppearanceCarrier::Normal(normal_record);
         let following_custom_satisfied = SelectedExactPlaceableUpdateAppearanceCarrier::Custom(
             ExactPlaceableUpdateAppearanceCarrierRecord {
-                custom_rewrite_ready: false,
-                custom_rewrite_target: None,
-                custom_rewrite_target_unavailable_reason: Some(
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                     ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                 ),
                 ..custom_record
@@ -9575,18 +9573,18 @@ mod diagnostic_tests {
         );
         let pre_add_normal_mismatch = SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
             ExactPlaceableUpdateAppearanceCarrierRecord {
-                custom_rewrite_target: Some(other_target),
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::available(other_target),
                 ..normal_record
             },
         );
         let pre_add_custom_unavailable = SelectedExactPlaceableUpdateAppearanceCarrier::Custom(
             ExactPlaceableUpdateAppearanceCarrierRecord {
                 source_resref: Some(other_resref),
-                custom_rewrite_ready: false,
-                custom_rewrite_target: None,
-                custom_rewrite_target_unavailable_reason: Some(
-                    ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition,
-                ),
+                custom_rewrite_target_resolution:
+                    ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
+                        ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition,
+                    ),
                 ..custom_record
             },
         );
@@ -9655,12 +9653,13 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: false,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(PlaceableUpdateAppearanceOutput {
-                appearance: 0xFFFE,
-                resref: Some(target_resref),
-            }),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(
+                    PlaceableUpdateAppearanceOutput {
+                        appearance: 0xFFFE,
+                        resref: Some(target_resref),
+                    },
+                ),
         };
         let selected = SelectedExactPlaceableUpdateAppearanceCarrier::Normal(record);
         let decision = selected.custom_rewrite_target_decision(&row_without_custom_output);
@@ -9792,9 +9791,8 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: true,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(add_target),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
         };
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
@@ -9808,7 +9806,8 @@ mod diagnostic_tests {
             SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
                 ExactPlaceableUpdateAppearanceCarrierRecord {
                     position_output_equivalence: false,
-                    custom_rewrite_target: Some(other_target),
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::available(other_target),
                     ..base_record
                 },
             ),
@@ -9819,9 +9818,8 @@ mod diagnostic_tests {
             SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
                 ExactPlaceableUpdateAppearanceCarrierRecord {
                     position_output_equivalence: false,
-                    custom_rewrite_ready: false,
-                    custom_rewrite_target: None,
-                    custom_rewrite_target_unavailable_reason: Some(
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                         ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::MissingPosition,
                     ),
                     ..base_record
@@ -9849,7 +9847,8 @@ mod diagnostic_tests {
                     source_appearance: 0xFFFE,
                     source_resref: Some(add_resref),
                     position_output_equivalence: false,
-                    custom_rewrite_target: Some(other_target),
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::available(other_target),
                     ..base_record
                 },
             ),
@@ -9863,9 +9862,8 @@ mod diagnostic_tests {
                     source_appearance: 0xFFFE,
                     source_resref: Some(stale_resref),
                     position_output_equivalence: false,
-                    custom_rewrite_ready: false,
-                    custom_rewrite_target: None,
-                    custom_rewrite_target_unavailable_reason: Some(
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                         ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                     ),
                     ..base_record
@@ -9881,9 +9879,8 @@ mod diagnostic_tests {
                     source_appearance: 0xFFFE,
                     source_resref: Some(add_resref),
                     position_output_equivalence: false,
-                    custom_rewrite_ready: false,
-                    custom_rewrite_target: None,
-                    custom_rewrite_target_unavailable_reason: Some(
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                         ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                     ),
                     ..base_record
@@ -10015,9 +10012,8 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: true,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(add_target),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
         };
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
@@ -10031,7 +10027,8 @@ mod diagnostic_tests {
             SelectedExactPlaceableUpdateAppearanceCarrier::Normal(
                 ExactPlaceableUpdateAppearanceCarrierRecord {
                     position_output_equivalence: false,
-                    custom_rewrite_target: Some(other_target),
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::available(other_target),
                     ..base_record
                 },
             ),
@@ -10044,7 +10041,8 @@ mod diagnostic_tests {
                     resref_offset: Some(20),
                     source_appearance: 0xFFFE,
                     source_resref: Some(add_resref),
-                    custom_rewrite_target: Some(other_target),
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::available(other_target),
                     ..base_record
                 },
             ),
@@ -10058,9 +10056,8 @@ mod diagnostic_tests {
                     source_appearance: 0xFFFE,
                     source_resref: Some(other_resref),
                     position_output_equivalence: false,
-                    custom_rewrite_ready: false,
-                    custom_rewrite_target: None,
-                    custom_rewrite_target_unavailable_reason: Some(
+                    custom_rewrite_target_resolution:
+                        ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                         ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                     ),
                     ..base_record
@@ -10164,9 +10161,8 @@ mod diagnostic_tests {
             fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
             fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
             position_output_equivalence: true,
-            custom_rewrite_ready: true,
-            custom_rewrite_target: Some(add_target),
-            custom_rewrite_target_unavailable_reason: None,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
         };
 
         let cases = [
@@ -10181,7 +10177,10 @@ mod diagnostic_tests {
             (
                 ExactPlaceableUpdateAppearanceCarrier {
                     pre_add_normal: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
-                        custom_rewrite_target: Some(other_target),
+                        custom_rewrite_target_resolution:
+                            ExactPlaceableCustomCarrierRewriteTargetResolution::available(
+                                other_target,
+                            ),
                         ..base_record
                     }),
                     ..ExactPlaceableUpdateAppearanceCarrier::default()
@@ -10192,9 +10191,8 @@ mod diagnostic_tests {
             (
                 ExactPlaceableUpdateAppearanceCarrier {
                     pre_add_normal: Some(ExactPlaceableUpdateAppearanceCarrierRecord {
-                        custom_rewrite_ready: false,
-                        custom_rewrite_target: None,
-                        custom_rewrite_target_unavailable_reason: Some(
+                        custom_rewrite_target_resolution:
+                            ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                             ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                         ),
                         ..base_record
@@ -10223,7 +10221,10 @@ mod diagnostic_tests {
                         resref_offset: Some(20),
                         source_appearance: 0xFFFE,
                         source_resref: Some(add_resref),
-                        custom_rewrite_target: Some(other_target),
+                        custom_rewrite_target_resolution:
+                            ExactPlaceableCustomCarrierRewriteTargetResolution::available(
+                                other_target,
+                            ),
                         ..base_record
                     }),
                     ..ExactPlaceableUpdateAppearanceCarrier::default()
@@ -10237,9 +10238,8 @@ mod diagnostic_tests {
                         resref_offset: Some(20),
                         source_appearance: 0xFFFE,
                         source_resref: Some(other_resref),
-                        custom_rewrite_ready: false,
-                        custom_rewrite_target: None,
-                        custom_rewrite_target_unavailable_reason: Some(
+                        custom_rewrite_target_resolution:
+                            ExactPlaceableCustomCarrierRewriteTargetResolution::unavailable(
                             ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::PositionOutputUnavailable,
                         ),
                         ..base_record
@@ -23881,22 +23881,22 @@ impl ExactPlaceableUpdateAppearanceCarrier {
 
     fn following_custom_rewrite_ready(self) -> bool {
         self.following_custom
-            .is_some_and(|record| record.custom_rewrite_ready)
+            .is_some_and(|record| record.custom_rewrite_ready())
     }
 
     fn following_custom_rewrite_blocked(self) -> bool {
         self.following_custom
-            .is_some_and(|record| !record.custom_rewrite_ready)
+            .is_some_and(|record| !record.custom_rewrite_ready())
     }
 
     fn following_normal_custom_rewrite_ready(self) -> bool {
         self.following_normal
-            .is_some_and(|record| record.custom_rewrite_ready)
+            .is_some_and(|record| record.custom_rewrite_ready())
     }
 
     fn following_normal_custom_rewrite_blocked(self) -> bool {
         self.following_normal
-            .is_some_and(|record| !record.custom_rewrite_ready)
+            .is_some_and(|record| !record.custom_rewrite_ready())
     }
 
     fn has_pre_add_position_output_equivalence(self) -> bool {
@@ -23906,22 +23906,22 @@ impl ExactPlaceableUpdateAppearanceCarrier {
 
     fn pre_add_custom_rewrite_ready(self) -> bool {
         self.pre_add_custom
-            .is_some_and(|record| record.custom_rewrite_ready)
+            .is_some_and(|record| record.custom_rewrite_ready())
     }
 
     fn pre_add_custom_rewrite_blocked(self) -> bool {
         self.pre_add_custom
-            .is_some_and(|record| !record.custom_rewrite_ready)
+            .is_some_and(|record| !record.custom_rewrite_ready())
     }
 
     fn pre_add_normal_custom_rewrite_ready(self) -> bool {
         self.pre_add_normal
-            .is_some_and(|record| record.custom_rewrite_ready)
+            .is_some_and(|record| record.custom_rewrite_ready())
     }
 
     fn pre_add_normal_custom_rewrite_blocked(self) -> bool {
         self.pre_add_normal
-            .is_some_and(|record| !record.custom_rewrite_ready)
+            .is_some_and(|record| !record.custom_rewrite_ready())
     }
 
     fn following_kind(self) -> &'static str {
@@ -24026,15 +24026,20 @@ impl ExactPlaceableCustomCarrierSynthesisDecision {
     fn insertion(self) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
         let policy = self.policy();
         let origin = policy.insertion_origin()?;
-        let insertion_carrier = self
-            .selection()
-            .map(PlaceableCustomAppearanceUpdateInsertionCarrier::from_selection);
-        let unavailable_reason = policy
-            .carries_target_unavailable_reason()
-            .then(|| {
-                insertion_carrier.and_then(|carrier| carrier.target_decision.unavailable_reason())
-            })
-            .flatten();
+        let selection = self.selection();
+        let insertion_carrier =
+            selection.map(PlaceableCustomAppearanceUpdateInsertionCarrier::from_selection);
+        let unavailable_reason = if policy.carries_target_unavailable_reason() {
+            let reason =
+                selection.and_then(|selection| selection.target_decision().unavailable_reason());
+            debug_assert!(
+                reason.is_some(),
+                "target-unavailable synthesis policies must retain a concrete reason"
+            );
+            reason
+        } else {
+            None
+        };
         Some(ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
             origin,
             unavailable_reason,
@@ -24120,7 +24125,7 @@ impl SelectedExactPlaceableUpdateAppearanceCarrier {
     }
 
     fn custom_rewrite_ready(self) -> bool {
-        self.record().custom_rewrite_ready
+        self.record().custom_rewrite_ready()
     }
 
     fn custom_rewrite_target_matches_module_row(self, row: &AreaPlaceableContextRow) -> bool {
@@ -24203,11 +24208,11 @@ impl ExactPlaceableCustomCarrierRewriteTargetDecision {
     }
 
     fn target_unavailable(
-        reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+        reason: ExactPlaceableCustomCarrierRewriteTargetUnavailableReason,
     ) -> Self {
         Self {
             state: ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable,
-            unavailable_reason: reason,
+            unavailable_reason: Some(reason),
         }
     }
 
@@ -24242,24 +24247,38 @@ impl ExactPlaceableCustomCarrierRewriteTargetUnavailableReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExactPlaceableCustomCarrierRewriteTargetResolution {
-    target: Option<PlaceableUpdateAppearanceOutput>,
-    unavailable_reason: Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+enum ExactPlaceableCustomCarrierRewriteTargetResolution {
+    Available(PlaceableUpdateAppearanceOutput),
+    Unavailable(ExactPlaceableCustomCarrierRewriteTargetUnavailableReason),
 }
 
 impl ExactPlaceableCustomCarrierRewriteTargetResolution {
     fn available(target: PlaceableUpdateAppearanceOutput) -> Self {
-        Self {
-            target: Some(target),
-            unavailable_reason: None,
-        }
+        Self::Available(target)
     }
 
     fn unavailable(reason: ExactPlaceableCustomCarrierRewriteTargetUnavailableReason) -> Self {
-        Self {
-            target: None,
-            unavailable_reason: Some(reason),
+        Self::Unavailable(reason)
+    }
+
+    fn target(self) -> Option<PlaceableUpdateAppearanceOutput> {
+        match self {
+            Self::Available(target) => Some(target),
+            Self::Unavailable(_) => None,
         }
+    }
+
+    fn unavailable_reason(
+        self,
+    ) -> Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason> {
+        match self {
+            Self::Available(_) => None,
+            Self::Unavailable(reason) => Some(reason),
+        }
+    }
+
+    fn is_available(self) -> bool {
+        matches!(self, Self::Available(_))
     }
 }
 
@@ -24458,10 +24477,7 @@ struct ExactPlaceableUpdateAppearanceCarrierRecord {
     fragment_bit_start: usize,
     fragment_bit_end: usize,
     position_output_equivalence: bool,
-    custom_rewrite_ready: bool,
-    custom_rewrite_target: Option<PlaceableUpdateAppearanceOutput>,
-    custom_rewrite_target_unavailable_reason:
-        Option<ExactPlaceableCustomCarrierRewriteTargetUnavailableReason>,
+    custom_rewrite_target_resolution: ExactPlaceableCustomCarrierRewriteTargetResolution,
 }
 
 impl ExactPlaceableUpdateAppearanceCarrierRecord {
@@ -24472,7 +24488,6 @@ impl ExactPlaceableUpdateAppearanceCarrierRecord {
     ) -> Option<Self> {
         let claim = mention.placeable_appearance_claim?;
         let appearance = mention.placeable_appearance?;
-        let custom_rewrite_ready = custom_rewrite_target_resolution.target.is_some();
         Some(Self {
             record_offset: mention.record_offset,
             record_end: mention.record_end,
@@ -24483,11 +24498,16 @@ impl ExactPlaceableUpdateAppearanceCarrierRecord {
             fragment_bit_start: mention.fragment_bit_start,
             fragment_bit_end: mention.fragment_bit_end,
             position_output_equivalence,
-            custom_rewrite_ready,
-            custom_rewrite_target: custom_rewrite_target_resolution.target,
-            custom_rewrite_target_unavailable_reason: custom_rewrite_target_resolution
-                .unavailable_reason,
+            custom_rewrite_target_resolution,
         })
+    }
+
+    fn custom_rewrite_ready(self) -> bool {
+        self.custom_rewrite_target_resolution.is_available()
+    }
+
+    fn custom_rewrite_target(self) -> Option<PlaceableUpdateAppearanceOutput> {
+        self.custom_rewrite_target_resolution.target()
     }
 
     fn custom_rewrite_target_matches_module_row(self, row: &AreaPlaceableContextRow) -> bool {
@@ -24503,18 +24523,22 @@ impl ExactPlaceableUpdateAppearanceCarrierRecord {
     ) -> ExactPlaceableCustomCarrierRewriteTargetDecision {
         let Some(module_target) = custom_placeable_appearance_output_for_module_static_row(row)
         else {
-            return ExactPlaceableCustomCarrierRewriteTargetDecision::target_unavailable(Some(
+            return ExactPlaceableCustomCarrierRewriteTargetDecision::target_unavailable(
                 ExactPlaceableCustomCarrierRewriteTargetUnavailableReason::UniqueModuleTargetUnavailable,
-            ));
+            );
         };
-        match self.custom_rewrite_target {
-            Some(target) if target == module_target => {
+        match self.custom_rewrite_target_resolution {
+            ExactPlaceableCustomCarrierRewriteTargetResolution::Available(target)
+                if target == module_target =>
+            {
                 ExactPlaceableCustomCarrierRewriteTargetDecision::matches_module_row()
             }
-            Some(_) => ExactPlaceableCustomCarrierRewriteTargetDecision::target_mismatch(),
-            None => ExactPlaceableCustomCarrierRewriteTargetDecision::target_unavailable(
-                self.custom_rewrite_target_unavailable_reason,
-            ),
+            ExactPlaceableCustomCarrierRewriteTargetResolution::Available(_) => {
+                ExactPlaceableCustomCarrierRewriteTargetDecision::target_mismatch()
+            }
+            ExactPlaceableCustomCarrierRewriteTargetResolution::Unavailable(reason) => {
+                ExactPlaceableCustomCarrierRewriteTargetDecision::target_unavailable(reason)
+            }
         }
     }
 
@@ -24736,7 +24760,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         following_source_appearance = following_source_appearance.as_deref(),
         following_source_resref = ?following.and_then(|selected| selected.record().source_resref),
         following_custom_rewrite_target =
-            ?following.and_then(|selected| selected.record().custom_rewrite_target),
+            ?following.and_then(|selected| selected.record().custom_rewrite_target()),
         following_fragment_bit_start = following.map(|selected| selected.record().fragment_bit_start),
         following_fragment_bit_end = following.map(|selected| selected.record().fragment_bit_end),
         selected_following_carrier_kind = following.map(|selected| selected.kind()),
@@ -24767,7 +24791,7 @@ fn trace_exact_placeable_fixed_width_custom_add_candidate(
         pre_add_source_appearance = pre_add_source_appearance.as_deref(),
         pre_add_source_resref = ?pre_add.and_then(|selected| selected.record().source_resref),
         pre_add_custom_rewrite_target =
-            ?pre_add.and_then(|selected| selected.record().custom_rewrite_target),
+            ?pre_add.and_then(|selected| selected.record().custom_rewrite_target()),
         pre_add_fragment_bit_start = pre_add.map(|selected| selected.record().fragment_bit_start),
         pre_add_fragment_bit_end = pre_add.map(|selected| selected.record().fragment_bit_end),
         selected_pre_add_carrier_kind = pre_add.map(|selected| selected.kind()),
