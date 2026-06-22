@@ -2473,8 +2473,6 @@ mod diagnostic_tests {
             relation: "inside-focus-row",
             gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             source_owner: LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
-            claimable_handoff: false,
-            handoff_blocker: "unowned-emitted-source-gap",
             ledger_relation: "unowned-emitted-gap",
             ledger_source_relation: "unowned-source-gap",
             ledger_emitted_gap_bits: Some(2),
@@ -2531,8 +2529,6 @@ mod diagnostic_tests {
                 focus_failure_orientation_vector: Some(true),
                 focus_cursor_ledger: Some(LiveObjectUpdateItemCursorLedgerEvidence {
                     source_owner: LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
-                    claimable_handoff: true,
-                    handoff_blocker: "none",
                     ledger_relation: "after-previous-emitted-end",
                     ledger_source_relation: "after-previous-source-end",
                     ledger_emitted_gap_bits: Some(0),
@@ -2593,8 +2589,6 @@ mod diagnostic_tests {
                     neighbor_orientation_vector: Some(false),
                     gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
                     source_owner: LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
-                    claimable_handoff: false,
-                    handoff_blocker: "unowned-emitted-source-gap",
                     emitted_gap_bits: 2,
                     emitted_gap_bit_start: 28,
                     emitted_gap_bit_end: 30,
@@ -3987,16 +3981,19 @@ mod diagnostic_tests {
             exact_verdict.source_owner,
             LiveObjectUpdateItemCursorSourceOwner::ContiguousTail
         );
-        assert!(exact_verdict.claimable_handoff);
-        assert_eq!(exact_verdict.handoff_blocker, "none");
+        assert!(exact_verdict.source_owner.claimable_handoff());
+        assert_eq!(exact_verdict.source_owner.handoff_blocker(), "none");
         let inside_verdict =
             live_object_item_update_cursor_handoff_verdict(&ledger, CNW_FRAGMENT_HEADER_BITS + 6);
         assert_eq!(
             inside_verdict.source_owner,
             LiveObjectUpdateItemCursorSourceOwner::InsidePreviousRow
         );
-        assert!(!inside_verdict.claimable_handoff);
-        assert_eq!(inside_verdict.handoff_blocker, "inside-previous-row");
+        assert!(!inside_verdict.source_owner.claimable_handoff());
+        assert_eq!(
+            inside_verdict.source_owner.handoff_blocker(),
+            "inside-previous-row"
+        );
         assert_eq!(
             ledger.item_update_cursor_failure_kind(CNW_FRAGMENT_HEADER_BITS + 10),
             LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterUnownedLedgerGap
@@ -4007,9 +4004,9 @@ mod diagnostic_tests {
             unowned_verdict.source_owner,
             LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap
         );
-        assert!(!unowned_verdict.claimable_handoff);
+        assert!(!unowned_verdict.source_owner.claimable_handoff());
         assert_eq!(
-            unowned_verdict.handoff_blocker,
+            unowned_verdict.source_owner.handoff_blocker(),
             "unowned-emitted-source-gap"
         );
         let unowned_neighbor = LiveObjectItemUpdateUnownedNeighbor {
@@ -4040,8 +4037,6 @@ mod diagnostic_tests {
             previous_family: "item-create-rewrite",
             gap_origin: LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             source_owner: LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
-            claimable_handoff: false,
-            handoff_blocker: "unowned-emitted-source-gap",
             focus_failure_stage: "orientation-vector-read-bytes",
             focus_failure_mask: Some(0x0008_0033),
             focus_failure_read_cursor: 12,
@@ -13728,15 +13723,11 @@ pub struct LiveObjectUpdateItemUnownedNeighborEvidence {
     pub previous_family: &'static str,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    pub claimable_handoff: bool,
-    pub handoff_blocker: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateItemCursorLedgerEvidence {
     pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    pub claimable_handoff: bool,
-    pub handoff_blocker: &'static str,
     pub ledger_relation: &'static str,
     pub ledger_source_relation: &'static str,
     pub ledger_emitted_gap_bits: Option<usize>,
@@ -13773,8 +13764,6 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub neighbor_orientation_vector: Option<bool>,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    pub claimable_handoff: bool,
-    pub handoff_blocker: &'static str,
     pub emitted_gap_bits: usize,
     pub emitted_gap_bit_start: usize,
     pub emitted_gap_bit_end: usize,
@@ -13887,8 +13876,6 @@ pub struct LiveObjectUpdateSourceWindowNeighborEvidence {
     pub relation: &'static str,
     pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    pub claimable_handoff: bool,
-    pub handoff_blocker: &'static str,
     pub ledger_relation: &'static str,
     pub ledger_source_relation: &'static str,
     pub ledger_emitted_gap_bits: Option<usize>,
@@ -13990,39 +13977,32 @@ impl LiveObjectUpdateItemCursorSourceOwner {
             Self::UnownedEmittedAndSourceGap => "unowned-emitted-source-gap",
         }
     }
+
+    pub fn claimable_handoff(self) -> bool {
+        matches!(self, Self::ContiguousTail)
+    }
+
+    pub fn handoff_blocker(self) -> &'static str {
+        match self {
+            Self::ContiguousTail => "none",
+            Self::NoLedger => "no-ledger",
+            Self::BeforeLedgerRow => "before-ledger-row",
+            Self::InsidePreviousRow => "inside-previous-row",
+            Self::UnownedEmittedGap => "unowned-emitted-gap",
+            Self::UnownedSourceGap => "unowned-source-gap",
+            Self::UnownedEmittedAndSourceGap => "unowned-emitted-source-gap",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LiveObjectItemUpdateCursorHandoffVerdict {
     source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    claimable_handoff: bool,
-    handoff_blocker: &'static str,
 }
 
 impl LiveObjectItemUpdateCursorHandoffVerdict {
     fn from_source_owner(source_owner: LiveObjectUpdateItemCursorSourceOwner) -> Self {
-        let (claimable_handoff, handoff_blocker) = match source_owner {
-            LiveObjectUpdateItemCursorSourceOwner::ContiguousTail => (true, "none"),
-            LiveObjectUpdateItemCursorSourceOwner::NoLedger => (false, "no-ledger"),
-            LiveObjectUpdateItemCursorSourceOwner::BeforeLedgerRow => (false, "before-ledger-row"),
-            LiveObjectUpdateItemCursorSourceOwner::InsidePreviousRow => {
-                (false, "inside-previous-row")
-            }
-            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedGap => {
-                (false, "unowned-emitted-gap")
-            }
-            LiveObjectUpdateItemCursorSourceOwner::UnownedSourceGap => {
-                (false, "unowned-source-gap")
-            }
-            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap => {
-                (false, "unowned-emitted-source-gap")
-            }
-        };
-        Self {
-            source_owner,
-            claimable_handoff,
-            handoff_blocker,
-        }
+        Self { source_owner }
     }
 }
 
@@ -29692,8 +29672,6 @@ struct LiveObjectSourceWindowItemNeighborCursorClaim {
     relation: &'static str,
     gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    claimable_handoff: bool,
-    handoff_blocker: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -30355,8 +30333,6 @@ impl LiveObjectItemUpdateCursorFailure {
                     previous_family: neighbor.previous_family,
                     gap_origin: neighbor.gap_origin,
                     source_owner: neighbor.source_owner,
-                    claimable_handoff: neighbor.claimable_handoff,
-                    handoff_blocker: neighbor.handoff_blocker,
                 }
             }),
             item_handoff,
@@ -30400,8 +30376,6 @@ impl LiveObjectItemUpdateCursorFailure {
             neighbor_orientation_vector: neighbor.orientation_vector,
             gap_origin: neighbor.gap_origin,
             source_owner: neighbor.source_owner,
-            claimable_handoff: neighbor.claimable_handoff,
-            handoff_blocker: neighbor.handoff_blocker,
             emitted_gap_bits: neighbor.emitted_gap_bits,
             emitted_gap_bit_start: neighbor.emitted_gap_bit_start,
             emitted_gap_bit_end: neighbor.emitted_gap_bit_end,
@@ -30435,8 +30409,6 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     previous_family: &'static str,
     gap_origin: LiveObjectUpdateItemCursorGapOrigin,
     source_owner: LiveObjectUpdateItemCursorSourceOwner,
-    claimable_handoff: bool,
-    handoff_blocker: &'static str,
     focus_failure_stage: &'static str,
     focus_failure_mask: Option<u32>,
     focus_failure_read_cursor: usize,
@@ -30607,8 +30579,6 @@ fn live_object_item_cursor_ledger_evidence(
 
     LiveObjectUpdateItemCursorLedgerEvidence {
         source_owner: verdict.source_owner,
-        claimable_handoff: verdict.claimable_handoff,
-        handoff_blocker: verdict.handoff_blocker,
         ledger_relation: ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger"),
         ledger_source_relation: ledger_gap
             .map(|gap| gap.source_relation)
@@ -30906,8 +30876,6 @@ fn live_object_source_window_evidence(
             relation: neighbor.relation,
             gap_origin: neighbor.gap_origin,
             source_owner: neighbor.source_owner,
-            claimable_handoff: neighbor.claimable_handoff,
-            handoff_blocker: neighbor.handoff_blocker,
             ledger_relation: ledger_gap.map(|gap| gap.relation).unwrap_or("no-ledger"),
             ledger_source_relation: ledger_gap
                 .map(|gap| gap.source_relation)
@@ -31223,8 +31191,6 @@ fn live_object_source_window_item_neighbor_cursor_claims(
                 cursor,
             ),
             source_owner: verdict.source_owner,
-            claimable_handoff: verdict.claimable_handoff,
-            handoff_blocker: verdict.handoff_blocker,
         });
     }
     claims
@@ -31404,8 +31370,6 @@ fn nearest_unowned_item_update_neighbor_cursor(
                 candidate_cursor,
             ),
             source_owner: verdict.source_owner,
-            claimable_handoff: verdict.claimable_handoff,
-            handoff_blocker: verdict.handoff_blocker,
             focus_failure_stage: focus_failure
                 .map(|failure| failure.stage.as_str())
                 .unwrap_or("none"),
@@ -31703,8 +31667,8 @@ fn trace_item_update_source_window(
                 neighbor.relation,
                 neighbor.gap_origin.as_str(),
                 neighbor.source_owner.as_str(),
-                neighbor.claimable_handoff,
-                neighbor.handoff_blocker,
+                neighbor.source_owner.claimable_handoff(),
+                neighbor.source_owner.handoff_blocker(),
                 ledger_relation,
                 ledger_emitted_gap_bits,
                 ledger_emitted_gap_range,
@@ -32127,8 +32091,8 @@ fn format_live_object_update_rewrite_failure_evidence(
                 &mut out,
                 "item_handoff_source_owner={} claimable_handoff={} handoff_blocker={}",
                 handoff.source_owner.as_str(),
-                handoff.claimable_handoff,
-                handoff.handoff_blocker
+                handoff.source_owner.claimable_handoff(),
+                handoff.source_owner.handoff_blocker()
             );
             let _ = writeln!(
                 &mut out,
@@ -32277,8 +32241,8 @@ fn write_source_window_evidence(
             neighbor.relation,
             neighbor.gap_origin.as_str(),
             neighbor.source_owner.as_str(),
-            neighbor.claimable_handoff,
-            neighbor.handoff_blocker,
+            neighbor.source_owner.claimable_handoff(),
+            neighbor.source_owner.handoff_blocker(),
             neighbor.ledger_relation,
             neighbor.ledger_source_relation,
             format_optional_gap(
@@ -32321,8 +32285,8 @@ fn write_item_cursor_ledger_evidence(
         out,
         "{label}=source_owner={} claimable_handoff={} handoff_blocker={} ledger_relation={} ledger_source_relation={} ledger_emitted_gap={} ledger_source_gap={} ledger_implied_source_cursor={} ledger_cumulative_emitted_source_delta={} ledger_source_emitted_delta_after_previous={} ledger_previous={}",
         ledger.source_owner.as_str(),
-        ledger.claimable_handoff,
-        ledger.handoff_blocker,
+        ledger.source_owner.claimable_handoff(),
+        ledger.source_owner.handoff_blocker(),
         ledger.ledger_relation,
         ledger.ledger_source_relation,
         format_optional_gap(
