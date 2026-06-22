@@ -24943,6 +24943,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis offset adjustment rejected"
             );
@@ -24966,6 +24969,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor offset adjustment rejected"
             );
@@ -24988,6 +24994,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 anchor_expected_record = update.anchor.expected_record.as_str(),
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 offset_reject_reason = reason.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor-end offset adjustment rejected"
             );
@@ -25017,6 +25026,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 anchor_source_resref = ?update.anchor.source_appearance.resref,
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 anchor_reject_reason =
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Boundary.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor validation rejected"
@@ -25053,6 +25065,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 anchor_source_resref = ?update.anchor.source_appearance.resref,
                 fragment_bit_cursor = update.fragment_bit_cursor,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 anchor_reject_reason =
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Source.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis anchor validation rejected"
@@ -25087,6 +25102,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                 emitted_appearance = format_args!("0x{:04X}", update.appearance),
                 emitted_resref = ?update.template_resref,
                 insertion_origin = update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 anchor_reject_reason =
                     PlaceableCustomAppearanceUpdatePlanAnchorReject::Duplicate.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis duplicate divergent anchor rejected"
@@ -25127,6 +25145,10 @@ fn plan_pending_placeable_custom_appearance_updates(
                                 format_args!("0x{:04X}", previous.update.appearance),
                             emitted_resref = ?previous.update.template_resref,
                             insertion_origin = previous.update.insertion_origin.as_str(),
+                            insertion_target_unavailable_reason = previous
+                                .update
+                                .insertion_target_unavailable_reason
+                                .map(|reason| reason.as_str()),
                             anchor_reject_reason =
                                 PlaceableCustomAppearanceUpdatePlanAnchorReject::Duplicate
                                     .as_str(),
@@ -25150,6 +25172,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                     prior_emitted_appearance = format_args!("0x{:04X}", existing.output.appearance),
                     prior_emitted_resref = ?existing.output.template_resref,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_target_unavailable_reason = update
+                        .insertion_target_unavailable_reason
+                        .map(|reason| reason.as_str()),
                     anchor_reject_reason =
                         PlaceableCustomAppearanceUpdatePlanAnchorReject::Duplicate.as_str(),
                     "server->client exact live-object placeable custom appearance synthesis divergent duplicate anchor rejected"
@@ -25167,6 +25192,9 @@ fn plan_pending_placeable_custom_appearance_updates(
                     anchor_expected_record = update.anchor.expected_record.as_str(),
                     fragment_bit_cursor = update.fragment_bit_cursor,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_target_unavailable_reason = update
+                        .insertion_target_unavailable_reason
+                        .map(|reason| reason.as_str()),
                     anchor_reject_reason =
                         PlaceableCustomAppearanceUpdatePlanAnchorReject::Duplicate.as_str(),
                     "server->client exact live-object placeable custom appearance synthesis duplicate anchor rejected"
@@ -25331,8 +25359,22 @@ fn apply_pending_placeable_custom_appearance_updates(
                     object_id = format_args!("0x{:08X}", update.object_id),
                     fragment_bit_cursor = update.fragment_bit_cursor,
                     insert_offset = planned_update.insert_offset,
+                    original_insert_offset = update.original_insert_offset,
+                    original_anchor_offset = update.anchor.original_record_offset,
+                    original_anchor_end = update.anchor.original_record_end,
+                    anchor_opcode = format_args!("0x{:02X}", update.anchor.opcode),
+                    anchor_expected_record = update.anchor.expected_record.as_str(),
+                    anchor_fragment_bit_start = update.anchor.fragment_bit_start,
+                    anchor_fragment_bit_end = update.anchor.fragment_bit_end,
+                    anchor_source_appearance =
+                        format_args!("0x{:04X}", update.anchor.source_appearance.appearance),
+                    anchor_source_resref = ?update.anchor.source_appearance.resref,
                     emitted_appearance = format_args!("0x{:04X}", update.appearance),
+                    emitted_resref = ?update.template_resref,
                     insertion_origin = update.insertion_origin.as_str(),
+                    insertion_target_unavailable_reason = update
+                        .insertion_target_unavailable_reason
+                        .map(|reason| reason.as_str()),
                     reject_reason = reason.as_str(),
                     area_resref = area_context.area_resref.as_str(),
                     "server->client exact live-object placeable custom appearance synthesis rejected"
@@ -25410,6 +25452,9 @@ fn apply_pending_placeable_custom_appearance_updates(
                     batch_reject_focus.map(|focus| focus.update.anchor.expected_record.as_str()),
                 batch_reject_focus_insertion_origin =
                     batch_reject_focus.map(|focus| focus.update.insertion_origin.as_str()),
+                batch_reject_focus_insertion_target_unavailable_reason = batch_reject_focus
+                    .and_then(|focus| focus.update.insertion_target_unavailable_reason)
+                    .map(|reason| reason.as_str()),
                 area_resref = area_context.area_resref.as_str(),
                 "server->client exact live-object placeable custom appearance synthesis batch rejected"
             );
@@ -25437,8 +25482,26 @@ fn apply_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = batch_reject_focus.update.fragment_bit_cursor,
                 insert_offset = batch_reject_focus.insert_offset,
                 record_end = batch_reject_focus.record_end,
+                original_insert_offset = batch_reject_focus.update.original_insert_offset,
+                original_anchor_offset =
+                    batch_reject_focus.update.anchor.original_record_offset,
+                original_anchor_end = batch_reject_focus.update.anchor.original_record_end,
+                anchor_opcode = format_args!("0x{:02X}", batch_reject_focus.update.anchor.opcode),
+                anchor_expected_record = batch_reject_focus.update.anchor.expected_record.as_str(),
+                anchor_fragment_bit_start = batch_reject_focus.update.anchor.fragment_bit_start,
+                anchor_fragment_bit_end = batch_reject_focus.update.anchor.fragment_bit_end,
+                anchor_source_appearance = format_args!(
+                    "0x{:04X}",
+                    batch_reject_focus.update.anchor.source_appearance.appearance
+                ),
+                anchor_source_resref = ?batch_reject_focus.update.anchor.source_appearance.resref,
                 emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
+                emitted_resref = ?batch_reject_focus.update.template_resref,
                 insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = batch_reject_focus
+                    .update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 batch_reject_reason = reason.as_str(),
                 claim_reject_stage = reject.stage.as_str(),
                 claim_reject_offset = reject.offset,
@@ -25490,8 +25553,26 @@ fn apply_pending_placeable_custom_appearance_updates(
                 fragment_bit_cursor = batch_reject_focus.update.fragment_bit_cursor,
                 insert_offset = batch_reject_focus.insert_offset,
                 record_end = batch_reject_focus.record_end,
+                original_insert_offset = batch_reject_focus.update.original_insert_offset,
+                original_anchor_offset =
+                    batch_reject_focus.update.anchor.original_record_offset,
+                original_anchor_end = batch_reject_focus.update.anchor.original_record_end,
+                anchor_opcode = format_args!("0x{:02X}", batch_reject_focus.update.anchor.opcode),
+                anchor_expected_record = batch_reject_focus.update.anchor.expected_record.as_str(),
+                anchor_fragment_bit_start = batch_reject_focus.update.anchor.fragment_bit_start,
+                anchor_fragment_bit_end = batch_reject_focus.update.anchor.fragment_bit_end,
+                anchor_source_appearance = format_args!(
+                    "0x{:04X}",
+                    batch_reject_focus.update.anchor.source_appearance.appearance
+                ),
+                anchor_source_resref = ?batch_reject_focus.update.anchor.source_appearance.resref,
                 emitted_appearance = format_args!("0x{:04X}", batch_reject_focus.update.appearance),
+                emitted_resref = ?batch_reject_focus.update.template_resref,
                 insertion_origin = batch_reject_focus.update.insertion_origin.as_str(),
+                insertion_target_unavailable_reason = batch_reject_focus
+                    .update
+                    .insertion_target_unavailable_reason
+                    .map(|reason| reason.as_str()),
                 batch_reject_reason = reason.as_str(),
                 batch_reject_focus = batch_reject_focus.kind.as_str(),
                 area_resref = area_context.area_resref.as_str(),
@@ -26063,6 +26144,16 @@ fn trace_synthesized_placeable_custom_appearance_update(
         fragment_bit_cursor = update.fragment_bit_cursor,
         insert_offset,
         record_end,
+        original_insert_offset = update.original_insert_offset,
+        original_anchor_offset = update.anchor.original_record_offset,
+        original_anchor_end = update.anchor.original_record_end,
+        anchor_opcode = format_args!("0x{:02X}", update.anchor.opcode),
+        anchor_expected_record = update.anchor.expected_record.as_str(),
+        anchor_fragment_bit_start = update.anchor.fragment_bit_start,
+        anchor_fragment_bit_end = update.anchor.fragment_bit_end,
+        anchor_source_appearance =
+            format_args!("0x{:04X}", update.anchor.source_appearance.appearance),
+        anchor_source_resref = ?update.anchor.source_appearance.resref,
         emitted_appearance = format_args!("0x{:04X}", update.appearance),
         emitted_resref = ?update.template_resref,
         bytes_inserted,
