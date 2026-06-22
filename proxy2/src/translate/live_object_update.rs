@@ -566,7 +566,20 @@ mod diagnostic_tests {
     fn synthetic_custom_placeable_batch_reject_focus_uses_final_offsets() {
         let low = synthetic_focus_pending(0x8000_3401, 10);
         let high = synthetic_focus_pending(0x8000_3402, 20);
-        let emitted = vec![(20, 0, high, 5), (10, 1, low, 5)];
+        let emitted = vec![
+            EmittedPlaceableCustomAppearanceUpdate {
+                insert_offset: 20,
+                sequence: 0,
+                update: high,
+                bytes_inserted: 5,
+            },
+            EmittedPlaceableCustomAppearanceUpdate {
+                insert_offset: 10,
+                sequence: 1,
+                update: low,
+                bytes_inserted: 5,
+            },
+        ];
 
         let before = focused_placeable_custom_appearance_update_batch_reject(9, &emitted)
             .expect("reject before staged bytes should still focus the first staged carrier");
@@ -616,7 +629,12 @@ mod diagnostic_tests {
         live.extend_from_slice(&stale_resref);
         let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         let pending = synthetic_focus_pending(object_id, 0);
-        let emitted = vec![(0, 0, pending, live.len())];
+        let emitted = vec![EmittedPlaceableCustomAppearanceUpdate {
+            insert_offset: 0,
+            sequence: 0,
+            update: pending,
+            bytes_inserted: live.len(),
+        }];
 
         let focus =
             invalid_synthesized_placeable_custom_appearance_update(&live, &fragment_bits, &emitted)
@@ -24568,8 +24586,28 @@ enum PlaceableCustomAppearanceUpdateBatchClaimReject {
     Cursor,
 }
 
-type EmittedPlaceableCustomAppearanceUpdate =
-    (usize, usize, PendingPlaceableCustomAppearanceUpdate, usize);
+#[derive(Debug, Clone, Copy)]
+struct EmittedPlaceableCustomAppearanceUpdate {
+    insert_offset: usize,
+    sequence: usize,
+    update: PendingPlaceableCustomAppearanceUpdate,
+    bytes_inserted: usize,
+}
+
+impl EmittedPlaceableCustomAppearanceUpdate {
+    fn final_insert_offset(self, emitted: &[Self]) -> usize {
+        final_synthesized_placeable_custom_appearance_update_offset(
+            self.insert_offset,
+            self.sequence,
+            emitted,
+        )
+    }
+
+    fn record_end(self, emitted: &[Self]) -> usize {
+        self.final_insert_offset(emitted)
+            .saturating_add(self.bytes_inserted)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PlaceableCustomAppearanceUpdateBatchFootprint {
@@ -24582,8 +24620,8 @@ struct PlaceableCustomAppearanceUpdateBatchFootprint {
 impl PlaceableCustomAppearanceUpdateBatchFootprint {
     fn from_emitted(emitted: &[EmittedPlaceableCustomAppearanceUpdate]) -> Self {
         let mut footprint = Self::default();
-        for &(_, _, update, _) in emitted {
-            match update.anchor.expected_record {
+        for emitted_update in emitted {
+            match emitted_update.update.anchor.expected_record {
                 PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd => {
                     footprint.placeable_add_anchor = true;
                 }
@@ -24594,7 +24632,7 @@ impl PlaceableCustomAppearanceUpdateBatchFootprint {
                     footprint.custom_update_anchor = true;
                 }
             }
-            if update.insertion_origin.is_after_add() {
+            if emitted_update.update.insertion_origin.is_after_add() {
                 footprint.after_add_origin = true;
             }
         }
@@ -25433,12 +25471,12 @@ fn apply_pending_placeable_custom_appearance_updates(
                 continue;
             }
         };
-        emitted.push((
-            planned_update.insert_offset,
-            planned_update.sequence,
+        emitted.push(EmittedPlaceableCustomAppearanceUpdate {
+            insert_offset: planned_update.insert_offset,
+            sequence: planned_update.sequence,
             update,
             bytes_inserted,
-        ));
+        });
     }
     if emitted.is_empty() {
         return None;
@@ -25519,7 +25557,7 @@ fn apply_pending_placeable_custom_appearance_updates(
             }
             let Some(rejected_position) = emitted
                 .iter()
-                .position(|&(_, sequence, _, _)| sequence == batch_reject_focus.sequence)
+                .position(|emitted_update| emitted_update.sequence == batch_reject_focus.sequence)
             else {
                 return None;
             };
@@ -25590,7 +25628,7 @@ fn apply_pending_placeable_custom_appearance_updates(
             );
             let Some(rejected_position) = emitted
                 .iter()
-                .position(|&(_, sequence, _, _)| sequence == batch_reject_focus.sequence)
+                .position(|emitted_update| emitted_update.sequence == batch_reject_focus.sequence)
             else {
                 return None;
             };
@@ -25648,34 +25686,30 @@ fn apply_pending_placeable_custom_appearance_updates(
     }
 
     *live_bytes = candidate;
-    for &(insert_offset, sequence, update, bytes_inserted) in &emitted {
-        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
-            insert_offset,
-            sequence,
-            &emitted,
-        );
-        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+    for emitted_update in &emitted {
+        let final_insert_offset = emitted_update.final_insert_offset(&emitted);
+        let record_end = emitted_update.record_end(&emitted);
         trace_synthesized_placeable_custom_appearance_update(
             area_context,
-            update,
+            emitted_update.update,
             final_insert_offset,
             record_end,
-            bytes_inserted,
+            emitted_update.bytes_inserted,
         );
         summary.bytes_inserted = summary
             .bytes_inserted
-            .saturating_add(u32::try_from(bytes_inserted).unwrap_or(u32::MAX));
+            .saturating_add(u32::try_from(emitted_update.bytes_inserted).unwrap_or(u32::MAX));
         summary.exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update =
             summary
                 .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update
                 .saturating_add(1);
-        if !update.anchor_rewrite_already_counted {
+        if !emitted_update.update.anchor_rewrite_already_counted {
             summary.add_records_rewritten = summary.add_records_rewritten.saturating_add(1);
         }
         count_committed_placeable_custom_appearance_update_origin(
             summary,
-            update.insertion_origin,
-            update.insertion_target_unavailable_reason,
+            emitted_update.update.insertion_origin,
+            emitted_update.update.insertion_target_unavailable_reason,
         );
     }
 
@@ -26055,11 +26089,11 @@ fn final_synthesized_placeable_custom_appearance_update_offset(
 ) -> usize {
     let preceding_bytes = emitted
         .iter()
-        .filter(|&&(other_insert_offset, other_sequence, _, _)| {
-            other_insert_offset < insert_offset
-                || (other_insert_offset == insert_offset && other_sequence < sequence)
+        .filter(|other| {
+            other.insert_offset < insert_offset
+                || (other.insert_offset == insert_offset && other.sequence < sequence)
         })
-        .map(|&(_, _, _, bytes_inserted)| bytes_inserted)
+        .map(|other| other.bytes_inserted)
         .fold(0usize, usize::saturating_add);
     insert_offset.saturating_add(preceding_bytes)
 }
@@ -26069,13 +26103,9 @@ fn focused_placeable_custom_appearance_update_batch_reject(
     emitted: &[EmittedPlaceableCustomAppearanceUpdate],
 ) -> Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> {
     let mut focused: Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> = None;
-    for &(insert_offset, sequence, update, bytes_inserted) in emitted {
-        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
-            insert_offset,
-            sequence,
-            emitted,
-        );
-        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+    for emitted_update in emitted {
+        let final_insert_offset = emitted_update.final_insert_offset(emitted);
+        let record_end = emitted_update.record_end(emitted);
         let kind = if reject_offset < final_insert_offset {
             PlaceableCustomAppearanceUpdateBatchRejectFocusKind::BeforeSynthesizedUpdate
         } else if reject_offset < record_end {
@@ -26086,9 +26116,9 @@ fn focused_placeable_custom_appearance_update_batch_reject(
         let candidate = PlaceableCustomAppearanceUpdateBatchRejectFocus {
             kind,
             insert_offset: final_insert_offset,
-            sequence,
+            sequence: emitted_update.sequence,
             record_end,
-            update,
+            update: emitted_update.update,
         };
         match kind {
             PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate => {
@@ -26124,31 +26154,27 @@ fn invalid_synthesized_placeable_custom_appearance_update(
     fragment_bits: &[bool],
     emitted: &[EmittedPlaceableCustomAppearanceUpdate],
 ) -> Option<PlaceableCustomAppearanceUpdateBatchRejectFocus> {
-    for &(insert_offset, sequence, update, bytes_inserted) in emitted {
-        let final_insert_offset = final_synthesized_placeable_custom_appearance_update_offset(
-            insert_offset,
-            sequence,
-            emitted,
-        );
-        let record_end = final_insert_offset.saturating_add(bytes_inserted);
+    for emitted_update in emitted {
+        let final_insert_offset = emitted_update.final_insert_offset(emitted);
+        let record_end = emitted_update.record_end(emitted);
         if verified_synthesized_placeable_custom_appearance_update_exact_claim(
             candidate,
             final_insert_offset,
             record_end,
             fragment_bits,
-            update.fragment_bit_cursor,
-            update.object_id,
-            update.appearance,
-            update.template_resref,
+            emitted_update.update.fragment_bit_cursor,
+            emitted_update.update.object_id,
+            emitted_update.update.appearance,
+            emitted_update.update.template_resref,
         ) {
             continue;
         }
         return Some(PlaceableCustomAppearanceUpdateBatchRejectFocus {
             kind: PlaceableCustomAppearanceUpdateBatchRejectFocusKind::InsideSynthesizedUpdate,
             insert_offset: final_insert_offset,
-            sequence,
+            sequence: emitted_update.sequence,
             record_end,
-            update,
+            update: emitted_update.update,
         });
     }
     None
@@ -26160,18 +26186,18 @@ fn rebuild_synthesized_placeable_custom_appearance_update_candidate(
     emitted: &[EmittedPlaceableCustomAppearanceUpdate],
 ) -> Option<Vec<u8>> {
     let mut candidate = live_bytes.to_vec();
-    for &(insert_offset, _, update, expected_bytes_inserted) in emitted {
+    for emitted_update in emitted {
         let bytes_inserted = synthesize_placeable_custom_appearance_update(
             &mut candidate,
             fragment_bits,
-            insert_offset,
-            update.object_id,
-            update.fragment_bit_cursor,
-            update.appearance,
-            update.template_resref,
+            emitted_update.insert_offset,
+            emitted_update.update.object_id,
+            emitted_update.update.fragment_bit_cursor,
+            emitted_update.update.appearance,
+            emitted_update.update.template_resref,
         )
         .ok()?;
-        if bytes_inserted != expected_bytes_inserted {
+        if bytes_inserted != emitted_update.bytes_inserted {
             return None;
         }
     }
