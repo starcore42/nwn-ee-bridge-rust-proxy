@@ -2530,6 +2530,15 @@ mod diagnostic_tests {
             neighbors_retained: 1,
             neighbors: source_neighbors,
         };
+        let mut focus_prefix_bits = vec![false; 28];
+        focus_prefix_bits.extend_from_slice(&[false, true]);
+        let focus_prefix = live_object_item_handoff_focus_prefix_evidence(
+            &focus_prefix_bits,
+            28,
+            30,
+            0x0008_0033,
+            Some(false),
+        );
         let failure = LiveObjectUpdateRewriteFailure {
             reason: "item-update-cursor-failed-before-valid-neighbor-unowned-gap",
             kind: LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap,
@@ -2599,6 +2608,7 @@ mod diagnostic_tests {
                         38,
                         &[false, true, true, true, false, true],
                     )),
+                    focus_prefix,
                     focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence {
                         source_owner: LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
                         ledger_relation: "after-previous-emitted-end",
@@ -2678,6 +2688,12 @@ mod diagnostic_tests {
         assert!(report.contains("item_handoff_focus=51..104 bit_cursor=28 update_mask=0xFFFFFFF3"));
         assert!(report.contains(
             "item_handoff_focus_cursor=source_owner=contiguous-tail claimable_handoff=true handoff_blocker=none ledger_relation=after-previous-emitted-end ledger_source_relation=after-previous-source-end ledger_emitted_gap=bits=0 range=28..28 values=28..28: ledger_source_gap=bits=0 range=22..22 values=22..22: ledger_implied_source_cursor=22 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
+        ));
+        assert!(report.contains(
+            "item_handoff_focus_prefix=translated_mask=0x00080033 orientation_vector=false focus_cursor=28 candidate_cursor=30 prefix_bits=2 stages_retained=1"
+        ));
+        assert!(report.contains(
+            "item_handoff_focus_prefix_stage[0]=stage=position-residuals bits=28..30 consumed_bits=2 field_bits=2 values=28..30:01"
         ));
         assert!(report.contains(
             "item_handoff_valid_neighbor=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false gap_origin=focus-position-bits"
@@ -3030,6 +3046,24 @@ mod diagnostic_tests {
             neighbor.gap_origin,
             LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
             "the +2 scalar neighbor starts only after the inherited cursor's item position bits"
+        );
+        let focus_prefix = neighbor
+            .focus_prefix
+            .expect("the shifted neighbor should retain the focus-row prefix it skipped");
+        assert_eq!(focus_prefix.focus_bit_cursor, item_bit_cursor);
+        assert_eq!(focus_prefix.candidate_bit_cursor, item_bit_cursor + 2);
+        assert_eq!(focus_prefix.prefix_bits, 2);
+        assert_eq!(focus_prefix.stages_retained, 1);
+        let prefix_stage =
+            focus_prefix.stages[0].expect("position prefix stage should be retained");
+        assert_eq!(
+            prefix_stage.stage,
+            LiveObjectUpdateItemHandoffFocusPrefixStage::PositionResiduals
+        );
+        assert_eq!(prefix_stage.consumed_bits, 2);
+        assert_eq!(
+            prefix_stage.field_bits,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS
         );
         assert_ne!(
             neighbor.focus_failure_stage, "none",
@@ -4082,6 +4116,7 @@ mod diagnostic_tests {
             read_end: live.len(),
             translated_mask: 0x0008_0033,
             orientation_vector: Some(false),
+            focus_prefix: None,
             emitted_gap_bits: 2,
             emitted_gap_bit_start: cursor_after_row,
             emitted_gap_bit_end: cursor_after_row + 2,
@@ -14139,6 +14174,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub focus_bit_cursor: usize,
     pub focus_update_mask: Option<u32>,
     pub focus_source_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub focus_prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
     pub focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence,
     pub neighbor_delta: isize,
     pub neighbor_bit_start: usize,
@@ -14186,6 +14222,53 @@ pub struct LiveObjectUpdateItemHandoffSequenceResidueEvidence {
     pub candidate_emitted_cursor: usize,
     pub source_gap_bits: usize,
     pub emitted_gap_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+    pub translated_mask: u32,
+    pub orientation_vector: Option<bool>,
+    pub focus_bit_cursor: usize,
+    pub candidate_bit_cursor: usize,
+    pub prefix_bits: usize,
+    pub stages_retained: usize,
+    pub stages: [Option<LiveObjectUpdateItemHandoffFocusPrefixStageEvidence>;
+        LIVE_OBJECT_UPDATE_ITEM_HANDOFF_PREFIX_STAGE_LIMIT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffFocusPrefixStageEvidence {
+    pub stage: LiveObjectUpdateItemHandoffFocusPrefixStage,
+    pub bit_start: usize,
+    pub bit_end: usize,
+    pub consumed_bits: usize,
+    pub field_bits: usize,
+    pub bits: LiveObjectUpdateRewriteBitSliceEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffFocusPrefixStage {
+    PositionResiduals,
+    OrientationSelector,
+    OrientationVectorPrefix,
+    OrientationScalarPrefix,
+    StatePrefix,
+    NameOrLocstringPrefix,
+    Unclassified,
+}
+
+impl LiveObjectUpdateItemHandoffFocusPrefixStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PositionResiduals => "position-residuals",
+            Self::OrientationSelector => "orientation-selector",
+            Self::OrientationVectorPrefix => "orientation-vector-prefix",
+            Self::OrientationScalarPrefix => "orientation-scalar-prefix",
+            Self::StatePrefix => "state-prefix",
+            Self::NameOrLocstringPrefix => "name-or-locstring-prefix",
+            Self::Unclassified => "unclassified",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14241,6 +14324,7 @@ pub const LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT: usize = 16;
 pub const LIVE_OBJECT_UPDATE_REWRITE_BYTE_PREVIEW_LIMIT: usize = 16;
 pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_ENTRY_LIMIT: usize = 10;
 pub const LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT: usize = 8;
+pub const LIVE_OBJECT_UPDATE_ITEM_HANDOFF_PREFIX_STAGE_LIMIT: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateRewriteBitSliceEvidence {
@@ -31114,6 +31198,7 @@ impl LiveObjectItemUpdateCursorFailure {
             focus_bit_cursor: self.bit_cursor,
             focus_update_mask: focus_entry.and_then(|entry| entry.update_mask),
             focus_source_bits: focus_entry.map(|entry| entry.source_bits),
+            focus_prefix: neighbor.focus_prefix,
             focus_cursor_ledger: self.focus_cursor_ledger,
             neighbor_delta: neighbor.delta,
             neighbor_bit_start: neighbor.bit_start,
@@ -31148,6 +31233,7 @@ struct LiveObjectItemUpdateUnownedNeighbor {
     read_end: usize,
     translated_mask: u32,
     orientation_vector: Option<bool>,
+    focus_prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
     emitted_gap_bits: usize,
     emitted_gap_bit_start: usize,
     emitted_gap_bit_end: usize,
@@ -32468,6 +32554,199 @@ fn live_object_item_update_focus_gap_origin(
     LiveObjectUpdateItemCursorGapOrigin::InsideFocusRowUnclassified
 }
 
+fn live_object_item_handoff_focus_prefix_evidence(
+    fragment_bits: &[bool],
+    focus_bit_cursor: usize,
+    candidate_bit_cursor: usize,
+    translated_mask: u32,
+    orientation_vector: Option<bool>,
+) -> Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence> {
+    if candidate_bit_cursor <= focus_bit_cursor {
+        return None;
+    }
+
+    let mut cursor = focus_bit_cursor;
+    let mut stages = [None; LIVE_OBJECT_UPDATE_ITEM_HANDOFF_PREFIX_STAGE_LIMIT];
+    let mut stages_retained = 0;
+
+    macro_rules! push_stage {
+        ($stage:expr, $field_bits:expr) => {{
+            let field_bits = $field_bits;
+            if cursor < candidate_bit_cursor {
+                let field_end = cursor.saturating_add(field_bits);
+                if candidate_bit_cursor <= field_end {
+                    live_object_item_handoff_push_focus_prefix_stage(
+                        &mut stages,
+                        &mut stages_retained,
+                        fragment_bits,
+                        $stage,
+                        cursor,
+                        candidate_bit_cursor,
+                        field_bits,
+                    );
+                    true
+                } else {
+                    live_object_item_handoff_push_focus_prefix_stage(
+                        &mut stages,
+                        &mut stages_retained,
+                        fragment_bits,
+                        $stage,
+                        cursor,
+                        field_end,
+                        field_bits,
+                    );
+                    cursor = field_end;
+                    false
+                }
+            } else {
+                true
+            }
+        }};
+    }
+
+    if (translated_mask & LEGACY_UPDATE_POSITION_MASK) != 0
+        && push_stage!(
+            LiveObjectUpdateItemHandoffFocusPrefixStage::PositionResiduals,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+        )
+    {
+        return Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+            translated_mask,
+            orientation_vector,
+            focus_bit_cursor,
+            candidate_bit_cursor,
+            prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+            stages_retained,
+            stages,
+        });
+    }
+
+    if (translated_mask & LEGACY_UPDATE_ORIENTATION_MASK) != 0 {
+        if push_stage!(
+            LiveObjectUpdateItemHandoffFocusPrefixStage::OrientationSelector,
+            1
+        ) {
+            return Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+                translated_mask,
+                orientation_vector,
+                focus_bit_cursor,
+                candidate_bit_cursor,
+                prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+                stages_retained,
+                stages,
+            });
+        }
+
+        match orientation_vector {
+            Some(true) => {
+                if push_stage!(
+                    LiveObjectUpdateItemHandoffFocusPrefixStage::OrientationVectorPrefix,
+                    EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS
+                ) {
+                    return Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+                        translated_mask,
+                        orientation_vector,
+                        focus_bit_cursor,
+                        candidate_bit_cursor,
+                        prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+                        stages_retained,
+                        stages,
+                    });
+                }
+            }
+            Some(false) => {
+                if push_stage!(
+                    LiveObjectUpdateItemHandoffFocusPrefixStage::OrientationScalarPrefix,
+                    EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS
+                ) {
+                    return Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+                        translated_mask,
+                        orientation_vector,
+                        focus_bit_cursor,
+                        candidate_bit_cursor,
+                        prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+                        stages_retained,
+                        stages,
+                    });
+                }
+            }
+            None => {}
+        }
+    }
+
+    if (translated_mask & LEGACY_UPDATE_STATE_MASK) != 0
+        && push_stage!(
+            LiveObjectUpdateItemHandoffFocusPrefixStage::StatePrefix,
+            LEGACY_UPDATE_STATE_FRAGMENT_BITS
+        )
+    {
+        return Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+            translated_mask,
+            orientation_vector,
+            focus_bit_cursor,
+            candidate_bit_cursor,
+            prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+            stages_retained,
+            stages,
+        });
+    }
+
+    if cursor < candidate_bit_cursor {
+        let stage = if (translated_mask & LEGACY_UPDATE_NAME_MASK) != 0 {
+            LiveObjectUpdateItemHandoffFocusPrefixStage::NameOrLocstringPrefix
+        } else {
+            LiveObjectUpdateItemHandoffFocusPrefixStage::Unclassified
+        };
+        live_object_item_handoff_push_focus_prefix_stage(
+            &mut stages,
+            &mut stages_retained,
+            fragment_bits,
+            stage,
+            cursor,
+            candidate_bit_cursor,
+            candidate_bit_cursor.saturating_sub(cursor),
+        );
+    }
+
+    Some(LiveObjectUpdateItemHandoffFocusPrefixEvidence {
+        translated_mask,
+        orientation_vector,
+        focus_bit_cursor,
+        candidate_bit_cursor,
+        prefix_bits: candidate_bit_cursor.saturating_sub(focus_bit_cursor),
+        stages_retained,
+        stages,
+    })
+}
+
+fn live_object_item_handoff_push_focus_prefix_stage(
+    stages: &mut [Option<LiveObjectUpdateItemHandoffFocusPrefixStageEvidence>;
+             LIVE_OBJECT_UPDATE_ITEM_HANDOFF_PREFIX_STAGE_LIMIT],
+    stages_retained: &mut usize,
+    fragment_bits: &[bool],
+    stage: LiveObjectUpdateItemHandoffFocusPrefixStage,
+    bit_start: usize,
+    bit_end: usize,
+    field_bits: usize,
+) {
+    if *stages_retained >= stages.len() || bit_end <= bit_start {
+        return;
+    }
+    stages[*stages_retained] = Some(LiveObjectUpdateItemHandoffFocusPrefixStageEvidence {
+        stage,
+        bit_start,
+        bit_end,
+        consumed_bits: bit_end.saturating_sub(bit_start),
+        field_bits,
+        bits: live_object_rewrite_bit_slice_evidence(
+            bit_start,
+            bit_end,
+            fragment_bits.get(bit_start..bit_end).unwrap_or(&[]),
+        ),
+    });
+    *stages_retained += 1;
+}
+
 fn nearest_unowned_item_update_neighbor_cursor(
     live_bytes: &[u8],
     offset: usize,
@@ -32528,6 +32807,13 @@ fn nearest_unowned_item_update_neighbor_cursor(
             read_end: claim.cursor.read_end,
             translated_mask: claim.translated_mask,
             orientation_vector: claim.cursor.orientation_vector,
+            focus_prefix: live_object_item_handoff_focus_prefix_evidence(
+                fragment_bits,
+                bit_cursor,
+                candidate_cursor,
+                claim.translated_mask,
+                claim.cursor.orientation_vector,
+            ),
             emitted_gap_bits: gap.emitted_gap_bits,
             emitted_gap_bit_start: gap.emitted_gap_bit_start,
             emitted_gap_bit_end: gap.emitted_gap_bit_end,
@@ -33265,6 +33551,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 "item_handoff_focus_cursor",
                 Some(handoff.focus_cursor_ledger),
             );
+            write_item_handoff_focus_prefix(&mut out, handoff.focus_prefix);
             let _ = writeln!(
                 &mut out,
                 "item_handoff_valid_neighbor=delta={} bits={}..{} read_end={} translated_mask=0x{:08X} orientation_vector={} gap_origin={}",
@@ -33537,6 +33824,41 @@ fn write_item_handoff_sequence_residue(
         residue.source_gap_bits,
         residue.emitted_gap_bits,
     );
+}
+
+fn write_item_handoff_focus_prefix(
+    out: &mut String,
+    prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(prefix) = prefix else {
+        let _ = writeln!(out, "item_handoff_focus_prefix=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "item_handoff_focus_prefix=translated_mask=0x{:08X} orientation_vector={} focus_cursor={} candidate_cursor={} prefix_bits={} stages_retained={}",
+        prefix.translated_mask,
+        format_optional_bool(prefix.orientation_vector),
+        prefix.focus_bit_cursor,
+        prefix.candidate_bit_cursor,
+        prefix.prefix_bits,
+        prefix.stages_retained,
+    );
+    for (index, stage) in prefix.stages.iter().flatten().enumerate() {
+        let _ = writeln!(
+            out,
+            "item_handoff_focus_prefix_stage[{index}]=stage={} bits={}..{} consumed_bits={} field_bits={} values={}",
+            stage.stage.as_str(),
+            stage.bit_start,
+            stage.bit_end,
+            stage.consumed_bits,
+            stage.field_bits,
+            format_rewrite_bit_slice_evidence(stage.bits)
+        );
+    }
 }
 
 fn format_item_handoff_sequence_row(
