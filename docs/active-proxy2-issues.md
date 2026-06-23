@@ -482,6 +482,14 @@ Current status:
   hgbridge-proxy2 placeable_name_mode_tests -- --nocapture`, `cargo test -q -p
   hgbridge-proxy2 placeable_add_semantic_tests -- --nocapture`, `cargo fmt
   --all --check`, `git diff --check`, and `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-23 follow-up exact `A/09` placeable-add TLK-name branch: exact EE
+  placeable add validation now accepts the decompile-shaped locstring/token
+  name path only when the fragment cursor has `outer=true, inner=true` and the
+  read buffer at the name cursor is exactly `BYTE client-TLK selector + DWORD
+  token`. The same validator still rejects a stale true inner bit over inline
+  CExoString bytes, so the first post-name state BOOL cannot be borrowed as a
+  name helper selector. Verified with focused `placeable_add`/`add_guard`/
+  `placeable_name_mode_tests` filters and `cargo check -q -p hgbridge-proxy2`.
 - 2026-05-25 `P/05/01` placeable-update forced-orientation diagnostic audit:
   no packet shape changed, but the source-state logger now decodes `U/09`
   state bits using the byte-proven forced scalar/vector branch width instead of
@@ -1547,6 +1555,623 @@ Current status:
   following-normal rows remain, prove from capture/decompile whether a synthetic
   `U/09 mask=0x20` must be inserted after that following row rather than at the
   add boundary.
+- 2026-06-15 follow-up blocked following-normal custom carrier synthesis:
+  fixed-width custom `A/09` adds now synthesize the minimal same-object
+  `U/09 mask=0x20` after a verified following normal WORD-only appearance
+  carrier when that carrier cannot be widened by the update rewriter. The
+  deferred insertion validates against the following carrier's parser-owned
+  `fragment_bit_end`, consumes no fragment bits, and is adjusted around earlier
+  in-place appearance rewrites before emit. Verified with focused fixed-width,
+  exact-placeable, placeable-update, formatter, and cargo-check runs. Next
+  replay should compare remaining fixed-width custom skips; following normal
+  blocked rows should now emit `synthesizes-after-following-normal-rewrite-blocked`.
+- 2026-06-15 follow-up custom carrier synthesis origin telemetry: packet bytes
+  and synthesis policy are unchanged. Pending fixed-width custom `A/09`
+  synthetic carriers now carry a typed insertion origin and summary counters
+  split emitted `U/09 mask=0x20` rows into `after-add` versus
+  `after-following-normal`. Direct, M-frame, and server-dispatch traces expose
+  the origin split plus normal-carrier rewrite-ready/blocked counts without
+  expanding the oversized server-dispatch exact-summary event. Verified with
+  focused exact-placeable/add and placeable-update tests plus formatter,
+  cargo-check, and diff-check. Next local replay should compare
+  `synthesized_update_after_following_normal` against any remaining blocked
+  normal carrier skips before broadening synthesis rules.
+- 2026-06-15 follow-up after-add custom carrier reason split: packet bytes are
+  unchanged. The typed synthesis policy now splits post-add synthetic
+  `U/09 mask=0x20` carriers into no-carrier, pre-add normal rewrite-ready,
+  pre-add normal rewrite-blocked, and pre-add custom reasons while preserving
+  the physical after-add insertion point. Direct, M-frame, and server-dispatch
+  traces expose the reason buckets through a focused event to avoid the
+  oversized tracing macro recursion limit. Verified with focused
+  module-custom, fixed-width, exact-placeable, placeable-update, formatter,
+  cargo-check, and diff-check runs. Next local replay should compare
+  `synthesized_update_after_add_*` reason buckets against
+  `synthesized_update_after_following_normal` before broadening carrier rules.
+- 2026-06-15 follow-up exact `U/09` cursor/writer guard: tightened the EE
+  door/placeable update exact parser so even zero-fragment-bit rows reject a
+  start cursor beyond the valid CNW fragment stream, and made synthetic
+  fixed-width custom `U/09 mask=0x20` carrier emission validate on a candidate
+  live-byte buffer before mutating the planned payload. This changes only
+  invalid shifted-cursor paths; valid no-bit custom appearance carriers still
+  accept at `cursor == fragment_bits.len()`. Verified with focused cursor and
+  transactional writer regressions plus exact-placeable, placeable-update,
+  fixed-width, formatter, cargo-check, and diff-check runs. Next local replay
+  should still compare `synthesized_update_after_add_*` buckets against
+  `synthesized_update_after_following_normal` before broadening carrier rules.
+- 2026-06-15 follow-up synthetic custom carrier planning diagnostics: packet
+  bytes are unchanged on valid paths. Pending fixed-width custom `A/09`
+  synthetic `U/09 mask=0x20` carriers now plan through a typed insertion record
+  before emission, count planned carriers separately from emitted carriers, and
+  report offset-adjustment versus exact-validation rejects through direct,
+  M-frame, and server-dispatch carrier-policy traces. The synthetic writer still
+  validates against a candidate live-byte buffer before mutating the payload.
+  Verified with focused cursor/planning, module-custom, fixed-width,
+  placeable-update, formatter, cargo-check, and diff-check runs. Next local
+  replay should compare `synthesized_update_planned`,
+  `synthesized_update_emit_rejected`, and `synthesized_update_after_*` buckets;
+  any nonzero planned-minus-emitted count needs offset/cursor proof before a
+  broader carrier synthesis rule.
+- 2026-06-15 follow-up synthetic custom carrier anchor validation: valid packet
+  bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  `U/09 mask=0x20` carriers now retain the exact parser-owned anchor row
+  (`A/09` add or blocked following-normal `U/09`) and reject planning if the
+  adjusted insertion point no longer lands at that row's verified byte end and
+  fragment cursor. Direct and M-frame summaries distinguish offset-adjustment,
+  anchor-validation, and emit-validation rejects. Next replay should treat any
+  anchor reject as stale row-boundary evidence before broadening synthesis.
+- 2026-06-15 follow-up lifecycle-bounded custom carrier selection: fixed-width
+  custom `A/09` carrier lookup now takes the add's parser-owned byte span and
+  ignores same-object `U/09` appearance rows across intervening `A`/`D`
+  lifecycle fences. A pre-add custom row before a delete/add fence and a
+  following custom row after a delete/add fence no longer suppress or relocate
+  the add's bounded synthetic `U/09 mask=0x20`; those rows remain separate
+  parser-owned update rows for their own lifecycle. Verified with focused
+  lifecycle carrier regressions plus `exact_placeable_`, `fixed_width`,
+  `placeable_update`, formatter, cargo-check, and diff-check. Next local replay
+  should compare remaining add-only synthesis against true same-lifecycle
+  carrier buckets rather than post-lifecycle rows.
+- 2026-06-15 follow-up synthetic custom carrier anchor branch validation: valid
+  packet bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  carriers now record the expected anchor branch (`A/09` add versus normal
+  WORD-only `U/09` appearance update) and reject a post-normal insertion anchor
+  if the adjusted exact row is already the custom `WORD + CResRef` branch. This
+  keeps deferred `U/09 mask=0x20` insertion tied to the specific parser-owned
+  normal carrier it is meant to follow. Verified with focused planning,
+  exact-placeable, placeable-update, fixed-width, formatter, cargo-check, and
+  diff-check runs. Next local replay should still compare plan-anchor rejects
+  and emitted origin buckets before broadening carrier synthesis.
+- 2026-06-15 follow-up synthetic custom carrier batch transactionality: valid
+  packet bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  carriers now emit into a staged live-byte buffer and commit only after every
+  planned `U/09 mask=0x20` row validates; a later emit reject cannot leave an
+  earlier staged carrier in the helper buffer or count/log it as emitted. The
+  post-commit trace reports final offsets after lower-offset synthetic inserts.
+  Verified with focused rollback coverage plus `exact_placeable_`,
+  `placeable_update`, cargo-check, formatter, and diff-check. Next local replay
+  should compare planned/emitted/rejected buckets before widening synthesis.
+- 2026-06-15 follow-up synthetic custom carrier duplicate-anchor guard: valid
+  packet bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  carriers now reject duplicate plans for the same adjusted insert boundary,
+  object id, fragment cursor, and exact anchor before staging any bytes. This
+  keeps replay anomalies from emitting two identical `U/09 mask=0x20` carrier
+  rows at one parser-owned boundary; duplicate rejections increment the anchor
+  reject bucket. Verified with focused pending-carrier, exact-placeable,
+  placeable-update, fixed-width, cargo-check, formatter, and diff-check runs.
+  Next replay should treat nonzero plan-anchor rejects as stale or duplicated
+  anchor evidence before broadening synthesis.
+- 2026-06-15 follow-up synthetic custom carrier source-anchor guard: valid
+  packet bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  carrier anchors now retain the parser-owned source appearance branch and
+  reject if the adjusted `A/09` fixed WORD or normal `U/09` appearance WORD no
+  longer matches before staging bytes. The same anchor-reject bucket now
+  distinguishes stale source-row evidence from emit failures. Verified with
+  pending-carrier, exact-placeable, placeable-update, fixed-width, cargo-check,
+  formatter, and diff-check runs. Next replay should treat source-anchor
+  rejects as stale row or earlier-rewrite evidence before widening synthesis.
+- 2026-06-15 follow-up synthetic custom carrier anchor-reject taxonomy: packet
+  bytes are unchanged. The fixed-width custom `A/09` synthetic carrier planner
+  now splits aggregate plan-anchor rejects into boundary, source-anchor, and
+  duplicate-anchor buckets, and carries those counters through direct
+  live-object, M-frame, and server-dispatch summaries. Focused coverage pins
+  each bucket so the next replay can distinguish stale offset math, stale
+  source row proof, and duplicate planning before widening carrier synthesis.
+  Verified with pending-carrier, exact-placeable, placeable-update,
+  fixed-width, formatter, cargo-check, and diff-check runs.
+- 2026-06-15 follow-up synthetic custom carrier anchor branch/origin taxonomy:
+  packet bytes are unchanged. The same plan-anchor reject path now also counts
+  rejects by expected parser-owned anchor branch (`A/09` add versus normal
+  WORD-only `U/09`) and insertion origin (after-add versus after-following
+  normal), with the counters aggregated through M-frame/server-dispatch traces.
+  Focused pending-carrier tests pin the branch/origin sums. Next replay should
+  compare reason, branch, and origin buckets before widening synthesis.
+- 2026-06-15 follow-up synthetic custom carrier batch exact-claim guard: valid
+  packet bytes are unchanged. Staged fixed-width custom `A/09` synthetic
+  `U/09 mask=0x20` batches now build the full candidate live-object payload and
+  require the exact EE live-object claim before committing staged bytes or
+  emitted counters. Batch claim rejects are reported separately from per-row
+  emit rejects through direct, M-frame, and server-dispatch summaries. Focused
+  pending-carrier coverage pins a locally valid synthetic `U/09` row followed
+  by unclaimed live bytes as transactional rejection. Next replay should compare
+  batch-claim rejects against per-row emit rejects and anchor rejects before
+  broadening carrier synthesis.
+- 2026-06-15 follow-up synthetic custom carrier batch reject taxonomy: valid
+  packet bytes are unchanged. The exact live-object claim validator now exposes
+  the first reject stage to the synthetic carrier batch guard, and staged custom
+  `U/09` batches split batch rejects into payload-build, header/declared,
+  fragment, boundary, record-validator, and cursor buckets through direct,
+  M-frame, and server-dispatch summaries. Focused pending-carrier coverage pins
+  a malformed full-payload batch as a record-validator reject. Next replay
+  should compare the new batch reason buckets against per-row emit and anchor
+  rejects before widening custom-carrier synthesis.
+- 2026-06-15 follow-up synthetic custom carrier batch footprint taxonomy: valid
+  packet bytes are unchanged. Full-batch exact-claim rejects now also report
+  whether the rejected staged batch contained parser-owned `A/09` add anchors,
+  normal WORD-only `U/09` anchors, after-add insertions, or
+  after-following-normal insertions, aggregated through direct live-object,
+  M-frame, and server-dispatch summaries. Focused pending-carrier coverage pins
+  both malformed add-anchor and malformed normal-update-anchor batches. Next
+  replay should compare batch reason buckets with these branch/origin footprints
+  before widening custom-carrier synthesis.
+- 2026-06-15 follow-up synthetic custom carrier batch reject focus: valid
+  packet bytes are unchanged. Full-batch exact-claim rejects now localize the
+  validator failure against staged synthetic `U/09 mask=0x20` rows using final
+  post-insertion offsets, split into before/inside/after-synthetic-row counters
+  and focused warning fields carrying the row object, anchor branch, and
+  insertion origin. Existing malformed add-anchor and normal-update-anchor
+  regressions reject inside the staged row. Next replay should compare the new
+  focus buckets with claim reason and branch/origin footprint counters before
+  changing synthesis scope.
+- 2026-06-15 follow-up synthetic custom carrier offset-reject taxonomy: valid
+  packet bytes are unchanged. Pending fixed-width custom `A/09` synthetic
+  carriers now split stale offset-adjustment failures into insert-boundary,
+  anchor-start, and anchor-end buckets, plus expected anchor branch and
+  insertion-origin counters through direct live-object, M-frame, and
+  server-dispatch summaries. Focused coverage pins add-anchor/after-add and
+  normal-update/after-following-normal offset rejects before byte staging. Next
+  replay should compare offset, anchor, emit, and batch-claim rejects before
+  broadening custom-carrier synthesis.
+- 2026-06-16 follow-up synthetic custom carrier emit isolation: fixed-width
+  custom `A/09` synthetic carrier batches now skip and count a locally invalid
+  planned `U/09 mask=0x20` row instead of aborting every other locally valid
+  sibling in the same live-object payload. The remaining staged carriers still
+  commit only after the existing full `P/05/01` exact-claim validator accepts
+  the rebuilt payload, so full-payload rejects remain transactional. Verified
+  with pending-carrier, exact-placeable, placeable-update, fixed-width,
+  formatter, diff-check, and cargo-check runs. Next local replay should compare
+  emit rejects against emitted carrier origin buckets; a nonzero emit reject
+  no longer proves all same-payload carrier opportunities were lost.
+- 2026-06-16 follow-up synthetic custom carrier batch reject isolation: staged
+  fixed-width custom `A/09` carrier batches now use the exact-claim focus row
+  to drop only an inside-failing synthetic `U/09 mask=0x20` row, then rebuild
+  and re-run the full `P/05/01` exact claim before committing any remaining
+  carriers. Before/after-row batch rejects and payload-build rejects still abort
+  the whole staged batch. Next replay should compare inside-focused batch
+  rejects against final emitted origin buckets to see whether mixed batches now
+  preserve independent valid carrier opportunities.
+- 2026-06-16 follow-up synthetic custom carrier plan reject isolation:
+  fixed-width custom `A/09` carrier planning now skips a stale offset, stale
+  source/boundary anchor, or duplicate anchor row without discarding other
+  parser-verified carrier plans in the same live-object payload. A plan batch
+  still returns no change if every candidate rejects before byte staging.
+  Focused regressions pin duplicate-anchor and stale-source mixed batches; next
+  replay should compare plan-offset/anchor rejects against final emitted origin
+  buckets before widening carrier synthesis.
+- 2026-06-16 follow-up fixed-width custom carrier rewrite diagnostics: valid
+  packet bytes are unchanged. Following and pre-add custom `U/09` carriers now
+  split into custom-rewrite-ready versus custom-rewrite-blocked counters in the
+  direct live-object summary, M-frame aggregation, and focused server-dispatch
+  traces. Matching custom carriers can still be identity evidence without being
+  safe rewrite targets; next replay should compare these custom rewrite buckets
+  with fixed-width skips and synthetic emitted origins before suppressing or
+  broadening following-custom carrier handling.
+- 2026-06-16 follow-up exact `U/09` appearance row guard: normal/custom
+  placeable update appearance rewrites now stage the edited row in a candidate
+  live-object buffer, re-run the parser-owned exact `U/09` claim at the original
+  fragment cursor, and commit only if the rewritten appearance WORD/CResRef
+  branch still exact-claims. Row-local rejects increment
+  `exact_placeable_update_appearance_exact_rejected` without mutating the source
+  row. Verified with exact-placeable, placeable-update, fixed-width,
+  pending-carrier, formatter, and cargo-check runs; next replay should watch
+  this counter beside custom-rewrite buckets.
+- 2026-06-16 follow-up exact module-custom `U/09` rewrite counter: packet bytes
+  are unchanged. Successful exact placeable update appearance rewrites now split
+  module-backed custom static targets from source-custom rows through the
+  live-object, M-frame, and server-dispatch summaries. Verified with the focused
+  module-custom exact update regressions plus cargo-check, formatter, and
+  diff-check; next replay should compare rewritten module-custom targets against
+  fixed-width skips and exact-row rejects.
+- 2026-06-16 follow-up synthetic custom `U/09` payload guard: valid packet bytes
+  are unchanged. Synthetic fixed-width custom appearance carriers now exact-claim
+  the staged `U/09 mask=0x20` row by object id, mask, appearance offset,
+  unchanged fragment cursor, and the inserted WORD+CResRef payload before
+  committing. Parser-valid rows with stale or mismatched CResRefs now reject as
+  exact-claim mismatches. Verified with the focused synthetic pending-carrier
+  regressions; next replay should compare these rejects with fixed-width
+  module-custom skip and emitted-origin counters.
+- 2026-06-16 follow-up synthetic custom carrier batch row-drop counters: packet
+  bytes are unchanged. Inside-focused full-payload batch rejects now count the
+  specific synthetic `U/09 mask=0x20` row dropped by anchor branch and insertion
+  origin through direct live-object, M-frame, and server-dispatch summaries. This
+  separates row-isolated batch recovery from whole-batch aborts during the next
+  local replay. Verified with focused pending-carrier, exact-placeable,
+  placeable-update, formatter, diff-check, and cargo-check runs.
+- 2026-06-16 follow-up synthetic custom carrier after-row batch isolation:
+  staged fixed-width custom `U/09 mask=0x20` batches now retry after dropping a
+  focused staged carrier when the full exact-claim failure lands inside or
+  after that row; failures before the first staged row still abort the batch.
+  The full `P/05/01` exact claim remains the commit gate, and an unclaimable
+  original suffix still prevents output mutation. Verified with focused
+  pending-carrier, exact-placeable, placeable-update, formatter, diff-check,
+  and cargo-check runs.
+- 2026-06-16 follow-up synthetic custom carrier rewrite-count commit gate:
+  valid packet bytes are unchanged. Synthetic fixed-width custom `U/09
+  mask=0x20` carriers now increment `add_records_rewritten` only after the
+  staged carrier survives the full exact-claim commit gate; add rows already
+  rewritten in place carry that count into the pending carrier so committed
+  synthesis does not double count. Verified with focused pending-carrier tests
+  using a non-incremental cargo target after the default incremental cache hit a
+  rustc ICE.
+- 2026-06-16 follow-up blocked following-custom carrier synthesis: exact
+  fixed-width custom `A/09` adds now suppress synthetic `U/09 mask=0x20`
+  insertion only when an existing following custom carrier is rewrite-ready or
+  already matches the selected module row's appearance and `TemplateResRef`.
+  A stale/parser-owned following custom row that cannot be rewritten now stays
+  unchanged and is followed by an exact-claimed replacement carrier at that
+  row's fragment cursor. The after-following-custom origin is counted through
+  direct live-object, M-frame, and server-dispatch summaries. Verified with
+  non-incremental `pending_synthesized_custom_placeable_update`,
+  `exact_placeable_`, `placeable_update`, cargo-check, formatter, and
+  diff-check runs.
+- 2026-06-16 follow-up custom-origin carrier reject counters: valid packet
+  bytes are unchanged. Synthetic fixed-width custom `U/09 mask=0x20` plan
+  offset rejects, anchor rejects, full-batch rejects, and focused row drops now
+  split `after-following-custom` from `after-following-normal` origins through
+  direct live-object summaries, M-frame aggregation, and server-dispatch traces.
+  A fixture-free blocked-custom-carrier batch regression pins the transactional
+  reject/drop path. Next replay should compare custom-origin rejects and drops
+  against emitted after-following-custom carriers before broadening synthesis.
+- 2026-06-16 follow-up synthetic custom carrier final-row proof: valid packet
+  bytes are unchanged. After a staged fixed-width custom `U/09 mask=0x20` batch
+  passes the full `P/05/01` exact claim, each emitted carrier must still
+  exact-claim at its final post-insertion byte offset with the staged object id,
+  appearance, `TemplateResRef`, and unchanged fragment cursor. A parser-valid
+  but stale final row is now dropped and the batch rebuilt before commit.
+  Verified with focused pending-carrier/final-row, exact-placeable,
+  placeable-update, formatter, diff-check, and non-incremental cargo-check
+  runs. Next replay should treat any final-row drop as stale staged-output or
+  offset-rebuild evidence before widening custom-carrier synthesis.
+- 2026-06-16 follow-up divergent duplicate synthetic carrier guard: ambiguous
+  fixed-width custom `A/09` synthetic carrier plans that share the same
+  parser-owned insert boundary/object/cursor but want different `WORD+CResRef`
+  output are now treated as non-emitting duplicate-anchor conflicts. Identical
+  duplicates still collapse to one planned row; divergent duplicates reject both
+  candidate outputs so pending-row order cannot choose a module-custom carrier
+  without unique output proof. Verified with non-incremental
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, `cargo check -q -p hgbridge-proxy2`, and
+  `cargo fmt --all --check`.
+- 2026-06-16 follow-up synthetic custom carrier custom-anchor counters: valid
+  packet bytes are unchanged. Synthetic fixed-width custom `U/09 mask=0x20`
+  plan offset rejects, anchor rejects, full-batch rejects, and focused row drops
+  now distinguish normal `U/09` WORD anchors from custom `U/09` WORD+CResRef
+  anchors through direct live-object summaries, M-frame aggregation, and
+  server-dispatch traces. Fixture-free custom-anchor regressions cover offset,
+  source-anchor, and transactional batch reject paths. Next replay should
+  compare custom-anchor rejects with after-following-custom origin counters
+  before broadening custom-carrier synthesis. Verified with non-incremental
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, `cargo check -q -p hgbridge-proxy2`, formatter, and
+  diff-check runs.
+- 2026-06-21 follow-up fixed-width custom carrier row-order selection: exact
+  fixed-width custom `A/09` carrier lookup now selects the latest same-lifecycle
+  following or pre-add `U/09` appearance row, not a custom row merely because
+  one exists. A matching custom `WORD+CResRef` carrier followed by a later normal
+  WORD-only appearance row now synthesizes after the later normal row when that
+  row cannot be widened, preserving sequential live-object state; the pre-add
+  side likewise classifies and widens the nearest prior appearance row. Verified
+  with focused latest-following/latest-pre-add regressions plus non-incremental
+  `exact_placeable_`, `placeable_update`,
+  `pending_synthesized_custom_placeable_update`, and
+  `cargo check -q -p hgbridge-proxy2`; next replay should compare remaining
+  custom-anchor rejects against emitted normal/custom following-origin counters.
+- 2026-06-21 follow-up fixed-width custom carrier replay telemetry: packet bytes
+  are unchanged. The exact fixed-width `A/09` carrier candidate trace now emits
+  selected following/pre-add carrier kind and selected rewrite-ready/blocked
+  booleans, and the aggregate synthesis-policy trace exposes the normal
+  following/pre-add buckets alongside custom buckets and emitted origins. Next
+  replay should compare remaining custom-anchor rejects against the selected
+  normal/custom buckets before widening any carrier rule.
+- 2026-06-22 follow-up fixed-width custom carrier rewrite-target guard: selected
+  same-lifecycle `U/09` appearance carriers now retain the exact module-custom
+  output the translator can emit. A following normal or custom row suppresses
+  the add-side synthetic `U/09 mask=0x20` carrier only when that rewrite output
+  equals the selected fixed-width `A/09` module row; if the following row
+  rewrites to a different custom output, the add gets its synthetic carrier at
+  the add boundary so the later update remains the final state. Direct,
+  M-frame, and server-dispatch traces now expose the following-normal/custom
+  rewrite-target-mismatch buckets. Verified with focused carrier-policy tests,
+  formatter, diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay
+  should inspect those mismatch buckets before widening any custom-carrier
+  suppression rule.
+- 2026-06-22 follow-up fixed-width custom carrier target-state telemetry: no
+  packet bytes changed. The selected carrier decision now classifies a custom
+  rewrite target as `matches-module-row`, `target-mismatch`, or
+  `target-unavailable`; the old rewrite-blocked counters remain aggregate
+  buckets while direct, M-frame, and server-dispatch summaries split following
+  normal/custom target-mismatch from unavailable writers. The per-candidate
+  `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` trace also prints the selected
+  following/pre-add target state. Verified with focused carrier-policy,
+  exact-placeable, pending-carrier, placeable-update, formatter, diff-check,
+  and `cargo check -q -p hgbridge-proxy2`; next replay should compare
+  target-mismatch against unavailable before broadening suppression or
+  after-following synthesis.
+- 2026-06-22 follow-up pre-add carrier target-state counters: packet bytes are
+  unchanged. Pre-add normal/custom `U/09` carriers now use the same
+  `matches-module-row` / `target-mismatch` / `target-unavailable` split as
+  following carriers while keeping the prior ready/blocked aggregate buckets.
+  Direct live-object, M-frame, and server-dispatch focused traces preserve the
+  split so the next `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` replay can distinguish
+  pre-add mismatch from unavailable before changing any synthesis placement
+  rule. Verified with focused carrier tests, formatter, diff-check, and
+  `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-22 follow-up pre-add committed-origin split: packet bytes are
+  unchanged. Synthetic fixed-width custom `U/09 mask=0x20` carriers that are
+  emitted after an `A/09` because of a pre-add normal/custom carrier now split
+  their committed origin by rewrite target state while preserving the old
+  aggregate ready/blocked/custom counters. This lets replay compare candidates
+  against carriers that survive planning and exact-claim validation. Verified
+  with focused committed-origin, `exact_placeable_`,
+  `pending_synthesized_custom_placeable_update`, `placeable_update`, formatter,
+  diff-check, and `cargo check -q -p hgbridge-proxy2`; next local replay should
+  compare committed pre-add target-mismatch/unavailable origins against the
+  candidate buckets before any placement rule change.
+- 2026-06-22 follow-up carrier counter helper: packet bytes are unchanged. The
+  fixed-width custom `A/09` add path now routes selected following and pre-add
+  `U/09` carrier target-state accounting through one shared production helper,
+  so normal/custom and match/mismatch/unavailable buckets cannot drift before a
+  synthesis-placement rule change. Verified with focused `carrier` tests,
+  formatter, diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay
+  should still compare candidate and committed mismatch/unavailable buckets
+  before changing where synthetic carriers are anchored.
+- 2026-06-22 follow-up following custom target-unavailable placement:
+  fixed-width custom `A/09` adds now treat a later explicit custom `U/09`
+  carrier with unavailable rewrite target as later packet-authored state unless
+  its `WORD+CResRef` already matches the selected module row. The add target is
+  synthesized at the add boundary, not after the later custom row, and direct,
+  M-frame, and server-dispatch summaries expose the committed
+  following-custom target-unavailable after-add bucket. Verified with focused
+  `carrier`, `exact_placeable_`, `pending_synthesized_custom_placeable_update`,
+  `placeable_update`, formatter, diff-check, and
+  `cargo check -q -p hgbridge-proxy2`; next replay should compare remaining
+  following-normal target-unavailable after-following synthesis against
+  committed add-boundary following-custom target-unavailable carriers.
+- 2026-06-22 follow-up following normal target-unavailable placement:
+  fixed-width custom `A/09` adds now treat a later normal `U/09` carrier with
+  unavailable custom rewrite target as later packet-authored state too. The
+  add's module-custom carrier is synthesized at the add boundary, preserving the
+  later normal row as final same-lifecycle appearance state, and direct,
+  M-frame, and server-dispatch summaries expose a committed
+  following-normal target-unavailable after-add bucket. Verified with focused
+  `carrier`, `exact_placeable_`, `pending_synthesized_custom_placeable_update`,
+  and `placeable_update` regressions; next replay should compare remaining
+  target-unavailable buckets against visual/static drift before changing any
+  broader custom-carrier suppression rule.
+- 2026-06-22 follow-up selected carrier target-unavailable reason trace: packet
+  bytes are unchanged. Selected normal/custom `U/09` carrier records now retain
+  the reason their custom rewrite target is unavailable (`missing-position`,
+  `position-output-unavailable`, or unique-target output unavailable), and the
+  focused `HGBRIDGE_PROXY2_DEBUG_LIVE_CLAIM` candidate trace prints that reason
+  beside the existing selected target-state. Verified with focused
+  fixed-width/carrier, exact-placeable, pending-carrier, placeable-update,
+  formatter, diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay
+  should split target-unavailable visual/static drift by missing position versus
+  failed position-output proof before changing carrier suppression.
+- 2026-06-22 follow-up selected carrier target-unavailable reason counters:
+  packet bytes are unchanged. The fixed-width custom `A/09` selected-carrier
+  counters now split target-unavailable reasons by selected following/pre-add
+  normal/custom scope, and direct live-object, M-frame, and server-dispatch
+  summaries expose `missing-position`, `position-output-unavailable`, and
+  unique-module-target-unavailable buckets beside the existing aggregate
+  unavailable counts. Verified with focused `carrier`, `exact_placeable_`,
+  `pending_synthesized_custom_placeable_update`, `placeable_update`, formatter,
+  diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay should compare
+  reason buckets against remaining visual/static drift before changing carrier
+  suppression or placement.
+- 2026-06-22 follow-up stale after-following carrier origin cleanup: packet
+  bytes are unchanged. The fixed-width custom `A/09` synthetic carrier planner
+  no longer exposes the obsolete post-following normal/custom insertion origins
+  or their direct/M-frame/server-dispatch counters; after the target-mismatch
+  and target-unavailable ordering audits, every emitted module-custom carrier is
+  add-boundary anchored unless a following carrier is proven to suppress it.
+  Pending-carrier rejection tests now keep normal/custom anchor classes while
+  counting only add-boundary origin classes. Verified with focused `carrier`,
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and `cargo check -q -p
+  hgbridge-proxy2`; next replay should compare selected target-unavailable
+  reason buckets against visual/static drift, not the removed after-following
+  origin counters.
+- 2026-06-22 follow-up committed target-unavailable reason counters: packet
+  bytes are unchanged. Synthetic fixed-width custom `U/09 mask=0x20` carriers
+  now carry the selected carrier target-unavailable reason through planning to
+  the pending add-boundary carrier and count it only after the staged carrier
+  survives full exact-claim commit, split by pre-add/following normal/custom
+  after-add origin in direct live-object, M-frame, and server-dispatch
+  summaries. Focused committed-origin coverage pins the committed
+  `position-output-unavailable` reason buckets for pre-add normal/custom
+  carriers. Verified with focused `carrier`,
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and `cargo check -q -p
+  hgbridge-proxy2`; next replay should compare committed reason buckets against
+  visual/static drift before changing carrier suppression or placement.
+- 2026-06-22 follow-up target-unavailable uncommitted delta diagnostics:
+  packet bytes are unchanged. Fixed-width custom `A/09` carrier summaries now
+  derive selected, committed, and selected-minus-committed target-unavailable
+  reason buckets, with saturating per-reason subtraction so overcommitted scoped
+  buckets cannot hide remaining missing-position or position-output gaps.
+  Direct live-object and server-dispatch traces expose
+  `target_unavailable_uncommitted_*` fields for the next replay. Verified with
+  focused bucket-delta and `carrier` tests plus `cargo check -q -p
+  hgbridge-proxy2`; next replay should inspect uncommitted reason deltas before
+  changing carrier suppression or placement.
+- 2026-06-22 follow-up target-unavailable satisfied-carrier split: packet bytes
+  are unchanged. Fixed-width custom `A/09` carrier summaries now split a
+  selected following custom `U/09` whose rewrite target is unavailable but whose
+  source `WORD+CResRef` already matches the module row into
+  `target_unavailable_satisfied_by_matching_following_custom_*`, and derive
+  `target_unavailable_unresolved_*` after subtracting both committed synthetic
+  carriers and this packet-authored satisfied carrier bucket. Direct
+  live-object and server-dispatch traces use a separate target-unavailable
+  resolution event to avoid growing the already-large synthesis-policy event.
+  Verified with focused following-carrier and bucket-delta tests, `carrier`,
+  `exact_placeable_`, `pending_synthesized_custom_placeable_update`,
+  `placeable_update`, formatter, and `cargo check -q -p hgbridge-proxy2`. Next
+  local replay should compare unresolved missing-position versus
+  position-output-unavailable buckets against visual/static drift before
+  changing carrier suppression or placement.
+- 2026-06-22 follow-up scoped target-unavailable resolution diagnostics: packet
+  bytes are unchanged. The fixed-width custom `A/09` carrier summary now derives
+  selected-minus-committed-minus-satisfied target-unavailable reasons per
+  following-normal, following-custom, pre-add-normal, and pre-add-custom scope
+  before aggregating, so a matching following-custom carrier cannot erase
+  unresolved missing-position or position-output evidence from a different
+  scope. Direct live-object and server-dispatch resolution traces expose the
+  scoped unresolved buckets. Verified with focused `carrier`, `exact_placeable_`,
+  `pending_synthesized_custom_placeable_update`, `placeable_update`, formatter,
+  diff-check, and isolated-target `cargo check -q -p hgbridge-proxy2` after the
+  default target hit a stale Windows PDB. Next replay should compare scoped
+  unresolved buckets against visual/static drift before changing carrier
+  suppression or placement.
+- 2026-06-22 follow-up synthetic carrier reject trace context: packet bytes are
+  unchanged. Pending synthetic `U/09` custom-carrier planning, emit, batch-drop,
+  and commit traces now include the add anchor offsets/source appearance plus
+  the selected carrier target-unavailable reason, so a debug replay can connect
+  scoped unresolved counters to concrete `A/09` rows and rejected staged
+  carriers. Verified with focused `carrier`, `exact_placeable_`,
+  `pending_synthesized_custom_placeable_update`, `placeable_update`, formatter,
+  diff-check, and isolated-target `cargo check -q -p hgbridge-proxy2`. Next
+  replay should compare row-level `insertion_target_unavailable_reason` and
+  anchor offsets against the scoped unresolved buckets before changing carrier
+  suppression or placement.
+- 2026-06-22 follow-up target-unavailable satisfied predicate: packet bytes are
+  unchanged. Following-custom target-unavailable satisfaction now lives behind a
+  policy predicate that requires the selected custom source to match the module
+  row, so a stale explicit custom carrier cannot clear scoped unresolved
+  evidence merely because its rewrite target was unavailable. Focused coverage
+  pins both the stale-custom rejection and the matching-custom satisfaction
+  path. A local `To Heir is Human` bridge attempt at
+  `C:\nwnbridge\local-diamond-bridge-20260622-150423` reached only BN
+  enumeration/crypto, produced no live-object/carrier trace, and created no
+  quarantine; the next replay still needs a gameplay connection before
+  comparing row-level target-unavailable reasons against scoped unresolved
+  buckets.
+- 2026-06-22 follow-up synthetic carrier emitted-row state: packet bytes are
+  unchanged. Staged fixed-width custom `U/09 mask=0x20` carriers now use a
+  named emitted-row record that owns final insert-offset and record-end
+  calculation after lower-offset inserts or row drops. Batch focus, final-row
+  exact validation, candidate rebuild, commit traces, and byte accounting now
+  share that production offset rule instead of destructuring raw tuple fields.
+  Verified with focused synthetic-carrier, pending-carrier, carrier, and
+  exact-placeable regressions plus `cargo check`, formatter, and diff-check.
+  Next replay still needs a gameplay live-object path to compare scoped
+  target-unavailable reason buckets against visual/static drift.
+- 2026-06-22 follow-up custom carrier target-decision state: packet bytes are
+  unchanged. Selected fixed-width custom `A/09` carrier target state now flows
+  through a typed decision that carries the unavailable reason into synthesis
+  policy, pending insertion, counters, and debug trace. This prevents
+  `target-unavailable` reason evidence from drifting between the separate
+  policy/counter paths before the next gameplay replay. Verified with focused
+  target-decision, `carrier`, `pending_synthesized_custom_placeable_update`,
+  `exact_placeable_`, formatter, diff-check, and isolated-target `cargo check
+  -q -p hgbridge-proxy2`. Next replay still needs a gameplay live-object path
+  to compare scoped unresolved target-unavailable buckets against visual/static
+  drift.
+- 2026-06-22 follow-up custom carrier synthesis decision owner: packet bytes
+  are unchanged. Fixed-width custom `A/09` carrier planning now materializes one
+  synthesis decision that owns the selected following/pre-add scope, selected
+  `U/09` carrier, rewrite target decision, and source-match predicate before
+  policy, counters, and pending insertion consume it. The debug candidate trace
+  now prints the selected synthesis scope, and focused coverage pins that the
+  pending writer and counters share the same target-unavailable reason. Verified
+  with focused target-decision, `carrier`,
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and isolated-target `cargo check
+  -q -p hgbridge-proxy2`. Next replay still needs a gameplay live-object path
+  to compare scoped unresolved target-unavailable buckets against visual/static
+  drift before changing carrier suppression or placement.
+- 2026-06-22 follow-up pending custom carrier selected-row evidence: packet
+  bytes are unchanged. Pending synthetic fixed-width custom `U/09 mask=0x20`
+  carriers now retain the selected following/pre-add carrier row scope, byte
+  offsets, appearance/resref offsets, fragment cursor span, source appearance,
+  and rewrite-target decision through plan, emit, batch-reject/drop, and commit
+  traces. Focused coverage pins that pending insertion and counters share the
+  same selected row evidence. Next replay still needs a gameplay live-object
+  path to tie row-level carrier evidence to scoped unresolved
+  target-unavailable buckets and visual/static drift.
+- 2026-06-22 follow-up custom carrier policy derivation: packet bytes are
+  unchanged. Fixed-width custom `A/09` synthesis policy is now derived only from
+  the selected following/pre-add `U/09` carrier scope and target decision, with a
+  scope/custom-shape debug invariant, so counters, insertion, and traces cannot
+  pair a selected carrier with a separately supplied policy. Verified with
+  focused policy, carrier, pending-carrier, exact-placeable, placeable-update,
+  formatter, diff-check, and isolated-target `cargo check -q -p
+  hgbridge-proxy2`. Next replay still needs a gameplay live-object path to
+  compare scoped unresolved target-unavailable buckets against visual/static
+  drift.
+- 2026-06-22 follow-up custom carrier decision ownership: packet bytes are
+  unchanged. Fixed-width custom `A/09` synthesis decisions are now an enum over
+  no-carrier versus one selected `U/09` carrier, deriving policy and pending
+  insertion origin from that state instead of storing a separately cached policy.
+  Target-unavailable reasons are carried only through policies that actually
+  synthesize from unavailable targets, so the pending writer cannot pair a stale
+  policy with a different selected carrier. Verified with focused decision tests,
+  `carrier`, `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and isolated-target `cargo check -q
+  -p hgbridge-proxy2`. Next replay still needs a gameplay live-object path to
+  compare scoped unresolved target-unavailable buckets against visual/static
+  drift.
+- 2026-06-22 follow-up custom carrier rewrite-target resolution: packet bytes
+  are unchanged. Selected `U/09` carrier rows now store rewrite-target evidence
+  as one `Available(output)` or `Unavailable(reason)` value instead of separate
+  optional output/reason fields, and `TargetUnavailable` decisions require a
+  concrete reason before policy, pending insertion, counters, or traces consume
+  them. This removes another way for selected-carrier state to drift while the
+  gameplay replay is still blocked. Verified with focused custom-carrier,
+  `carrier`, `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, and isolated-target `cargo check -q -p
+  hgbridge-proxy2`. Next replay still needs a gameplay live-object path to
+  compare scoped unresolved target-unavailable buckets against visual/static
+  drift.
+- 2026-06-22 follow-up target-unavailable resolution owner: packet bytes are
+  unchanged. Direct live-object and M-frame/server-dispatch diagnostics now
+  consume one `ExactPlaceableCustomCarrierTargetUnavailableResolution` value
+  derived from selected, committed, and satisfied scoped reason buckets, and the
+  older separate uncommitted/unresolved helper paths were removed. Verified with
+  focused bucket-delta, `carrier`,
+  `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and isolated-target `cargo check
+  -q -p hgbridge-proxy2`. Next replay still needs a gameplay live-object path
+  to compare the owned scoped resolution buckets against visual/static drift.
+- 2026-06-23 follow-up scoped target-unavailable resolution model: packet bytes
+  are unchanged. The fixed-width custom carrier target-unavailable resolver now
+  materializes per-scope selected/committed/satisfied/uncommitted/unresolved
+  snapshots and derives aggregate totals from that scoped model; direct
+  live-object trace consumption no longer flattens raw unresolved buckets
+  separately from the production resolver. Verified with focused bucket-delta,
+  `carrier`, `pending_synthesized_custom_placeable_update`, `exact_placeable_`,
+  `placeable_update`, formatter, diff-check, and isolated-target `cargo check
+  -q -p hgbridge-proxy2`. Next replay still needs a gameplay live-object path to
+  compare the scoped snapshots against visual/static drift before changing
+  custom-carrier suppression or placement.
+- 2026-06-23 follow-up target-unavailable resolution state owner: packet bytes
+  are unchanged. The fixed-width custom carrier target-unavailable resolver now
+  stores one scoped resolution model and derives selected/committed/satisfied,
+  uncommitted, unresolved, aggregate, and by-scope views through accessors; the
+  dispatcher trace can no longer peek at duplicated raw unresolved fields. Verified
+  with focused bucket-delta, `carrier`, `pending_synthesized_custom_placeable_update`,
+  `exact_placeable_`, `placeable_update`, formatter, and isolated-target
+  `cargo check -q -p hgbridge-proxy2`. Next replay still needs a gameplay
+  live-object path to compare scoped unresolved buckets against visual/static
+  drift before changing custom-carrier suppression or placement.
 - 2026-05-25 `P/04/01` zero-count static-tail ownership audit: hardened the
   static direction normalizer and module-resource static-row repair helpers so
   row-shaped bytes after a zero static-placeable count remain unclaimed until
@@ -3340,6 +3965,15 @@ Current status:
   shifted `U/6` neighbor cannot become claimable through saturated gap math. The
   active two pre-`U/6` bits remain unassigned pending compact source capture or
   source-side writer/list-handoff proof.
+- 2026-06-23 follow-up `P/05/01` item `U/6` compact handoff sequence evidence:
+  packet bytes and cursor ownership remain unchanged. Retained item handoff
+  evidence now derives a typed sequence kind from bounded source-window rows,
+  distinguishing direct `A/6 -> U/6` from the compact
+  `U/10 -> A/6 -> U/6` handoff after the door update mask has been translated
+  to EE `0x00000017`. The CEP-style no-map regression now proves that sequence
+  is recognized while still blocked by the unowned emitted/source two-bit gap;
+  the next production path remains compact source capture or source-side
+  writer/list-handoff ownership before assigning those bits.
 - 2026-06-07 `P/05/01` Diamond `CreateWriteMessage` fragment-header audit: no
   packet behavior changed. Diamond `nwserver` `0x507E30` initializes the CNW
   write cursor at byte offset 7, clears the bit cursor, and immediately calls
@@ -3885,6 +4519,186 @@ Current status:
   bits. Verified with focused failure-report, contiguous-tail, unowned-neighbor,
   and source-window tests plus `cargo fmt --all --check`, `git diff --check`,
   and `cargo check -q -p hgbridge-proxy2`.
+- 2026-06-23 follow-up `P/05/01` item cursor source-owner policy: packet bytes
+  and cursor ownership are unchanged. Item `U/6` failure evidence now stores the
+  source-owner verdict as the single production state, and derives
+  `claimable_handoff` plus `handoff_blocker` from that verdict when traces or
+  artifacts are formatted. This prevents future source-owner policy from
+  branching on duplicated booleans/strings while the active compact
+  `U/10 -> A/6 -> U/6` proof still needs compact source capture or a
+  source-side writer/list-handoff owner. Verified with focused cursor-failure
+  and failure-report regressions, `cargo check -q -p hgbridge-proxy2`, and the
+  full `live_object_update` filter.
+- 2026-06-23 follow-up `P/05/01` item handoff source-decision owner: packet
+  bytes and cursor ownership are unchanged. Item `U/6` handoff evidence now
+  stores a typed source decision derived from the bounded source-window sequence
+  plus source-owner verdict, so the compact `U/10 -> A/6 -> U/6` case records
+  `blocked-unowned-emitted-source-gap` through one policy path rather than
+  recomputing sequence/source checks in the formatter. Next implementation path
+  remains proving or implementing a compact source-writer/list-handoff owner
+  before assigning the two pre-`U/6` bits. Verified with focused decision,
+  report, raw-neighbor handoff tests and the full `live_object_update` filter.
+- 2026-06-23 follow-up `P/05/01` item handoff sequence-context evidence:
+  packet bytes and cursor ownership are unchanged. Item `U/6` failure evidence
+  now carries typed bounded-row context for the compact handoff sequence:
+  optional carrier `U/10`, previous typed `A/6`, and failed focus `U/6`,
+  including masks, object ids, bit ranges, claim family, and source-bit
+  previews. Failure artifacts can now compare the source-capture/decompile
+  writer target without reconstructing those rows from generic source-window
+  text. The active compact no-map case still records
+  `blocked-unowned-emitted-source-gap`; the two pre-`U/6` bits remain unowned
+  until compact source-writer/list-handoff proof assigns them. Verified with
+  isolated-target focused no-map, `item_handoff`, `cargo check -q -p
+  hgbridge-proxy2`, formatter/diff checks, and serial `live_object_update`
+  (`580 passed`).
+- 2026-06-23 follow-up `P/05/01` compact item handoff source-contract gate:
+  packet bytes and cursor ownership are unchanged. Item `U/6` failure evidence
+  now derives source decisions from a typed handoff source contract, and the
+  compact `U/10 tail9 -> A/6 -> U/6` contract is recognized only when the
+  carrier row has the exact expected widths: eight source bits and thirteen
+  EE-facing bits. A broader bounded door update before `A/6` is now
+  `unclassified-source-contract` instead of a claimable compact handoff. The
+  active compact no-map case still records
+  `blocked-unowned-emitted-source-gap`; the two pre-`U/6` bits remain unowned
+  pending compact source capture or source-writer/list-handoff proof. Verified
+  with isolated-target focused source-contract, compact no-map, `item_handoff`,
+  `cargo check -q -p hgbridge-proxy2`, formatter/diff checks, and serial
+  `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` compact item handoff ledger-backed contract:
+  packet bytes and cursor ownership are unchanged. Source-window and item
+  handoff row evidence now carries the production rewrite ledger family,
+  emitted-bit preview, and insert/remove counts beside the source-bit preview.
+  The compact `U/10 tail9 -> A/6 -> U/6` source contract now requires the
+  carrier to be backed by the actual `update-compact-tail9-rewrite` ledger
+  claim, not only a byte-plausible door update with eight source bits and
+  thirteen EE bits. The active no-map case still reports
+  `blocked-unowned-emitted-source-gap`; the two pre-`U/6` bits remain unowned
+  pending compact source capture or source-writer/list-handoff proof. Verified
+  with isolated-target focused `item_handoff`, compact no-map, `cargo check -q
+  -p hgbridge-proxy2`, formatter/diff checks, and serial
+  `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` compact item handoff residue evidence:
+  packet bytes and cursor ownership are unchanged. Item handoff failure
+  evidence now carries a typed sequence-residue summary for the bounded
+  `U/10 tail9 -> A/6 -> U/6` prefix: compact tail9 plus no-map `A/6` owns
+  thirteen source bits, emits nineteen EE-facing bits, and fully explains the
+  +6 prefix delta before the failed `U/6`. The only validating shifted cursor
+  is now classified as a two-bit `focus-row-prefix` gap inside the `U/6`, not
+  an inter-row donation from the compact prefix. The active no-map case remains
+  `blocked-unowned-emitted-source-gap`; next proof still needs compact
+  source-capture or source-writer/list-handoff ownership for those first two
+  item-update bits. Verified with isolated-target focused no-map, report, and
+  source-contract tests, `cargo check -q -p hgbridge-proxy2`, formatter/diff
+  checks, and serial `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff rewrite-backed `A/6` contract:
+  packet bytes and cursor ownership are unchanged. The direct `A/6 -> U/6`
+  source contract and the compact `U/10 tail9 -> A/6 -> U/6` source contract
+  now both require the preceding item add/create row to have the production
+  `item-create-rewrite` or `item-add-rewrite` ledger claim with matching
+  emitted/source bit widths; a byte-shaped `A/6` row is still useful sequence
+  context but is no longer a bounded source contract by itself. The active
+  no-map case still reports `blocked-unowned-emitted-source-gap`; the two
+  pre-`U/6` bits remain unowned pending compact source capture or
+  source-writer/list-handoff proof. Verified with focused source-contract,
+  compact no-map, `item_handoff`, `cargo check -q -p hgbridge-proxy2`,
+  formatter/diff checks, and serial `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff row-role contract:
+  packet bytes and cursor ownership are unchanged. Handoff sequence rows now
+  expose a typed role derived from opcode/marker, exact bit widths, source
+  preview width, and rewrite-ledger provenance. The source-contract gate now
+  consumes those roles so a broad door predecessor remains sequence context,
+  while only compact tail9 and rewrite-backed `A/6` rows become compact/direct
+  source-contract proof. Failure reports include the role beside each retained
+  sequence row. The active no-map case still reports
+  `blocked-unowned-emitted-source-gap`; the two pre-`U/6` bits still require
+  compact source capture or source-writer/list-handoff proof. Verified with
+  isolated-target focused source-contract, `item_handoff`,
+  `cargo check -q -p hgbridge-proxy2`, formatter/diff checks, and serial
+  `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff focus-cursor contract:
+  packet bytes and cursor ownership are unchanged. Item handoff evidence now
+  carries the inherited focus `U/6` cursor ledger verdict inside the typed
+  handoff object and emits it as `item_handoff_focus_cursor`, so artifacts show
+  the real focus cursor as `contiguous-tail` separately from the validating
+  `+2` neighbor blocked by `unowned-emitted-source-gap`. The compact no-map
+  regression asserts the focus source cursor lands before the two disputed
+  item-update lead bits. Next proof still needs compact source capture or
+  source-writer/list-handoff ownership before assigning those bits. Verified
+  with isolated-target focused report/no-map/`item_handoff`, `cargo check -q
+  -p hgbridge-proxy2`, formatter/diff checks, and serial `live_object_update`
+  (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff focus-prefix replay: packet bytes
+  and cursor ownership are unchanged. Item handoff evidence now retains a typed
+  replay of the decompile-owned `U/6` field prefix skipped by a validating
+  shifted neighbor. The compact no-map `+2` case records the disputed bits as
+  `position-residuals` at the focus cursor before the scalar-shaped neighbor,
+  so the next compact source capture can compare source bits to field ownership
+  without parsing formatter text. The two pre-`U/6` bits remain unowned pending
+  compact source capture or source-writer/list-handoff proof. Verified with
+  isolated-target focused report, neighbor, `item_handoff`, `cargo check -q -p
+  hgbridge-proxy2`, formatter/diff checks, and serial `live_object_update`
+  (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff focus-prefix blocker: packet
+  bytes and cursor ownership are unchanged. The typed source decision now uses
+  retained sequence-residue evidence, so a bounded compact/direct handoff whose
+  only validating neighbor skips decompile-owned focus-row prefix bits reports
+  `blocked-focus-row-prefix` instead of the generic unowned emitted/source gap.
+  The raw source-owner verdict is still emitted separately, and the compact
+  no-map `U/10 tail9 -> A/6 -> U/6` case remains unclaimable until compact
+  source capture or source-writer/list-handoff proof assigns those first item
+  update bits. Verified with isolated-target focused `item_handoff`, focused
+  compact no-map, `cargo check -q -p hgbridge-proxy2`, formatter/diff checks,
+  and serial `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff focus-prefix ownership proof:
+  packet bytes and cursor ownership are unchanged. Sequence-residue evidence
+  now carries the typed focus gap origin plus source-owner verdict, and
+  `blocked-focus-row-prefix` is emitted only when the skipped prefix is one of
+  the decompile-owned `U/6` focus fields proven by the Diamond/EE item update
+  readers. Failure artifacts print the residue `gap_origin` and `source_owner`
+  beside the pre-focus source/emitted bit totals, so the next compact source
+  capture can compare the disputed first item-update bits without treating an
+  unclassified inside-row skip as proof. The compact no-map handoff remains
+  unclaimable pending source capture or source-writer/list-handoff ownership.
+  Verified with focused source-contract, compact no-map, `item_handoff`,
+  `cargo fmt --all --check`, `git diff --check`, `cargo check -q -p
+  hgbridge-proxy2`, and serial `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff failure-kind narrowing: packet
+  bytes and cursor ownership are unchanged. Runtime item `U/6` cursor failures
+  now classify the compact `U/10 tail9 -> A/6 -> U/6` shifted-neighbor case as
+  `item-update-cursor-failed-before-valid-neighbor-focus-row-prefix` when the
+  shared typed handoff decision is `blocked-focus-row-prefix`; generic
+  unowned-neighbor failures remain separate. Debug live-claim output now prints
+  the typed handoff source decision beside the raw source-owner verdict. This
+  keeps the active no-map handoff unclaimable while making the blocker visible
+  to dispatch/quarantine handling and the next compact source capture. Verified
+  with focused compact no-map and dispatcher tests, `cargo fmt --all --check`,
+  `git diff --check`, `cargo check -q -p hgbridge-proxy2`, and serial
+  `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff prefix-source replay evidence:
+  packet bytes and cursor ownership are unchanged. Item handoff failure evidence
+  now carries a typed `prefix_source_replay` verdict that flattens the retained
+  decompile-owned focus-prefix stages in reader order and compares them with the
+  source-coordinate gap bits. The active compact no-map
+  `U/10 tail9 -> A/6 -> U/6` case records
+  `source-gap-matches-focus-prefix` for the two skipped position residual bits,
+  but remains unclaimable as `blocked-focus-row-prefix` until compact source
+  capture or source-writer/list-handoff proof assigns those bits. Verified with
+  focused compact no-map, report, `item_handoff`, `cargo fmt --all --check`,
+  `git diff --check`, `cargo check -q -p hgbridge-proxy2`, and serial
+  `live_object_update` (`581 passed`).
+- 2026-06-23 follow-up `P/05/01` item handoff source-span contract: packet
+  bytes and cursor ownership are unchanged. Source-window and handoff sequence
+  rows now carry exact `source_bit_start/source_bit_end/source_bit_delta`
+  fields separately from retained source-bit previews, and the compact tail9 /
+  rewrite-backed `A/6` source contract consumes those exact spans instead of
+  overloading preview length as ownership proof. Failure reports print
+  `source_span` and `source_delta`, so the next compact source capture can
+  compare the `U/10 -> A/6 -> U/6` source handoff without reconstructing spans
+  from truncated previews. The active no-map handoff remains
+  `blocked-focus-row-prefix` pending compact source capture or
+  source-writer/list-handoff proof. Verified with local-target focused
+  compact no-map and `item_handoff` tests, `cargo check -q -p
+  hgbridge-proxy2`, formatter, and diff-check.
 - 2026-06-09 `P/05/01` stock snapshot mask-owner proof: no packet behavior
   changed. Re-ran a direct PE scan of `NWN Diamond/nwserver.exe` to keep the
   compact-tail source-writer boundary reproducible without trusting the text
@@ -4524,6 +5338,23 @@ Current status:
   hgbridge-proxy2`, and `git diff --check`. The private XP2 seq19 replay
   advances from the prior offset 953 rollback to offset 1145
   (`add-record-cursor-advance-failed`).
+- 2026-06-23 promoted live-object source-bit ledger audit: production rewrite
+  state now inserts read-buffer fragment bits promoted by midstream `W`,
+  trailing creature-add prefixes, creature-update spans, GUI item spans, and
+  inventory spans into `LiveObjectRewriteBitLedger` before the following row
+  commits. This preserves the Diamond/EE bit order as source-owned MSB bits
+  rather than treating the promoted bytes as synthetic EE output. Verified with
+  focused `work_remaining_midstream_storage_promotes_bits_before_compact_add_update`,
+  creature-add prefix, GUI item, inventory interleaved-tail, and Dark Ranger
+  creature-update/inventory regressions plus `work_remaining_`.
+- ~~2026-06-23 translated creature appearance ledger follow-up: fixed the
+  remaining CEP zero-declared `P/5 -> U/5 0x3967` source-delta failure by
+  committing verified creature appearance rows to `LiveObjectRewriteBitLedger`
+  and inserting appearance-adjacent promoted source bits before the following
+  record commit. Verified with the private
+  `local_cepv22_seq11_zero_declared_stream_rewrites_and_claims_exactly`
+  regression, public ledger source-insert regression, and private
+  `live_object_update` filter (`579 passed / 0 failed`).~~
 - 2026-06-02 `P/05/01` compact `A/09` shifted low-tail replay audit: no packet
   behavior changed, but public coverage now pins the later raw XP2 seq19
   rollback shape. After a valid prior low-tail rewrite, the raw trace reaches

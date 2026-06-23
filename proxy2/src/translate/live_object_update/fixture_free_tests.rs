@@ -5928,9 +5928,21 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         "compact tail9 U/10 emits the EE scalar-orientation/state contract"
     );
     assert_eq!(
+        carrier_row.source_bit_delta,
+        Some(super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS),
+        "compact tail9 U/10 owns only the capture-backed source span"
+    );
+    assert_eq!(
+        carrier_row.source_bit_end,
+        Some(
+            carrier_row.source_bit_start + super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS
+        ),
+        "compact tail9 U/10 source span should be exact, not inferred from preview length"
+    );
+    assert_eq!(
         carrier_row.source_bits.bit_count,
         super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
-        "compact tail9 U/10 owns only the capture-backed source bits"
+        "source preview should still expose the compact tail9 U/10 bits for capture comparison"
     );
     let previous_row = sequence_context
         .previous_row
@@ -5944,6 +5956,16 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         Some(failure.bit_cursor),
         "typed A/6 must hand off exactly to the failed U/6 cursor before the unowned +2 neighbor"
     );
+    assert_eq!(
+        previous_row.source_bit_delta,
+        Some(5),
+        "no-map A/6 owns exactly its five Diamond source bits before EE inserts the active-property BOOL"
+    );
+    assert_eq!(
+        previous_row.source_bit_end,
+        Some(handoff.source_gap_bit_start),
+        "typed A/6 source ownership must stop before the disputed U/6 lead bits"
+    );
     let focus_row = sequence_context
         .focus_row
         .expect("compact handoff evidence should retain the failed U/6 row");
@@ -5956,6 +5978,9 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         focus_row.bit_end, None,
         "the failing U/6 row remains unclaimed until a source owner is proven"
     );
+    assert_eq!(focus_row.source_bit_start, handoff.source_gap_bit_start);
+    assert_eq!(focus_row.source_bit_end, None);
+    assert_eq!(focus_row.source_bit_delta, None);
     assert_eq!(handoff.neighbor_delta, 2);
     assert_eq!(handoff.neighbor_bit_start, failure.bit_cursor + 2);
     assert_eq!(handoff.emitted_gap_bits, 2);

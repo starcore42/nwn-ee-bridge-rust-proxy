@@ -2444,6 +2444,9 @@ mod diagnostic_tests {
             bit_start: 22,
             bit_end: Some(28),
             bit_delta: Some(6),
+            source_bit_start: 17,
+            source_bit_end: Some(22),
+            source_bit_delta: Some(5),
             source_bits: live_object_rewrite_bit_slice_evidence(
                 17,
                 22,
@@ -2469,6 +2472,9 @@ mod diagnostic_tests {
             bit_start: 28,
             bit_end: None,
             bit_delta: None,
+            source_bit_start: 22,
+            source_bit_end: None,
+            source_bit_delta: None,
             source_bits: live_object_rewrite_bit_slice_evidence(
                 22,
                 38,
@@ -4270,6 +4276,9 @@ mod diagnostic_tests {
                 bit_start,
                 bit_end,
                 bit_delta: bit_end.map(|end| end.saturating_sub(bit_start)),
+                source_bit_start,
+                source_bit_end: bit_end.map(|_| source_bit_start + source_bit_count),
+                source_bit_delta: bit_end.map(|_| source_bit_count),
                 source_bits: live_object_rewrite_bit_slice_evidence(
                     source_bit_start,
                     source_bit_start + source_bit_count,
@@ -14388,6 +14397,9 @@ pub struct LiveObjectUpdateItemHandoffSequenceRowEvidence {
     pub bit_start: usize,
     pub bit_end: Option<usize>,
     pub bit_delta: Option<usize>,
+    pub source_bit_start: usize,
+    pub source_bit_end: Option<usize>,
+    pub source_bit_delta: Option<usize>,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
     pub ledger_family: Option<&'static str>,
@@ -14513,6 +14525,9 @@ pub struct LiveObjectUpdateSourceWindowEntryEvidence {
     pub bit_start: usize,
     pub bit_end: Option<usize>,
     pub bit_delta: Option<usize>,
+    pub source_bit_start: usize,
+    pub source_bit_end: Option<usize>,
+    pub source_bit_delta: Option<usize>,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
     pub ledger_family: Option<&'static str>,
@@ -31823,12 +31838,20 @@ fn live_object_source_window_evidence(
             .zip(row_claims[retain_start..].iter()),
     ) {
         let source_bit_len = rewrite_bit_ledger.source_bit_len(fragment_bits);
-        let source_preview_start = rewrite_bit_ledger
-            .source_cursor_for_emitted_cursor(claim.bit_start)
+        let ledger_entry = rewrite_bit_ledger.entry_for_row(row.offset, row.record_end);
+        let source_bit_start = ledger_entry
+            .map(|entry| entry.source_bit_start)
+            .unwrap_or_else(|| rewrite_bit_ledger.source_cursor_for_emitted_cursor(claim.bit_start))
             .min(source_bit_len);
-        let source_preview_end = claim
-            .bit_end
-            .map(|bit_end| rewrite_bit_ledger.source_cursor_for_emitted_cursor(bit_end))
+        let source_bit_end = claim.bit_end.map(|bit_end| {
+            ledger_entry
+                .map(|entry| entry.source_bit_end)
+                .unwrap_or_else(|| rewrite_bit_ledger.source_cursor_for_emitted_cursor(bit_end))
+                .min(source_bit_len)
+                .max(source_bit_start)
+        });
+        let source_preview_start = source_bit_start;
+        let source_preview_end = source_bit_end
             .unwrap_or_else(|| {
                 source_preview_start.saturating_add(LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT)
             })
@@ -31839,7 +31862,6 @@ fn live_object_source_window_evidence(
             source_preview_start,
             source_preview_end,
         );
-        let ledger_entry = rewrite_bit_ledger.entry_for_row(row.offset, row.record_end);
         let ledger_emitted_bits = ledger_entry.map(|entry| {
             live_object_rewrite_bit_slice_evidence(
                 entry.emitted_bit_start,
@@ -31859,6 +31881,10 @@ fn live_object_source_window_evidence(
             bit_delta: claim
                 .bit_end
                 .map(|bit_end| bit_end.saturating_sub(claim.bit_start)),
+            source_bit_start,
+            source_bit_end,
+            source_bit_delta: source_bit_end
+                .map(|bit_end| bit_end.saturating_sub(source_bit_start)),
             source_bits: live_object_rewrite_bit_slice_evidence(
                 source_preview_start,
                 source_preview_end,
@@ -32102,8 +32128,8 @@ fn live_object_item_handoff_sequence_residue(
     let previous = context.previous_row?;
     let focus = context.focus_row?;
     let first = context.carrier_row.unwrap_or(previous);
-    let pre_focus_source_bit_start = first.source_bits.bit_start;
-    let pre_focus_source_bit_end = focus.source_bits.bit_start;
+    let pre_focus_source_bit_start = first.source_bit_start;
+    let pre_focus_source_bit_end = focus.source_bit_start;
     let pre_focus_source_bits = pre_focus_source_bit_end.checked_sub(pre_focus_source_bit_start)?;
     let pre_focus_emitted_bit_start = first.bit_start;
     let pre_focus_emitted_bit_end = focus.bit_start;
@@ -32284,7 +32310,7 @@ fn live_object_item_handoff_row_matches_compact_tail9_door_update_contract(
         && row.marker == DOOR_OBJECT_TYPE
         && matches!(row.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
         && row.bit_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS)
-        && row.source_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS
+        && row.source_bit_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS)
         && row.claim_family == "update"
         && row.ledger_family == Some("update-compact-tail9-rewrite")
         && ledger_emitted_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS
@@ -32332,7 +32358,7 @@ fn live_object_item_handoff_row_matches_rewrite_backed_item_create_contract(
         && row.bit_delta == Some(ledger_emitted_bits.bit_count)
         && ledger_emitted_bits.bit_start == row.bit_start
         && ledger_emitted_bits.bit_end == bit_end
-        && ledger_source_delta == Some(row.source_bits.bit_count)
+        && ledger_source_delta == row.source_bit_delta
 }
 
 fn live_object_item_handoff_row_is_bounded_item_create(
@@ -32376,6 +32402,9 @@ fn live_object_item_handoff_sequence_row(
         bit_start: entry.bit_start,
         bit_end: entry.bit_end,
         bit_delta: entry.bit_delta,
+        source_bit_start: entry.source_bit_start,
+        source_bit_end: entry.source_bit_end,
+        source_bit_delta: entry.source_bit_delta,
         source_bits: entry.source_bits,
         claim_family: entry.claim_family,
         ledger_family: entry.ledger_family,
@@ -34042,9 +34071,10 @@ fn write_source_window_evidence(
             .bit_end
             .map(|bit_end| format!("{}..{bit_end}", entry.bit_start))
             .unwrap_or_else(|| format!("{}..unclaimed", entry.bit_start));
+        let source_span = format_optional_bit_span(entry.source_bit_start, entry.source_bit_end);
         let _ = writeln!(
             out,
-            "source_window_entry[{index}]={}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} ledger={} bytes={}",
+            "source_window_entry[{index}]={}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} source_span={} source_delta={} claim={} source_bits={} ledger={} bytes={}",
             entry.offset,
             entry.record_end,
             format_live_object_byte(entry.opcode),
@@ -34053,6 +34083,8 @@ fn write_source_window_evidence(
             format_optional_u32_hex(entry.update_mask),
             bits,
             format_optional_usize(entry.bit_delta),
+            source_span,
+            format_optional_usize(entry.source_bit_delta),
             entry.claim_family,
             format_rewrite_bit_slice_evidence(entry.source_bits),
             format_source_window_ledger_evidence(
@@ -34231,8 +34263,9 @@ fn format_item_handoff_sequence_row(
         .bit_end
         .map(|bit_end| format!("{}..{bit_end}", row.bit_start))
         .unwrap_or_else(|| format!("{}..unclaimed", row.bit_start));
+    let source_span = format_optional_bit_span(row.source_bit_start, row.source_bit_end);
     format!(
-        "{}..{} opcode={} marker={} object_id={} update_mask={} role={} bits={} bit_delta={} claim={} source_bits={} ledger={}",
+        "{}..{} opcode={} marker={} object_id={} update_mask={} role={} bits={} bit_delta={} source_span={} source_delta={} claim={} source_bits={} ledger={}",
         row.offset,
         row.record_end,
         format_live_object_byte(row.opcode),
@@ -34242,6 +34275,8 @@ fn format_item_handoff_sequence_row(
         row.role().as_str(),
         bits,
         format_optional_usize(row.bit_delta),
+        source_span,
+        format_optional_usize(row.source_bit_delta),
         row.claim_family,
         format_rewrite_bit_slice_evidence(row.source_bits),
         format_source_window_ledger_evidence(
@@ -34330,6 +34365,11 @@ fn format_optional_usize(value: Option<usize>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_bit_span(start: usize, end: Option<usize>) -> String {
+    end.map(|end| format!("{start}..{end}"))
+        .unwrap_or_else(|| format!("{start}..unclaimed"))
 }
 
 fn format_optional_isize(value: Option<isize>) -> String {
