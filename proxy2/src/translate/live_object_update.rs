@@ -8356,6 +8356,20 @@ mod diagnostic_tests {
             summary.exact_placeable_update_identity_resolved_by_position_output_equivalence, 0,
             "the malformed duplicate must not be counted as an output-equivalent candidate"
         );
+        assert_eq!(
+            summary.exact_placeable_update_base_identity_source_blocked_resolved_targets, 1,
+            "the compatible row should be counted as a source-blocked base identity resolved by P/05 proof"
+        );
+        assert_eq!(
+            summary.exact_placeable_update_base_identity_source_blocked_position_targets, 1,
+            "the source-blocked base row should be paired with exact update-position proof"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets,
+            0,
+            "the source-blocked base row must not be classified as output-equivalent position proof"
+        );
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
         assert_eq!(
@@ -14111,6 +14125,14 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_base_identity_source_blocked_appearance_rewrites: u32,
     pub exact_placeable_update_base_identity_source_blocked_orientation_rewrites: u32,
     pub exact_placeable_update_base_identity_source_blocked_state_rewrites: u32,
+    pub exact_placeable_add_base_identity_source_blocked_resolved_targets: u32,
+    pub exact_placeable_add_base_identity_source_blocked_fixed_field_targets: u32,
+    pub exact_placeable_add_base_identity_source_blocked_position_targets: u32,
+    pub exact_placeable_add_base_identity_source_blocked_add_output_equivalence_targets: u32,
+    pub exact_placeable_update_base_identity_source_blocked_resolved_targets: u32,
+    pub exact_placeable_update_base_identity_source_blocked_position_targets: u32,
+    pub exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets:
+        u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence: u32,
@@ -22800,6 +22822,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     &claim,
                 );
                 record_exact_placeable_reconciliation_target(&mut summary, b'A', target);
+                record_exact_placeable_base_identity_source_blocked_selection(
+                    &mut summary,
+                    b'A',
+                    base_identity_source_blocked,
+                    selection,
+                    false,
+                );
                 record_exact_placeable_identity_blocked_module_custom_rows(
                     &mut summary,
                     b'A',
@@ -23279,6 +23308,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     base_target,
                 );
                 record_exact_placeable_reconciliation_target(&mut summary, b'U', selection.target);
+                record_exact_placeable_base_identity_source_blocked_selection(
+                    &mut summary,
+                    b'U',
+                    base_identity_source_blocked,
+                    selection,
+                    update_position_output_equivalence,
+                );
                 if selection.identity_resolved_by_position {
                     summary.exact_placeable_update_identity_resolved_by_position = summary
                         .exact_placeable_update_identity_resolved_by_position
@@ -23603,6 +23639,71 @@ fn placeable_static_target_source_provenance_blocked(
     conflict.source_incompatible_static_rows != 0
         || conflict.source_read_mismatch_static_rows != 0
         || conflict.source_fragment_owned_static_rows != 0
+}
+
+fn record_exact_placeable_base_identity_source_blocked_selection(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    opcode: u8,
+    base_identity_source_blocked: bool,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    update_position_output_equivalence: bool,
+) {
+    if !base_identity_source_blocked
+        || !matches!(
+            selection.target,
+            AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
+        )
+    {
+        return;
+    }
+
+    match opcode {
+        b'A' => {
+            summary.exact_placeable_add_base_identity_source_blocked_resolved_targets = summary
+                .exact_placeable_add_base_identity_source_blocked_resolved_targets
+                .saturating_add(1);
+            if selection.identity_resolved_by_fixed_fields {
+                summary.exact_placeable_add_base_identity_source_blocked_fixed_field_targets =
+                    summary
+                        .exact_placeable_add_base_identity_source_blocked_fixed_field_targets
+                        .saturating_add(1);
+            }
+            if selection.identity_resolved_by_following_position
+                || selection.identity_resolved_by_preceding_position
+                || selection.identity_resolved_by_surrounding_position
+            {
+                summary.exact_placeable_add_base_identity_source_blocked_position_targets = summary
+                    .exact_placeable_add_base_identity_source_blocked_position_targets
+                    .saturating_add(1);
+            }
+            if selection.identity_resolved_by_add_output_equivalence {
+                summary
+                    .exact_placeable_add_base_identity_source_blocked_add_output_equivalence_targets =
+                    summary
+                        .exact_placeable_add_base_identity_source_blocked_add_output_equivalence_targets
+                        .saturating_add(1);
+            }
+        }
+        b'U' => {
+            summary.exact_placeable_update_base_identity_source_blocked_resolved_targets = summary
+                .exact_placeable_update_base_identity_source_blocked_resolved_targets
+                .saturating_add(1);
+            if selection.identity_resolved_by_position {
+                summary.exact_placeable_update_base_identity_source_blocked_position_targets =
+                    summary
+                        .exact_placeable_update_base_identity_source_blocked_position_targets
+                        .saturating_add(1);
+                if update_position_output_equivalence {
+                    summary
+                        .exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets =
+                        summary
+                            .exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets
+                            .saturating_add(1);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -29427,6 +29528,8 @@ fn trace_exact_placeable_reconciliation_summary(
         || summary.exact_placeable_update_base_identity_source_blocked_appearance_rewrites != 0
         || summary.exact_placeable_update_base_identity_source_blocked_orientation_rewrites != 0
         || summary.exact_placeable_update_base_identity_source_blocked_state_rewrites != 0
+        || summary.exact_placeable_add_base_identity_source_blocked_resolved_targets != 0
+        || summary.exact_placeable_update_base_identity_source_blocked_resolved_targets != 0
     {
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
@@ -29459,6 +29562,20 @@ fn trace_exact_placeable_reconciliation_summary(
                 summary.exact_placeable_update_base_identity_source_blocked_orientation_rewrites,
             update_base_identity_source_blocked_state_rewrites =
                 summary.exact_placeable_update_base_identity_source_blocked_state_rewrites,
+            add_base_identity_source_blocked_resolved_targets =
+                summary.exact_placeable_add_base_identity_source_blocked_resolved_targets,
+            add_base_identity_source_blocked_fixed_field_targets =
+                summary.exact_placeable_add_base_identity_source_blocked_fixed_field_targets,
+            add_base_identity_source_blocked_position_targets =
+                summary.exact_placeable_add_base_identity_source_blocked_position_targets,
+            add_base_identity_source_blocked_add_output_equivalence_targets = summary
+                .exact_placeable_add_base_identity_source_blocked_add_output_equivalence_targets,
+            update_base_identity_source_blocked_resolved_targets =
+                summary.exact_placeable_update_base_identity_source_blocked_resolved_targets,
+            update_base_identity_source_blocked_position_targets =
+                summary.exact_placeable_update_base_identity_source_blocked_position_targets,
+            update_base_identity_source_blocked_position_output_equivalence_targets = summary
+                .exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets,
             "server->client exact live-object placeable base identity provenance blockers"
         );
     }
