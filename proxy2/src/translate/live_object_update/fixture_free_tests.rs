@@ -5837,13 +5837,10 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         "handoff evidence should identify the compact U/10 -> A/6 -> U/6 sequence"
     );
     assert!(!handoff.sequence_claimable_handoff());
-    assert_eq!(
-        handoff.sequence_handoff_blocker(),
-        "unowned-emitted-source-gap"
-    );
+    assert_eq!(handoff.sequence_handoff_blocker(), "focus-row-prefix");
     assert_eq!(
         handoff.source_decision(),
-        super::LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
+        super::LiveObjectUpdateItemHandoffSourceDecision::BlockedFocusRowPrefix,
         "compact sequence evidence must still reject the shifted cursor until a source owner is proven"
     );
     assert_eq!(

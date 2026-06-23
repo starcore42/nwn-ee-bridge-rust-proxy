@@ -4343,6 +4343,43 @@ mod diagnostic_tests {
             blocked,
             LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap
         );
+        let focus_prefix_residue = live_object_item_handoff_sequence_residue(
+            exact_context,
+            focus.source_bits.bit_start,
+            focus.source_bits.bit_start + 2,
+            focus.bit_start + 2,
+            2,
+            2,
+            LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
+            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
+        )
+        .expect("bounded compact handoff should retain residue evidence");
+        assert_eq!(
+            focus_prefix_residue.origin,
+            LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix
+        );
+        let focus_prefix_blocked =
+            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
+                exact_contract,
+                LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
+                Some(focus_prefix_residue),
+            );
+        assert_eq!(
+            focus_prefix_blocked,
+            LiveObjectUpdateItemHandoffSourceDecision::BlockedFocusRowPrefix
+        );
+        assert!(!focus_prefix_blocked.claimable_handoff());
+        assert_eq!(focus_prefix_blocked.as_str(), "blocked-focus-row-prefix");
+        assert_eq!(focus_prefix_blocked.handoff_blocker(), "focus-row-prefix");
+        assert_eq!(
+            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
+                exact_contract,
+                LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+                Some(focus_prefix_residue),
+            ),
+            LiveObjectUpdateItemHandoffSourceDecision::ClaimableContiguousTail,
+            "a residue annotation must not override a genuinely contiguous source cursor"
+        );
 
         let direct_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: None,
@@ -14626,6 +14663,7 @@ pub enum LiveObjectUpdateItemHandoffSourceDecision {
     UnclassifiedSequence,
     UnclassifiedSourceContract,
     ClaimableContiguousTail,
+    BlockedFocusRowPrefix,
     BlockedNoLedger,
     BlockedBeforeLedgerRow,
     BlockedInsidePreviousRow,
@@ -14686,6 +14724,14 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
         source_contract: LiveObjectUpdateItemHandoffSourceContract,
         source_owner: LiveObjectUpdateItemCursorSourceOwner,
     ) -> Self {
+        Self::from_source_contract_source_owner_and_residue(source_contract, source_owner, None)
+    }
+
+    pub fn from_source_contract_source_owner_and_residue(
+        source_contract: LiveObjectUpdateItemHandoffSourceContract,
+        source_owner: LiveObjectUpdateItemCursorSourceOwner,
+        sequence_residue: Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence>,
+    ) -> Self {
         if !source_contract.has_bounded_source_contract() {
             return match source_contract {
                 LiveObjectUpdateItemHandoffSourceContract::NoSourceWindow => Self::NoSourceWindow,
@@ -14697,6 +14743,14 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
                     unreachable!("bounded source contract rejected by has_bounded_source_contract")
                 }
             };
+        }
+
+        if source_owner != LiveObjectUpdateItemCursorSourceOwner::ContiguousTail
+            && sequence_residue.is_some_and(|residue| {
+                residue.origin == LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix
+            })
+        {
+            return Self::BlockedFocusRowPrefix;
         }
 
         match source_owner {
@@ -14724,6 +14778,7 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
             Self::UnclassifiedSequence => "unclassified-handoff-sequence",
             Self::UnclassifiedSourceContract => "unclassified-source-contract",
             Self::ClaimableContiguousTail => "claimable-contiguous-tail",
+            Self::BlockedFocusRowPrefix => "blocked-focus-row-prefix",
             Self::BlockedNoLedger => "blocked-no-ledger",
             Self::BlockedBeforeLedgerRow => "blocked-before-ledger-row",
             Self::BlockedInsidePreviousRow => "blocked-inside-previous-row",
@@ -14743,6 +14798,7 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
             Self::NoSourceWindow => "no-source-window",
             Self::UnclassifiedSequence => "unclassified-handoff-sequence",
             Self::UnclassifiedSourceContract => "unclassified-source-contract",
+            Self::BlockedFocusRowPrefix => "focus-row-prefix",
             Self::BlockedNoLedger => "no-ledger",
             Self::BlockedBeforeLedgerRow => "before-ledger-row",
             Self::BlockedInsidePreviousRow => "inside-previous-row",
@@ -31173,11 +31229,6 @@ impl LiveObjectItemUpdateCursorFailure {
         );
         let source_contract =
             live_object_item_handoff_source_contract(sequence_kind, sequence_context);
-        let source_decision =
-            LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_and_source_owner(
-                source_contract,
-                neighbor.source_owner,
-            );
         let sequence_residue = live_object_item_handoff_sequence_residue(
             sequence_context,
             neighbor.source_gap_bit_start,
@@ -31187,6 +31238,11 @@ impl LiveObjectItemUpdateCursorFailure {
             neighbor.emitted_gap_bits,
             neighbor.gap_origin,
             neighbor.source_owner,
+        );
+        let source_decision = LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
+            source_contract,
+            neighbor.source_owner,
+            sequence_residue,
         );
 
         LiveObjectUpdateItemHandoffEvidence {
