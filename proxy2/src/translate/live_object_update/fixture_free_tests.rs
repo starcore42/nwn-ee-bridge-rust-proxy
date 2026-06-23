@@ -5792,12 +5792,12 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         .failure
         .expect("failed no-map handoff should preserve the typed U/6 cursor failure");
     assert_eq!(
-        failure.reason, "item-update-cursor-failed-before-valid-neighbor-unowned-gap",
-        "failed no-map handoff should classify the unowned +2 U/6 neighbor for quarantine"
+        failure.reason, "item-update-cursor-failed-before-valid-neighbor-focus-row-prefix",
+        "failed no-map handoff should classify the +2 U/6 neighbor as a focus-row-prefix blocker"
     );
     assert_eq!(
         failure.kind,
-        super::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
+        super::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborFocusRowPrefix
     );
     assert_eq!(
         failure.item_update_neighbor_gap_origin,

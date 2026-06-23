@@ -4148,6 +4148,9 @@ mod diagnostic_tests {
             ledger.item_update_cursor_failure_kind_with_unowned_neighbor(
                 cursor_after_row,
                 Some(unowned_neighbor),
+                None,
+                0,
+                live.len(),
             ),
             LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
         );
@@ -4155,6 +4158,9 @@ mod diagnostic_tests {
             ledger.item_update_cursor_failure_kind_with_unowned_neighbor(
                 CNW_FRAGMENT_HEADER_BITS + 6,
                 Some(unowned_neighbor),
+                None,
+                0,
+                live.len(),
             ),
             LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorInsideLedgerRow,
             "a validating neighbor must not hide that the inherited cursor overlaps the prior row"
@@ -14503,6 +14509,7 @@ pub enum LiveObjectUpdateRewriteFailureKind {
     ItemUpdateCursorAfterLedgerHandoff,
     ItemUpdateCursorAfterUnownedLedgerGap,
     ItemUpdateCursorBeforeValidNeighborUnownedGap,
+    ItemUpdateCursorBeforeValidNeighborFocusRowPrefix,
 }
 
 impl LiveObjectUpdateRewriteFailureKind {
@@ -14519,6 +14526,9 @@ impl LiveObjectUpdateRewriteFailureKind {
             }
             Self::ItemUpdateCursorBeforeValidNeighborUnownedGap => {
                 "item-update-cursor-failed-before-valid-neighbor-unowned-gap"
+            }
+            Self::ItemUpdateCursorBeforeValidNeighborFocusRowPrefix => {
+                "item-update-cursor-failed-before-valid-neighbor-focus-row-prefix"
             }
         }
     }
@@ -21531,10 +21541,21 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     bit_cursor,
                     &rewrite_bit_ledger,
                 );
+                let source_window = live_object_source_window_evidence(
+                    &live_bytes,
+                    offset,
+                    record_end,
+                    &fragment_bits,
+                    bit_cursor,
+                    &rewrite_bit_ledger,
+                );
                 let kind = rewrite_bit_ledger
                     .item_update_cursor_failure_kind_with_unowned_neighbor(
                         bit_cursor,
                         unowned_neighbor,
+                        source_window,
+                        offset,
+                        record_end,
                     );
                 let reason = kind.as_str();
                 trace_item_update_source_window(
@@ -21574,14 +21595,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                     unowned_neighbor,
                     contiguous_tail: rewrite_bit_ledger
                         .contiguous_tail_evidence(&fragment_bits, bit_cursor),
-                    source_window: live_object_source_window_evidence(
-                        &live_bytes,
-                        offset,
-                        record_end,
-                        &fragment_bits,
-                        bit_cursor,
-                        &rewrite_bit_ledger,
-                    ),
+                    source_window,
                 };
                 *rewrite_failure = Some(failure.into_rewrite_failure());
                 fatal_item_update_cursor_failure = Some(failure);
@@ -21894,8 +21908,16 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 .orientation_vector
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
+            let handoff_source_decision = live_object_item_handoff_classification(
+                failure.source_window,
+                failure.offset,
+                failure.record_end,
+                neighbor,
+            )
+            .source_decision
+            .as_str();
             eprintln!(
-                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_mask={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={}",
+                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_mask={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={} handoff_source_decision={}",
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
@@ -21925,6 +21947,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 neighbor.previous_family,
                 neighbor.gap_origin.as_str(),
                 neighbor.source_owner.as_str(),
+                handoff_source_decision,
             );
         }
         trace_update_rewrite_cursor_unreliable(
@@ -30877,11 +30900,26 @@ impl LiveObjectRewriteBitLedger {
         &self,
         cursor: usize,
         unowned_neighbor: Option<LiveObjectItemUpdateUnownedNeighbor>,
+        source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+        focus_offset: usize,
+        focus_record_end: usize,
     ) -> LiveObjectUpdateRewriteFailureKind {
         let kind = self.item_update_cursor_failure_kind(cursor);
         if unowned_neighbor.is_some()
             && kind == LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorAfterLedgerHandoff
         {
+            if unowned_neighbor.map(|neighbor| {
+                live_object_item_handoff_classification(
+                    source_window,
+                    focus_offset,
+                    focus_record_end,
+                    neighbor,
+                )
+                .source_decision
+            }) == Some(LiveObjectUpdateItemHandoffSourceDecision::BlockedFocusRowPrefix)
+            {
+                return LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborFocusRowPrefix;
+            }
             LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
         } else {
             kind
@@ -31236,13 +31274,6 @@ impl LiveObjectItemUpdateCursorFailure {
         self,
         neighbor: LiveObjectItemUpdateUnownedNeighbor,
     ) -> LiveObjectUpdateItemHandoffEvidence {
-        let sequence_kind = live_object_item_handoff_sequence_kind(
-            self.source_window,
-            self.offset,
-            self.record_end,
-            neighbor.previous_offset,
-            neighbor.previous_record_end,
-        );
         let focus_entry = self.source_window.and_then(|source_window| {
             source_window
                 .entries
@@ -31256,29 +31287,11 @@ impl LiveObjectItemUpdateCursorFailure {
                         && entry.marker == ITEM_OBJECT_TYPE
                 })
         });
-        let sequence_context = live_object_item_handoff_sequence_context(
+        let classification = live_object_item_handoff_classification(
             self.source_window,
             self.offset,
             self.record_end,
-            neighbor.previous_offset,
-            neighbor.previous_record_end,
-        );
-        let source_contract =
-            live_object_item_handoff_source_contract(sequence_kind, sequence_context);
-        let sequence_residue = live_object_item_handoff_sequence_residue(
-            sequence_context,
-            neighbor.source_gap_bit_start,
-            neighbor.source_gap_bit_end,
-            neighbor.bit_start,
-            neighbor.source_gap_bits,
-            neighbor.emitted_gap_bits,
-            neighbor.gap_origin,
-            neighbor.source_owner,
-        );
-        let source_decision = LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
-            source_contract,
-            neighbor.source_owner,
-            sequence_residue,
+            neighbor,
         );
 
         LiveObjectUpdateItemHandoffEvidence {
@@ -31308,13 +31321,22 @@ impl LiveObjectItemUpdateCursorFailure {
             source_gap_bit_start: neighbor.source_gap_bit_start,
             source_gap_bit_end: neighbor.source_gap_bit_end,
             source_gap_values: neighbor.source_gap_values,
-            sequence_kind,
-            source_contract,
-            source_decision,
-            sequence_context,
-            sequence_residue,
+            sequence_kind: classification.sequence_kind,
+            source_contract: classification.source_contract,
+            source_decision: classification.source_decision,
+            sequence_context: classification.sequence_context,
+            sequence_residue: classification.sequence_residue,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveObjectItemHandoffClassification {
+    sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
+    sequence_context: LiveObjectUpdateItemHandoffSequenceContext,
+    source_contract: LiveObjectUpdateItemHandoffSourceContract,
+    sequence_residue: Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence>,
+    source_decision: LiveObjectUpdateItemHandoffSourceDecision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31855,6 +31877,53 @@ fn live_object_source_window_evidence(
         neighbors_retained: neighbor_claims.len().saturating_sub(neighbor_retain_start),
         neighbors,
     })
+}
+
+fn live_object_item_handoff_classification(
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+    focus_offset: usize,
+    focus_record_end: usize,
+    neighbor: LiveObjectItemUpdateUnownedNeighbor,
+) -> LiveObjectItemHandoffClassification {
+    let sequence_kind = live_object_item_handoff_sequence_kind(
+        source_window,
+        focus_offset,
+        focus_record_end,
+        neighbor.previous_offset,
+        neighbor.previous_record_end,
+    );
+    let sequence_context = live_object_item_handoff_sequence_context(
+        source_window,
+        focus_offset,
+        focus_record_end,
+        neighbor.previous_offset,
+        neighbor.previous_record_end,
+    );
+    let source_contract = live_object_item_handoff_source_contract(sequence_kind, sequence_context);
+    let sequence_residue = live_object_item_handoff_sequence_residue(
+        sequence_context,
+        neighbor.source_gap_bit_start,
+        neighbor.source_gap_bit_end,
+        neighbor.bit_start,
+        neighbor.source_gap_bits,
+        neighbor.emitted_gap_bits,
+        neighbor.gap_origin,
+        neighbor.source_owner,
+    );
+    let source_decision =
+        LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
+            source_contract,
+            neighbor.source_owner,
+            sequence_residue,
+        );
+
+    LiveObjectItemHandoffClassification {
+        sequence_kind,
+        sequence_context,
+        source_contract,
+        sequence_residue,
+        source_decision,
+    }
 }
 
 fn live_object_item_handoff_sequence_kind(

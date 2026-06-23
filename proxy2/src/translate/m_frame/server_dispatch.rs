@@ -4554,7 +4554,7 @@ mod tests {
         );
         assert_eq!(
             rewrite.quarantine_reason,
-            Some("item-update-cursor-failed-before-valid-neighbor-unowned-gap"),
+            Some("item-update-cursor-failed-before-valid-neighbor-focus-row-prefix"),
             "dispatcher should preserve the bounded U/6 ledger failure reason"
         );
         let failure = rewrite
@@ -4562,7 +4562,7 @@ mod tests {
             .expect("dispatcher should retain the bounded live-object U/6 failure evidence");
         assert_eq!(
             failure.kind,
-            crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborUnownedGap
+            crate::translate::live_object_update::LiveObjectUpdateRewriteFailureKind::ItemUpdateCursorBeforeValidNeighborFocusRowPrefix
         );
         let evidence = failure
             .item_update_cursor_evidence
