@@ -5835,6 +5835,34 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         super::LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate,
         "compact source evidence should require the exact tail9 U/10 source/emitted width contract"
     );
+    let residue = handoff
+        .sequence_residue()
+        .expect("compact handoff evidence should summarize the source/emitted residue");
+    assert_eq!(
+        residue.origin,
+        super::LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix,
+        "the +2 validating cursor starts inside the failed U/6 row, not between proven rows"
+    );
+    assert_eq!(
+        residue.pre_focus_source_bits,
+        super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
+        "compact tail9 plus no-map A/6 owns exactly thirteen source bits before U/6"
+    );
+    assert_eq!(
+        residue.pre_focus_emitted_bits,
+        super::COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS + 6,
+        "compact tail9 plus no-map A/6 emits nineteen EE-facing bits before U/6"
+    );
+    assert_eq!(
+        residue.pre_focus_emitted_source_delta, 6,
+        "the bounded prefix delta should be fully explained before the U/6 row"
+    );
+    assert_eq!(residue.focus_emitted_cursor, failure.bit_cursor);
+    assert_eq!(residue.candidate_emitted_cursor, failure.bit_cursor + 2);
+    assert_eq!(residue.focus_source_cursor, handoff.source_gap_bit_start);
+    assert_eq!(residue.candidate_source_cursor, handoff.source_gap_bit_end);
+    assert_eq!(residue.source_gap_bits, 2);
+    assert_eq!(residue.emitted_gap_bits, 2);
     let sequence_context = handoff.sequence_context();
     let carrier_row = sequence_context
         .carrier_row

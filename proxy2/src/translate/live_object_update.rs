@@ -2629,6 +2629,7 @@ mod diagnostic_tests {
                     source_decision:
                         LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap,
                     sequence_context: LiveObjectUpdateItemHandoffSequenceContext::default(),
+                    sequence_residue: None,
                 }),
                 contiguous_tail: Some(contiguous_tail),
                 source_window: Some(source_window),
@@ -2664,6 +2665,7 @@ mod diagnostic_tests {
         assert!(report.contains("item_handoff_sequence_carrier=none"));
         assert!(report.contains("item_handoff_sequence_previous=none"));
         assert!(report.contains("item_handoff_sequence_focus=none"));
+        assert!(report.contains("item_handoff_sequence_residue=none"));
         assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
@@ -14049,6 +14051,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub source_contract: LiveObjectUpdateItemHandoffSourceContract,
     pub source_decision: LiveObjectUpdateItemHandoffSourceDecision,
     pub sequence_context: LiveObjectUpdateItemHandoffSequenceContext,
+    pub sequence_residue: Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -14056,6 +14059,24 @@ pub struct LiveObjectUpdateItemHandoffSequenceContext {
     pub carrier_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
     pub previous_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
     pub focus_row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffSequenceResidueEvidence {
+    pub origin: LiveObjectUpdateItemHandoffSequenceResidueOrigin,
+    pub pre_focus_source_bit_start: usize,
+    pub pre_focus_source_bit_end: usize,
+    pub pre_focus_source_bits: usize,
+    pub pre_focus_emitted_bit_start: usize,
+    pub pre_focus_emitted_bit_end: usize,
+    pub pre_focus_emitted_bits: usize,
+    pub pre_focus_emitted_source_delta: isize,
+    pub focus_source_cursor: usize,
+    pub focus_emitted_cursor: usize,
+    pub candidate_source_cursor: usize,
+    pub candidate_emitted_cursor: usize,
+    pub source_gap_bits: usize,
+    pub emitted_gap_bits: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14357,6 +14378,27 @@ impl LiveObjectUpdateItemHandoffSourceContract {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSequenceResidueOrigin {
+    Contiguous,
+    FocusRowPrefix,
+    InsidePreviousRow,
+    UnownedBetweenRows,
+    Unclassified,
+}
+
+impl LiveObjectUpdateItemHandoffSequenceResidueOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Contiguous => "contiguous",
+            Self::FocusRowPrefix => "focus-row-prefix",
+            Self::InsidePreviousRow => "inside-previous-row",
+            Self::UnownedBetweenRows => "unowned-between-rows",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateItemHandoffSourceDecision {
     NoSourceWindow,
     UnclassifiedSequence,
@@ -14508,6 +14550,10 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn sequence_context(&self) -> LiveObjectUpdateItemHandoffSequenceContext {
         self.sequence_context
+    }
+
+    pub fn sequence_residue(&self) -> Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence> {
+        self.sequence_residue
     }
 }
 
@@ -30906,6 +30952,16 @@ impl LiveObjectItemUpdateCursorFailure {
                 source_contract,
                 neighbor.source_owner,
             );
+        let sequence_residue = live_object_item_handoff_sequence_residue(
+            sequence_context,
+            neighbor.source_gap_bit_start,
+            neighbor.source_gap_bit_end,
+            neighbor.bit_start,
+            neighbor.source_gap_bits,
+            neighbor.emitted_gap_bits,
+            neighbor.gap_origin,
+            neighbor.source_owner,
+        );
 
         LiveObjectUpdateItemHandoffEvidence {
             previous_offset: neighbor.previous_offset,
@@ -30936,6 +30992,7 @@ impl LiveObjectItemUpdateCursorFailure {
             source_contract,
             source_decision,
             sequence_context,
+            sequence_residue,
         }
     }
 }
@@ -31571,6 +31628,98 @@ fn live_object_item_handoff_sequence_context(
         carrier_row,
         previous_row,
         focus_row: Some(live_object_item_handoff_sequence_row(focus)),
+    }
+}
+
+fn live_object_item_handoff_sequence_residue(
+    context: LiveObjectUpdateItemHandoffSequenceContext,
+    source_gap_bit_start: usize,
+    source_gap_bit_end: usize,
+    candidate_emitted_cursor: usize,
+    source_gap_bits: usize,
+    emitted_gap_bits: usize,
+    gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+    source_owner: LiveObjectUpdateItemCursorSourceOwner,
+) -> Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence> {
+    if !live_object_item_handoff_context_has_bounded_item_create_to_update(context) {
+        return None;
+    }
+
+    let previous = context.previous_row?;
+    let focus = context.focus_row?;
+    let first = context.carrier_row.unwrap_or(previous);
+    let pre_focus_source_bit_start = first.source_bits.bit_start;
+    let pre_focus_source_bit_end = focus.source_bits.bit_start;
+    let pre_focus_source_bits = pre_focus_source_bit_end.checked_sub(pre_focus_source_bit_start)?;
+    let pre_focus_emitted_bit_start = first.bit_start;
+    let pre_focus_emitted_bit_end = focus.bit_start;
+    let pre_focus_emitted_bits =
+        pre_focus_emitted_bit_end.checked_sub(pre_focus_emitted_bit_start)?;
+    let pre_focus_emitted_source_delta =
+        signed_bit_delta(pre_focus_emitted_bits, pre_focus_source_bits);
+    debug_assert_eq!(source_gap_bit_start, pre_focus_source_bit_end);
+
+    Some(LiveObjectUpdateItemHandoffSequenceResidueEvidence {
+        origin: live_object_item_handoff_sequence_residue_origin(
+            source_gap_bits,
+            emitted_gap_bits,
+            gap_origin,
+            source_owner,
+        ),
+        pre_focus_source_bit_start,
+        pre_focus_source_bit_end,
+        pre_focus_source_bits,
+        pre_focus_emitted_bit_start,
+        pre_focus_emitted_bit_end,
+        pre_focus_emitted_bits,
+        pre_focus_emitted_source_delta,
+        focus_source_cursor: pre_focus_source_bit_end,
+        focus_emitted_cursor: pre_focus_emitted_bit_end,
+        candidate_source_cursor: source_gap_bit_end,
+        candidate_emitted_cursor,
+        source_gap_bits,
+        emitted_gap_bits,
+    })
+}
+
+fn live_object_item_handoff_sequence_residue_origin(
+    source_gap_bits: usize,
+    emitted_gap_bits: usize,
+    gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+    source_owner: LiveObjectUpdateItemCursorSourceOwner,
+) -> LiveObjectUpdateItemHandoffSequenceResidueOrigin {
+    if source_gap_bits == 0 && emitted_gap_bits == 0 {
+        return LiveObjectUpdateItemHandoffSequenceResidueOrigin::Contiguous;
+    }
+    if matches!(
+        gap_origin,
+        LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
+            | LiveObjectUpdateItemCursorGapOrigin::PartialFocusPositionBits
+            | LiveObjectUpdateItemCursorGapOrigin::FocusOrientationSelector
+            | LiveObjectUpdateItemCursorGapOrigin::PartialFocusOrientationSelector
+            | LiveObjectUpdateItemCursorGapOrigin::FocusOrientationVectorPrefixBits
+            | LiveObjectUpdateItemCursorGapOrigin::FocusOrientationScalarPrefixBits
+            | LiveObjectUpdateItemCursorGapOrigin::FocusStatePrefixBits
+            | LiveObjectUpdateItemCursorGapOrigin::FocusNameOrLocstringPrefixBits
+    ) {
+        return LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix;
+    }
+    match source_owner {
+        LiveObjectUpdateItemCursorSourceOwner::InsidePreviousRow => {
+            LiveObjectUpdateItemHandoffSequenceResidueOrigin::InsidePreviousRow
+        }
+        LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedGap
+        | LiveObjectUpdateItemCursorSourceOwner::UnownedSourceGap
+        | LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap => {
+            LiveObjectUpdateItemHandoffSequenceResidueOrigin::UnownedBetweenRows
+        }
+        LiveObjectUpdateItemCursorSourceOwner::ContiguousTail => {
+            LiveObjectUpdateItemHandoffSequenceResidueOrigin::Contiguous
+        }
+        LiveObjectUpdateItemCursorSourceOwner::NoLedger
+        | LiveObjectUpdateItemCursorSourceOwner::BeforeLedgerRow => {
+            LiveObjectUpdateItemHandoffSequenceResidueOrigin::Unclassified
+        }
     }
 }
 
@@ -32917,6 +33066,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.source_decision.handoff_blocker()
             );
             write_item_handoff_sequence_context(&mut out, handoff.sequence_context);
+            write_item_handoff_sequence_residue(&mut out, handoff.sequence_residue);
             let _ = writeln!(
                 &mut out,
                 "item_handoff_emitted_gap=bits={} range={}..{} values={}",
@@ -33118,6 +33268,37 @@ fn write_item_handoff_sequence_context(
         out,
         "item_handoff_sequence_focus={}",
         format_item_handoff_sequence_row(context.focus_row)
+    );
+}
+
+fn write_item_handoff_sequence_residue(
+    out: &mut String,
+    residue: Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(residue) = residue else {
+        let _ = writeln!(out, "item_handoff_sequence_residue=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "item_handoff_sequence_residue=origin={} pre_focus_source={}..{} bits={} pre_focus_emitted={}..{} bits={} emitted_source_delta={} focus_source_cursor={} focus_emitted_cursor={} candidate_source_cursor={} candidate_emitted_cursor={} source_gap_bits={} emitted_gap_bits={}",
+        residue.origin.as_str(),
+        residue.pre_focus_source_bit_start,
+        residue.pre_focus_source_bit_end,
+        residue.pre_focus_source_bits,
+        residue.pre_focus_emitted_bit_start,
+        residue.pre_focus_emitted_bit_end,
+        residue.pre_focus_emitted_bits,
+        residue.pre_focus_emitted_source_delta,
+        residue.focus_source_cursor,
+        residue.focus_emitted_cursor,
+        residue.candidate_source_cursor,
+        residue.candidate_emitted_cursor,
+        residue.source_gap_bits,
+        residue.emitted_gap_bits,
     );
 }
 
