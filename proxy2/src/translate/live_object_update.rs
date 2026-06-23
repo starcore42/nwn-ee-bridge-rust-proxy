@@ -2609,6 +2609,17 @@ mod diagnostic_tests {
                         &[false, true, true, true, false, true],
                     )),
                     focus_prefix,
+                    prefix_source_replay: Some(
+                        LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence {
+                            verdict: LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapMatchesFocusPrefix,
+                            prefix_bits: 2,
+                            source_gap_bits: 2,
+                            emitted_gap_bits: 2,
+                            compared_bits: 2,
+                            matched_bits: 2,
+                            first_mismatch_bit: None,
+                        },
+                    ),
                     focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence {
                         source_owner: LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
                         ledger_relation: "after-previous-emitted-end",
@@ -2694,6 +2705,9 @@ mod diagnostic_tests {
         ));
         assert!(report.contains(
             "item_handoff_focus_prefix_stage[0]=stage=position-residuals bits=28..30 consumed_bits=2 field_bits=2 values=28..30:01"
+        ));
+        assert!(report.contains(
+            "item_handoff_prefix_source_replay=verdict=source-gap-matches-focus-prefix prefix_bits=2 source_gap_bits=2 emitted_gap_bits=2 compared_bits=2 matched_bits=2 first_mismatch=none"
         ));
         assert!(report.contains(
             "item_handoff_valid_neighbor=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false gap_origin=focus-position-bits"
@@ -14230,6 +14244,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub focus_update_mask: Option<u32>,
     pub focus_source_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     pub focus_prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
+    pub prefix_source_replay: Option<LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence>,
     pub focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence,
     pub neighbor_delta: isize,
     pub neighbor_bit_start: usize,
@@ -14301,6 +14316,40 @@ pub struct LiveObjectUpdateItemHandoffFocusPrefixStageEvidence {
     pub consumed_bits: usize,
     pub field_bits: usize,
     pub bits: LiveObjectUpdateRewriteBitSliceEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence {
+    pub verdict: LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict,
+    pub prefix_bits: usize,
+    pub source_gap_bits: usize,
+    pub emitted_gap_bits: usize,
+    pub compared_bits: usize,
+    pub matched_bits: usize,
+    pub first_mismatch_bit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict {
+    EmptyFocusPrefix,
+    SourceGapMatchesFocusPrefix,
+    SourceGapDiffersFromFocusPrefix,
+    SourceGapShorterThanFocusPrefix,
+    SourceGapLongerThanFocusPrefix,
+    PreviewIncomplete,
+}
+
+impl LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyFocusPrefix => "empty-focus-prefix",
+            Self::SourceGapMatchesFocusPrefix => "source-gap-matches-focus-prefix",
+            Self::SourceGapDiffersFromFocusPrefix => "source-gap-differs-from-focus-prefix",
+            Self::SourceGapShorterThanFocusPrefix => "source-gap-shorter-than-focus-prefix",
+            Self::SourceGapLongerThanFocusPrefix => "source-gap-longer-than-focus-prefix",
+            Self::PreviewIncomplete => "preview-incomplete",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21916,8 +21965,16 @@ fn rewrite_update_records_payload_with_area_context_inner(
             )
             .source_decision
             .as_str();
+            let prefix_source_replay = live_object_item_handoff_prefix_source_replay(
+                neighbor.focus_prefix,
+                neighbor.source_gap_values,
+                neighbor.source_gap_bits,
+                neighbor.emitted_gap_bits,
+            )
+            .map(|replay| replay.verdict.as_str())
+            .unwrap_or("none");
             eprintln!(
-                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_mask={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={} handoff_source_decision={}",
+                "live-object item update cursor failure unowned neighbor: focus_offset={} focus_record_end={} focus_bit_cursor={} reason={} focus_failure_stage={} focus_failure_mask={} focus_failure_read_cursor={} focus_failure_bit_cursor={} focus_failure_orientation_vector={} delta={} bit_start={} bit_end={} read_end={} translated_mask=0x{:08X} orientation_vector={} emitted_gap_bits={} emitted_gap={}..{} source_gap_bits={} source_gap={}..{} previous={}..{}:{} gap_origin={} source_owner={} handoff_source_decision={} prefix_source_replay={}",
                 failure.offset,
                 failure.record_end,
                 failure.bit_cursor,
@@ -21948,6 +22005,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 neighbor.gap_origin.as_str(),
                 neighbor.source_owner.as_str(),
                 handoff_source_decision,
+                prefix_source_replay,
             );
         }
         trace_update_rewrite_cursor_unreliable(
@@ -31304,6 +31362,12 @@ impl LiveObjectItemUpdateCursorFailure {
             focus_update_mask: focus_entry.and_then(|entry| entry.update_mask),
             focus_source_bits: focus_entry.map(|entry| entry.source_bits),
             focus_prefix: neighbor.focus_prefix,
+            prefix_source_replay: live_object_item_handoff_prefix_source_replay(
+                neighbor.focus_prefix,
+                neighbor.source_gap_values,
+                neighbor.source_gap_bits,
+                neighbor.emitted_gap_bits,
+            ),
             focus_cursor_ledger: self.focus_cursor_ledger,
             neighbor_delta: neighbor.delta,
             neighbor_bit_start: neighbor.bit_start,
@@ -32912,6 +32976,110 @@ fn live_object_item_handoff_push_focus_prefix_stage(
     *stages_retained += 1;
 }
 
+fn live_object_item_handoff_prefix_source_replay(
+    focus_prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
+    source_gap_values: LiveObjectUpdateRewriteBitSliceEvidence,
+    source_gap_bits: usize,
+    emitted_gap_bits: usize,
+) -> Option<LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence> {
+    let focus_prefix = focus_prefix?;
+    let prefix_bits = focus_prefix.prefix_bits;
+    if prefix_bits == 0 {
+        return Some(LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence {
+            verdict: LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::EmptyFocusPrefix,
+            prefix_bits,
+            source_gap_bits,
+            emitted_gap_bits,
+            compared_bits: 0,
+            matched_bits: 0,
+            first_mismatch_bit: None,
+        });
+    }
+
+    let prefix_retained_bits = live_object_item_handoff_focus_prefix_retained_bits(focus_prefix);
+    let source_retained_bits = source_gap_values.bits_retained.min(source_gap_bits);
+    let compared_bits = prefix_bits
+        .min(source_gap_bits)
+        .min(prefix_retained_bits)
+        .min(source_retained_bits);
+    let mut matched_bits = 0;
+    let mut first_mismatch_bit = None;
+    for index in 0..compared_bits {
+        let Some(prefix_bit) = live_object_item_handoff_focus_prefix_bit(focus_prefix, index)
+        else {
+            first_mismatch_bit = Some(index);
+            break;
+        };
+        let Some(source_bit) = source_gap_values.bits.get(index).and_then(|bit| *bit) else {
+            first_mismatch_bit = Some(index);
+            break;
+        };
+        if source_bit == prefix_bit {
+            matched_bits += 1;
+        } else {
+            first_mismatch_bit = Some(index);
+            break;
+        }
+    }
+
+    let verdict = if first_mismatch_bit.is_some() {
+        LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapDiffersFromFocusPrefix
+    } else if prefix_retained_bits < prefix_bits.min(source_gap_bits)
+        || source_retained_bits < prefix_bits.min(source_gap_bits)
+    {
+        LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::PreviewIncomplete
+    } else if source_gap_bits < prefix_bits {
+        LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapShorterThanFocusPrefix
+    } else if source_gap_bits > prefix_bits {
+        LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapLongerThanFocusPrefix
+    } else {
+        LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapMatchesFocusPrefix
+    };
+
+    Some(LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence {
+        verdict,
+        prefix_bits,
+        source_gap_bits,
+        emitted_gap_bits,
+        compared_bits,
+        matched_bits,
+        first_mismatch_bit,
+    })
+}
+
+fn live_object_item_handoff_focus_prefix_retained_bits(
+    focus_prefix: LiveObjectUpdateItemHandoffFocusPrefixEvidence,
+) -> usize {
+    focus_prefix
+        .stages
+        .iter()
+        .flatten()
+        .map(|stage| stage.consumed_bits.min(stage.bits.bits_retained))
+        .sum::<usize>()
+        .min(focus_prefix.prefix_bits)
+}
+
+fn live_object_item_handoff_focus_prefix_bit(
+    focus_prefix: LiveObjectUpdateItemHandoffFocusPrefixEvidence,
+    bit_index: usize,
+) -> Option<bool> {
+    if bit_index >= focus_prefix.prefix_bits {
+        return None;
+    }
+    let mut remaining = bit_index;
+    for stage in focus_prefix.stages.iter().flatten() {
+        if remaining < stage.consumed_bits {
+            return if remaining < stage.bits.bits_retained {
+                stage.bits.bits.get(remaining).and_then(|bit| *bit)
+            } else {
+                None
+            };
+        }
+        remaining = remaining.saturating_sub(stage.consumed_bits);
+    }
+    None
+}
+
 fn nearest_unowned_item_update_neighbor_cursor(
     live_bytes: &[u8],
     offset: usize,
@@ -33717,6 +33885,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 Some(handoff.focus_cursor_ledger),
             );
             write_item_handoff_focus_prefix(&mut out, handoff.focus_prefix);
+            write_item_handoff_prefix_source_replay(&mut out, handoff.prefix_source_replay);
             let _ = writeln!(
                 &mut out,
                 "item_handoff_valid_neighbor=delta={} bits={}..{} read_end={} translated_mask=0x{:08X} orientation_vector={} gap_origin={}",
@@ -34026,6 +34195,30 @@ fn write_item_handoff_focus_prefix(
             format_rewrite_bit_slice_evidence(stage.bits)
         );
     }
+}
+
+fn write_item_handoff_prefix_source_replay(
+    out: &mut String,
+    replay: Option<LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(replay) = replay else {
+        let _ = writeln!(out, "item_handoff_prefix_source_replay=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "item_handoff_prefix_source_replay=verdict={} prefix_bits={} source_gap_bits={} emitted_gap_bits={} compared_bits={} matched_bits={} first_mismatch={}",
+        replay.verdict.as_str(),
+        replay.prefix_bits,
+        replay.source_gap_bits,
+        replay.emitted_gap_bits,
+        replay.compared_bits,
+        replay.matched_bits,
+        format_optional_usize(replay.first_mismatch_bit)
+    );
 }
 
 fn format_item_handoff_sequence_row(

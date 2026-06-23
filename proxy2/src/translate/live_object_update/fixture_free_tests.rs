@@ -5870,6 +5870,20 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         residue.blocks_decompile_owned_focus_prefix(),
         "source policy should block only because the skipped prefix is a typed focus-row field"
     );
+    let prefix_replay = handoff
+        .prefix_source_replay
+        .expect("handoff evidence should compare the source gap against the focus prefix");
+    assert_eq!(
+        prefix_replay.verdict,
+        super::LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict::SourceGapMatchesFocusPrefix,
+        "the unowned source gap should exactly replay the decompile-owned U/6 prefix it skips"
+    );
+    assert_eq!(prefix_replay.prefix_bits, 2);
+    assert_eq!(prefix_replay.source_gap_bits, 2);
+    assert_eq!(prefix_replay.emitted_gap_bits, 2);
+    assert_eq!(prefix_replay.compared_bits, 2);
+    assert_eq!(prefix_replay.matched_bits, 2);
+    assert_eq!(prefix_replay.first_mismatch_bit, None);
     assert_eq!(
         residue.pre_focus_source_bits,
         super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
