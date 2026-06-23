@@ -14336,6 +14336,63 @@ pub struct LiveObjectUpdateItemHandoffSequenceResidueEvidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffBoundaryAuditEvidence {
+    pub status: LiveObjectUpdateItemHandoffBoundaryStatus,
+    pub source_relation: LiveObjectUpdateItemHandoffBoundaryRelation,
+    pub emitted_relation: LiveObjectUpdateItemHandoffBoundaryRelation,
+    pub focus_source_cursor: usize,
+    pub candidate_source_cursor: usize,
+    pub focus_emitted_cursor: usize,
+    pub candidate_emitted_cursor: usize,
+    pub source_gap_bits: usize,
+    pub emitted_gap_bits: usize,
+    pub emitted_source_delta: isize,
+    pub blocks_focus_prefix: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffBoundaryStatus {
+    AtFocusRowStart,
+    FocusRowPrefix,
+    InsidePreviousRow,
+    UnownedBetweenRows,
+    Unclassified,
+}
+
+impl LiveObjectUpdateItemHandoffBoundaryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtFocusRowStart => "at-focus-row-start",
+            Self::FocusRowPrefix => "focus-row-prefix",
+            Self::InsidePreviousRow => "inside-previous-row",
+            Self::UnownedBetweenRows => "unowned-between-rows",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffBoundaryRelation {
+    AtFocusRowStart,
+    InsideFocusRowPrefix,
+    InsidePreviousRow,
+    UnownedBeforeFocusRow,
+    Unclassified,
+}
+
+impl LiveObjectUpdateItemHandoffBoundaryRelation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtFocusRowStart => "at-focus-row-start",
+            Self::InsideFocusRowPrefix => "inside-focus-row-prefix",
+            Self::InsidePreviousRow => "inside-previous-row",
+            Self::UnownedBeforeFocusRow => "unowned-before-focus-row",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateItemHandoffFocusPrefixEvidence {
     pub translated_mask: u32,
     pub orientation_vector: Option<bool>,
@@ -15006,6 +15063,10 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn focus_cursor_ledger(&self) -> LiveObjectUpdateItemCursorLedgerEvidence {
         self.focus_cursor_ledger
+    }
+
+    pub fn boundary_audit(&self) -> Option<LiveObjectUpdateItemHandoffBoundaryAuditEvidence> {
+        live_object_item_handoff_boundary_audit(*self)
     }
 }
 
@@ -32294,6 +32355,78 @@ fn live_object_item_handoff_sequence_residue_origin(
     }
 }
 
+fn live_object_item_handoff_boundary_audit(
+    handoff: LiveObjectUpdateItemHandoffEvidence,
+) -> Option<LiveObjectUpdateItemHandoffBoundaryAuditEvidence> {
+    let residue = handoff.sequence_residue?;
+    Some(LiveObjectUpdateItemHandoffBoundaryAuditEvidence {
+        status: live_object_item_handoff_boundary_status(residue.origin),
+        source_relation: live_object_item_handoff_boundary_relation(
+            residue.source_gap_bits,
+            residue.origin,
+        ),
+        emitted_relation: live_object_item_handoff_boundary_relation(
+            residue.emitted_gap_bits,
+            residue.origin,
+        ),
+        focus_source_cursor: residue.focus_source_cursor,
+        candidate_source_cursor: residue.candidate_source_cursor,
+        focus_emitted_cursor: residue.focus_emitted_cursor,
+        candidate_emitted_cursor: residue.candidate_emitted_cursor,
+        source_gap_bits: residue.source_gap_bits,
+        emitted_gap_bits: residue.emitted_gap_bits,
+        emitted_source_delta: residue.pre_focus_emitted_source_delta,
+        blocks_focus_prefix: residue.blocks_decompile_owned_focus_prefix(),
+    })
+}
+
+fn live_object_item_handoff_boundary_status(
+    origin: LiveObjectUpdateItemHandoffSequenceResidueOrigin,
+) -> LiveObjectUpdateItemHandoffBoundaryStatus {
+    match origin {
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::Contiguous => {
+            LiveObjectUpdateItemHandoffBoundaryStatus::AtFocusRowStart
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix => {
+            LiveObjectUpdateItemHandoffBoundaryStatus::FocusRowPrefix
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::InsidePreviousRow => {
+            LiveObjectUpdateItemHandoffBoundaryStatus::InsidePreviousRow
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::UnownedBetweenRows => {
+            LiveObjectUpdateItemHandoffBoundaryStatus::UnownedBetweenRows
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::Unclassified => {
+            LiveObjectUpdateItemHandoffBoundaryStatus::Unclassified
+        }
+    }
+}
+
+fn live_object_item_handoff_boundary_relation(
+    gap_bits: usize,
+    origin: LiveObjectUpdateItemHandoffSequenceResidueOrigin,
+) -> LiveObjectUpdateItemHandoffBoundaryRelation {
+    if gap_bits == 0 {
+        return LiveObjectUpdateItemHandoffBoundaryRelation::AtFocusRowStart;
+    }
+
+    match origin {
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix => {
+            LiveObjectUpdateItemHandoffBoundaryRelation::InsideFocusRowPrefix
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::InsidePreviousRow => {
+            LiveObjectUpdateItemHandoffBoundaryRelation::InsidePreviousRow
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::UnownedBetweenRows => {
+            LiveObjectUpdateItemHandoffBoundaryRelation::UnownedBeforeFocusRow
+        }
+        LiveObjectUpdateItemHandoffSequenceResidueOrigin::Contiguous
+        | LiveObjectUpdateItemHandoffSequenceResidueOrigin::Unclassified => {
+            LiveObjectUpdateItemHandoffBoundaryRelation::Unclassified
+        }
+    }
+}
+
 fn live_object_item_handoff_source_contract(
     sequence_kind: LiveObjectUpdateItemHandoffSequenceKind,
     context: LiveObjectUpdateItemHandoffSequenceContext,
@@ -34130,6 +34263,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.source_decision.claimable_handoff(),
                 handoff.source_decision.handoff_blocker()
             );
+            write_item_handoff_boundary_audit(&mut out, handoff.boundary_audit());
             write_item_handoff_sequence_context(&mut out, handoff.sequence_context);
             write_item_handoff_sequence_residue(&mut out, handoff.sequence_residue);
             let _ = writeln!(
@@ -34239,6 +34373,7 @@ fn format_live_object_update_item_handoff_source_capture(
             handoff.source_owner.as_str().to_string(),
         ],
     );
+    write_item_handoff_boundary_audit_capture(&mut out, handoff.boundary_audit());
     write_item_cursor_ledger_capture(&mut out, "focus_cursor", handoff.focus_cursor_ledger);
     write_item_handoff_sequence_row_capture(
         &mut out,
@@ -34392,6 +34527,47 @@ fn write_item_cursor_ledger_capture(
                 ledger.ledger_previous_record_end,
                 ledger.ledger_previous_family,
             ),
+        ],
+    );
+}
+
+fn write_item_handoff_boundary_audit_capture(
+    out: &mut String,
+    audit: Option<LiveObjectUpdateItemHandoffBoundaryAuditEvidence>,
+) {
+    let Some(audit) = audit else {
+        write_tsv_line(out, &["boundary_audit".to_string(), "none".to_string()]);
+        return;
+    };
+
+    write_tsv_line(
+        out,
+        &[
+            "boundary_audit".to_string(),
+            "status".to_string(),
+            audit.status.as_str().to_string(),
+            "source_relation".to_string(),
+            audit.source_relation.as_str().to_string(),
+            "emitted_relation".to_string(),
+            audit.emitted_relation.as_str().to_string(),
+            "source_cursor".to_string(),
+            format!(
+                "{}..{}",
+                audit.focus_source_cursor, audit.candidate_source_cursor
+            ),
+            "emitted_cursor".to_string(),
+            format!(
+                "{}..{}",
+                audit.focus_emitted_cursor, audit.candidate_emitted_cursor
+            ),
+            "source_gap_bits".to_string(),
+            audit.source_gap_bits.to_string(),
+            "emitted_gap_bits".to_string(),
+            audit.emitted_gap_bits.to_string(),
+            "emitted_source_delta".to_string(),
+            audit.emitted_source_delta.to_string(),
+            "blocks_focus_prefix".to_string(),
+            audit.blocks_focus_prefix.to_string(),
         ],
     );
 }
@@ -34992,6 +35168,34 @@ fn write_item_handoff_sequence_context(
         out,
         "item_handoff_sequence_focus={}",
         format_item_handoff_sequence_row(context.focus_row)
+    );
+}
+
+fn write_item_handoff_boundary_audit(
+    out: &mut String,
+    audit: Option<LiveObjectUpdateItemHandoffBoundaryAuditEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(audit) = audit else {
+        let _ = writeln!(out, "item_handoff_boundary_audit=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "item_handoff_boundary_audit=status={} source_relation={} emitted_relation={} source_cursor={}..{} emitted_cursor={}..{} source_gap_bits={} emitted_gap_bits={} emitted_source_delta={} blocks_focus_prefix={}",
+        audit.status.as_str(),
+        audit.source_relation.as_str(),
+        audit.emitted_relation.as_str(),
+        audit.focus_source_cursor,
+        audit.candidate_source_cursor,
+        audit.focus_emitted_cursor,
+        audit.candidate_emitted_cursor,
+        audit.source_gap_bits,
+        audit.emitted_gap_bits,
+        audit.emitted_source_delta,
+        audit.blocks_focus_prefix
     );
 }
 

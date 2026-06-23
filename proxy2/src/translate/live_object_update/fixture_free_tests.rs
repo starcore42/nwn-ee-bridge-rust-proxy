@@ -5851,6 +5851,89 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     let residue = handoff
         .sequence_residue()
         .expect("compact handoff evidence should summarize the source/emitted residue");
+    let boundary_audit = handoff
+        .boundary_audit()
+        .expect("compact residue should produce a typed boundary audit");
+    assert_eq!(
+        boundary_audit.status,
+        super::LiveObjectUpdateItemHandoffBoundaryStatus::FocusRowPrefix,
+        "the validating +2 cursor must be reported as an inside-U/6 prefix, not a row boundary"
+    );
+    assert_eq!(
+        boundary_audit.source_relation,
+        super::LiveObjectUpdateItemHandoffBoundaryRelation::InsideFocusRowPrefix
+    );
+    assert_eq!(
+        boundary_audit.emitted_relation,
+        super::LiveObjectUpdateItemHandoffBoundaryRelation::InsideFocusRowPrefix
+    );
+    assert_eq!(
+        boundary_audit.focus_source_cursor,
+        handoff.source_gap_bit_start
+    );
+    assert_eq!(
+        boundary_audit.candidate_source_cursor,
+        handoff.source_gap_bit_end
+    );
+    assert_eq!(boundary_audit.focus_emitted_cursor, failure.bit_cursor);
+    assert_eq!(
+        boundary_audit.candidate_emitted_cursor,
+        failure.bit_cursor + 2
+    );
+    assert_eq!(boundary_audit.source_gap_bits, 2);
+    assert_eq!(boundary_audit.emitted_gap_bits, 2);
+    assert_eq!(boundary_audit.emitted_source_delta, 6);
+    assert!(
+        boundary_audit.blocks_focus_prefix,
+        "the boundary audit should expose the decompile-owned U/6 prefix blocker"
+    );
+    let report = super::format_live_object_update_rewrite_failure_evidence(
+        "fixture-free",
+        &payload,
+        failure,
+    );
+    let expected_report_audit = format!(
+        "item_handoff_boundary_audit=status={} source_relation={} emitted_relation={} source_cursor={}..{} emitted_cursor={}..{} source_gap_bits={} emitted_gap_bits={} emitted_source_delta={} blocks_focus_prefix={}",
+        boundary_audit.status.as_str(),
+        boundary_audit.source_relation.as_str(),
+        boundary_audit.emitted_relation.as_str(),
+        boundary_audit.focus_source_cursor,
+        boundary_audit.candidate_source_cursor,
+        boundary_audit.focus_emitted_cursor,
+        boundary_audit.candidate_emitted_cursor,
+        boundary_audit.source_gap_bits,
+        boundary_audit.emitted_gap_bits,
+        boundary_audit.emitted_source_delta,
+        boundary_audit.blocks_focus_prefix
+    );
+    assert!(
+        report.contains(&expected_report_audit),
+        "failure report should serialize the typed boundary audit: {expected_report_audit}"
+    );
+    let handoff_capture = super::format_live_object_update_item_handoff_source_capture(
+        "fixture-free",
+        &payload,
+        failure,
+    )
+    .expect("item handoff failure should emit a structured source capture");
+    let expected_capture_audit = format!(
+        "boundary_audit\tstatus\t{}\tsource_relation\t{}\temitted_relation\t{}\tsource_cursor\t{}..{}\temitted_cursor\t{}..{}\tsource_gap_bits\t{}\temitted_gap_bits\t{}\temitted_source_delta\t{}\tblocks_focus_prefix\t{}",
+        boundary_audit.status.as_str(),
+        boundary_audit.source_relation.as_str(),
+        boundary_audit.emitted_relation.as_str(),
+        boundary_audit.focus_source_cursor,
+        boundary_audit.candidate_source_cursor,
+        boundary_audit.focus_emitted_cursor,
+        boundary_audit.candidate_emitted_cursor,
+        boundary_audit.source_gap_bits,
+        boundary_audit.emitted_gap_bits,
+        boundary_audit.emitted_source_delta,
+        boundary_audit.blocks_focus_prefix
+    );
+    assert!(
+        handoff_capture.contains(&expected_capture_audit),
+        "handoff capture should serialize the typed boundary audit: {expected_capture_audit}"
+    );
     assert_eq!(
         residue.origin,
         super::LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix,
