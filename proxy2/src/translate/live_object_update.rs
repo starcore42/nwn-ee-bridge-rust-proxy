@@ -38,9 +38,9 @@ use std::{
 };
 
 use crate::translate::area::{
-    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextRowKind,
-    AreaPlaceableContextState, AreaPlaceableContextStaticReconciliationTarget,
-    AreaPlaceableObservedState, format_area_placeable_module_state,
+    AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
+    AreaPlaceableContextStaticReconciliationTarget, AreaPlaceableObservedState,
+    format_area_placeable_module_state,
 };
 
 mod add;
@@ -8252,6 +8252,103 @@ mod diagnostic_tests {
         let claim =
             claim_payload_if_verified(&payload).expect("rewritten duplicate-output U/09 claims");
         assert_eq!(claim.mentions.len(), 1);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0022,
+                resref: None,
+            })
+        );
+        assert_eq!(
+            claim.mentions[0].placeable_state,
+            Some(LiveObjectPlaceableState {
+                lockable: Some(true),
+                locked: Some(false),
+                ..LiveObjectPlaceableState::default()
+            })
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_position_ignores_invalid_area_row_source_provenance() {
+        let object_id = 0x8000_3604u32;
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+        let mask =
+            LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        fragment_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked conflicts with the compatible module row.
+            false, // lockable conflicts with the compatible module row.
+            false, // visual payload.
+            false, // EE-only terminal state BOOL.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("position+appearance+state U/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            lockable: true,
+            locked: false,
+            ..crate::translate::area::AreaPlaceableContextState::default()
+        };
+        let compatible_row = crate::translate::area::AreaPlaceableContextRow {
+            object_id,
+            appearance: 0x0022,
+            x: 10.0,
+            y: 20.0,
+            z: 0.0,
+            object_id_confidence:
+                crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+            module_state: Some(module_state),
+            ..crate::translate::area::AreaPlaceableContextRow::default()
+        };
+        let malformed_duplicate = crate::translate::area::AreaPlaceableContextRow {
+            appearance: 0x0033,
+            source_read_start: 200,
+            source_read_end: 201,
+            source_fragment_bit_start: 14,
+            source_fragment_bit_end: 15,
+            ..compatible_row.clone()
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![malformed_duplicate, compatible_row],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("invalid explicit P/04 row provenance should be ignored for U/09 selection");
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.update_records_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position, 1,
+            "only the compatible static row should remain as position proof"
+        );
+        assert_eq!(
+            summary.exact_placeable_update_identity_resolved_by_position_output_equivalence, 0,
+            "the malformed duplicate must not be counted as an output-equivalent candidate"
+        );
+        assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
+        assert_eq!(summary.exact_placeable_update_state_rewritten, 1);
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("rewritten provenance-filtered U/09 should exact-claim");
         assert_eq!(
             claim.mentions[0].placeable_appearance,
             Some(LiveObjectPlaceableAppearance {
@@ -24679,24 +24776,26 @@ fn module_static_rows_matching_raw_position<'a>(
     let mut output_unavailable_rows = 0u32;
     let mut output_divergent = false;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static || matched.row.module_state.is_none()
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if row.module_state.is_none() {
             continue;
         }
-        if !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw) {
+        if !module_static_row_matches_raw_position(row, x_raw, y_raw, z_raw) {
             continue;
         }
         rows = rows.saturating_add(1);
         if selected.is_none() {
-            selected = Some(matched.row);
+            selected = Some(row);
         }
-        if is_custom_placeable_appearance(matched.row.appearance) {
+        if is_custom_placeable_appearance(row.appearance) {
             module_custom_rows = module_custom_rows.saturating_add(1);
-            if matched.row.module_template_resref.is_none() {
+            if row.module_template_resref.is_none() {
                 missing_resref_rows = missing_resref_rows.saturating_add(1);
             }
         }
-        if let Some(output) = placeable_add_output_for_module_static_row(matched.row) {
+        if let Some(output) = placeable_add_output_for_module_static_row(row) {
             if let Some(existing_output) = selected_output {
                 if existing_output != output {
                     output_divergent = true;
@@ -24737,21 +24836,23 @@ fn equivalent_module_static_row_matching_raw_position_output<'a>(
     let mut selected_output = None;
     let mut rows = 0u32;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || matched.row.module_state.is_none()
-            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if row.module_state.is_none()
+            || !module_static_row_matches_raw_position(row, x_raw, y_raw, z_raw)
         {
             continue;
         }
         rows = rows.saturating_add(1);
-        let output = placeable_add_output_for_module_static_row(matched.row)?;
+        let output = placeable_add_output_for_module_static_row(row)?;
         if let Some(existing_output) = selected_output {
             if existing_output != output {
                 return None;
             }
         } else {
             selected_output = Some(output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
     }
 
@@ -24774,22 +24875,24 @@ fn module_static_row_matching_raw_position_custom_carrier<'a>(
     let mut selected_output = None;
     let mut rows = 0u32;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
-            || matched.row.appearance != appearance
-            || matched.row.module_template_resref != Some(resref)
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !module_static_row_matches_raw_position(row, x_raw, y_raw, z_raw)
+            || row.appearance != appearance
+            || row.module_template_resref != Some(resref)
         {
             continue;
         }
         rows = rows.saturating_add(1);
-        let output = placeable_add_output_for_module_static_row(matched.row)?;
+        let output = placeable_add_output_for_module_static_row(row)?;
         if let Some(existing_output) = selected_output {
             if existing_output != output {
                 return None;
             }
         } else {
             selected_output = Some(output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
     }
 
@@ -24816,28 +24919,30 @@ fn equivalent_module_static_row_matching_raw_position_fixed_output<'a>(
     let mut output_missing_template_resref_rows = 0u32;
     let mut output_divergent = false;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || matched.row.module_state.is_none()
-            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if row.module_state.is_none()
+            || !module_static_row_matches_raw_position(row, x_raw, y_raw, z_raw)
         {
             continue;
         }
         rows = rows.saturating_add(1);
-        let fixed_output = placeable_add_fixed_output_for_module_static_row(matched.row)?;
+        let fixed_output = placeable_add_fixed_output_for_module_static_row(row)?;
         if let Some(existing_fixed_output) = selected_fixed_output {
             if existing_fixed_output != fixed_output {
                 return None;
             }
         } else {
             selected_fixed_output = Some(fixed_output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
 
-        if placeable_add_output_missing_template_resref_for_module_static_row(matched.row) {
+        if placeable_add_output_missing_template_resref_for_module_static_row(row) {
             output_missing_template_resref_rows =
                 output_missing_template_resref_rows.saturating_add(1);
         }
-        if let Some(output) = placeable_add_output_for_module_static_row(matched.row) {
+        if let Some(output) = placeable_add_output_for_module_static_row(row) {
             if let Some(existing_output) = selected_output {
                 if existing_output != output {
                     output_divergent = true;
@@ -25087,14 +25192,16 @@ fn equivalent_module_static_row_matching_raw_position_update_output<'a>(
     let mut selected_output = None;
     let mut rows = 0u32;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || matched.row.module_state.is_none()
-            || !module_static_row_matches_raw_position(matched.row, x_raw, y_raw, z_raw)
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if row.module_state.is_none()
+            || !module_static_row_matches_raw_position(row, x_raw, y_raw, z_raw)
         {
             continue;
         }
         rows = rows.saturating_add(1);
-        let output = output_for_row(matched.row)?;
+        let output = output_for_row(row)?;
         if !output.has_non_position_output() {
             return None;
         }
@@ -25104,7 +25211,7 @@ fn equivalent_module_static_row_matching_raw_position_update_output<'a>(
             }
         } else {
             selected_output = Some(output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
     }
 
@@ -25271,14 +25378,14 @@ fn identity_blocked_module_custom_rows_for_object(
     });
     let mut summary = IdentityBlockedModuleCustomRows::default();
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || matched.row.module_state.is_none()
-            || !is_custom_placeable_appearance(matched.row.appearance)
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if row.module_state.is_none() || !is_custom_placeable_appearance(row.appearance) {
             continue;
         }
         summary.rows = summary.rows.saturating_add(1);
-        if matched.row.module_template_resref.is_none() {
+        if row.module_template_resref.is_none() {
             summary.missing_resref_rows = summary.missing_resref_rows.saturating_add(1);
         }
     }
@@ -25353,15 +25460,16 @@ fn identity_blocked_add_fixed_field_match_for_object(
     let mut module_custom_rows = 0u32;
     let mut missing_resref_rows = 0u32;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !module_static_row_matches_verified_add_fixed_fields(row, claim) {
             continue;
         }
         matched_rows = matched_rows.saturating_add(1);
-        if is_custom_placeable_appearance(matched.row.appearance) {
+        if is_custom_placeable_appearance(row.appearance) {
             module_custom_rows = module_custom_rows.saturating_add(1);
-            if matched.row.module_template_resref.is_none() {
+            if row.module_template_resref.is_none() {
                 missing_resref_rows = missing_resref_rows.saturating_add(1);
             }
         }
@@ -25395,12 +25503,13 @@ fn unique_module_static_row_matching_verified_add_fixed_fields<'a>(
     });
     let mut selected = None;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !module_static_row_matches_verified_add_fixed_fields(row, claim) {
             continue;
         }
-        if selected.replace(matched.row).is_some() {
+        if selected.replace(row).is_some() {
             return None;
         }
     }
@@ -25423,23 +25532,24 @@ fn equivalent_module_static_row_matching_verified_add_fixed_field_custom_carrier
     let mut selected = None;
     let mut selected_carrier = None;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !module_static_row_matches_verified_add_fixed_fields(row, claim) {
             continue;
         }
         matched_rows = matched_rows.saturating_add(1);
-        if !is_custom_placeable_appearance(matched.row.appearance) {
+        if !is_custom_placeable_appearance(row.appearance) {
             return None;
         }
-        let carrier = (matched.row.appearance, matched.row.module_template_resref?);
+        let carrier = (row.appearance, row.module_template_resref?);
         if let Some(existing_carrier) = selected_carrier {
             if existing_carrier != carrier {
                 return None;
             }
         } else {
             selected_carrier = Some(carrier);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
     }
 
@@ -25465,27 +25575,28 @@ fn equivalent_module_static_row_matching_verified_add_fixed_field_fixed_output<'
     let mut output_missing_template_resref_rows = 0u32;
     let mut output_divergent = false;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static
-            || !module_static_row_matches_verified_add_fixed_fields(matched.row, claim)
-        {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !module_static_row_matches_verified_add_fixed_fields(row, claim) {
             continue;
         }
         matched_rows = matched_rows.saturating_add(1);
-        let fixed_output = placeable_add_fixed_output_for_module_static_row(matched.row)?;
+        let fixed_output = placeable_add_fixed_output_for_module_static_row(row)?;
         if let Some(existing_fixed_output) = selected_fixed_output {
             if existing_fixed_output != fixed_output {
                 return None;
             }
         } else {
             selected_fixed_output = Some(fixed_output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
 
-        if placeable_add_output_missing_template_resref_for_module_static_row(matched.row) {
+        if placeable_add_output_missing_template_resref_for_module_static_row(row) {
             output_missing_template_resref_rows =
                 output_missing_template_resref_rows.saturating_add(1);
         }
-        if let Some(output) = placeable_add_output_for_module_static_row(matched.row) {
+        if let Some(output) = placeable_add_output_for_module_static_row(row) {
             if let Some(existing_output) = selected_output {
                 if existing_output != output {
                     output_divergent = true;
@@ -25536,24 +25647,24 @@ fn equivalent_module_static_row_for_verified_add_output(
     let mut selected_output = None;
     let mut static_rows = 0u32;
     for matched in overlap.rows() {
-        if matched.kind != AreaPlaceableContextRowKind::Static {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
             return None;
-        }
+        };
         if !matches!(
-            matched.row.object_id_confidence,
+            row.object_id_confidence,
             crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique
         ) {
             return None;
         }
         static_rows = static_rows.saturating_add(1);
-        let output = placeable_add_output_for_module_static_row(matched.row)?;
+        let output = placeable_add_output_for_module_static_row(row)?;
         if let Some(existing_output) = selected_output {
             if existing_output != output {
                 return None;
             }
         } else {
             selected_output = Some(output);
-            selected = Some(matched.row);
+            selected = Some(row);
         }
     }
 
