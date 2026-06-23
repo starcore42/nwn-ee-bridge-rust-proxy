@@ -4222,9 +4222,9 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
             5,
             "item-create",
-            None,
-            None,
-            None,
+            Some("item-create-rewrite"),
+            Some(1),
+            Some(0),
         );
         let focus = handoff_row(
             b'U',
@@ -4265,6 +4265,48 @@ mod diagnostic_tests {
         assert_eq!(
             blocked,
             LiveObjectUpdateItemHandoffSourceDecision::BlockedUnownedEmittedAndSourceGap
+        );
+
+        let direct_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: None,
+            previous_row: Some(previous),
+            focus_row: Some(focus),
+        };
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
+                direct_context,
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::ItemCreateToItemUpdate,
+            "a direct A/6 -> U/6 source contract requires typed item-create ledger provenance"
+        );
+
+        let unbacked_previous = handoff_row(
+            b'A',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            None,
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS,
+            Some(CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS + 6),
+            CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+            5,
+            "item-create",
+            None,
+            None,
+            None,
+        );
+        let unbacked_direct_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: None,
+            previous_row: Some(unbacked_previous),
+            focus_row: Some(focus),
+        };
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate,
+                unbacked_direct_context,
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a byte-shaped item-create row is not a bounded source contract without the production item-create ledger claim"
         );
 
         let loose_carrier = handoff_row(
@@ -4332,6 +4374,20 @@ mod diagnostic_tests {
             ),
             LiveObjectUpdateItemHandoffSourceContract::Unclassified,
             "a compact-width carrier must still have the production tail9 ledger claim"
+        );
+
+        let unbacked_previous_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: Some(carrier),
+            previous_row: Some(unbacked_previous),
+            focus_row: Some(focus),
+        };
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+                unbacked_previous_context,
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a compact handoff source contract also requires the item-create row's production ledger claim"
         );
     }
 
@@ -31742,6 +31798,13 @@ fn live_object_item_handoff_source_contract(
         return LiveObjectUpdateItemHandoffSourceContract::Unclassified;
     }
 
+    let Some(previous) = context.previous_row else {
+        return LiveObjectUpdateItemHandoffSourceContract::Unclassified;
+    };
+    if !live_object_item_handoff_row_is_rewrite_backed_item_create(previous) {
+        return LiveObjectUpdateItemHandoffSourceContract::Unclassified;
+    }
+
     if sequence_kind == LiveObjectUpdateItemHandoffSequenceKind::ItemCreateToItemUpdate {
         return LiveObjectUpdateItemHandoffSourceContract::ItemCreateToItemUpdate;
     }
@@ -31797,6 +31860,34 @@ fn live_object_item_handoff_row_is_compact_tail9_door_update(
         && row.ledger_family == Some("update-compact-tail9-rewrite")
         && ledger_emitted_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS
         && ledger_source_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS)
+}
+
+fn live_object_item_handoff_row_is_rewrite_backed_item_create(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    let Some(bit_end) = row.bit_end else {
+        return false;
+    };
+    let Some(ledger_emitted_bits) = row.ledger_emitted_bits else {
+        return false;
+    };
+    let ledger_source_delta = row
+        .ledger_bits_inserted
+        .zip(row.ledger_bits_removed)
+        .and_then(|(bits_inserted, bits_removed)| {
+            live_object_rewrite_source_delta(row.bit_start, bit_end, bits_inserted, bits_removed)
+        });
+
+    row.opcode == b'A'
+        && row.marker == ITEM_OBJECT_TYPE
+        && matches!(
+            (row.claim_family, row.ledger_family),
+            ("item-create", Some("item-create-rewrite")) | ("item-add", Some("item-add-rewrite"))
+        )
+        && row.bit_delta == Some(ledger_emitted_bits.bit_count)
+        && ledger_emitted_bits.bit_start == row.bit_start
+        && ledger_emitted_bits.bit_end == bit_end
+        && ledger_source_delta == Some(row.source_bits.bit_count)
 }
 
 fn live_object_item_handoff_row_is_bounded_item_create(
