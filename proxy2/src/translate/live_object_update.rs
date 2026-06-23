@@ -2599,6 +2599,33 @@ mod diagnostic_tests {
                         38,
                         &[false, true, true, true, false, true],
                     )),
+                    focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence {
+                        source_owner: LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+                        ledger_relation: "after-previous-emitted-end",
+                        ledger_source_relation: "after-previous-source-end",
+                        ledger_emitted_gap_bits: Some(0),
+                        ledger_emitted_gap_bit_start: Some(28),
+                        ledger_emitted_gap_bit_end: Some(28),
+                        ledger_emitted_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                            28,
+                            28,
+                            &[],
+                        )),
+                        ledger_source_gap_bits: Some(0),
+                        ledger_source_gap_bit_start: Some(22),
+                        ledger_source_gap_bit_end: Some(22),
+                        ledger_source_gap_values: Some(live_object_rewrite_bit_slice_evidence(
+                            22,
+                            22,
+                            &[],
+                        )),
+                        ledger_implied_source_cursor: Some(22),
+                        ledger_cumulative_emitted_source_delta: Some(6),
+                        ledger_source_emitted_delta_after_previous: Some(6),
+                        ledger_previous_offset: Some(16),
+                        ledger_previous_record_end: Some(51),
+                        ledger_previous_family: Some("item-create-rewrite"),
+                    },
                     neighbor_delta: 2,
                     neighbor_bit_start: 30,
                     neighbor_bit_end: 42,
@@ -2649,6 +2676,9 @@ mod diagnostic_tests {
         assert!(report.contains("gap_origin=focus-position-bits"));
         assert!(report.contains("item_handoff_previous=16..51:item-create-rewrite"));
         assert!(report.contains("item_handoff_focus=51..104 bit_cursor=28 update_mask=0xFFFFFFF3"));
+        assert!(report.contains(
+            "item_handoff_focus_cursor=source_owner=contiguous-tail claimable_handoff=true handoff_blocker=none ledger_relation=after-previous-emitted-end ledger_source_relation=after-previous-source-end ledger_emitted_gap=bits=0 range=28..28 values=28..28: ledger_source_gap=bits=0 range=22..22 values=22..22: ledger_implied_source_cursor=22 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
+        ));
         assert!(report.contains(
             "item_handoff_valid_neighbor=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false gap_origin=focus-position-bits"
         ));
@@ -14109,6 +14139,7 @@ pub struct LiveObjectUpdateItemHandoffEvidence {
     pub focus_bit_cursor: usize,
     pub focus_update_mask: Option<u32>,
     pub focus_source_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub focus_cursor_ledger: LiveObjectUpdateItemCursorLedgerEvidence,
     pub neighbor_delta: isize,
     pub neighbor_bit_start: usize,
     pub neighbor_bit_end: usize,
@@ -14661,6 +14692,10 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn sequence_residue(&self) -> Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence> {
         self.sequence_residue
+    }
+
+    pub fn focus_cursor_ledger(&self) -> LiveObjectUpdateItemCursorLedgerEvidence {
+        self.focus_cursor_ledger
     }
 }
 
@@ -31079,6 +31114,7 @@ impl LiveObjectItemUpdateCursorFailure {
             focus_bit_cursor: self.bit_cursor,
             focus_update_mask: focus_entry.and_then(|entry| entry.update_mask),
             focus_source_bits: focus_entry.map(|entry| entry.source_bits),
+            focus_cursor_ledger: self.focus_cursor_ledger,
             neighbor_delta: neighbor.delta,
             neighbor_bit_start: neighbor.bit_start,
             neighbor_bit_end: neighbor.bit_end,
@@ -33223,6 +33259,11 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.focus_record_end,
                 handoff.focus_bit_cursor,
                 focus_update_mask
+            );
+            write_item_cursor_ledger_evidence(
+                &mut out,
+                "item_handoff_focus_cursor",
+                Some(handoff.focus_cursor_ledger),
             );
             let _ = writeln!(
                 &mut out,

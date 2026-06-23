@@ -5815,6 +5815,22 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(handoff.focus_record_end, failure.record_end);
     assert_eq!(handoff.focus_bit_cursor, failure.bit_cursor);
     assert_eq!(handoff.focus_update_mask, Some(0xFFFF_FFF3));
+    let focus_cursor_ledger = handoff.focus_cursor_ledger();
+    assert_eq!(
+        focus_cursor_ledger.source_owner,
+        super::LiveObjectUpdateItemCursorSourceOwner::ContiguousTail,
+        "the inherited U/6 focus cursor is exactly handed off from the prior ledger row"
+    );
+    assert_eq!(
+        focus_cursor_ledger.ledger_implied_source_cursor,
+        Some(handoff.source_gap_bit_start),
+        "focus cursor source coordinate should land before the two disputed U/6 lead bits"
+    );
+    assert_eq!(
+        focus_cursor_ledger.ledger_source_gap_bits,
+        Some(0),
+        "the focus cursor itself has no source gap; only the shifted neighbor does"
+    );
     assert_eq!(
         handoff.sequence_kind,
         super::LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
