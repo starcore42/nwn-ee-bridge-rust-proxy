@@ -4240,6 +4240,18 @@ mod diagnostic_tests {
             None,
             None,
         );
+        assert_eq!(
+            carrier.role(),
+            LiveObjectUpdateItemHandoffSequenceRowRole::CompactTail9DoorUpdateCarrier
+        );
+        assert_eq!(
+            previous.role(),
+            LiveObjectUpdateItemHandoffSequenceRowRole::RewriteBackedItemCreate
+        );
+        assert_eq!(
+            focus.role(),
+            LiveObjectUpdateItemHandoffSequenceRowRole::FocusItemUpdate
+        );
         let exact_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: Some(carrier),
             previous_row: Some(previous),
@@ -4295,6 +4307,11 @@ mod diagnostic_tests {
             None,
             None,
         );
+        assert_eq!(
+            unbacked_previous.role(),
+            LiveObjectUpdateItemHandoffSequenceRowRole::BoundedItemCreate,
+            "unbacked item-create rows remain sequence context but not source-contract proof"
+        );
         let unbacked_direct_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: None,
             previous_row: Some(unbacked_previous),
@@ -4322,6 +4339,11 @@ mod diagnostic_tests {
             Some("update-compact-tail9-rewrite"),
             Some(6),
             Some(1),
+        );
+        assert_eq!(
+            loose_carrier.role(),
+            LiveObjectUpdateItemHandoffSequenceRowRole::BoundedDoorUpdate,
+            "broad tail9-shaped door rows remain sequence context but not compact source proof"
         );
         let loose_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: Some(loose_carrier),
@@ -14152,6 +14174,35 @@ pub struct LiveObjectUpdateItemHandoffSequenceRowEvidence {
     pub ledger_emitted_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
     pub ledger_bits_inserted: Option<usize>,
     pub ledger_bits_removed: Option<usize>,
+}
+
+impl LiveObjectUpdateItemHandoffSequenceRowEvidence {
+    pub fn role(&self) -> LiveObjectUpdateItemHandoffSequenceRowRole {
+        live_object_item_handoff_sequence_row_role(*self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSequenceRowRole {
+    CompactTail9DoorUpdateCarrier,
+    BoundedDoorUpdate,
+    RewriteBackedItemCreate,
+    BoundedItemCreate,
+    FocusItemUpdate,
+    Other,
+}
+
+impl LiveObjectUpdateItemHandoffSequenceRowRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompactTail9DoorUpdateCarrier => "compact-tail9-door-update-carrier",
+            Self::BoundedDoorUpdate => "bounded-door-update",
+            Self::RewriteBackedItemCreate => "rewrite-backed-item-create",
+            Self::BoundedItemCreate => "bounded-item-create",
+            Self::FocusItemUpdate => "focus-item-update",
+            Self::Other => "other",
+        }
+    }
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -31835,7 +31886,34 @@ fn live_object_item_handoff_context_has_bounded_item_create_to_update(
         && previous.bit_end == Some(focus.bit_start)
 }
 
+fn live_object_item_handoff_sequence_row_role(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> LiveObjectUpdateItemHandoffSequenceRowRole {
+    if live_object_item_handoff_row_matches_compact_tail9_door_update_contract(row) {
+        return LiveObjectUpdateItemHandoffSequenceRowRole::CompactTail9DoorUpdateCarrier;
+    }
+    if live_object_item_handoff_row_matches_bounded_door_update(row) {
+        return LiveObjectUpdateItemHandoffSequenceRowRole::BoundedDoorUpdate;
+    }
+    if live_object_item_handoff_row_matches_rewrite_backed_item_create_contract(row) {
+        return LiveObjectUpdateItemHandoffSequenceRowRole::RewriteBackedItemCreate;
+    }
+    if live_object_item_handoff_row_matches_bounded_item_create(row) {
+        return LiveObjectUpdateItemHandoffSequenceRowRole::BoundedItemCreate;
+    }
+    if row.opcode == b'U' && row.marker == ITEM_OBJECT_TYPE && row.bit_end.is_none() {
+        return LiveObjectUpdateItemHandoffSequenceRowRole::FocusItemUpdate;
+    }
+    LiveObjectUpdateItemHandoffSequenceRowRole::Other
+}
+
 fn live_object_item_handoff_row_is_compact_tail9_door_update(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    row.role() == LiveObjectUpdateItemHandoffSequenceRowRole::CompactTail9DoorUpdateCarrier
+}
+
+fn live_object_item_handoff_row_matches_compact_tail9_door_update_contract(
     row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
 ) -> bool {
     let Some(bit_end) = row.bit_end else {
@@ -31862,7 +31940,23 @@ fn live_object_item_handoff_row_is_compact_tail9_door_update(
         && ledger_source_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS)
 }
 
+fn live_object_item_handoff_row_matches_bounded_door_update(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    row.opcode == b'U'
+        && row.marker == DOOR_OBJECT_TYPE
+        && matches!(row.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
+        && row.bit_end.is_some()
+        && row.claim_family == "update"
+}
+
 fn live_object_item_handoff_row_is_rewrite_backed_item_create(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    row.role() == LiveObjectUpdateItemHandoffSequenceRowRole::RewriteBackedItemCreate
+}
+
+fn live_object_item_handoff_row_matches_rewrite_backed_item_create_contract(
     row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
 ) -> bool {
     let Some(bit_end) = row.bit_end else {
@@ -31891,6 +31985,16 @@ fn live_object_item_handoff_row_is_rewrite_backed_item_create(
 }
 
 fn live_object_item_handoff_row_is_bounded_item_create(
+    row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
+) -> bool {
+    matches!(
+        row.role(),
+        LiveObjectUpdateItemHandoffSequenceRowRole::RewriteBackedItemCreate
+            | LiveObjectUpdateItemHandoffSequenceRowRole::BoundedItemCreate
+    )
+}
+
+fn live_object_item_handoff_row_matches_bounded_item_create(
     row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
 ) -> bool {
     row.opcode == b'A'
@@ -31933,20 +32037,21 @@ fn live_object_item_handoff_sequence_row(
 fn live_object_source_window_entry_is_bounded_item_create(
     entry: LiveObjectUpdateSourceWindowEntryEvidence,
 ) -> bool {
-    entry.opcode == b'A'
-        && entry.marker == ITEM_OBJECT_TYPE
-        && entry.bit_end.is_some()
-        && matches!(entry.claim_family, "item-create" | "item-add")
+    matches!(
+        live_object_item_handoff_sequence_row(entry).role(),
+        LiveObjectUpdateItemHandoffSequenceRowRole::RewriteBackedItemCreate
+            | LiveObjectUpdateItemHandoffSequenceRowRole::BoundedItemCreate
+    )
 }
 
 fn live_object_source_window_entry_is_bounded_door_update(
     entry: LiveObjectUpdateSourceWindowEntryEvidence,
 ) -> bool {
-    entry.opcode == b'U'
-        && entry.marker == DOOR_OBJECT_TYPE
-        && matches!(entry.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
-        && entry.bit_end.is_some()
-        && entry.claim_family == "update"
+    matches!(
+        live_object_item_handoff_sequence_row(entry).role(),
+        LiveObjectUpdateItemHandoffSequenceRowRole::CompactTail9DoorUpdateCarrier
+            | LiveObjectUpdateItemHandoffSequenceRowRole::BoundedDoorUpdate
+    )
 }
 
 fn live_object_source_window_entries_match_object(
@@ -33404,13 +33509,14 @@ fn format_item_handoff_sequence_row(
         .map(|bit_end| format!("{}..{bit_end}", row.bit_start))
         .unwrap_or_else(|| format!("{}..unclaimed", row.bit_start));
     format!(
-        "{}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} ledger={}",
+        "{}..{} opcode={} marker={} object_id={} update_mask={} role={} bits={} bit_delta={} claim={} source_bits={} ledger={}",
         row.offset,
         row.record_end,
         format_live_object_byte(row.opcode),
         format_live_object_byte(row.marker),
         format_optional_u32_hex(row.object_id),
         format_optional_u32_hex(row.update_mask),
+        row.role().as_str(),
         bits,
         format_optional_usize(row.bit_delta),
         row.claim_family,
