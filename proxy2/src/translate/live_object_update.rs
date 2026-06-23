@@ -4452,6 +4452,98 @@ mod diagnostic_tests {
             "a residue annotation must not override a genuinely contiguous source cursor"
         );
 
+        let carrier_bit_end = carrier
+            .bit_end
+            .expect("compact tail9 carrier has an emitted span");
+        let carrier_source_bit_end = carrier
+            .source_bit_end
+            .expect("compact tail9 carrier has a source span");
+        let emitted_gap_previous = handoff_row(
+            b'A',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            None,
+            carrier_bit_end + 1,
+            Some(carrier_bit_end + 7),
+            carrier_source_bit_end,
+            5,
+            "item-create",
+            Some("item-create-rewrite"),
+            Some(1),
+            Some(0),
+        );
+        let emitted_gap_focus = handoff_row(
+            b'U',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            Some(0xFFFF_FFF3),
+            emitted_gap_previous
+                .bit_end
+                .expect("item create remains bounded"),
+            None,
+            emitted_gap_previous.source_bit_start + 5,
+            16,
+            "unclaimed",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+                LiveObjectUpdateItemHandoffSequenceContext {
+                    carrier_row: Some(carrier),
+                    previous_row: Some(emitted_gap_previous),
+                    focus_row: Some(emitted_gap_focus),
+                },
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a compact carrier with an unowned emitted gap before A/6 is not source-contract proof"
+        );
+
+        let source_gap_previous = handoff_row(
+            b'A',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            None,
+            carrier_bit_end,
+            Some(carrier_bit_end + 6),
+            carrier_source_bit_end + 1,
+            5,
+            "item-create",
+            Some("item-create-rewrite"),
+            Some(1),
+            Some(0),
+        );
+        let source_gap_focus = handoff_row(
+            b'U',
+            ITEM_OBJECT_TYPE,
+            Some(0x8000_00B8),
+            Some(0xFFFF_FFF3),
+            source_gap_previous
+                .bit_end
+                .expect("item create remains bounded"),
+            None,
+            source_gap_previous.source_bit_start + 5,
+            16,
+            "unclaimed",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+                LiveObjectUpdateItemHandoffSequenceContext {
+                    carrier_row: Some(carrier),
+                    previous_row: Some(source_gap_previous),
+                    focus_row: Some(source_gap_focus),
+                },
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a compact carrier with an unowned source gap before A/6 is not source-contract proof"
+        );
+
         let direct_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: None,
             previous_row: Some(previous),
@@ -32460,6 +32552,7 @@ fn live_object_item_handoff_source_contract(
     if context
         .carrier_row
         .is_some_and(live_object_item_handoff_row_is_compact_tail9_door_update)
+        && live_object_item_handoff_context_has_contiguous_carrier_to_item_create(context)
     {
         LiveObjectUpdateItemHandoffSourceContract::CompactTail9DoorUpdateItemCreateToItemUpdate
     } else {
@@ -32481,6 +32574,20 @@ fn live_object_item_handoff_context_has_bounded_item_create_to_update(
         && focus.marker == ITEM_OBJECT_TYPE
         && live_object_item_handoff_rows_match_object(previous, focus)
         && previous.bit_end == Some(focus.bit_start)
+}
+
+fn live_object_item_handoff_context_has_contiguous_carrier_to_item_create(
+    context: LiveObjectUpdateItemHandoffSequenceContext,
+) -> bool {
+    let Some(carrier) = context.carrier_row else {
+        return false;
+    };
+    let Some(previous) = context.previous_row else {
+        return false;
+    };
+
+    carrier.bit_end == Some(previous.bit_start)
+        && carrier.source_bit_end == Some(previous.source_bit_start)
 }
 
 fn live_object_item_handoff_sequence_row_role(
