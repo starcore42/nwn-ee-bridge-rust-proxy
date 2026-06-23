@@ -2695,6 +2695,12 @@ mod diagnostic_tests {
             &payload,
             failure,
         );
+        let handoff_capture = format_live_object_update_item_handoff_source_capture(
+            "live-object-update-records",
+            &payload,
+            failure,
+        )
+        .expect("item U/6 handoff failure should emit a source-capture artifact");
 
         assert!(report.contains("source=live-object-update-records"));
         assert!(
@@ -2754,12 +2760,30 @@ mod diagnostic_tests {
             "source_window_summary=focus=51..104 focus_row_index=1 initial_bit_cursor=22 expected_bit_cursor=28 fragment_bits=42 entries=2 retained=2 neighbors=1 retained=1"
         ));
         assert!(report.contains(
-            "source_window_entry[1]=51..104 opcode=0x55 marker=0x06 object_id=0x00000020 update_mask=0xFFFFFFF3 bits=28..unclaimed bit_delta=none claim=unclaimed source_bits=22..38:011101...+10 ledger=none bytes=51..104:55 06 20 00 00 00 F3 FF FF FF"
+            "source_window_entry[1]=51..104 opcode=0x55 marker=0x06 object_id=0x00000020 update_mask=0xFFFFFFF3 bits=28..unclaimed bit_delta=none source_span=22..unclaimed source_delta=none claim=unclaimed source_bits=22..38:011101...+10 ledger=none bytes=51..104:55 06 20 00 00 00 F3 FF FF FF"
         ));
         assert!(report.contains(
             "source_window_neighbor[0]=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false relation=inside-focus-row gap_origin=focus-position-bits source_owner=unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap ledger_relation=unowned-emitted-gap ledger_source_relation=unowned-source-gap ledger_emitted_gap=bits=2 range=28..30 values=28..30:01 ledger_source_gap=bits=2 range=22..24 values=22..24:01 ledger_implied_source_cursor=24 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
         ));
         assert!(report.contains("source_owner=unowned-emitted-source-gap"));
+        assert!(handoff_capture.contains("capture\tlive-object-item-handoff-source\tversion\t1"));
+        assert!(handoff_capture.contains(
+            "handoff\tsequence\titem-create-to-item-update\tsource_contract\titem-create-to-item-update\tsource_decision\tblocked-unowned-emitted-source-gap"
+        ));
+        assert!(handoff_capture.contains("sequence_row\tprevious\tnone"));
+        assert!(handoff_capture.contains("sequence_row\tfocus\tnone"));
+        assert!(handoff_capture.contains("source_gap\tbits\t2\trange\t22..24\tvalues\t22..24:01"));
+        assert!(
+            handoff_capture
+                .contains("focus_prefix_stage\t0\tstage\tposition-residuals\tbits\t28..30")
+        );
+        assert!(
+            handoff_capture
+                .contains("source_window_neighbor\t0\tdelta\t2\tbits\t30..42\tread_end\t104")
+        );
+        assert!(handoff_capture.contains(
+            "source_window_entry\t1\trole\tfocus-item-update\toffset\t51\trecord_end\t104"
+        ));
     }
 
     #[test]
@@ -33804,6 +33828,15 @@ pub fn dump_live_object_update_rewrite_failure_evidence(
     dir.set_file_name(format!("{base_name}.txt"));
     let report = format_live_object_update_rewrite_failure_evidence(source, payload, failure);
     let _ = std::fs::write(dir, report);
+    if let Some(handoff_capture) =
+        format_live_object_update_item_handoff_source_capture(source, payload, failure)
+    {
+        let Some(mut dir) = crate::translate::diagnostics::probe_dump_dir() else {
+            return;
+        };
+        dir.push(format!("{base_name}.handoff.tsv"));
+        let _ = std::fs::write(dir, handoff_capture);
+    }
 }
 
 fn format_live_object_update_rewrite_failure_evidence(
@@ -33989,6 +34022,623 @@ fn format_live_object_update_rewrite_failure_evidence(
     }
 
     out
+}
+
+fn format_live_object_update_item_handoff_source_capture(
+    source: &str,
+    payload: &[u8],
+    failure: LiveObjectUpdateRewriteFailure,
+) -> Option<String> {
+    let evidence = failure.item_update_cursor_evidence?;
+    let handoff = evidence.item_handoff?;
+    let mut out = String::new();
+    let gap_origin = failure
+        .item_update_neighbor_gap_origin
+        .map(|origin| origin.as_str())
+        .unwrap_or("none");
+
+    write_tsv_line(
+        &mut out,
+        &[
+            "capture".to_string(),
+            "live-object-item-handoff-source".to_string(),
+            "version".to_string(),
+            "1".to_string(),
+        ],
+    );
+    write_tsv_line(
+        &mut out,
+        &[
+            "meta".to_string(),
+            "source".to_string(),
+            source.to_string(),
+            "payload_len".to_string(),
+            payload.len().to_string(),
+            "payload_prefix".to_string(),
+            crate::packet::hex_prefix(payload, 64),
+        ],
+    );
+    write_tsv_line(
+        &mut out,
+        &[
+            "failure".to_string(),
+            "reason".to_string(),
+            failure.reason.to_string(),
+            "kind".to_string(),
+            failure.kind.as_str().to_string(),
+            "offset".to_string(),
+            failure.offset.to_string(),
+            "record_end".to_string(),
+            failure.record_end.to_string(),
+            "bit_cursor".to_string(),
+            failure.bit_cursor.to_string(),
+            "gap_origin".to_string(),
+            gap_origin.to_string(),
+        ],
+    );
+    write_tsv_line(
+        &mut out,
+        &[
+            "handoff".to_string(),
+            "sequence".to_string(),
+            handoff.sequence_kind.as_str().to_string(),
+            "source_contract".to_string(),
+            handoff.source_contract.as_str().to_string(),
+            "source_decision".to_string(),
+            handoff.source_decision.as_str().to_string(),
+            "claimable".to_string(),
+            handoff.source_decision.claimable_handoff().to_string(),
+            "blocker".to_string(),
+            handoff.source_decision.handoff_blocker().to_string(),
+            "source_owner".to_string(),
+            handoff.source_owner.as_str().to_string(),
+        ],
+    );
+    write_item_cursor_ledger_capture(&mut out, "focus_cursor", handoff.focus_cursor_ledger);
+    write_item_handoff_sequence_row_capture(
+        &mut out,
+        "carrier",
+        handoff.sequence_context.carrier_row,
+    );
+    write_item_handoff_sequence_row_capture(
+        &mut out,
+        "previous",
+        handoff.sequence_context.previous_row,
+    );
+    write_item_handoff_sequence_row_capture(&mut out, "focus", handoff.sequence_context.focus_row);
+    write_item_handoff_residue_capture(&mut out, handoff.sequence_residue);
+    write_item_handoff_prefix_capture(&mut out, handoff.focus_prefix);
+    write_item_handoff_prefix_source_replay_capture(&mut out, handoff.prefix_source_replay);
+    write_tsv_line(
+        &mut out,
+        &[
+            "valid_neighbor".to_string(),
+            "delta".to_string(),
+            handoff.neighbor_delta.to_string(),
+            "bits".to_string(),
+            format!(
+                "{}..{}",
+                handoff.neighbor_bit_start, handoff.neighbor_bit_end
+            ),
+            "read_end".to_string(),
+            handoff.neighbor_read_end.to_string(),
+            "translated_mask".to_string(),
+            format!("0x{:08X}", handoff.neighbor_translated_mask),
+            "orientation_vector".to_string(),
+            format_optional_bool(handoff.neighbor_orientation_vector),
+            "gap_origin".to_string(),
+            handoff.gap_origin.as_str().to_string(),
+        ],
+    );
+    write_tsv_line(
+        &mut out,
+        &[
+            "emitted_gap".to_string(),
+            "bits".to_string(),
+            handoff.emitted_gap_bits.to_string(),
+            "range".to_string(),
+            format!(
+                "{}..{}",
+                handoff.emitted_gap_bit_start, handoff.emitted_gap_bit_end
+            ),
+            "values".to_string(),
+            format_rewrite_bit_slice_evidence(handoff.emitted_gap_values),
+        ],
+    );
+    write_tsv_line(
+        &mut out,
+        &[
+            "source_gap".to_string(),
+            "bits".to_string(),
+            handoff.source_gap_bits.to_string(),
+            "range".to_string(),
+            format!(
+                "{}..{}",
+                handoff.source_gap_bit_start, handoff.source_gap_bit_end
+            ),
+            "values".to_string(),
+            format_rewrite_bit_slice_evidence(handoff.source_gap_values),
+        ],
+    );
+    if let Some(focus_bits) = handoff.focus_source_bits {
+        write_tsv_line(
+            &mut out,
+            &[
+                "focus_source_bits".to_string(),
+                "values".to_string(),
+                format_rewrite_bit_slice_evidence(focus_bits),
+            ],
+        );
+    } else {
+        write_tsv_line(
+            &mut out,
+            &["focus_source_bits".to_string(), "none".to_string()],
+        );
+    }
+    write_rewrite_tail_capture(&mut out, evidence.contiguous_tail);
+    write_source_window_capture(&mut out, evidence.source_window);
+
+    Some(out)
+}
+
+fn write_tsv_line(out: &mut String, fields: &[String]) {
+    for (index, field) in fields.iter().enumerate() {
+        if index != 0 {
+            out.push('\t');
+        }
+        push_tsv_field(out, field);
+    }
+    out.push('\n');
+}
+
+fn push_tsv_field(out: &mut String, field: &str) {
+    for ch in field.chars() {
+        match ch {
+            '\t' | '\r' | '\n' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn write_item_cursor_ledger_capture(
+    out: &mut String,
+    label: &str,
+    ledger: LiveObjectUpdateItemCursorLedgerEvidence,
+) {
+    write_tsv_line(
+        out,
+        &[
+            "ledger".to_string(),
+            label.to_string(),
+            "source_owner".to_string(),
+            ledger.source_owner.as_str().to_string(),
+            "claimable".to_string(),
+            ledger.source_owner.claimable_handoff().to_string(),
+            "blocker".to_string(),
+            ledger.source_owner.handoff_blocker().to_string(),
+            "emitted_relation".to_string(),
+            ledger.ledger_relation.to_string(),
+            "source_relation".to_string(),
+            ledger.ledger_source_relation.to_string(),
+            "emitted_gap".to_string(),
+            format_optional_gap(
+                ledger.ledger_emitted_gap_bits,
+                ledger.ledger_emitted_gap_bit_start,
+                ledger.ledger_emitted_gap_bit_end,
+                ledger.ledger_emitted_gap_values,
+            ),
+            "source_gap".to_string(),
+            format_optional_gap(
+                ledger.ledger_source_gap_bits,
+                ledger.ledger_source_gap_bit_start,
+                ledger.ledger_source_gap_bit_end,
+                ledger.ledger_source_gap_values,
+            ),
+            "implied_source_cursor".to_string(),
+            format_optional_usize(ledger.ledger_implied_source_cursor),
+            "cumulative_emitted_source_delta".to_string(),
+            format_optional_isize(ledger.ledger_cumulative_emitted_source_delta),
+            "source_emitted_delta_after_previous".to_string(),
+            format_optional_isize(ledger.ledger_source_emitted_delta_after_previous),
+            "previous".to_string(),
+            format_optional_previous_row(
+                ledger.ledger_previous_offset,
+                ledger.ledger_previous_record_end,
+                ledger.ledger_previous_family,
+            ),
+        ],
+    );
+}
+
+fn write_item_handoff_sequence_row_capture(
+    out: &mut String,
+    label: &str,
+    row: Option<LiveObjectUpdateItemHandoffSequenceRowEvidence>,
+) {
+    let Some(row) = row else {
+        write_tsv_line(
+            out,
+            &[
+                "sequence_row".to_string(),
+                label.to_string(),
+                "none".to_string(),
+            ],
+        );
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "sequence_row".to_string(),
+            label.to_string(),
+            "role".to_string(),
+            row.role().as_str().to_string(),
+            "offset".to_string(),
+            row.offset.to_string(),
+            "record_end".to_string(),
+            row.record_end.to_string(),
+            "opcode".to_string(),
+            format_live_object_byte(row.opcode),
+            "marker".to_string(),
+            format_live_object_byte(row.marker),
+            "object_id".to_string(),
+            format_optional_u32_hex(row.object_id),
+            "update_mask".to_string(),
+            format_optional_u32_hex(row.update_mask),
+            "bits".to_string(),
+            format_optional_bit_span(row.bit_start, row.bit_end),
+            "bit_delta".to_string(),
+            format_optional_usize(row.bit_delta),
+            "source_span".to_string(),
+            format_optional_bit_span(row.source_bit_start, row.source_bit_end),
+            "source_delta".to_string(),
+            format_optional_usize(row.source_bit_delta),
+            "claim".to_string(),
+            row.claim_family.to_string(),
+            "source_bits".to_string(),
+            format_rewrite_bit_slice_evidence(row.source_bits),
+            "ledger".to_string(),
+            format_source_window_ledger_evidence(
+                row.ledger_family,
+                row.ledger_emitted_bits,
+                row.ledger_bits_inserted,
+                row.ledger_bits_removed,
+            ),
+        ],
+    );
+}
+
+fn write_item_handoff_residue_capture(
+    out: &mut String,
+    residue: Option<LiveObjectUpdateItemHandoffSequenceResidueEvidence>,
+) {
+    let Some(residue) = residue else {
+        write_tsv_line(out, &["sequence_residue".to_string(), "none".to_string()]);
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "sequence_residue".to_string(),
+            "origin".to_string(),
+            residue.origin.as_str().to_string(),
+            "gap_origin".to_string(),
+            residue.gap_origin.as_str().to_string(),
+            "source_owner".to_string(),
+            residue.source_owner.as_str().to_string(),
+            "pre_focus_source".to_string(),
+            format!(
+                "{}..{}",
+                residue.pre_focus_source_bit_start, residue.pre_focus_source_bit_end
+            ),
+            "pre_focus_source_bits".to_string(),
+            residue.pre_focus_source_bits.to_string(),
+            "pre_focus_emitted".to_string(),
+            format!(
+                "{}..{}",
+                residue.pre_focus_emitted_bit_start, residue.pre_focus_emitted_bit_end
+            ),
+            "pre_focus_emitted_bits".to_string(),
+            residue.pre_focus_emitted_bits.to_string(),
+            "emitted_source_delta".to_string(),
+            residue.pre_focus_emitted_source_delta.to_string(),
+            "focus_source_cursor".to_string(),
+            residue.focus_source_cursor.to_string(),
+            "focus_emitted_cursor".to_string(),
+            residue.focus_emitted_cursor.to_string(),
+            "candidate_source_cursor".to_string(),
+            residue.candidate_source_cursor.to_string(),
+            "candidate_emitted_cursor".to_string(),
+            residue.candidate_emitted_cursor.to_string(),
+            "source_gap_bits".to_string(),
+            residue.source_gap_bits.to_string(),
+            "emitted_gap_bits".to_string(),
+            residue.emitted_gap_bits.to_string(),
+            "blocks_focus_prefix".to_string(),
+            residue.blocks_decompile_owned_focus_prefix().to_string(),
+        ],
+    );
+}
+
+fn write_item_handoff_prefix_capture(
+    out: &mut String,
+    prefix: Option<LiveObjectUpdateItemHandoffFocusPrefixEvidence>,
+) {
+    let Some(prefix) = prefix else {
+        write_tsv_line(out, &["focus_prefix".to_string(), "none".to_string()]);
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "focus_prefix".to_string(),
+            "translated_mask".to_string(),
+            format!("0x{:08X}", prefix.translated_mask),
+            "orientation_vector".to_string(),
+            format_optional_bool(prefix.orientation_vector),
+            "focus_cursor".to_string(),
+            prefix.focus_bit_cursor.to_string(),
+            "candidate_cursor".to_string(),
+            prefix.candidate_bit_cursor.to_string(),
+            "prefix_bits".to_string(),
+            prefix.prefix_bits.to_string(),
+            "stages_retained".to_string(),
+            prefix.stages_retained.to_string(),
+        ],
+    );
+    for (index, stage) in prefix.stages.iter().flatten().enumerate() {
+        write_tsv_line(
+            out,
+            &[
+                "focus_prefix_stage".to_string(),
+                index.to_string(),
+                "stage".to_string(),
+                stage.stage.as_str().to_string(),
+                "bits".to_string(),
+                format!("{}..{}", stage.bit_start, stage.bit_end),
+                "consumed_bits".to_string(),
+                stage.consumed_bits.to_string(),
+                "field_bits".to_string(),
+                stage.field_bits.to_string(),
+                "values".to_string(),
+                format_rewrite_bit_slice_evidence(stage.bits),
+            ],
+        );
+    }
+}
+
+fn write_item_handoff_prefix_source_replay_capture(
+    out: &mut String,
+    replay: Option<LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence>,
+) {
+    let Some(replay) = replay else {
+        write_tsv_line(
+            out,
+            &["prefix_source_replay".to_string(), "none".to_string()],
+        );
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "prefix_source_replay".to_string(),
+            "verdict".to_string(),
+            replay.verdict.as_str().to_string(),
+            "prefix_bits".to_string(),
+            replay.prefix_bits.to_string(),
+            "source_gap_bits".to_string(),
+            replay.source_gap_bits.to_string(),
+            "emitted_gap_bits".to_string(),
+            replay.emitted_gap_bits.to_string(),
+            "compared_bits".to_string(),
+            replay.compared_bits.to_string(),
+            "matched_bits".to_string(),
+            replay.matched_bits.to_string(),
+            "first_mismatch".to_string(),
+            format_optional_usize(replay.first_mismatch_bit),
+        ],
+    );
+}
+
+fn write_rewrite_tail_capture(out: &mut String, tail: Option<LiveObjectUpdateRewriteTailEvidence>) {
+    let Some(tail) = tail else {
+        write_tsv_line(out, &["contiguous_tail".to_string(), "none".to_string()]);
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "contiguous_tail".to_string(),
+            "entries".to_string(),
+            tail.entry_count.to_string(),
+            "retained".to_string(),
+            tail.entries_retained.to_string(),
+            "source_span".to_string(),
+            format!("{}..{}", tail.source_bit_start, tail.source_bit_end),
+            "emitted_span".to_string(),
+            format!("{}..{}", tail.emitted_bit_start, tail.emitted_bit_end),
+            "emitted_cursor".to_string(),
+            tail.emitted_cursor.to_string(),
+            "source_cursor".to_string(),
+            tail.source_cursor.to_string(),
+            "emitted_source_delta".to_string(),
+            tail.emitted_source_delta.to_string(),
+            "emitted_gap".to_string(),
+            tail.emitted_gap_to_cursor.to_string(),
+            "source_gap".to_string(),
+            tail.source_gap_to_cursor.to_string(),
+        ],
+    );
+    for (index, entry) in tail.entries.iter().flatten().enumerate() {
+        write_tsv_line(
+            out,
+            &[
+                "contiguous_tail_entry".to_string(),
+                index.to_string(),
+                "offset".to_string(),
+                entry.offset.to_string(),
+                "record_end".to_string(),
+                entry.record_end.to_string(),
+                "opcode".to_string(),
+                format_live_object_byte(entry.opcode),
+                "marker".to_string(),
+                format_live_object_byte(entry.marker),
+                "family".to_string(),
+                entry.family.to_string(),
+                "source_span".to_string(),
+                format!("{}..{}", entry.source_bit_start, entry.source_bit_end),
+                "source_bits".to_string(),
+                format_rewrite_bit_slice_evidence(entry.source_bits),
+                "emitted_span".to_string(),
+                format!("{}..{}", entry.emitted_bit_start, entry.emitted_bit_end),
+                "emitted_bits".to_string(),
+                format_rewrite_bit_slice_evidence(entry.emitted_bits),
+                "inserted".to_string(),
+                entry.bits_inserted.to_string(),
+                "removed".to_string(),
+                entry.bits_removed.to_string(),
+            ],
+        );
+    }
+}
+
+fn write_source_window_capture(
+    out: &mut String,
+    source_window: Option<LiveObjectUpdateSourceWindowEvidence>,
+) {
+    let Some(source_window) = source_window else {
+        write_tsv_line(out, &["source_window".to_string(), "none".to_string()]);
+        return;
+    };
+    write_tsv_line(
+        out,
+        &[
+            "source_window".to_string(),
+            "focus".to_string(),
+            format!(
+                "{}..{}",
+                source_window.focus_offset, source_window.focus_record_end
+            ),
+            "focus_row_index".to_string(),
+            format_optional_usize(source_window.focus_row_index),
+            "initial_bit_cursor".to_string(),
+            source_window.initial_bit_cursor.to_string(),
+            "expected_bit_cursor".to_string(),
+            source_window.expected_bit_cursor.to_string(),
+            "fragment_bits".to_string(),
+            source_window.fragment_bit_count.to_string(),
+            "entries".to_string(),
+            source_window.entry_count.to_string(),
+            "entries_retained".to_string(),
+            source_window.entries_retained.to_string(),
+            "neighbors".to_string(),
+            source_window.neighbor_count.to_string(),
+            "neighbors_retained".to_string(),
+            source_window.neighbors_retained.to_string(),
+        ],
+    );
+    for (index, entry) in source_window.entries.iter().flatten().enumerate() {
+        let row = live_object_item_handoff_sequence_row(*entry);
+        write_tsv_line(
+            out,
+            &[
+                "source_window_entry".to_string(),
+                index.to_string(),
+                "role".to_string(),
+                row.role().as_str().to_string(),
+                "offset".to_string(),
+                entry.offset.to_string(),
+                "record_end".to_string(),
+                entry.record_end.to_string(),
+                "opcode".to_string(),
+                format_live_object_byte(entry.opcode),
+                "marker".to_string(),
+                format_live_object_byte(entry.marker),
+                "object_id".to_string(),
+                format_optional_u32_hex(entry.object_id),
+                "update_mask".to_string(),
+                format_optional_u32_hex(entry.update_mask),
+                "bits".to_string(),
+                format_optional_bit_span(entry.bit_start, entry.bit_end),
+                "bit_delta".to_string(),
+                format_optional_usize(entry.bit_delta),
+                "source_span".to_string(),
+                format_optional_bit_span(entry.source_bit_start, entry.source_bit_end),
+                "source_delta".to_string(),
+                format_optional_usize(entry.source_bit_delta),
+                "claim".to_string(),
+                entry.claim_family.to_string(),
+                "source_bits".to_string(),
+                format_rewrite_bit_slice_evidence(entry.source_bits),
+                "ledger".to_string(),
+                format_source_window_ledger_evidence(
+                    entry.ledger_family,
+                    entry.ledger_emitted_bits,
+                    entry.ledger_bits_inserted,
+                    entry.ledger_bits_removed,
+                ),
+            ],
+        );
+    }
+    for (index, neighbor) in source_window.neighbors.iter().flatten().enumerate() {
+        write_tsv_line(
+            out,
+            &[
+                "source_window_neighbor".to_string(),
+                index.to_string(),
+                "delta".to_string(),
+                neighbor.delta.to_string(),
+                "bits".to_string(),
+                format!("{}..{}", neighbor.bit_start, neighbor.bit_end),
+                "read_end".to_string(),
+                neighbor.read_end.to_string(),
+                "translated_mask".to_string(),
+                format!("0x{:08X}", neighbor.translated_mask),
+                "orientation_vector".to_string(),
+                format_optional_bool(neighbor.orientation_vector),
+                "relation".to_string(),
+                neighbor.relation.to_string(),
+                "gap_origin".to_string(),
+                neighbor.gap_origin.as_str().to_string(),
+                "source_owner".to_string(),
+                neighbor.source_owner.as_str().to_string(),
+                "claimable".to_string(),
+                neighbor.source_owner.claimable_handoff().to_string(),
+                "blocker".to_string(),
+                neighbor.source_owner.handoff_blocker().to_string(),
+                "ledger_relation".to_string(),
+                neighbor.ledger_relation.to_string(),
+                "ledger_source_relation".to_string(),
+                neighbor.ledger_source_relation.to_string(),
+                "emitted_gap".to_string(),
+                format_optional_gap(
+                    neighbor.ledger_emitted_gap_bits,
+                    neighbor.ledger_emitted_gap_bit_start,
+                    neighbor.ledger_emitted_gap_bit_end,
+                    neighbor.ledger_emitted_gap_values,
+                ),
+                "source_gap".to_string(),
+                format_optional_gap(
+                    neighbor.ledger_source_gap_bits,
+                    neighbor.ledger_source_gap_bit_start,
+                    neighbor.ledger_source_gap_bit_end,
+                    neighbor.ledger_source_gap_values,
+                ),
+                "implied_source_cursor".to_string(),
+                format_optional_usize(neighbor.ledger_implied_source_cursor),
+                "cumulative_emitted_source_delta".to_string(),
+                format_optional_isize(neighbor.ledger_cumulative_emitted_source_delta),
+                "source_emitted_delta_after_previous".to_string(),
+                format_optional_isize(neighbor.ledger_source_emitted_delta_after_previous),
+                "previous".to_string(),
+                format_optional_previous_row(
+                    neighbor.ledger_previous_offset,
+                    neighbor.ledger_previous_record_end,
+                    neighbor.ledger_previous_family,
+                ),
+            ],
+        );
+    }
 }
 
 fn write_rewrite_tail_evidence(
