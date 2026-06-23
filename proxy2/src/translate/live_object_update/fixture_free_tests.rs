@@ -5857,6 +5857,20 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
         "the +2 validating cursor starts inside the failed U/6 row, not between proven rows"
     );
     assert_eq!(
+        residue.gap_origin,
+        super::LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits,
+        "the skipped prefix is the decompile-owned U/6 position residual field"
+    );
+    assert_eq!(
+        residue.source_owner,
+        super::LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap,
+        "the shifted neighbor still has no emitted or source owner"
+    );
+    assert!(
+        residue.blocks_decompile_owned_focus_prefix(),
+        "source policy should block only because the skipped prefix is a typed focus-row field"
+    );
+    assert_eq!(
         residue.pre_focus_source_bits,
         super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
         "compact tail9 plus no-map A/6 owns exactly thirteen source bits before U/6"

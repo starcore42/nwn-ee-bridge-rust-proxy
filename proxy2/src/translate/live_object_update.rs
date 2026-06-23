@@ -4358,6 +4358,18 @@ mod diagnostic_tests {
             focus_prefix_residue.origin,
             LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix
         );
+        assert_eq!(
+            focus_prefix_residue.gap_origin,
+            LiveObjectUpdateItemCursorGapOrigin::FocusPositionBits
+        );
+        assert_eq!(
+            focus_prefix_residue.source_owner,
+            LiveObjectUpdateItemCursorSourceOwner::UnownedEmittedAndSourceGap
+        );
+        assert!(
+            focus_prefix_residue.blocks_decompile_owned_focus_prefix(),
+            "the shifted neighbor skips decompile-owned U/6 position residual bits"
+        );
         let focus_prefix_blocked =
             LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
                 exact_contract,
@@ -14246,6 +14258,8 @@ pub struct LiveObjectUpdateItemHandoffSequenceContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectUpdateItemHandoffSequenceResidueEvidence {
     pub origin: LiveObjectUpdateItemHandoffSequenceResidueOrigin,
+    pub gap_origin: LiveObjectUpdateItemCursorGapOrigin,
+    pub source_owner: LiveObjectUpdateItemCursorSourceOwner,
     pub pre_focus_source_bit_start: usize,
     pub pre_focus_source_bit_end: usize,
     pub pre_focus_source_bits: usize,
@@ -14539,6 +14553,23 @@ impl LiveObjectUpdateItemCursorGapOrigin {
             Self::InsideFocusRowUnclassified => "inside-focus-row-unclassified",
         }
     }
+
+    pub fn is_decompile_owned_focus_prefix(self) -> bool {
+        // Diamond sub_459700 -> sub_467AE0 -> sub_451AF0 and EE
+        // sub_1407B8380 -> sub_14079C050 -> sub_1407A08F0 read these U/6
+        // fields at the inherited cursor before any neighboring shifted parse.
+        matches!(
+            self,
+            Self::FocusPositionBits
+                | Self::PartialFocusPositionBits
+                | Self::FocusOrientationSelector
+                | Self::PartialFocusOrientationSelector
+                | Self::FocusOrientationVectorPrefixBits
+                | Self::FocusOrientationScalarPrefixBits
+                | Self::FocusStatePrefixBits
+                | Self::FocusNameOrLocstringPrefixBits
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14746,9 +14777,7 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
         }
 
         if source_owner != LiveObjectUpdateItemCursorSourceOwner::ContiguousTail
-            && sequence_residue.is_some_and(|residue| {
-                residue.origin == LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix
-            })
+            && sequence_residue.is_some_and(|residue| residue.blocks_decompile_owned_focus_prefix())
         {
             return Self::BlockedFocusRowPrefix;
         }
@@ -14806,6 +14835,13 @@ impl LiveObjectUpdateItemHandoffSourceDecision {
             Self::BlockedUnownedSourceGap => "unowned-source-gap",
             Self::BlockedUnownedEmittedAndSourceGap => "unowned-emitted-source-gap",
         }
+    }
+}
+
+impl LiveObjectUpdateItemHandoffSequenceResidueEvidence {
+    pub fn blocks_decompile_owned_focus_prefix(self) -> bool {
+        self.origin == LiveObjectUpdateItemHandoffSequenceResidueOrigin::FocusRowPrefix
+            && self.gap_origin.is_decompile_owned_focus_prefix()
     }
 }
 
@@ -31944,13 +31980,17 @@ fn live_object_item_handoff_sequence_residue(
         signed_bit_delta(pre_focus_emitted_bits, pre_focus_source_bits);
     debug_assert_eq!(source_gap_bit_start, pre_focus_source_bit_end);
 
+    let origin = live_object_item_handoff_sequence_residue_origin(
+        source_gap_bits,
+        emitted_gap_bits,
+        gap_origin,
+        source_owner,
+    );
+
     Some(LiveObjectUpdateItemHandoffSequenceResidueEvidence {
-        origin: live_object_item_handoff_sequence_residue_origin(
-            source_gap_bits,
-            emitted_gap_bits,
-            gap_origin,
-            source_owner,
-        ),
+        origin,
+        gap_origin,
+        source_owner,
         pre_focus_source_bit_start,
         pre_focus_source_bit_end,
         pre_focus_source_bits,
@@ -33864,8 +33904,10 @@ fn write_item_handoff_sequence_residue(
 
     let _ = writeln!(
         out,
-        "item_handoff_sequence_residue=origin={} pre_focus_source={}..{} bits={} pre_focus_emitted={}..{} bits={} emitted_source_delta={} focus_source_cursor={} focus_emitted_cursor={} candidate_source_cursor={} candidate_emitted_cursor={} source_gap_bits={} emitted_gap_bits={}",
+        "item_handoff_sequence_residue=origin={} gap_origin={} source_owner={} pre_focus_source={}..{} bits={} pre_focus_emitted={}..{} bits={} emitted_source_delta={} focus_source_cursor={} focus_emitted_cursor={} candidate_source_cursor={} candidate_emitted_cursor={} source_gap_bits={} emitted_gap_bits={}",
         residue.origin.as_str(),
+        residue.gap_origin.as_str(),
+        residue.source_owner.as_str(),
         residue.pre_focus_source_bit_start,
         residue.pre_focus_source_bit_end,
         residue.pre_focus_source_bits,
