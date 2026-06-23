@@ -7969,7 +7969,7 @@ mod diagnostic_tests {
             }],
             ..crate::translate::area::AreaPlaceableContext::default()
         };
-        let (selection, area_rows, _) = placeable_static_reconciliation_selection_for_update(
+        let (selection, area_rows, _, _) = placeable_static_reconciliation_selection_for_update(
             &area_context,
             object_id,
             update_claim,
@@ -8336,6 +8336,18 @@ mod diagnostic_tests {
         assert_eq!(summary.update_records_examined, 1);
         assert_eq!(summary.update_records_rewritten, 1);
         assert_eq!(summary.exact_placeable_update_unique_targets, 1);
+        assert_eq!(
+            summary.exact_placeable_update_base_identity_source_incompatible_static_rows, 1,
+            "the malformed P/04 static row should stay visible even after U/09 position proof selects the compatible row"
+        );
+        assert_eq!(
+            summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows,
+            1
+        );
         assert_eq!(
             summary.exact_placeable_update_identity_resolved_by_position, 1,
             "only the compatible static row should remain as position proof"
@@ -14069,6 +14081,14 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_unique_targets: u32,
     pub exact_placeable_add_identity_blocked: u32,
     pub exact_placeable_update_identity_blocked: u32,
+    pub exact_placeable_add_base_identity_module_unbacked_static_rows: u32,
+    pub exact_placeable_add_base_identity_source_incompatible_static_rows: u32,
+    pub exact_placeable_add_base_identity_source_read_mismatch_static_rows: u32,
+    pub exact_placeable_add_base_identity_source_fragment_owned_static_rows: u32,
+    pub exact_placeable_update_base_identity_module_unbacked_static_rows: u32,
+    pub exact_placeable_update_base_identity_source_incompatible_static_rows: u32,
+    pub exact_placeable_update_base_identity_source_read_mismatch_static_rows: u32,
+    pub exact_placeable_update_base_identity_source_fragment_owned_static_rows: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence: u32,
@@ -22520,6 +22540,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     area_context,
                     mention.object_id,
                 );
+                record_exact_placeable_base_identity_provenance_blockers(
+                    &mut summary,
+                    b'A',
+                    base_target,
+                );
                 let Some(add_claim) = verified_placeable_add_exact_claim(
                     &live_bytes,
                     record_offset,
@@ -23203,12 +23228,17 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 ) else {
                     return None;
                 };
-                let (selection, area_rows, update_position_output_equivalence) =
+                let (selection, area_rows, update_position_output_equivalence, base_target) =
                     placeable_static_reconciliation_selection_for_update(
                         area_context,
                         mention.object_id,
                         update_claim,
                     );
+                record_exact_placeable_base_identity_provenance_blockers(
+                    &mut summary,
+                    b'U',
+                    base_target,
+                );
                 record_exact_placeable_reconciliation_target(&mut summary, b'U', selection.target);
                 if selection.identity_resolved_by_position {
                     summary.exact_placeable_update_identity_resolved_by_position = summary
@@ -23450,6 +23480,48 @@ fn record_exact_placeable_reconciliation_target(
         (b'U', AreaPlaceableContextStaticReconciliationTarget::NoOverlap) => {
             summary.exact_placeable_update_no_overlap =
                 summary.exact_placeable_update_no_overlap.saturating_add(1);
+        }
+        _ => {}
+    }
+}
+
+fn record_exact_placeable_base_identity_provenance_blockers(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    opcode: u8,
+    target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+) {
+    let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = target else {
+        return;
+    };
+    match opcode {
+        b'A' => {
+            summary.exact_placeable_add_base_identity_module_unbacked_static_rows = summary
+                .exact_placeable_add_base_identity_module_unbacked_static_rows
+                .saturating_add(u32::from(conflict.module_unbacked_static_rows));
+            summary.exact_placeable_add_base_identity_source_incompatible_static_rows = summary
+                .exact_placeable_add_base_identity_source_incompatible_static_rows
+                .saturating_add(u32::from(conflict.source_incompatible_static_rows));
+            summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows = summary
+                .exact_placeable_add_base_identity_source_read_mismatch_static_rows
+                .saturating_add(u32::from(conflict.source_read_mismatch_static_rows));
+            summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows = summary
+                .exact_placeable_add_base_identity_source_fragment_owned_static_rows
+                .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
+        }
+        b'U' => {
+            summary.exact_placeable_update_base_identity_module_unbacked_static_rows = summary
+                .exact_placeable_update_base_identity_module_unbacked_static_rows
+                .saturating_add(u32::from(conflict.module_unbacked_static_rows));
+            summary.exact_placeable_update_base_identity_source_incompatible_static_rows = summary
+                .exact_placeable_update_base_identity_source_incompatible_static_rows
+                .saturating_add(u32::from(conflict.source_incompatible_static_rows));
+            summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows = summary
+                .exact_placeable_update_base_identity_source_read_mismatch_static_rows
+                .saturating_add(u32::from(conflict.source_read_mismatch_static_rows));
+            summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows =
+                summary
+                    .exact_placeable_update_base_identity_source_fragment_owned_static_rows
+                    .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
         }
         _ => {}
     }
@@ -24992,7 +25064,12 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
     area_context: &'a AreaPlaceableContext,
     object_id: u32,
     claim: VerifiedPlaceableUpdateExactClaim,
-) -> (PlaceableStaticReconciliationSelection<'a>, String, bool) {
+) -> (
+    PlaceableStaticReconciliationSelection<'a>,
+    String,
+    bool,
+    AreaPlaceableContextStaticReconciliationTarget<'a>,
+) {
     let (target, area_rows) =
         placeable_static_reconciliation_target_for_object(area_context, object_id);
     if matches!(
@@ -25030,6 +25107,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             },
             area_rows,
             false,
+            target,
         );
     } else if matches!(
         target,
@@ -25066,6 +25144,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
             },
             area_rows,
             true,
+            target,
         );
     }
 
@@ -25094,6 +25173,7 @@ fn placeable_static_reconciliation_selection_for_update<'a>(
         },
         area_rows,
         false,
+        target,
     )
 }
 
@@ -29255,6 +29335,37 @@ fn trace_exact_placeable_reconciliation_summary(
         update_state_rewritten = summary.exact_placeable_update_state_rewritten,
         "server->client exact live-object placeable area/static reconciliation summary"
     );
+    if summary.exact_placeable_add_base_identity_module_unbacked_static_rows != 0
+        || summary.exact_placeable_add_base_identity_source_incompatible_static_rows != 0
+        || summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows != 0
+        || summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows != 0
+        || summary.exact_placeable_update_base_identity_module_unbacked_static_rows != 0
+        || summary.exact_placeable_update_base_identity_source_incompatible_static_rows != 0
+        || summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows != 0
+        || summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows != 0
+    {
+        tracing::debug!(
+            area_resref = area_context.area_resref.as_str(),
+            exact_placeable_reconciliation_emitted = emitted,
+            add_base_identity_module_unbacked_static_rows =
+                summary.exact_placeable_add_base_identity_module_unbacked_static_rows,
+            add_base_identity_source_incompatible_static_rows =
+                summary.exact_placeable_add_base_identity_source_incompatible_static_rows,
+            add_base_identity_source_read_mismatch_static_rows =
+                summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows,
+            add_base_identity_source_fragment_owned_static_rows =
+                summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows,
+            update_base_identity_module_unbacked_static_rows =
+                summary.exact_placeable_update_base_identity_module_unbacked_static_rows,
+            update_base_identity_source_incompatible_static_rows =
+                summary.exact_placeable_update_base_identity_source_incompatible_static_rows,
+            update_base_identity_source_read_mismatch_static_rows =
+                summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows,
+            update_base_identity_source_fragment_owned_static_rows =
+                summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows,
+            "server->client exact live-object placeable base identity provenance blockers"
+        );
+    }
     if summary.exact_placeable_update_module_custom_appearance_rewritten != 0 {
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
