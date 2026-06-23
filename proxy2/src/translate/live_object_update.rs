@@ -2741,6 +2741,7 @@ mod diagnostic_tests {
         assert!(report.contains("item_handoff_sequence_previous=none"));
         assert!(report.contains("item_handoff_sequence_focus=none"));
         assert!(report.contains("item_handoff_sequence_residue=none"));
+        assert!(report.contains("item_handoff_source_prefix_audit=none"));
         assert!(report.contains("item_handoff_source_gap=bits=2 range=22..24 values=22..24:01"));
         assert!(report.contains("item_handoff_focus_source_bits=22..38:011101"));
         assert!(report.contains("payload_prefix=50 05 01 0A 00 00 00 55 06"));
@@ -2775,6 +2776,7 @@ mod diagnostic_tests {
         ));
         assert!(handoff_capture.contains("sequence_row\tprevious\tnone"));
         assert!(handoff_capture.contains("sequence_row\tfocus\tnone"));
+        assert!(handoff_capture.contains("source_prefix_audit\tnone"));
         assert!(handoff_capture.contains("source_gap\tbits\t2\trange\t22..24\tvalues\t22..24:01"));
         assert!(
             handoff_capture
@@ -4442,6 +4444,50 @@ mod diagnostic_tests {
         assert!(!focus_prefix_blocked.claimable_handoff());
         assert_eq!(focus_prefix_blocked.as_str(), "blocked-focus-row-prefix");
         assert_eq!(focus_prefix_blocked.handoff_blocker(), "focus-row-prefix");
+        let exact_source_prefix = live_object_item_handoff_source_prefix_audit_for_span(
+            focus.source_bits.bit_start,
+            focus.source_bits.bit_start + 2,
+            focus.source_bits.bit_start,
+            2,
+        );
+        assert_eq!(
+            exact_source_prefix.status,
+            LiveObjectUpdateItemHandoffSourcePrefixStatus::MatchesFocusPrefixSpan,
+            "the active compact handoff gap exactly covers the decompile-owned U/6 prefix span"
+        );
+        assert_eq!(exact_source_prefix.overlap_bits, 2);
+        let inside_source_prefix = live_object_item_handoff_source_prefix_audit_for_span(
+            focus.source_bits.bit_start + 1,
+            focus.source_bits.bit_start + 2,
+            focus.source_bits.bit_start,
+            2,
+        );
+        assert_eq!(
+            inside_source_prefix.status,
+            LiveObjectUpdateItemHandoffSourcePrefixStatus::InsideFocusPrefixSpan
+        );
+        assert_eq!(inside_source_prefix.overlap_bits, 1);
+        let crossing_source_prefix = live_object_item_handoff_source_prefix_audit_for_span(
+            focus.source_bits.bit_start + 1,
+            focus.source_bits.bit_start + 3,
+            focus.source_bits.bit_start,
+            2,
+        );
+        assert_eq!(
+            crossing_source_prefix.status,
+            LiveObjectUpdateItemHandoffSourcePrefixStatus::CrossesFocusPrefixBoundary
+        );
+        assert_eq!(crossing_source_prefix.overlap_bits, 1);
+        assert_eq!(
+            live_object_item_handoff_source_prefix_audit_for_span(
+                focus.source_bits.bit_start + 2,
+                focus.source_bits.bit_start + 2,
+                focus.source_bits.bit_start,
+                2,
+            )
+            .status,
+            LiveObjectUpdateItemHandoffSourcePrefixStatus::SourceGapEmpty
+        );
         assert_eq!(
             LiveObjectUpdateItemHandoffSourceDecision::from_source_contract_source_owner_and_residue(
                 exact_contract,
@@ -14443,6 +14489,18 @@ pub struct LiveObjectUpdateItemHandoffBoundaryAuditEvidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence {
+    pub status: LiveObjectUpdateItemHandoffSourcePrefixStatus,
+    pub source_gap_bit_start: usize,
+    pub source_gap_bit_end: usize,
+    pub source_gap_bits: usize,
+    pub focus_prefix_source_bit_start: usize,
+    pub focus_prefix_source_bit_end: usize,
+    pub focus_prefix_bits: usize,
+    pub overlap_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateItemHandoffBoundaryStatus {
     AtFocusRowStart,
     FocusRowPrefix,
@@ -14480,6 +14538,31 @@ impl LiveObjectUpdateItemHandoffBoundaryRelation {
             Self::InsidePreviousRow => "inside-previous-row",
             Self::UnownedBeforeFocusRow => "unowned-before-focus-row",
             Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffSourcePrefixStatus {
+    SourceGapEmpty,
+    EmptyFocusPrefix,
+    MatchesFocusPrefixSpan,
+    InsideFocusPrefixSpan,
+    CrossesFocusPrefixBoundary,
+    BeforeFocusPrefixSpan,
+    AfterFocusPrefixSpan,
+}
+
+impl LiveObjectUpdateItemHandoffSourcePrefixStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceGapEmpty => "source-gap-empty",
+            Self::EmptyFocusPrefix => "empty-focus-prefix",
+            Self::MatchesFocusPrefixSpan => "matches-focus-prefix-span",
+            Self::InsideFocusPrefixSpan => "inside-focus-prefix-span",
+            Self::CrossesFocusPrefixBoundary => "crosses-focus-prefix-boundary",
+            Self::BeforeFocusPrefixSpan => "before-focus-prefix-span",
+            Self::AfterFocusPrefixSpan => "after-focus-prefix-span",
         }
     }
 }
@@ -15159,6 +15242,12 @@ impl LiveObjectUpdateItemHandoffEvidence {
 
     pub fn boundary_audit(&self) -> Option<LiveObjectUpdateItemHandoffBoundaryAuditEvidence> {
         live_object_item_handoff_boundary_audit(*self)
+    }
+
+    pub fn source_prefix_audit(
+        &self,
+    ) -> Option<LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence> {
+        live_object_item_handoff_source_prefix_audit(*self)
     }
 }
 
@@ -32472,6 +32561,64 @@ fn live_object_item_handoff_boundary_audit(
     })
 }
 
+fn live_object_item_handoff_source_prefix_audit(
+    handoff: LiveObjectUpdateItemHandoffEvidence,
+) -> Option<LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence> {
+    let focus_prefix = handoff.focus_prefix?;
+    let focus = handoff.sequence_context.focus_row?;
+    Some(live_object_item_handoff_source_prefix_audit_for_span(
+        handoff.source_gap_bit_start,
+        handoff.source_gap_bit_end,
+        focus.source_bit_start,
+        focus_prefix.prefix_bits,
+    ))
+}
+
+fn live_object_item_handoff_source_prefix_audit_for_span(
+    source_gap_bit_start: usize,
+    source_gap_bit_end: usize,
+    focus_prefix_source_bit_start: usize,
+    focus_prefix_bits: usize,
+) -> LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence {
+    let source_gap_bits = source_gap_bit_end.saturating_sub(source_gap_bit_start);
+    let focus_prefix_source_bit_end =
+        focus_prefix_source_bit_start.saturating_add(focus_prefix_bits);
+    let overlap_start = source_gap_bit_start.max(focus_prefix_source_bit_start);
+    let overlap_end = source_gap_bit_end.min(focus_prefix_source_bit_end);
+    let overlap_bits = overlap_end.saturating_sub(overlap_start);
+
+    let status = if source_gap_bits == 0 {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::SourceGapEmpty
+    } else if focus_prefix_bits == 0 {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::EmptyFocusPrefix
+    } else if source_gap_bit_start == focus_prefix_source_bit_start
+        && source_gap_bit_end == focus_prefix_source_bit_end
+    {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::MatchesFocusPrefixSpan
+    } else if source_gap_bit_start >= focus_prefix_source_bit_start
+        && source_gap_bit_end <= focus_prefix_source_bit_end
+    {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::InsideFocusPrefixSpan
+    } else if source_gap_bit_end <= focus_prefix_source_bit_start {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::BeforeFocusPrefixSpan
+    } else if source_gap_bit_start >= focus_prefix_source_bit_end {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::AfterFocusPrefixSpan
+    } else {
+        LiveObjectUpdateItemHandoffSourcePrefixStatus::CrossesFocusPrefixBoundary
+    };
+
+    LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence {
+        status,
+        source_gap_bit_start,
+        source_gap_bit_end,
+        source_gap_bits,
+        focus_prefix_source_bit_start,
+        focus_prefix_source_bit_end,
+        focus_prefix_bits,
+        overlap_bits,
+    }
+}
+
 fn live_object_item_handoff_boundary_status(
     origin: LiveObjectUpdateItemHandoffSequenceResidueOrigin,
 ) -> LiveObjectUpdateItemHandoffBoundaryStatus {
@@ -34371,6 +34518,7 @@ fn format_live_object_update_rewrite_failure_evidence(
                 handoff.source_decision.handoff_blocker()
             );
             write_item_handoff_boundary_audit(&mut out, handoff.boundary_audit());
+            write_item_handoff_source_prefix_audit(&mut out, handoff.source_prefix_audit());
             write_item_handoff_sequence_context(&mut out, handoff.sequence_context);
             write_item_handoff_sequence_residue(&mut out, handoff.sequence_residue);
             let _ = writeln!(
@@ -34481,6 +34629,7 @@ fn format_live_object_update_item_handoff_source_capture(
         ],
     );
     write_item_handoff_boundary_audit_capture(&mut out, handoff.boundary_audit());
+    write_item_handoff_source_prefix_audit_capture(&mut out, handoff.source_prefix_audit());
     write_item_cursor_ledger_capture(&mut out, "focus_cursor", handoff.focus_cursor_ledger);
     write_item_handoff_sequence_row_capture(
         &mut out,
@@ -34675,6 +34824,44 @@ fn write_item_handoff_boundary_audit_capture(
             audit.emitted_source_delta.to_string(),
             "blocks_focus_prefix".to_string(),
             audit.blocks_focus_prefix.to_string(),
+        ],
+    );
+}
+
+fn write_item_handoff_source_prefix_audit_capture(
+    out: &mut String,
+    audit: Option<LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence>,
+) {
+    let Some(audit) = audit else {
+        write_tsv_line(
+            out,
+            &["source_prefix_audit".to_string(), "none".to_string()],
+        );
+        return;
+    };
+
+    write_tsv_line(
+        out,
+        &[
+            "source_prefix_audit".to_string(),
+            "status".to_string(),
+            audit.status.as_str().to_string(),
+            "source_gap".to_string(),
+            format!(
+                "{}..{}",
+                audit.source_gap_bit_start, audit.source_gap_bit_end
+            ),
+            "source_gap_bits".to_string(),
+            audit.source_gap_bits.to_string(),
+            "focus_prefix_source".to_string(),
+            format!(
+                "{}..{}",
+                audit.focus_prefix_source_bit_start, audit.focus_prefix_source_bit_end
+            ),
+            "focus_prefix_bits".to_string(),
+            audit.focus_prefix_bits.to_string(),
+            "overlap_bits".to_string(),
+            audit.overlap_bits.to_string(),
         ],
     );
 }
@@ -35303,6 +35490,31 @@ fn write_item_handoff_boundary_audit(
         audit.emitted_gap_bits,
         audit.emitted_source_delta,
         audit.blocks_focus_prefix
+    );
+}
+
+fn write_item_handoff_source_prefix_audit(
+    out: &mut String,
+    audit: Option<LiveObjectUpdateItemHandoffSourcePrefixAuditEvidence>,
+) {
+    use std::fmt::Write as _;
+
+    let Some(audit) = audit else {
+        let _ = writeln!(out, "item_handoff_source_prefix_audit=none");
+        return;
+    };
+
+    let _ = writeln!(
+        out,
+        "item_handoff_source_prefix_audit=status={} source_gap={}..{} source_gap_bits={} focus_prefix_source={}..{} focus_prefix_bits={} overlap_bits={}",
+        audit.status.as_str(),
+        audit.source_gap_bit_start,
+        audit.source_gap_bit_end,
+        audit.source_gap_bits,
+        audit.focus_prefix_source_bit_start,
+        audit.focus_prefix_source_bit_end,
+        audit.focus_prefix_bits,
+        audit.overlap_bits
     );
 }
 
