@@ -5109,6 +5109,7 @@ mod placeable_add_semantic_tests {
                 has_direction: true,
                 object_id_confidence,
                 module_state: Some(module_state),
+                ..AreaPlaceableContextRow::default()
             }],
         }
     }
@@ -5136,6 +5137,10 @@ mod placeable_add_semantic_tests {
         let light = AreaPlaceableContextRow {
             object_id: 0x8000_0077,
             appearance: 77,
+            source_read_start: 200,
+            source_read_end: 218,
+            source_fragment_bit_start: 14,
+            source_fragment_bit_end: 14,
             x: 5.0,
             y: 6.0,
             z: 0.0,
@@ -5144,13 +5149,17 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Light, &light),
-            "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven"
+            "light:id=unique;wire=read:200..218 bits:14..14;app=0x004D@5.00,6.00,0.00;state=unproven"
         );
 
         let static_row = AreaPlaceableContextRow {
             object_id: 0x8000_0042,
             appearance: 82,
             module_template_resref: None,
+            source_read_start: 220,
+            source_read_end: 250,
+            source_fragment_bit_start: 14,
+            source_fragment_bit_end: 14,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -5171,7 +5180,7 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &static_row),
-            "static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "static:id=unique;wire=read:220..250 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
 
         let conflict = static_row
@@ -8555,6 +8564,7 @@ mod tests {
                 object_id_confidence:
                     crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: None,
+                ..crate::translate::area::AreaPlaceableContextRow::default()
             }],
             ..crate::translate::area::AreaPlaceableContext::default()
         };

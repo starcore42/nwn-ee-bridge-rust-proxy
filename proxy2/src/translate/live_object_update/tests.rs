@@ -2732,6 +2732,7 @@ fn local_cepv22_starter_area_entry_live_object_rewrites_to_exact_shape() {
             object_id_confidence:
                 crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
             module_state: None,
+            ..crate::translate::area::AreaPlaceableContextRow::default()
         }],
         light_rows: Vec::new(),
     };

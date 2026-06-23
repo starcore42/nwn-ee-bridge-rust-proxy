@@ -2593,6 +2593,10 @@ mod tests {
             object_id: 0x8000_0042,
             appearance: 0x0052,
             module_template_resref: None,
+            source_read_start: 128,
+            source_read_end: 158,
+            source_fragment_bit_start: 14,
+            source_fragment_bit_end: 14,
             x: 10.0,
             y: 20.0,
             z: 0.0,
@@ -2614,7 +2618,7 @@ mod tests {
 
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &row),
-            "static:id=area-alias;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "static:id=area-alias;wire=read:128..158 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
 
         let context = AreaPlaceableContext {

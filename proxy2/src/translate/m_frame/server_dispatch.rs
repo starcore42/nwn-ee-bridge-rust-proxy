@@ -3191,6 +3191,7 @@ mod live_object_dispatch_tests {
                 has_direction: true,
                 object_id_confidence: area::AreaPlaceableContextObjectIdConfidence::Unique,
                 module_state: None,
+                ..area::AreaPlaceableContextRow::default()
             }],
             light_rows: Vec::new(),
         };

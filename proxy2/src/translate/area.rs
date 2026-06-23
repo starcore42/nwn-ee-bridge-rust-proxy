@@ -490,6 +490,10 @@ pub struct AreaPlaceableContextRow {
     pub object_id: u32,
     pub appearance: u16,
     pub module_template_resref: Option<[u8; 16]>,
+    pub source_read_start: usize,
+    pub source_read_end: usize,
+    pub source_fragment_bit_start: usize,
+    pub source_fragment_bit_end: usize,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -656,9 +660,13 @@ pub fn format_area_placeable_context_row(
         .unwrap_or_else(|| "unproven".to_string());
     if row.has_direction {
         format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};wire=read:{}..{} bits:{}..{};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
             row.object_id_confidence.as_str(),
+            row.source_read_start,
+            row.source_read_end,
+            row.source_fragment_bit_start,
+            row.source_fragment_bit_end,
             row.appearance,
             row.x,
             row.y,
@@ -669,9 +677,13 @@ pub fn format_area_placeable_context_row(
         )
     } else {
         format!(
-            "{}:id={};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};wire=read:{}..{} bits:{}..{};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
             row.object_id_confidence.as_str(),
+            row.source_read_start,
+            row.source_read_end,
+            row.source_fragment_bit_start,
+            row.source_fragment_bit_end,
             row.appearance,
             row.x,
             row.y,
@@ -3456,7 +3468,7 @@ fn collect_area_post_tile_placeable_context(
     let (_, next_cursor) = advance_area_map_pin_rows(payload, fragment_offset, cursor)?;
     cursor = next_cursor;
 
-    let (_, next_cursor, _) = advance_area_sound_rows(
+    let (_, next_cursor, next_bit_cursor) = advance_area_sound_rows(
         payload,
         fragment_offset,
         cursor,
@@ -3464,13 +3476,16 @@ fn collect_area_post_tile_placeable_context(
         fragment_bits_available,
     )?;
     cursor = next_cursor;
+    let placeable_fragment_bit_cursor = next_bit_cursor;
 
     let mut light_rows = Vec::new();
     let (_, next_cursor) = walk_area_light_placeable_rows(
         payload,
         fragment_offset,
         cursor,
-        |row| {
+        |mut row| {
+            row.source_fragment_bit_start = placeable_fragment_bit_cursor;
+            row.source_fragment_bit_end = placeable_fragment_bit_cursor;
             if area_placeable_context_id_is_ambiguous(
                 row.object_id,
                 legacy_area_object_id,
@@ -3523,6 +3538,7 @@ fn collect_area_post_tile_placeable_context(
         let dir_x = read_area_f32(payload, fragment_offset, cursor + 18)?;
         let dir_y = read_area_f32(payload, fragment_offset, cursor + 22)?;
         let dir_z = read_area_f32(payload, fragment_offset, cursor + 26)?;
+        let row_end = cursor.checked_add(AREA_STATIC_PLACEABLE_ROW_BYTES)?;
         let module_claim = module_context_claims.iter().find(|claim| {
             claim.row.cursor == cursor
                 && module_static_placeable_row_claim_matches_source(
@@ -3550,6 +3566,10 @@ fn collect_area_post_tile_placeable_context(
             object_id,
             appearance,
             module_template_resref: module_claim.and_then(|claim| claim.template_resref),
+            source_read_start: cursor,
+            source_read_end: row_end,
+            source_fragment_bit_start: placeable_fragment_bit_cursor,
+            source_fragment_bit_end: placeable_fragment_bit_cursor,
             x,
             y,
             z,
@@ -3560,7 +3580,7 @@ fn collect_area_post_tile_placeable_context(
             object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
             module_state: module_claim.map(|claim| claim.state),
         });
-        cursor = cursor.checked_add(4 + 2 + 6 * 4)?;
+        cursor = row_end;
     }
     mark_area_placeable_context_object_id_confidence(
         legacy_area_object_id,
@@ -4681,6 +4701,8 @@ fn read_area_light_placeable_row(
     Some(AreaPlaceableContextRow {
         object_id,
         appearance,
+        source_read_start: cursor,
+        source_read_end: cursor.checked_add(AREA_LIGHT_PLACEABLE_ROW_BYTES)?,
         x,
         y,
         z,
@@ -9340,8 +9362,40 @@ mod public_static_direction_tests {
         assert_eq!(context.light_rows[0].x, 5.0);
         assert_eq!(context.light_rows[0].y, 6.0);
         assert!(!context.light_rows[0].has_direction);
+        assert_eq!(
+            context.light_rows[0]
+                .source_read_end
+                .checked_sub(context.light_rows[0].source_read_start),
+            Some(AREA_LIGHT_PLACEABLE_ROW_BYTES)
+        );
+        assert_eq!(
+            context.light_rows[0].source_fragment_bit_start,
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS
+        );
+        assert_eq!(
+            context.light_rows[0].source_fragment_bit_start,
+            context.light_rows[0].source_fragment_bit_end
+        );
         assert_eq!(context.static_rows[0].appearance, 82);
         assert!(context.static_rows[0].has_direction);
+        assert_eq!(
+            context.static_rows[0].source_read_start,
+            proof.static_rows_read_offset
+        );
+        assert_eq!(
+            context.static_rows[0]
+                .source_read_end
+                .checked_sub(context.static_rows[0].source_read_start),
+            Some(AREA_STATIC_PLACEABLE_ROW_BYTES)
+        );
+        assert_eq!(
+            context.static_rows[0].source_fragment_bit_start,
+            context.light_rows[0].source_fragment_bit_end
+        );
+        assert_eq!(
+            context.static_rows[0].source_fragment_bit_start,
+            context.static_rows[0].source_fragment_bit_end
+        );
 
         assert!(context.contains_light_placeable_id(0x8000_0077));
         assert!(!context.contains_static_placeable_id(0x8000_0077));
@@ -9404,6 +9458,10 @@ mod public_static_direction_tests {
             light_rows: vec![AreaPlaceableContextRow {
                 object_id: 0x8000_0077,
                 appearance: 77,
+                source_read_start: 200,
+                source_read_end: 218,
+                source_fragment_bit_start: 14,
+                source_fragment_bit_end: 14,
                 x: 5.0,
                 y: 6.0,
                 z: 0.0,
@@ -9414,6 +9472,10 @@ mod public_static_direction_tests {
                 object_id: 0x8000_0042,
                 appearance: 82,
                 module_template_resref: None,
+                source_read_start: 220,
+                source_read_end: 250,
+                source_fragment_bit_start: 14,
+                source_fragment_bit_end: 14,
                 x: 10.0,
                 y: 20.0,
                 z: 0.0,
@@ -9448,7 +9510,7 @@ mod public_static_direction_tests {
         }
         assert_eq!(
             overlap.formatted_rows(),
-            "light:id=unique;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "light:id=unique;wire=read:200..218 bits:14..14;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;wire=read:220..250 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
         let add_conflict = overlap.static_module_state_conflict(
             AreaPlaceableObservedState::from_add_record_state(false, true, false, true),
