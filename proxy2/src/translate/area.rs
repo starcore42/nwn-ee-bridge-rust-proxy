@@ -409,6 +409,10 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         let mut light_rows = 0usize;
         let mut static_rows = 0usize;
         let mut module_backed_static_rows = 0usize;
+        let mut module_unbacked_static_rows = 0usize;
+        let mut source_incompatible_static_rows = 0usize;
+        let mut source_read_mismatch_static_rows = 0usize;
+        let mut source_fragment_owned_static_rows = 0usize;
         let mut area_alias_rows = 0usize;
         let mut duplicate_object_id_rows = 0usize;
 
@@ -417,9 +421,25 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
                 AreaPlaceableContextRowKind::Light => light_rows += 1,
                 AreaPlaceableContextRowKind::Static => {
                     static_rows += 1;
-                    if matched.source_provenance_compatible() && matched.row.module_state.is_some()
-                    {
-                        module_backed_static_rows += 1;
+                    let source_read_width_compatible = matched
+                        .row
+                        .source_read_width_compatible_with_kind(matched.kind);
+                    let source_fragment_span_empty =
+                        matched.row.source_fragment_span_empty_for_reconciliation();
+                    if !source_read_width_compatible {
+                        source_read_mismatch_static_rows += 1;
+                    }
+                    if !source_fragment_span_empty {
+                        source_fragment_owned_static_rows += 1;
+                    }
+                    if matched.source_provenance_compatible() {
+                        if matched.row.module_state.is_some() {
+                            module_backed_static_rows += 1;
+                        } else {
+                            module_unbacked_static_rows += 1;
+                        }
+                    } else {
+                        source_incompatible_static_rows += 1;
                     }
                 }
             }
@@ -446,7 +466,11 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
             light_rows: saturating_u16(light_rows),
             static_rows: saturating_u16(static_rows),
             module_backed_static_rows: saturating_u16(module_backed_static_rows),
+            module_unbacked_static_rows: saturating_u16(module_unbacked_static_rows),
             unproven_static_rows: saturating_u16(unproven_static_rows),
+            source_incompatible_static_rows: saturating_u16(source_incompatible_static_rows),
+            source_read_mismatch_static_rows: saturating_u16(source_read_mismatch_static_rows),
+            source_fragment_owned_static_rows: saturating_u16(source_fragment_owned_static_rows),
             area_alias_rows: saturating_u16(area_alias_rows),
             duplicate_object_id_rows: saturating_u16(duplicate_object_id_rows),
         })
@@ -531,13 +555,57 @@ impl AreaPlaceableContextRow {
         &self,
         kind: AreaPlaceableContextRowKind,
     ) -> bool {
+        self.source_read_width_compatible_with_kind(kind)
+            && self.source_fragment_span_empty_for_reconciliation()
+    }
+
+    pub fn source_provenance_label_with_kind(&self, kind: AreaPlaceableContextRowKind) -> String {
+        if !self.has_explicit_source_provenance() {
+            return "implicit".to_string();
+        }
+
+        let expected_bytes = kind.decompiled_read_buffer_bytes();
+        let actual_bytes = self.source_read_end.checked_sub(self.source_read_start);
+        let read_width_compatible = actual_bytes == Some(expected_bytes);
+        let fragment_span_empty = self.source_fragment_span_empty_for_reconciliation();
+        if read_width_compatible && fragment_span_empty {
+            return "ok".to_string();
+        }
+
+        let mut label = String::new();
+        if !read_width_compatible {
+            let actual = actual_bytes
+                .map(|bytes| bytes.to_string())
+                .unwrap_or_else(|| "invalid".to_string());
+            let _ = write!(&mut label, "read-width={actual}/{expected_bytes}");
+        }
+        if !fragment_span_empty {
+            if !label.is_empty() {
+                label.push('+');
+            }
+            let _ = write!(
+                &mut label,
+                "fragment-bits={}..{}",
+                self.source_fragment_bit_start, self.source_fragment_bit_end
+            );
+        }
+        label
+    }
+
+    fn source_read_width_compatible_with_kind(&self, kind: AreaPlaceableContextRowKind) -> bool {
         if !self.has_explicit_source_provenance() {
             return true;
         }
         self.source_read_end
             .checked_sub(self.source_read_start)
             .is_some_and(|bytes| bytes == kind.decompiled_read_buffer_bytes())
-            && self.source_fragment_bit_start == self.source_fragment_bit_end
+    }
+
+    fn source_fragment_span_empty_for_reconciliation(&self) -> bool {
+        if !self.has_explicit_source_provenance() {
+            return true;
+        }
+        self.source_fragment_bit_start == self.source_fragment_bit_end
     }
 
     fn has_explicit_source_provenance(&self) -> bool {
@@ -657,7 +725,11 @@ pub struct AreaPlaceableContextIdentityConflict {
     pub light_rows: u16,
     pub static_rows: u16,
     pub module_backed_static_rows: u16,
+    pub module_unbacked_static_rows: u16,
     pub unproven_static_rows: u16,
+    pub source_incompatible_static_rows: u16,
+    pub source_read_mismatch_static_rows: u16,
+    pub source_fragment_owned_static_rows: u16,
     pub area_alias_rows: u16,
     pub duplicate_object_id_rows: u16,
 }
@@ -701,9 +773,10 @@ pub fn format_area_placeable_context_row(
         .module_state
         .map(format_area_placeable_module_state)
         .unwrap_or_else(|| "unproven".to_string());
+    let source_provenance = row.source_provenance_label_with_kind(kind);
     if row.has_direction {
         format!(
-            "{}:id={};wire=read:{}..{} bits:{}..{};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};wire=read:{}..{} bits:{}..{} source={source_provenance};app=0x{:04X}@{:.2},{:.2},{:.2};dir={:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
             row.object_id_confidence.as_str(),
             row.source_read_start,
@@ -720,7 +793,7 @@ pub fn format_area_placeable_context_row(
         )
     } else {
         format!(
-            "{}:id={};wire=read:{}..{} bits:{}..{};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
+            "{}:id={};wire=read:{}..{} bits:{}..{} source={source_provenance};app=0x{:04X}@{:.2},{:.2},{:.2};state={module_state}",
             kind.as_str(),
             row.object_id_confidence.as_str(),
             row.source_read_start,
@@ -9531,6 +9604,10 @@ mod public_static_direction_tests {
             AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row)
                 if row.object_id == object_id
         ));
+        assert_eq!(
+            static_row.source_provenance_label_with_kind(AreaPlaceableContextRowKind::Static),
+            "ok"
+        );
 
         let malformed_read_context = AreaPlaceableContext {
             static_rows: vec![AreaPlaceableContextRow {
@@ -9539,12 +9616,25 @@ mod public_static_direction_tests {
             }],
             ..AreaPlaceableContext::default()
         };
-        assert!(matches!(
-            malformed_read_context
-                .placeable_overlap_for_object_id(object_id)
-                .static_reconciliation_target(),
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
-        ));
+        assert_eq!(
+            malformed_read_context.static_rows[0]
+                .source_provenance_label_with_kind(AreaPlaceableContextRowKind::Static),
+            "read-width=29/30"
+        );
+        match malformed_read_context
+            .placeable_overlap_for_object_id(object_id)
+            .static_reconciliation_target()
+        {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.module_backed_static_rows, 0);
+                assert_eq!(conflict.module_unbacked_static_rows, 0);
+                assert_eq!(conflict.unproven_static_rows, 1);
+                assert_eq!(conflict.source_incompatible_static_rows, 1);
+                assert_eq!(conflict.source_read_mismatch_static_rows, 1);
+                assert_eq!(conflict.source_fragment_owned_static_rows, 0);
+            }
+            other => panic!("malformed source read width must block reconciliation: {other:?}"),
+        }
 
         let malformed_bit_context = AreaPlaceableContext {
             static_rows: vec![AreaPlaceableContextRow {
@@ -9553,12 +9643,25 @@ mod public_static_direction_tests {
             }],
             ..AreaPlaceableContext::default()
         };
-        assert!(matches!(
-            malformed_bit_context
-                .placeable_overlap_for_object_id(object_id)
-                .static_reconciliation_target(),
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(_)
-        ));
+        assert_eq!(
+            malformed_bit_context.static_rows[0]
+                .source_provenance_label_with_kind(AreaPlaceableContextRowKind::Static),
+            "fragment-bits=14..15"
+        );
+        match malformed_bit_context
+            .placeable_overlap_for_object_id(object_id)
+            .static_reconciliation_target()
+        {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.module_backed_static_rows, 0);
+                assert_eq!(conflict.module_unbacked_static_rows, 0);
+                assert_eq!(conflict.unproven_static_rows, 1);
+                assert_eq!(conflict.source_incompatible_static_rows, 1);
+                assert_eq!(conflict.source_read_mismatch_static_rows, 0);
+                assert_eq!(conflict.source_fragment_owned_static_rows, 1);
+            }
+            other => panic!("fragment-owning source row must block reconciliation: {other:?}"),
+        }
     }
 
     #[test]
@@ -9620,7 +9723,7 @@ mod public_static_direction_tests {
         }
         assert_eq!(
             overlap.formatted_rows(),
-            "light:id=unique;wire=read:200..218 bits:14..14;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;wire=read:220..250 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "light:id=unique;wire=read:200..218 bits:14..14 source=ok;app=0x004D@5.00,6.00,0.00;state=unproven,static:id=unique;wire=read:220..250 bits:14..14 source=ok;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
         let add_conflict = overlap.static_module_state_conflict(
             AreaPlaceableObservedState::from_add_record_state(false, true, false, true),

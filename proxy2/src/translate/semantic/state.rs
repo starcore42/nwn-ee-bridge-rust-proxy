@@ -2323,7 +2323,11 @@ mod tests {
             light_rows: 0,
             static_rows: 1,
             module_backed_static_rows: 0,
+            module_unbacked_static_rows: 1,
             unproven_static_rows: 1,
+            source_incompatible_static_rows: 0,
+            source_read_mismatch_static_rows: 0,
+            source_fragment_owned_static_rows: 0,
             area_alias_rows: 1,
             duplicate_object_id_rows: 0,
         };

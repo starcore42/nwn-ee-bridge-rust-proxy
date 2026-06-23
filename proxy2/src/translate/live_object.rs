@@ -5149,7 +5149,7 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Light, &light),
-            "light:id=unique;wire=read:200..218 bits:14..14;app=0x004D@5.00,6.00,0.00;state=unproven"
+            "light:id=unique;wire=read:200..218 bits:14..14 source=ok;app=0x004D@5.00,6.00,0.00;state=unproven"
         );
 
         let static_row = AreaPlaceableContextRow {
@@ -5180,7 +5180,7 @@ mod placeable_add_semantic_tests {
         };
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &static_row),
-            "static:id=unique;wire=read:220..250 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "static:id=unique;wire=read:220..250 bits:14..14 source=ok;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
 
         let conflict = static_row

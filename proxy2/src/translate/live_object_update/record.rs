@@ -2618,7 +2618,7 @@ mod tests {
 
         assert_eq!(
             format_area_placeable_context_row(AreaPlaceableContextRowKind::Static, &row),
-            "static:id=area-alias;wire=read:128..158 bits:14..14;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
+            "static:id=area-alias;wire=read:128..158 bits:14..14 source=ok;app=0x0052@10.00,20.00,0.00;dir=0.00,1.00,0.00;state=static=true useable=true trap=false disarmable=false lockable=true locked=false"
         );
 
         let context = AreaPlaceableContext {
