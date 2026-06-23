@@ -2450,6 +2450,14 @@ mod diagnostic_tests {
                 &[false, false, true, false, false],
             ),
             claim_family: "item-create",
+            ledger_family: Some("item-create-rewrite"),
+            ledger_emitted_bits: Some(live_object_rewrite_bit_slice_evidence(
+                22,
+                28,
+                &[false, false, true, false, false, false],
+            )),
+            ledger_bits_inserted: Some(1),
+            ledger_bits_removed: Some(0),
         });
         source_entries[1] = Some(LiveObjectUpdateSourceWindowEntryEvidence {
             offset: 51,
@@ -2467,6 +2475,10 @@ mod diagnostic_tests {
                 &[false, true, true, true, false, true],
             ),
             claim_family: "unclaimed",
+            ledger_family: None,
+            ledger_emitted_bits: None,
+            ledger_bits_inserted: None,
+            ledger_bits_removed: None,
         });
         let mut source_neighbors = [None; LIVE_OBJECT_UPDATE_SOURCE_WINDOW_NEIGHBOR_LIMIT];
         source_neighbors[0] = Some(LiveObjectUpdateSourceWindowNeighborEvidence {
@@ -2674,7 +2686,7 @@ mod diagnostic_tests {
             "source_window_summary=focus=51..104 focus_row_index=1 initial_bit_cursor=22 expected_bit_cursor=28 fragment_bits=42 entries=2 retained=2 neighbors=1 retained=1"
         ));
         assert!(report.contains(
-            "source_window_entry[1]=51..104 opcode=0x55 marker=0x06 object_id=0x00000020 update_mask=0xFFFFFFF3 bits=28..unclaimed bit_delta=none claim=unclaimed source_bits=22..38:011101...+10 bytes=51..104:55 06 20 00 00 00 F3 FF FF FF"
+            "source_window_entry[1]=51..104 opcode=0x55 marker=0x06 object_id=0x00000020 update_mask=0xFFFFFFF3 bits=28..unclaimed bit_delta=none claim=unclaimed source_bits=22..38:011101...+10 ledger=none bytes=51..104:55 06 20 00 00 00 F3 FF FF FF"
         ));
         assert!(report.contains(
             "source_window_neighbor[0]=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false relation=inside-focus-row gap_origin=focus-position-bits source_owner=unowned-emitted-source-gap claimable_handoff=false handoff_blocker=unowned-emitted-source-gap ledger_relation=unowned-emitted-gap ledger_source_relation=unowned-source-gap ledger_emitted_gap=bits=2 range=28..30 values=28..30:01 ledger_source_gap=bits=2 range=22..24 values=22..24:01 ledger_implied_source_cursor=24 ledger_cumulative_emitted_source_delta=6 ledger_source_emitted_delta_after_previous=6 ledger_previous=16..51:item-create-rewrite"
@@ -4146,8 +4158,21 @@ mod diagnostic_tests {
             source_bit_start: usize,
             source_bit_count: usize,
             claim_family: &'static str,
+            ledger_family: Option<&'static str>,
+            ledger_bits_inserted: Option<usize>,
+            ledger_bits_removed: Option<usize>,
         ) -> LiveObjectUpdateItemHandoffSequenceRowEvidence {
             let source_bits = vec![false; source_bit_count];
+            let emitted_bits = bit_end.and_then(|bit_end| {
+                let bit_count = bit_end.saturating_sub(bit_start);
+                ledger_family.map(|_| {
+                    live_object_rewrite_bit_slice_evidence(
+                        bit_start,
+                        bit_end,
+                        &vec![false; bit_count],
+                    )
+                })
+            });
             LiveObjectUpdateItemHandoffSequenceRowEvidence {
                 offset: 0,
                 record_end: 0,
@@ -4164,6 +4189,10 @@ mod diagnostic_tests {
                     &source_bits,
                 ),
                 claim_family,
+                ledger_family,
+                ledger_emitted_bits: emitted_bits,
+                ledger_bits_inserted,
+                ledger_bits_removed,
             }
         }
 
@@ -4177,6 +4206,9 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS,
             COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
             "update",
+            Some("update-compact-tail9-rewrite"),
+            Some(6),
+            Some(1),
         );
         let previous = handoff_row(
             b'A',
@@ -4188,6 +4220,9 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
             5,
             "item-create",
+            None,
+            None,
+            None,
         );
         let focus = handoff_row(
             b'U',
@@ -4199,6 +4234,9 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
             16,
             "unclaimed",
+            None,
+            None,
+            None,
         );
         let exact_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: Some(carrier),
@@ -4237,6 +4275,9 @@ mod diagnostic_tests {
             CNW_FRAGMENT_HEADER_BITS,
             COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
             "update",
+            Some("update-compact-tail9-rewrite"),
+            Some(6),
+            Some(1),
         );
         let loose_context = LiveObjectUpdateItemHandoffSequenceContext {
             carrier_row: Some(loose_carrier),
@@ -4262,6 +4303,34 @@ mod diagnostic_tests {
             LiveObjectUpdateItemHandoffSourceDecision::UnclassifiedSourceContract
         );
         assert!(!loose_decision.claimable_handoff());
+
+        let unbacked_carrier = handoff_row(
+            b'U',
+            DOOR_OBJECT_TYPE,
+            Some(0x8000_0004),
+            Some(0xFFFF_FFF7),
+            CNW_FRAGMENT_HEADER_BITS,
+            Some(CNW_FRAGMENT_HEADER_BITS + COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS),
+            CNW_FRAGMENT_HEADER_BITS,
+            COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS,
+            "update",
+            None,
+            None,
+            None,
+        );
+        let unbacked_context = LiveObjectUpdateItemHandoffSequenceContext {
+            carrier_row: Some(unbacked_carrier),
+            previous_row: Some(previous),
+            focus_row: Some(focus),
+        };
+        assert_eq!(
+            live_object_item_handoff_source_contract(
+                LiveObjectUpdateItemHandoffSequenceKind::DoorUpdateItemCreateToItemUpdate,
+                unbacked_context,
+            ),
+            LiveObjectUpdateItemHandoffSourceContract::Unclassified,
+            "a compact-width carrier must still have the production tail9 ledger claim"
+        );
     }
 
     #[test]
@@ -14002,6 +14071,10 @@ pub struct LiveObjectUpdateItemHandoffSequenceRowEvidence {
     pub bit_delta: Option<usize>,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
+    pub ledger_family: Option<&'static str>,
+    pub ledger_emitted_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_bits_inserted: Option<usize>,
+    pub ledger_bits_removed: Option<usize>,
 }
 
 pub const LIVE_OBJECT_UPDATE_REWRITE_TAIL_EVIDENCE_ENTRY_LIMIT: usize = 8;
@@ -14093,6 +14166,10 @@ pub struct LiveObjectUpdateSourceWindowEntryEvidence {
     pub bit_delta: Option<usize>,
     pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
     pub claim_family: &'static str,
+    pub ledger_family: Option<&'static str>,
+    pub ledger_emitted_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    pub ledger_bits_inserted: Option<usize>,
+    pub ledger_bits_removed: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30260,6 +30337,17 @@ impl LiveObjectRewriteBitLedger {
             .map(|entry| entry.emitted_bit_start)
     }
 
+    fn entry_for_row(
+        &self,
+        offset: usize,
+        record_end: usize,
+    ) -> Option<&LiveObjectRewriteBitLedgerEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.offset == offset && entry.record_end == record_end)
+            .or_else(|| self.entries.iter().find(|entry| entry.offset == offset))
+    }
+
     fn gap_before_cursor(&self, cursor: usize) -> Option<LiveObjectRewriteBitLedgerCursorGap> {
         let previous_index = self.previous_entry_index_for_cursor(cursor)?;
         let previous = self.entries.get(previous_index)?;
@@ -31287,6 +31375,14 @@ fn live_object_source_window_evidence(
             source_preview_start,
             source_preview_end,
         );
+        let ledger_entry = rewrite_bit_ledger.entry_for_row(row.offset, row.record_end);
+        let ledger_emitted_bits = ledger_entry.map(|entry| {
+            live_object_rewrite_bit_slice_evidence(
+                entry.emitted_bit_start,
+                entry.emitted_bit_end,
+                rewrite_bit_ledger.emitted_values_for_entry(fragment_bits, entry),
+            )
+        });
         *slot = Some(LiveObjectUpdateSourceWindowEntryEvidence {
             offset: row.offset,
             record_end: row.record_end,
@@ -31305,6 +31401,10 @@ fn live_object_source_window_evidence(
                 source_values,
             ),
             claim_family: claim.family,
+            ledger_family: ledger_entry.map(|entry| entry.family),
+            ledger_emitted_bits,
+            ledger_bits_inserted: ledger_entry.map(|entry| entry.bits_inserted),
+            ledger_bits_removed: ledger_entry.map(|entry| entry.bits_removed),
         });
     }
     let neighbor_retain_start = neighbor_claims
@@ -31526,12 +31626,28 @@ fn live_object_item_handoff_context_has_bounded_item_create_to_update(
 fn live_object_item_handoff_row_is_compact_tail9_door_update(
     row: LiveObjectUpdateItemHandoffSequenceRowEvidence,
 ) -> bool {
+    let Some(bit_end) = row.bit_end else {
+        return false;
+    };
+    let Some(ledger_emitted_bits) = row.ledger_emitted_bits else {
+        return false;
+    };
+    let ledger_source_delta = row
+        .ledger_bits_inserted
+        .zip(row.ledger_bits_removed)
+        .and_then(|(bits_inserted, bits_removed)| {
+            live_object_rewrite_source_delta(row.bit_start, bit_end, bits_inserted, bits_removed)
+        });
+
     row.opcode == b'U'
         && row.marker == DOOR_OBJECT_TYPE
         && matches!(row.update_mask, Some(0xFFFF_FFF7) | Some(0x0000_0017))
         && row.bit_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS)
         && row.source_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS
         && row.claim_family == "update"
+        && row.ledger_family == Some("update-compact-tail9-rewrite")
+        && ledger_emitted_bits.bit_count == COMPACT_TAIL9_DOOR_PLACEABLE_EE_FRAGMENT_BITS
+        && ledger_source_delta == Some(COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS)
 }
 
 fn live_object_item_handoff_row_is_bounded_item_create(
@@ -31567,6 +31683,10 @@ fn live_object_item_handoff_sequence_row(
         bit_delta: entry.bit_delta,
         source_bits: entry.source_bits,
         claim_family: entry.claim_family,
+        ledger_family: entry.ledger_family,
+        ledger_emitted_bits: entry.ledger_emitted_bits,
+        ledger_bits_inserted: entry.ledger_bits_inserted,
+        ledger_bits_removed: entry.ledger_bits_removed,
     }
 }
 
@@ -32916,7 +33036,7 @@ fn write_source_window_evidence(
             .unwrap_or_else(|| format!("{}..unclaimed", entry.bit_start));
         let _ = writeln!(
             out,
-            "source_window_entry[{index}]={}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} bytes={}",
+            "source_window_entry[{index}]={}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} ledger={} bytes={}",
             entry.offset,
             entry.record_end,
             format_live_object_byte(entry.opcode),
@@ -32927,6 +33047,12 @@ fn write_source_window_evidence(
             format_optional_usize(entry.bit_delta),
             entry.claim_family,
             format_rewrite_bit_slice_evidence(entry.source_bits),
+            format_source_window_ledger_evidence(
+                entry.ledger_family,
+                entry.ledger_emitted_bits,
+                entry.ledger_bits_inserted,
+                entry.ledger_bits_removed,
+            ),
             format_payload_byte_range(payload, entry.offset, entry.record_end, 48)
         );
     }
@@ -33006,7 +33132,7 @@ fn format_item_handoff_sequence_row(
         .map(|bit_end| format!("{}..{bit_end}", row.bit_start))
         .unwrap_or_else(|| format!("{}..unclaimed", row.bit_start));
     format!(
-        "{}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={}",
+        "{}..{} opcode={} marker={} object_id={} update_mask={} bits={} bit_delta={} claim={} source_bits={} ledger={}",
         row.offset,
         row.record_end,
         format_live_object_byte(row.opcode),
@@ -33016,7 +33142,33 @@ fn format_item_handoff_sequence_row(
         bits,
         format_optional_usize(row.bit_delta),
         row.claim_family,
-        format_rewrite_bit_slice_evidence(row.source_bits)
+        format_rewrite_bit_slice_evidence(row.source_bits),
+        format_source_window_ledger_evidence(
+            row.ledger_family,
+            row.ledger_emitted_bits,
+            row.ledger_bits_inserted,
+            row.ledger_bits_removed,
+        )
+    )
+}
+
+fn format_source_window_ledger_evidence(
+    family: Option<&'static str>,
+    emitted_bits: Option<LiveObjectUpdateRewriteBitSliceEvidence>,
+    bits_inserted: Option<usize>,
+    bits_removed: Option<usize>,
+) -> String {
+    let Some(family) = family else {
+        return "none".to_string();
+    };
+    format!(
+        "family={} emitted_bits={} inserted={} removed={}",
+        family,
+        emitted_bits
+            .map(format_rewrite_bit_slice_evidence)
+            .unwrap_or_else(|| "none".to_string()),
+        format_optional_usize(bits_inserted),
+        format_optional_usize(bits_removed),
     )
 }
 
