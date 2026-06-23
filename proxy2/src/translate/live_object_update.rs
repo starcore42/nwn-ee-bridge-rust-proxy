@@ -2722,6 +2722,9 @@ mod diagnostic_tests {
             "item_handoff_prefix_source_replay=verdict=source-gap-matches-focus-prefix prefix_bits=2 source_gap_bits=2 emitted_gap_bits=2 compared_bits=2 matched_bits=2 first_mismatch=none"
         ));
         assert!(report.contains(
+            "item_handoff_prefix_stage_replay[0]=stage=position-residuals verdict=source-gap-matches-focus-stage source_values=22..24:01 focus_values=28..30:01 compared_bits=2 matched_bits=2 first_mismatch=none"
+        ));
+        assert!(report.contains(
             "item_handoff_valid_neighbor=delta=2 bits=30..42 read_end=104 translated_mask=0x00080033 orientation_vector=false gap_origin=focus-position-bits"
         ));
         assert!(report.contains(
@@ -2777,6 +2780,9 @@ mod diagnostic_tests {
             handoff_capture
                 .contains("focus_prefix_stage\t0\tstage\tposition-residuals\tbits\t28..30")
         );
+        assert!(handoff_capture.contains(
+            "prefix_stage_replay\t0\tstage\tposition-residuals\tverdict\tsource-gap-matches-focus-stage\tsource_values\t22..24:01\tfocus_values\t28..30:01"
+        ));
         assert!(
             handoff_capture
                 .contains("source_window_neighbor\t0\tdelta\t2\tbits\t30..42\tread_end\t104")
@@ -14363,6 +14369,17 @@ pub struct LiveObjectUpdateItemHandoffPrefixSourceReplayEvidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectUpdateItemHandoffPrefixStageReplayEvidence {
+    pub stage: LiveObjectUpdateItemHandoffFocusPrefixStage,
+    pub verdict: LiveObjectUpdateItemHandoffPrefixStageReplayVerdict,
+    pub source_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub focus_bits: LiveObjectUpdateRewriteBitSliceEvidence,
+    pub compared_bits: usize,
+    pub matched_bits: usize,
+    pub first_mismatch_bit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict {
     EmptyFocusPrefix,
     SourceGapMatchesFocusPrefix,
@@ -14380,6 +14397,25 @@ impl LiveObjectUpdateItemHandoffPrefixSourceReplayVerdict {
             Self::SourceGapDiffersFromFocusPrefix => "source-gap-differs-from-focus-prefix",
             Self::SourceGapShorterThanFocusPrefix => "source-gap-shorter-than-focus-prefix",
             Self::SourceGapLongerThanFocusPrefix => "source-gap-longer-than-focus-prefix",
+            Self::PreviewIncomplete => "preview-incomplete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveObjectUpdateItemHandoffPrefixStageReplayVerdict {
+    SourceGapMatchesFocusStage,
+    SourceGapDiffersFromFocusStage,
+    SourceGapShorterThanFocusStage,
+    PreviewIncomplete,
+}
+
+impl LiveObjectUpdateItemHandoffPrefixStageReplayVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceGapMatchesFocusStage => "source-gap-matches-focus-stage",
+            Self::SourceGapDiffersFromFocusStage => "source-gap-differs-from-focus-stage",
+            Self::SourceGapShorterThanFocusStage => "source-gap-shorter-than-focus-stage",
             Self::PreviewIncomplete => "preview-incomplete",
         }
     }
@@ -31211,6 +31247,33 @@ fn live_object_rewrite_bit_slice_evidence(
     }
 }
 
+fn live_object_rewrite_bit_slice_sub_evidence(
+    evidence: LiveObjectUpdateRewriteBitSliceEvidence,
+    bit_start: usize,
+    bit_end: usize,
+) -> LiveObjectUpdateRewriteBitSliceEvidence {
+    let mut bits = [None; LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT];
+    let bit_count = bit_end.saturating_sub(bit_start);
+    let bits_retained = bit_count.min(LIVE_OBJECT_UPDATE_REWRITE_BIT_PREVIEW_LIMIT);
+    for (index, slot) in bits.iter_mut().take(bits_retained).enumerate() {
+        let absolute_bit = bit_start.saturating_add(index);
+        if absolute_bit < evidence.bit_start {
+            continue;
+        }
+        let parent_index = absolute_bit.saturating_sub(evidence.bit_start);
+        if parent_index < evidence.bits_retained {
+            *slot = evidence.bits[parent_index];
+        }
+    }
+    LiveObjectUpdateRewriteBitSliceEvidence {
+        bit_start,
+        bit_end,
+        bit_count,
+        bits_retained,
+        bits,
+    }
+}
+
 fn live_object_rewrite_byte_slice_evidence(
     byte_start: usize,
     byte_end: usize,
@@ -33100,6 +33163,87 @@ fn live_object_item_handoff_prefix_source_replay(
     })
 }
 
+fn live_object_item_handoff_prefix_stage_replays(
+    handoff: LiveObjectUpdateItemHandoffEvidence,
+) -> Vec<LiveObjectUpdateItemHandoffPrefixStageReplayEvidence> {
+    let Some(focus_prefix) = handoff.focus_prefix else {
+        return Vec::new();
+    };
+
+    let mut prefix_offset = 0usize;
+    let mut replays = Vec::new();
+    for stage in focus_prefix.stages.iter().flatten().copied() {
+        let stage_bits = stage
+            .consumed_bits
+            .min(stage.bit_end.saturating_sub(stage.bit_start));
+        if stage_bits == 0 {
+            continue;
+        }
+        let source_bit_start = handoff.source_gap_bit_start.saturating_add(prefix_offset);
+        let expected_source_bit_end = source_bit_start.saturating_add(stage_bits);
+        let source_bit_end = if source_bit_start >= handoff.source_gap_bit_end {
+            source_bit_start
+        } else {
+            expected_source_bit_end.min(handoff.source_gap_bit_end)
+        };
+        let source_bits = live_object_rewrite_bit_slice_sub_evidence(
+            handoff.source_gap_values,
+            source_bit_start,
+            source_bit_end,
+        );
+
+        let mut compared_bits = 0usize;
+        let mut matched_bits = 0usize;
+        let mut first_mismatch_bit = None;
+        let mut preview_incomplete = false;
+        let compare_limit = stage_bits
+            .min(source_bits.bit_count)
+            .min(stage.bits.bits_retained)
+            .min(source_bits.bits_retained);
+        for index in 0..compare_limit {
+            let focus_bit = stage.bits.bits[index];
+            let source_bit = source_bits.bits[index];
+            let (Some(focus_bit), Some(source_bit)) = (focus_bit, source_bit) else {
+                preview_incomplete = true;
+                break;
+            };
+            compared_bits += 1;
+            if source_bit == focus_bit {
+                matched_bits += 1;
+            } else {
+                first_mismatch_bit = Some(index);
+                break;
+            }
+        }
+        if first_mismatch_bit.is_none() && compared_bits < stage_bits.min(source_bits.bit_count) {
+            preview_incomplete = true;
+        }
+
+        let verdict = if first_mismatch_bit.is_some() {
+            LiveObjectUpdateItemHandoffPrefixStageReplayVerdict::SourceGapDiffersFromFocusStage
+        } else if source_bits.bit_count < stage_bits {
+            LiveObjectUpdateItemHandoffPrefixStageReplayVerdict::SourceGapShorterThanFocusStage
+        } else if preview_incomplete {
+            LiveObjectUpdateItemHandoffPrefixStageReplayVerdict::PreviewIncomplete
+        } else {
+            LiveObjectUpdateItemHandoffPrefixStageReplayVerdict::SourceGapMatchesFocusStage
+        };
+
+        replays.push(LiveObjectUpdateItemHandoffPrefixStageReplayEvidence {
+            stage: stage.stage,
+            verdict,
+            source_bits,
+            focus_bits: stage.bits,
+            compared_bits,
+            matched_bits,
+            first_mismatch_bit,
+        });
+        prefix_offset = prefix_offset.saturating_add(stage_bits);
+    }
+
+    replays
+}
+
 fn live_object_item_handoff_focus_prefix_retained_bits(
     focus_prefix: LiveObjectUpdateItemHandoffFocusPrefixEvidence,
 ) -> usize {
@@ -33948,6 +34092,7 @@ fn format_live_object_update_rewrite_failure_evidence(
             );
             write_item_handoff_focus_prefix(&mut out, handoff.focus_prefix);
             write_item_handoff_prefix_source_replay(&mut out, handoff.prefix_source_replay);
+            write_item_handoff_prefix_stage_replay(&mut out, handoff);
             let _ = writeln!(
                 &mut out,
                 "item_handoff_valid_neighbor=delta={} bits={}..{} read_end={} translated_mask=0x{:08X} orientation_vector={} gap_origin={}",
@@ -34109,6 +34254,7 @@ fn format_live_object_update_item_handoff_source_capture(
     write_item_handoff_residue_capture(&mut out, handoff.sequence_residue);
     write_item_handoff_prefix_capture(&mut out, handoff.focus_prefix);
     write_item_handoff_prefix_source_replay_capture(&mut out, handoff.prefix_source_replay);
+    write_item_handoff_prefix_stage_replay_capture(&mut out, handoff);
     write_tsv_line(
         &mut out,
         &[
@@ -34438,6 +34584,44 @@ fn write_item_handoff_prefix_source_replay_capture(
             format_optional_usize(replay.first_mismatch_bit),
         ],
     );
+}
+
+fn write_item_handoff_prefix_stage_replay_capture(
+    out: &mut String,
+    handoff: LiveObjectUpdateItemHandoffEvidence,
+) {
+    let replays = live_object_item_handoff_prefix_stage_replays(handoff);
+    if replays.is_empty() {
+        write_tsv_line(
+            out,
+            &["prefix_stage_replay".to_string(), "none".to_string()],
+        );
+        return;
+    }
+
+    for (index, replay) in replays.iter().enumerate() {
+        write_tsv_line(
+            out,
+            &[
+                "prefix_stage_replay".to_string(),
+                index.to_string(),
+                "stage".to_string(),
+                replay.stage.as_str().to_string(),
+                "verdict".to_string(),
+                replay.verdict.as_str().to_string(),
+                "source_values".to_string(),
+                format_rewrite_bit_slice_evidence(replay.source_bits),
+                "focus_values".to_string(),
+                format_rewrite_bit_slice_evidence(replay.focus_bits),
+                "compared_bits".to_string(),
+                replay.compared_bits.to_string(),
+                "matched_bits".to_string(),
+                replay.matched_bits.to_string(),
+                "first_mismatch".to_string(),
+                format_optional_usize(replay.first_mismatch_bit),
+            ],
+        );
+    }
 }
 
 fn write_rewrite_tail_capture(out: &mut String, tail: Option<LiveObjectUpdateRewriteTailEvidence>) {
@@ -34901,6 +35085,33 @@ fn write_item_handoff_prefix_source_replay(
         replay.matched_bits,
         format_optional_usize(replay.first_mismatch_bit)
     );
+}
+
+fn write_item_handoff_prefix_stage_replay(
+    out: &mut String,
+    handoff: LiveObjectUpdateItemHandoffEvidence,
+) {
+    use std::fmt::Write as _;
+
+    let replays = live_object_item_handoff_prefix_stage_replays(handoff);
+    if replays.is_empty() {
+        let _ = writeln!(out, "item_handoff_prefix_stage_replay=none");
+        return;
+    }
+
+    for (index, replay) in replays.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "item_handoff_prefix_stage_replay[{index}]=stage={} verdict={} source_values={} focus_values={} compared_bits={} matched_bits={} first_mismatch={}",
+            replay.stage.as_str(),
+            replay.verdict.as_str(),
+            format_rewrite_bit_slice_evidence(replay.source_bits),
+            format_rewrite_bit_slice_evidence(replay.focus_bits),
+            replay.compared_bits,
+            replay.matched_bits,
+            format_optional_usize(replay.first_mismatch_bit)
+        );
+    }
 }
 
 fn format_item_handoff_sequence_row(

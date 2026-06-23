@@ -5884,6 +5884,32 @@ fn cep_tail9_name_suffix_no_map_replays_raw_neighbor_u6_bits_without_repair() {
     assert_eq!(prefix_replay.compared_bits, 2);
     assert_eq!(prefix_replay.matched_bits, 2);
     assert_eq!(prefix_replay.first_mismatch_bit, None);
+    let stage_replays = super::live_object_item_handoff_prefix_stage_replays(handoff);
+    assert_eq!(stage_replays.len(), 1);
+    let stage_replay = stage_replays[0];
+    assert_eq!(
+        stage_replay.stage,
+        super::LiveObjectUpdateItemHandoffFocusPrefixStage::PositionResiduals,
+        "the disputed compact source bits should map to the U/6 position prefix"
+    );
+    assert_eq!(
+        stage_replay.verdict,
+        super::LiveObjectUpdateItemHandoffPrefixStageReplayVerdict::SourceGapMatchesFocusStage,
+        "source capture replay should identify the skipped field, not just a raw bit string"
+    );
+    assert_eq!(
+        stage_replay.source_bits.bit_start,
+        handoff.source_gap_bit_start
+    );
+    assert_eq!(stage_replay.source_bits.bit_end, handoff.source_gap_bit_end);
+    assert_eq!(stage_replay.focus_bits.bit_start, handoff.focus_bit_cursor);
+    assert_eq!(
+        stage_replay.focus_bits.bit_end,
+        handoff.focus_bit_cursor + 2
+    );
+    assert_eq!(stage_replay.compared_bits, 2);
+    assert_eq!(stage_replay.matched_bits, 2);
+    assert_eq!(stage_replay.first_mismatch_bit, None);
     assert_eq!(
         residue.pre_focus_source_bits,
         super::COMPACT_TAIL9_DOOR_PLACEABLE_SOURCE_FRAGMENT_BITS + 5,
