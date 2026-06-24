@@ -413,6 +413,7 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
         let mut source_incompatible_static_rows = 0usize;
         let mut source_read_mismatch_static_rows = 0usize;
         let mut source_fragment_owned_static_rows = 0usize;
+        let mut source_read_mismatch_and_fragment_owned_static_rows = 0usize;
         let mut area_alias_rows = 0usize;
         let mut duplicate_object_id_rows = 0usize;
 
@@ -431,6 +432,9 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
                     }
                     if !source_fragment_span_empty {
                         source_fragment_owned_static_rows += 1;
+                    }
+                    if !source_read_width_compatible && !source_fragment_span_empty {
+                        source_read_mismatch_and_fragment_owned_static_rows += 1;
                     }
                     if matched.source_provenance_compatible() {
                         if matched.row.module_state.is_some() {
@@ -471,6 +475,9 @@ impl<'a> AreaPlaceableContextOverlap<'a> {
             source_incompatible_static_rows: saturating_u16(source_incompatible_static_rows),
             source_read_mismatch_static_rows: saturating_u16(source_read_mismatch_static_rows),
             source_fragment_owned_static_rows: saturating_u16(source_fragment_owned_static_rows),
+            source_read_mismatch_and_fragment_owned_static_rows: saturating_u16(
+                source_read_mismatch_and_fragment_owned_static_rows,
+            ),
             area_alias_rows: saturating_u16(area_alias_rows),
             duplicate_object_id_rows: saturating_u16(duplicate_object_id_rows),
         })
@@ -730,6 +737,7 @@ pub struct AreaPlaceableContextIdentityConflict {
     pub source_incompatible_static_rows: u16,
     pub source_read_mismatch_static_rows: u16,
     pub source_fragment_owned_static_rows: u16,
+    pub source_read_mismatch_and_fragment_owned_static_rows: u16,
     pub area_alias_rows: u16,
     pub duplicate_object_id_rows: u16,
 }
@@ -9632,6 +9640,10 @@ mod public_static_direction_tests {
                 assert_eq!(conflict.source_incompatible_static_rows, 1);
                 assert_eq!(conflict.source_read_mismatch_static_rows, 1);
                 assert_eq!(conflict.source_fragment_owned_static_rows, 0);
+                assert_eq!(
+                    conflict.source_read_mismatch_and_fragment_owned_static_rows,
+                    0
+                );
             }
             other => panic!("malformed source read width must block reconciliation: {other:?}"),
         }
@@ -9639,7 +9651,7 @@ mod public_static_direction_tests {
         let malformed_bit_context = AreaPlaceableContext {
             static_rows: vec![AreaPlaceableContextRow {
                 source_fragment_bit_end: static_row.source_fragment_bit_start + 1,
-                ..static_row
+                ..static_row.clone()
             }],
             ..AreaPlaceableContext::default()
         };
@@ -9659,8 +9671,46 @@ mod public_static_direction_tests {
                 assert_eq!(conflict.source_incompatible_static_rows, 1);
                 assert_eq!(conflict.source_read_mismatch_static_rows, 0);
                 assert_eq!(conflict.source_fragment_owned_static_rows, 1);
+                assert_eq!(
+                    conflict.source_read_mismatch_and_fragment_owned_static_rows,
+                    0
+                );
             }
             other => panic!("fragment-owning source row must block reconciliation: {other:?}"),
+        }
+
+        let malformed_read_and_bit_context = AreaPlaceableContext {
+            static_rows: vec![AreaPlaceableContextRow {
+                source_read_end: static_row.source_read_end - 1,
+                source_fragment_bit_end: static_row.source_fragment_bit_start + 1,
+                ..static_row
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        assert_eq!(
+            malformed_read_and_bit_context.static_rows[0]
+                .source_provenance_label_with_kind(AreaPlaceableContextRowKind::Static),
+            "read-width=29/30+fragment-bits=14..15"
+        );
+        match malformed_read_and_bit_context
+            .placeable_overlap_for_object_id(object_id)
+            .static_reconciliation_target()
+        {
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                assert_eq!(conflict.module_backed_static_rows, 0);
+                assert_eq!(conflict.module_unbacked_static_rows, 0);
+                assert_eq!(conflict.unproven_static_rows, 1);
+                assert_eq!(conflict.source_incompatible_static_rows, 1);
+                assert_eq!(conflict.source_read_mismatch_static_rows, 1);
+                assert_eq!(conflict.source_fragment_owned_static_rows, 1);
+                assert_eq!(
+                    conflict.source_read_mismatch_and_fragment_owned_static_rows,
+                    1
+                );
+            }
+            other => panic!(
+                "read-mismatched and fragment-owning source row must expose the combined blocker: {other:?}"
+            ),
         }
     }
 

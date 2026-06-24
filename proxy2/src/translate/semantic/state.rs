@@ -2328,6 +2328,7 @@ mod tests {
             source_incompatible_static_rows: 0,
             source_read_mismatch_static_rows: 0,
             source_fragment_owned_static_rows: 0,
+            source_read_mismatch_and_fragment_owned_static_rows: 0,
             area_alias_rows: 1,
             duplicate_object_id_rows: 0,
         };

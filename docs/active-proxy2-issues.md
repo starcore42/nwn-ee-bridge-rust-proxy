@@ -1050,6 +1050,17 @@ Current status:
   regression, the helper-level field-correlation regression, and focused
   `exact_placeable_`; next replay can compare the class-specific rewrite versus
   unchanged buckets before adding a new `P/05` writer rule.
+- 2026-06-24 follow-up static/live placeable combined source-blocker
+  classification: packet bytes and reconciliation policy are unchanged. `P/04`
+  placeable identity conflicts now count static rows whose explicit source
+  provenance has both a malformed read-buffer width and owned fragment bits;
+  `P/05` reconciliation summary/debug counters carry that row-level combined
+  blocker through selected-target and rewrite/unchanged outcome buckets. This
+  distinguishes one malformed area row from separate read-width and fragment
+  blockers before any writer rule is added. Verified with focused area
+  provenance, malformed `U/09`, and source-blocked field-correlation tests;
+  next replay should compare combined-class counts against remaining source-
+  blocked field rewrites before changing emitted packet behavior.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

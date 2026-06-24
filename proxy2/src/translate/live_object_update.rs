@@ -8349,6 +8349,12 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary
+                .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows,
+            1,
+            "the malformed P/04 static row should expose that the same row has both source blocker classes"
+        );
+        assert_eq!(
             summary.exact_placeable_update_identity_resolved_by_position, 1,
             "only the compatible static row should remain as position proof"
         );
@@ -8367,6 +8373,12 @@ mod diagnostic_tests {
         assert_eq!(
             summary.exact_placeable_update_base_identity_source_blocked_fragment_owned_targets, 1,
             "the selected P/05 target should retain that the base P/04 identity was blocked by fragment-owned row bits"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets,
+            1,
+            "the selected P/05 target should retain when one base P/04 row carried both source blockers"
         );
         assert_eq!(
             summary.exact_placeable_update_base_identity_source_blocked_position_targets, 1,
@@ -8400,12 +8412,23 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            1,
+            "field rewrite status should also keep the row-level combined source blocker"
+        );
+        assert_eq!(
+            summary
                 .exact_placeable_update_base_identity_source_blocked_read_mismatch_field_unchanged_targets,
             0
         );
         assert_eq!(
             summary
                 .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets,
             0
         );
         assert_eq!(summary.exact_placeable_update_appearance_rewritten, 1);
@@ -8468,6 +8491,7 @@ mod diagnostic_tests {
             source_incompatible_static_rows: 1,
             source_read_mismatch_static_rows: 1,
             source_fragment_owned_static_rows: 1,
+            source_read_mismatch_and_fragment_owned_static_rows: 1,
             area_alias_rows: 0,
             duplicate_object_id_rows: 1,
         };
@@ -8503,6 +8527,11 @@ mod diagnostic_tests {
             1
         );
         assert_eq!(
+            summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
             summary.exact_placeable_add_base_identity_source_blocked_field_unchanged_targets,
             1
         );
@@ -8514,6 +8543,11 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets,
             1
         );
         assert_eq!(
@@ -14260,10 +14294,13 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_base_identity_source_incompatible_static_rows: u32,
     pub exact_placeable_add_base_identity_source_read_mismatch_static_rows: u32,
     pub exact_placeable_add_base_identity_source_fragment_owned_static_rows: u32,
+    pub exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows: u32,
     pub exact_placeable_update_base_identity_module_unbacked_static_rows: u32,
     pub exact_placeable_update_base_identity_source_incompatible_static_rows: u32,
     pub exact_placeable_update_base_identity_source_read_mismatch_static_rows: u32,
     pub exact_placeable_update_base_identity_source_fragment_owned_static_rows: u32,
+    pub exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows:
+        u32,
     pub exact_placeable_add_base_identity_source_blocked_appearance_rewrites: u32,
     pub exact_placeable_add_base_identity_source_blocked_state_rewrites: u32,
     pub exact_placeable_update_base_identity_source_blocked_position_rewrites: u32,
@@ -14273,6 +14310,8 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_base_identity_source_blocked_resolved_targets: u32,
     pub exact_placeable_add_base_identity_source_blocked_read_mismatch_targets: u32,
     pub exact_placeable_add_base_identity_source_blocked_fragment_owned_targets: u32,
+    pub exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets:
+        u32,
     pub exact_placeable_add_base_identity_source_blocked_fixed_field_targets: u32,
     pub exact_placeable_add_base_identity_source_blocked_position_targets: u32,
     pub exact_placeable_add_base_identity_source_blocked_add_output_equivalence_targets: u32,
@@ -14283,9 +14322,15 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_base_identity_source_blocked_fragment_owned_field_rewrite_targets: u32,
     pub exact_placeable_add_base_identity_source_blocked_fragment_owned_field_unchanged_targets:
         u32,
+    pub exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets:
+        u32,
+    pub exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets:
+        u32,
     pub exact_placeable_update_base_identity_source_blocked_resolved_targets: u32,
     pub exact_placeable_update_base_identity_source_blocked_read_mismatch_targets: u32,
     pub exact_placeable_update_base_identity_source_blocked_fragment_owned_targets: u32,
+    pub exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets:
+        u32,
     pub exact_placeable_update_base_identity_source_blocked_position_targets: u32,
     pub exact_placeable_update_base_identity_source_blocked_position_output_equivalence_targets:
         u32,
@@ -14298,6 +14343,10 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_update_base_identity_source_blocked_fragment_owned_field_rewrite_targets:
         u32,
     pub exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets:
+        u32,
+    pub exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets:
+        u32,
+    pub exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets:
         u32,
     pub exact_placeable_add_identity_resolved_by_fixed_fields: u32,
     pub exact_placeable_add_identity_resolved_by_fixed_field_equivalence: u32,
@@ -23797,6 +23846,13 @@ fn record_exact_placeable_base_identity_provenance_blockers(
             summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows = summary
                 .exact_placeable_add_base_identity_source_fragment_owned_static_rows
                 .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
+            summary
+                .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows =
+                summary
+                    .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows
+                    .saturating_add(u32::from(
+                        conflict.source_read_mismatch_and_fragment_owned_static_rows,
+                    ));
         }
         b'U' => {
             summary.exact_placeable_update_base_identity_module_unbacked_static_rows = summary
@@ -23812,6 +23868,13 @@ fn record_exact_placeable_base_identity_provenance_blockers(
                 summary
                     .exact_placeable_update_base_identity_source_fragment_owned_static_rows
                     .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
+            summary
+                .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows =
+                summary
+                    .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows
+                    .saturating_add(u32::from(
+                        conflict.source_read_mismatch_and_fragment_owned_static_rows,
+                    ));
         }
         _ => {}
     }
@@ -23870,6 +23933,13 @@ fn record_exact_placeable_base_identity_source_blocked_selection(
                         .exact_placeable_add_base_identity_source_blocked_fragment_owned_targets
                         .saturating_add(1);
             }
+            if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+                summary
+                    .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets =
+                    summary
+                        .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets
+                        .saturating_add(1);
+            }
             if selection.identity_resolved_by_fixed_fields {
                 summary.exact_placeable_add_base_identity_source_blocked_fixed_field_targets =
                     summary
@@ -23907,6 +23977,13 @@ fn record_exact_placeable_base_identity_source_blocked_selection(
                     .exact_placeable_update_base_identity_source_blocked_fragment_owned_targets =
                     summary
                         .exact_placeable_update_base_identity_source_blocked_fragment_owned_targets
+                        .saturating_add(1);
+            }
+            if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+                summary
+                    .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets =
+                    summary
+                        .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets
                         .saturating_add(1);
             }
             if selection.identity_resolved_by_position {
@@ -23977,6 +24054,8 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
 
     let read_mismatch_blocked = conflict.source_read_mismatch_static_rows != 0;
     let fragment_owned_blocked = conflict.source_fragment_owned_static_rows != 0;
+    let read_mismatch_and_fragment_owned_blocked =
+        conflict.source_read_mismatch_and_fragment_owned_static_rows != 0;
     match (opcode, field_rewritten) {
         (b'A', true) => {
             if read_mismatch_blocked {
@@ -23991,6 +24070,13 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
                     .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_rewrite_targets =
                     summary
                         .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_rewrite_targets
+                        .saturating_add(1);
+            }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets =
+                    summary
+                        .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets
                         .saturating_add(1);
             }
         }
@@ -24009,6 +24095,13 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
                         .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_unchanged_targets
                         .saturating_add(1);
             }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets =
+                    summary
+                        .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets
+                        .saturating_add(1);
+            }
         }
         (b'U', true) => {
             if read_mismatch_blocked {
@@ -24025,6 +24118,13 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
                         .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_rewrite_targets
                         .saturating_add(1);
             }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets =
+                    summary
+                        .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets
+                        .saturating_add(1);
+            }
         }
         (b'U', false) => {
             if read_mismatch_blocked {
@@ -24039,6 +24139,13 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
                     .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets =
                     summary
                         .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets
+                        .saturating_add(1);
+            }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets =
+                    summary
+                        .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets
                         .saturating_add(1);
             }
         }
@@ -29858,10 +29965,16 @@ fn trace_exact_placeable_reconciliation_summary(
         || summary.exact_placeable_add_base_identity_source_incompatible_static_rows != 0
         || summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows != 0
         || summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows != 0
+        || summary
+            .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows
+            != 0
         || summary.exact_placeable_update_base_identity_module_unbacked_static_rows != 0
         || summary.exact_placeable_update_base_identity_source_incompatible_static_rows != 0
         || summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows != 0
         || summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows != 0
+        || summary
+            .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows
+            != 0
         || summary.exact_placeable_add_base_identity_source_blocked_appearance_rewrites != 0
         || summary.exact_placeable_add_base_identity_source_blocked_state_rewrites != 0
         || summary.exact_placeable_update_base_identity_source_blocked_position_rewrites != 0
@@ -29872,8 +29985,14 @@ fn trace_exact_placeable_reconciliation_summary(
         || summary.exact_placeable_update_base_identity_source_blocked_resolved_targets != 0
         || summary.exact_placeable_add_base_identity_source_blocked_read_mismatch_targets != 0
         || summary.exact_placeable_add_base_identity_source_blocked_fragment_owned_targets != 0
+        || summary
+            .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets
+            != 0
         || summary.exact_placeable_update_base_identity_source_blocked_read_mismatch_targets != 0
         || summary.exact_placeable_update_base_identity_source_blocked_fragment_owned_targets != 0
+        || summary
+            .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets
+            != 0
         || summary.exact_placeable_add_base_identity_source_blocked_field_rewrite_targets != 0
         || summary.exact_placeable_add_base_identity_source_blocked_field_unchanged_targets != 0
         || summary.exact_placeable_update_base_identity_source_blocked_field_rewrite_targets != 0
@@ -29891,6 +30010,12 @@ fn trace_exact_placeable_reconciliation_summary(
             .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_unchanged_targets
             != 0
         || summary
+            .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets
+            != 0
+        || summary
+            .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets
+            != 0
+        || summary
             .exact_placeable_update_base_identity_source_blocked_read_mismatch_field_rewrite_targets
             != 0
         || summary
@@ -29901,6 +30026,12 @@ fn trace_exact_placeable_reconciliation_summary(
             != 0
         || summary
             .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets
+            != 0
+        || summary
+            .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets
+            != 0
+        || summary
+            .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets
             != 0
     {
         tracing::debug!(
@@ -29914,6 +30045,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows,
             add_base_identity_source_fragment_owned_static_rows =
                 summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows,
+            add_base_identity_source_read_mismatch_and_fragment_owned_static_rows = summary
+                .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows,
             update_base_identity_module_unbacked_static_rows =
                 summary.exact_placeable_update_base_identity_module_unbacked_static_rows,
             update_base_identity_source_incompatible_static_rows =
@@ -29922,6 +30055,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows,
             update_base_identity_source_fragment_owned_static_rows =
                 summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows,
+            update_base_identity_source_read_mismatch_and_fragment_owned_static_rows = summary
+                .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows,
             add_base_identity_source_blocked_appearance_rewrites =
                 summary.exact_placeable_add_base_identity_source_blocked_appearance_rewrites,
             add_base_identity_source_blocked_state_rewrites =
@@ -29940,6 +30075,8 @@ fn trace_exact_placeable_reconciliation_summary(
                 summary.exact_placeable_add_base_identity_source_blocked_read_mismatch_targets,
             add_base_identity_source_blocked_fragment_owned_targets =
                 summary.exact_placeable_add_base_identity_source_blocked_fragment_owned_targets,
+            add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets = summary
+                .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets,
             add_base_identity_source_blocked_fixed_field_targets =
                 summary.exact_placeable_add_base_identity_source_blocked_fixed_field_targets,
             add_base_identity_source_blocked_position_targets =
@@ -29958,12 +30095,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_rewrite_targets,
             add_base_identity_source_blocked_fragment_owned_field_unchanged_targets = summary
                 .exact_placeable_add_base_identity_source_blocked_fragment_owned_field_unchanged_targets,
+            add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets = summary
+                .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets = summary
+                .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets,
             update_base_identity_source_blocked_resolved_targets =
                 summary.exact_placeable_update_base_identity_source_blocked_resolved_targets,
             update_base_identity_source_blocked_read_mismatch_targets =
                 summary.exact_placeable_update_base_identity_source_blocked_read_mismatch_targets,
             update_base_identity_source_blocked_fragment_owned_targets =
                 summary.exact_placeable_update_base_identity_source_blocked_fragment_owned_targets,
+            update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets = summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets,
             update_base_identity_source_blocked_position_targets =
                 summary.exact_placeable_update_base_identity_source_blocked_position_targets,
             update_base_identity_source_blocked_position_output_equivalence_targets = summary
@@ -29980,6 +30123,10 @@ fn trace_exact_placeable_reconciliation_summary(
                 .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_rewrite_targets,
             update_base_identity_source_blocked_fragment_owned_field_unchanged_targets = summary
                 .exact_placeable_update_base_identity_source_blocked_fragment_owned_field_unchanged_targets,
+            update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets = summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets = summary
+                .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_field_unchanged_targets,
             "server->client exact live-object placeable base identity provenance blockers"
         );
     }
