@@ -1043,6 +1043,27 @@ fn trace_live_object_exact_rewrite_summary(
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
             "server exact placeable fixed-output custom carrier writer-gap slots"
         );
     }
@@ -1777,6 +1798,27 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only =
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
         "server exact placeable surrounding fixed-output carrier blockers"
     );
 }

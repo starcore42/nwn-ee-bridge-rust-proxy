@@ -1106,6 +1106,15 @@ Current status:
   focused writer-gap slot, source-blocker disposition, and fixed-output carrier
   tests; next replay should compare slot counters before adding any new
   `U/09` custom-carrier writer rule.
+- 2026-06-24 follow-up static/live placeable custom-carrier source-blocked
+  writer-gap slots: packet bytes and reconciliation policy are unchanged.
+  Residual fixed-width custom-carrier writer-gap candidates now keep a row-level
+  split for source-blocked field-rewrite slots versus source-unblocked slots,
+  across following normal/custom `U/09`, pre-add normal/custom `U/09`, and
+  add-only gaps. Direct live-object, M-frame, and server-dispatch traces expose
+  the source-blocked slot counters, so the next replay can distinguish malformed
+  `P/04` source provenance plus changed `A/09` fields from an unblocked `P/05`
+  custom-carrier writer gap before widening any `U/09` custom-carrier rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
