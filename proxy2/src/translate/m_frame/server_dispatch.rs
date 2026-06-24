@@ -1011,9 +1011,39 @@ fn trace_live_object_exact_rewrite_summary(
                 unproven_carrier_disposition.source_blocked_field_rewrite_targets,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unclassified =
                 unproven_carrier_disposition.source_blocked_field_unclassified_targets,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_candidates =
+                unproven_carrier_disposition.source_blocked_writer_gap_candidates,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_candidates =
+                unproven_carrier_disposition.source_unblocked_writer_gap_candidates,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_candidates =
                 unproven_carrier_disposition.writer_gap_candidates,
             "server exact placeable fixed-output custom carrier disposition"
+        );
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            "server exact placeable fixed-output custom carrier writer-gap slots"
         );
     }
     tracing::info!(

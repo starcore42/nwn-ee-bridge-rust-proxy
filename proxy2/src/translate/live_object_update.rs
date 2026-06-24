@@ -8651,6 +8651,8 @@ mod diagnostic_tests {
             disposition.writer_gap_candidates, 2,
             "non-source-blocked skips plus source-blocked field rewrites remain writer-gap candidates"
         );
+        assert_eq!(disposition.source_blocked_writer_gap_candidates, 1);
+        assert_eq!(disposition.source_unblocked_writer_gap_candidates, 1);
     }
 
     fn test_placeable_static_selection<'a>(
@@ -9019,6 +9021,12 @@ mod diagnostic_tests {
         assert_eq!(
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
             1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            1,
+            "an unblocked add-only skip remains a custom-carrier writer-gap candidate"
         );
         assert_eq!(
             summary
@@ -9465,6 +9473,14 @@ mod diagnostic_tests {
         let disposition = summary.exact_placeable_unproven_custom_carrier_disposition();
         assert_eq!(disposition.source_owned_without_field_rewrite, 1);
         assert_eq!(disposition.writer_gap_candidates, 0);
+        assert_eq!(disposition.source_blocked_writer_gap_candidates, 0);
+        assert_eq!(disposition.source_unblocked_writer_gap_candidates, 0);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            0,
+            "a malformed source-owned add-only carrier with unchanged A/09 fields is not a writer gap"
+        );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
@@ -10854,6 +10870,107 @@ mod diagnostic_tests {
                 "the decision must carry the exact selection used by counters and insertion"
             );
         }
+    }
+
+    #[test]
+    fn exact_placeable_unproven_carrier_writer_gap_slots_follow_selected_carrier() {
+        let add_resref = *b"plc_add_target\0\0";
+        let add_target = PlaceableUpdateAppearanceOutput {
+            appearance: 0xFFFE,
+            resref: Some(add_resref),
+        };
+        let normal_record = ExactPlaceableUpdateAppearanceCarrierRecord {
+            record_offset: 40,
+            record_end: 52,
+            appearance_offset: 50,
+            resref_offset: None,
+            source_appearance: 0x0011,
+            source_resref: None,
+            fragment_bit_start: CNW_FRAGMENT_HEADER_BITS,
+            fragment_bit_end: CNW_FRAGMENT_HEADER_BITS,
+            position_output_equivalence: false,
+            custom_rewrite_target_resolution:
+                ExactPlaceableCustomCarrierRewriteTargetResolution::available(add_target),
+        };
+        let custom_record = ExactPlaceableUpdateAppearanceCarrierRecord {
+            record_offset: 48,
+            record_end: 68,
+            appearance_offset: 58,
+            resref_offset: Some(60),
+            source_appearance: 0xFFFE,
+            source_resref: Some(add_resref),
+            ..normal_record
+        };
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            ExactPlaceableUpdateAppearanceCarrier {
+                following_normal: Some(normal_record),
+                ..ExactPlaceableUpdateAppearanceCarrier::default()
+            },
+        );
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            ExactPlaceableUpdateAppearanceCarrier {
+                following_custom: Some(custom_record),
+                ..ExactPlaceableUpdateAppearanceCarrier::default()
+            },
+        );
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            ExactPlaceableUpdateAppearanceCarrier {
+                pre_add_normal: Some(normal_record),
+                ..ExactPlaceableUpdateAppearanceCarrier::default()
+            },
+        );
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            ExactPlaceableUpdateAppearanceCarrier {
+                pre_add_custom: Some(custom_record),
+                ..ExactPlaceableUpdateAppearanceCarrier::default()
+            },
+        );
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            ExactPlaceableUpdateAppearanceCarrier::default(),
+        );
+
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
+            2
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only,
+            2
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            1
+        );
     }
 
     #[test]
@@ -14451,6 +14568,8 @@ pub struct ExactPlaceableUnprovenCustomCarrierDisposition {
     pub source_blocked_field_unchanged_targets: u32,
     pub source_blocked_field_unclassified_targets: u32,
     pub source_owned_without_field_rewrite: u32,
+    pub source_blocked_writer_gap_candidates: u32,
+    pub source_unblocked_writer_gap_candidates: u32,
     pub writer_gap_candidates: u32,
 }
 
@@ -14467,6 +14586,11 @@ impl ExactPlaceableUnprovenCustomCarrierDisposition {
             source_blocked.saturating_sub(classified_source_blocked);
         let source_owned_without_field_rewrite = source_blocked_field_unchanged_targets;
         let writer_gap_candidates = skipped.saturating_sub(source_owned_without_field_rewrite);
+        let source_blocked_writer_gap_candidates = source_blocked_field_rewrite_targets
+            .saturating_add(source_blocked_field_unclassified_targets)
+            .min(writer_gap_candidates);
+        let source_unblocked_writer_gap_candidates =
+            writer_gap_candidates.saturating_sub(source_blocked_writer_gap_candidates);
         Self {
             skipped,
             source_blocked,
@@ -14474,6 +14598,8 @@ impl ExactPlaceableUnprovenCustomCarrierDisposition {
             source_blocked_field_unchanged_targets,
             source_blocked_field_unclassified_targets,
             source_owned_without_field_rewrite,
+            source_blocked_writer_gap_candidates,
+            source_unblocked_writer_gap_candidates,
             writer_gap_candidates,
         }
     }
@@ -14868,6 +14994,18 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only: u32,
     pub exact_placeable_add_module_custom_template_resref_missing: u32,
     pub exact_placeable_update_module_custom_template_resref_missing: u32,
     pub exact_placeable_add_source_custom_appearance_rewritten: u32,
@@ -23293,6 +23431,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 );
                 let mut pending_custom_update_synthesis = None;
                 let mut unproven_custom_carrier_source_blocked = false;
+                let mut unproven_custom_carrier_update_carrier = None;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
                     && is_custom_placeable_appearance(row.appearance)
@@ -23321,6 +23460,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             mention.record_offset,
                             mention.record_end,
                         );
+                        unproven_custom_carrier_update_carrier = Some(update_carrier);
                         trace_exact_placeable_fixed_width_custom_add_candidate(
                             area_context,
                             mention,
@@ -23733,6 +23873,14 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         &mut summary,
                         base_target,
                         add_record_rewritten_in_place,
+                    );
+                }
+                if let Some(update_carrier) = unproven_custom_carrier_update_carrier
+                    && (!unproven_custom_carrier_source_blocked || add_record_rewritten_in_place)
+                {
+                    record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+                        &mut summary,
+                        update_carrier,
                     );
                 }
                 record_exact_placeable_base_identity_source_blocked_field_correlation(
@@ -24260,6 +24408,57 @@ fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlati
                         .saturating_add(1);
             }
         }
+    }
+}
+
+fn record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    update_carrier: ExactPlaceableUpdateAppearanceCarrier,
+) {
+    if let Some(selected_following) = update_carrier.selected_following() {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update
+                .saturating_add(1);
+        if selected_following.is_custom() {
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update
+                    .saturating_add(1);
+        } else {
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update
+                    .saturating_add(1);
+        }
+    } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only
+                .saturating_add(1);
+        if selected_pre_add.is_custom() {
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only
+                    .saturating_add(1);
+        } else {
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only
+                    .saturating_add(1);
+        }
+    } else {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only
+                .saturating_add(1);
     }
 }
 
@@ -30929,6 +31128,10 @@ fn trace_exact_placeable_reconciliation_summary(
                 unproven_carrier_disposition.source_blocked_field_rewrite_targets,
             add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unclassified =
                 unproven_carrier_disposition.source_blocked_field_unclassified_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_candidates =
+                unproven_carrier_disposition.source_blocked_writer_gap_candidates,
+            add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_candidates =
+                unproven_carrier_disposition.source_unblocked_writer_gap_candidates,
             add_module_custom_fixed_width_unproven_carrier_writer_gap_candidates =
                 unproven_carrier_disposition.writer_gap_candidates,
             "server->client exact live-object placeable fixed-output carrier disposition"
@@ -31011,6 +31214,27 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output_divergent =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output_divergent,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
             "server->client exact live-object placeable fixed-output carrier source blockers"
         );
     }

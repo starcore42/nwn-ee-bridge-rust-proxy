@@ -1098,6 +1098,14 @@ Current status:
   source-blocker helper and fixed-output custom-carrier rewrite tests; next
   replay should inspect `writer_gap_candidates` before widening any custom
   carrier writer rule.
+- 2026-06-24 follow-up static/live placeable custom-carrier writer-gap slots:
+  packet bytes and reconciliation policy are unchanged. Residual fixed-width
+  custom-carrier writer-gap candidates now carry selected carrier-slot counters
+  for following normal/custom `U/09`, pre-add normal/custom `U/09`, and add-only
+  gaps after malformed source-owned unchanged skips are excluded. Verified with
+  focused writer-gap slot, source-blocker disposition, and fixed-output carrier
+  tests; next replay should compare slot counters before adding any new
+  `U/09` custom-carrier writer rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
