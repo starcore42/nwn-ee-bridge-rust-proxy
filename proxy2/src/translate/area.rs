@@ -742,6 +742,50 @@ pub struct AreaPlaceableContextIdentityConflict {
     pub duplicate_object_id_rows: u16,
 }
 
+impl AreaPlaceableContextIdentityConflict {
+    pub fn source_provenance_blockers(self) -> AreaPlaceableSourceProvenanceBlockers {
+        AreaPlaceableSourceProvenanceBlockers {
+            source_incompatible_static_rows: self.source_incompatible_static_rows,
+            source_read_mismatch_static_rows: self.source_read_mismatch_static_rows,
+            source_fragment_owned_static_rows: self.source_fragment_owned_static_rows,
+            source_read_mismatch_and_fragment_owned_static_rows: self
+                .source_read_mismatch_and_fragment_owned_static_rows,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AreaPlaceableSourceProvenanceBlockers {
+    source_incompatible_static_rows: u16,
+    source_read_mismatch_static_rows: u16,
+    source_fragment_owned_static_rows: u16,
+    source_read_mismatch_and_fragment_owned_static_rows: u16,
+}
+
+impl AreaPlaceableSourceProvenanceBlockers {
+    pub fn any(self) -> bool {
+        self.source_incompatible_static_rows != 0
+            || self.source_read_mismatch_static_rows != 0
+            || self.source_fragment_owned_static_rows != 0
+    }
+
+    pub fn source_incompatible_rows(self) -> u16 {
+        self.source_incompatible_static_rows
+    }
+
+    pub fn read_mismatch_rows(self) -> u16 {
+        self.source_read_mismatch_static_rows
+    }
+
+    pub fn fragment_owned_rows(self) -> u16 {
+        self.source_fragment_owned_static_rows
+    }
+
+    pub fn read_mismatch_and_fragment_owned_rows(self) -> u16 {
+        self.source_read_mismatch_and_fragment_owned_static_rows
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AreaPlaceableContextOrientationConflict {
     pub observed_source: AreaPlaceableObservedOrientationSource,
@@ -9634,6 +9678,12 @@ mod public_static_direction_tests {
             .static_reconciliation_target()
         {
             AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                let blockers = conflict.source_provenance_blockers();
+                assert!(blockers.any());
+                assert_eq!(blockers.source_incompatible_rows(), 1);
+                assert_eq!(blockers.read_mismatch_rows(), 1);
+                assert_eq!(blockers.fragment_owned_rows(), 0);
+                assert_eq!(blockers.read_mismatch_and_fragment_owned_rows(), 0);
                 assert_eq!(conflict.module_backed_static_rows, 0);
                 assert_eq!(conflict.module_unbacked_static_rows, 0);
                 assert_eq!(conflict.unproven_static_rows, 1);
@@ -9665,6 +9715,12 @@ mod public_static_direction_tests {
             .static_reconciliation_target()
         {
             AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                let blockers = conflict.source_provenance_blockers();
+                assert!(blockers.any());
+                assert_eq!(blockers.source_incompatible_rows(), 1);
+                assert_eq!(blockers.read_mismatch_rows(), 0);
+                assert_eq!(blockers.fragment_owned_rows(), 1);
+                assert_eq!(blockers.read_mismatch_and_fragment_owned_rows(), 0);
                 assert_eq!(conflict.module_backed_static_rows, 0);
                 assert_eq!(conflict.module_unbacked_static_rows, 0);
                 assert_eq!(conflict.unproven_static_rows, 1);
@@ -9697,6 +9753,12 @@ mod public_static_direction_tests {
             .static_reconciliation_target()
         {
             AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) => {
+                let blockers = conflict.source_provenance_blockers();
+                assert!(blockers.any());
+                assert_eq!(blockers.source_incompatible_rows(), 1);
+                assert_eq!(blockers.read_mismatch_rows(), 1);
+                assert_eq!(blockers.fragment_owned_rows(), 1);
+                assert_eq!(blockers.read_mismatch_and_fragment_owned_rows(), 1);
                 assert_eq!(conflict.module_backed_static_rows, 0);
                 assert_eq!(conflict.module_unbacked_static_rows, 0);
                 assert_eq!(conflict.unproven_static_rows, 1);

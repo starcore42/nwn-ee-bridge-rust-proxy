@@ -40,7 +40,7 @@ use std::{
 use crate::translate::area::{
     AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
     AreaPlaceableContextStaticReconciliationTarget, AreaPlaceableObservedState,
-    format_area_placeable_module_state,
+    AreaPlaceableSourceProvenanceBlockers, format_area_placeable_module_state,
 };
 
 mod add;
@@ -22967,7 +22967,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     mention.object_id,
                 );
                 let base_identity_source_blocked =
-                    placeable_static_target_source_provenance_blocked(base_target);
+                    placeable_static_target_source_provenance_blockers(base_target).is_some();
                 record_exact_placeable_base_identity_provenance_blockers(
                     &mut summary,
                     b'A',
@@ -23705,7 +23705,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         update_claim,
                     );
                 let base_identity_source_blocked =
-                    placeable_static_target_source_provenance_blocked(base_target);
+                    placeable_static_target_source_provenance_blockers(base_target).is_some();
                 record_exact_placeable_base_identity_provenance_blockers(
                     &mut summary,
                     b'U',
@@ -24014,6 +24014,7 @@ fn record_exact_placeable_base_identity_provenance_blockers(
     let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = target else {
         return;
     };
+    let source_blockers = conflict.source_provenance_blockers();
     match opcode {
         b'A' => {
             summary.exact_placeable_add_base_identity_module_unbacked_static_rows = summary
@@ -24021,20 +24022,18 @@ fn record_exact_placeable_base_identity_provenance_blockers(
                 .saturating_add(u32::from(conflict.module_unbacked_static_rows));
             summary.exact_placeable_add_base_identity_source_incompatible_static_rows = summary
                 .exact_placeable_add_base_identity_source_incompatible_static_rows
-                .saturating_add(u32::from(conflict.source_incompatible_static_rows));
+                .saturating_add(u32::from(source_blockers.source_incompatible_rows()));
             summary.exact_placeable_add_base_identity_source_read_mismatch_static_rows = summary
                 .exact_placeable_add_base_identity_source_read_mismatch_static_rows
-                .saturating_add(u32::from(conflict.source_read_mismatch_static_rows));
+                .saturating_add(u32::from(source_blockers.read_mismatch_rows()));
             summary.exact_placeable_add_base_identity_source_fragment_owned_static_rows = summary
                 .exact_placeable_add_base_identity_source_fragment_owned_static_rows
-                .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
+                .saturating_add(u32::from(source_blockers.fragment_owned_rows()));
             summary
                 .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows =
                 summary
                     .exact_placeable_add_base_identity_source_read_mismatch_and_fragment_owned_static_rows
-                    .saturating_add(u32::from(
-                        conflict.source_read_mismatch_and_fragment_owned_static_rows,
-                    ));
+                    .saturating_add(u32::from(source_blockers.read_mismatch_and_fragment_owned_rows()));
         }
         b'U' => {
             summary.exact_placeable_update_base_identity_module_unbacked_static_rows = summary
@@ -24042,41 +24041,32 @@ fn record_exact_placeable_base_identity_provenance_blockers(
                 .saturating_add(u32::from(conflict.module_unbacked_static_rows));
             summary.exact_placeable_update_base_identity_source_incompatible_static_rows = summary
                 .exact_placeable_update_base_identity_source_incompatible_static_rows
-                .saturating_add(u32::from(conflict.source_incompatible_static_rows));
+                .saturating_add(u32::from(source_blockers.source_incompatible_rows()));
             summary.exact_placeable_update_base_identity_source_read_mismatch_static_rows = summary
                 .exact_placeable_update_base_identity_source_read_mismatch_static_rows
-                .saturating_add(u32::from(conflict.source_read_mismatch_static_rows));
+                .saturating_add(u32::from(source_blockers.read_mismatch_rows()));
             summary.exact_placeable_update_base_identity_source_fragment_owned_static_rows =
                 summary
                     .exact_placeable_update_base_identity_source_fragment_owned_static_rows
-                    .saturating_add(u32::from(conflict.source_fragment_owned_static_rows));
+                    .saturating_add(u32::from(source_blockers.fragment_owned_rows()));
             summary
                 .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows =
                 summary
                     .exact_placeable_update_base_identity_source_read_mismatch_and_fragment_owned_static_rows
-                    .saturating_add(u32::from(
-                        conflict.source_read_mismatch_and_fragment_owned_static_rows,
-                    ));
+                    .saturating_add(u32::from(source_blockers.read_mismatch_and_fragment_owned_rows()));
         }
         _ => {}
     }
 }
 
-fn placeable_static_target_source_provenance_blocked(
+fn placeable_static_target_source_provenance_blockers(
     target: AreaPlaceableContextStaticReconciliationTarget<'_>,
-) -> bool {
+) -> Option<AreaPlaceableSourceProvenanceBlockers> {
     let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = target else {
-        return false;
+        return None;
     };
-    placeable_identity_conflict_source_provenance_blocked(conflict)
-}
-
-fn placeable_identity_conflict_source_provenance_blocked(
-    conflict: crate::translate::area::AreaPlaceableContextIdentityConflict,
-) -> bool {
-    conflict.source_incompatible_static_rows != 0
-        || conflict.source_read_mismatch_static_rows != 0
-        || conflict.source_fragment_owned_static_rows != 0
+    let blockers = conflict.source_provenance_blockers();
+    blockers.any().then_some(blockers)
 }
 
 fn record_exact_placeable_unproven_custom_carrier_source_blockers(
@@ -24087,28 +24077,29 @@ fn record_exact_placeable_unproven_custom_carrier_source_blockers(
     else {
         return;
     };
-    if !placeable_identity_conflict_source_provenance_blocked(conflict) {
+    let blockers = conflict.source_provenance_blockers();
+    if !blockers.any() {
         return;
     }
 
     summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked = summary
         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked
         .saturating_add(1);
-    if conflict.source_read_mismatch_static_rows != 0 {
+    if blockers.read_mismatch_rows() != 0 {
         summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch
                 .saturating_add(1);
     }
-    if conflict.source_fragment_owned_static_rows != 0 {
+    if blockers.fragment_owned_rows() != 0 {
         summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned
                 .saturating_add(1);
     }
-    if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+    if blockers.read_mismatch_and_fragment_owned_rows() != 0 {
         summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
             summary
@@ -24126,7 +24117,8 @@ fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlati
     else {
         return;
     };
-    if !placeable_identity_conflict_source_provenance_blocked(conflict) {
+    let blockers = conflict.source_provenance_blockers();
+    if !blockers.any() {
         return;
     }
 
@@ -24144,10 +24136,10 @@ fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlati
                 .saturating_add(1);
     }
 
-    let read_mismatch_blocked = conflict.source_read_mismatch_static_rows != 0;
-    let fragment_owned_blocked = conflict.source_fragment_owned_static_rows != 0;
+    let read_mismatch_blocked = blockers.read_mismatch_rows() != 0;
+    let fragment_owned_blocked = blockers.fragment_owned_rows() != 0;
     let read_mismatch_and_fragment_owned_blocked =
-        conflict.source_read_mismatch_and_fragment_owned_static_rows != 0;
+        blockers.read_mismatch_and_fragment_owned_rows() != 0;
     match field_rewritten {
         true => {
             if read_mismatch_blocked {
@@ -24209,10 +24201,11 @@ fn record_exact_placeable_base_identity_source_blocked_selection(
     else {
         return;
     };
+    let blockers = conflict.source_provenance_blockers();
     if !matches!(
         selection.target,
         AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
-    ) || !placeable_identity_conflict_source_provenance_blocked(conflict)
+    ) || !blockers.any()
     {
         return;
     }
@@ -24222,19 +24215,19 @@ fn record_exact_placeable_base_identity_source_blocked_selection(
             summary.exact_placeable_add_base_identity_source_blocked_resolved_targets = summary
                 .exact_placeable_add_base_identity_source_blocked_resolved_targets
                 .saturating_add(1);
-            if conflict.source_read_mismatch_static_rows != 0 {
+            if blockers.read_mismatch_rows() != 0 {
                 summary.exact_placeable_add_base_identity_source_blocked_read_mismatch_targets =
                     summary
                         .exact_placeable_add_base_identity_source_blocked_read_mismatch_targets
                         .saturating_add(1);
             }
-            if conflict.source_fragment_owned_static_rows != 0 {
+            if blockers.fragment_owned_rows() != 0 {
                 summary.exact_placeable_add_base_identity_source_blocked_fragment_owned_targets =
                     summary
                         .exact_placeable_add_base_identity_source_blocked_fragment_owned_targets
                         .saturating_add(1);
             }
-            if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+            if blockers.read_mismatch_and_fragment_owned_rows() != 0 {
                 summary
                     .exact_placeable_add_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets =
                     summary
@@ -24267,20 +24260,20 @@ fn record_exact_placeable_base_identity_source_blocked_selection(
             summary.exact_placeable_update_base_identity_source_blocked_resolved_targets = summary
                 .exact_placeable_update_base_identity_source_blocked_resolved_targets
                 .saturating_add(1);
-            if conflict.source_read_mismatch_static_rows != 0 {
+            if blockers.read_mismatch_rows() != 0 {
                 summary.exact_placeable_update_base_identity_source_blocked_read_mismatch_targets =
                     summary
                         .exact_placeable_update_base_identity_source_blocked_read_mismatch_targets
                         .saturating_add(1);
             }
-            if conflict.source_fragment_owned_static_rows != 0 {
+            if blockers.fragment_owned_rows() != 0 {
                 summary
                     .exact_placeable_update_base_identity_source_blocked_fragment_owned_targets =
                     summary
                         .exact_placeable_update_base_identity_source_blocked_fragment_owned_targets
                         .saturating_add(1);
             }
-            if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+            if blockers.read_mismatch_and_fragment_owned_rows() != 0 {
                 summary
                     .exact_placeable_update_base_identity_source_blocked_read_mismatch_and_fragment_owned_targets =
                     summary
@@ -24316,7 +24309,8 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
     else {
         return;
     };
-    if !placeable_identity_conflict_source_provenance_blocked(conflict)
+    let blockers = conflict.source_provenance_blockers();
+    if !blockers.any()
         || !matches!(
             selection.target,
             AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(_)
@@ -24353,10 +24347,10 @@ fn record_exact_placeable_base_identity_source_blocked_field_correlation(
         _ => {}
     }
 
-    let read_mismatch_blocked = conflict.source_read_mismatch_static_rows != 0;
-    let fragment_owned_blocked = conflict.source_fragment_owned_static_rows != 0;
+    let read_mismatch_blocked = blockers.read_mismatch_rows() != 0;
+    let fragment_owned_blocked = blockers.fragment_owned_rows() != 0;
     let read_mismatch_and_fragment_owned_blocked =
-        conflict.source_read_mismatch_and_fragment_owned_static_rows != 0;
+        blockers.read_mismatch_and_fragment_owned_rows() != 0;
     match (opcode, field_rewritten) {
         (b'A', true) => {
             if read_mismatch_blocked {

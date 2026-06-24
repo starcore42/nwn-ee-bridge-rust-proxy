@@ -1082,6 +1082,14 @@ Current status:
   diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay should
   compare source-blocked custom-carrier `field_rewrite` versus
   `field_unchanged` before adding a custom carrier writer rule.
+- 2026-06-24 follow-up static/live placeable source-blocker model: packet
+  bytes and reconciliation policy are unchanged. `P/04` static-placeable
+  identity conflicts now expose a typed source-provenance blocker summary, and
+  exact `P/05` add/update plus fixed-width custom-carrier counters consume that
+  shared model instead of re-reading raw conflict fields. Verified with focused
+  explicit P/04 provenance and live-object `source_blocked` tests; next replay
+  should use the same blocker summary when deciding whether a custom-carrier
+  skip is malformed P/04 ownership evidence or a real P/05 writer gap.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
