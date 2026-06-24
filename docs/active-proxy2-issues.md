@@ -1177,6 +1177,14 @@ Current status:
   divergent-output rows remain gated and reported through the typed synthesis
   gate. Next replay should inspect remaining blocked-source-provenance and
   divergent-output gate pressure before widening source-blocked carriers.
+- 2026-06-25 follow-up static/live placeable unproven-carrier synthesis gate
+  slots: packet bytes and synthesis policy are unchanged. The typed `A/09`
+  unproven-carrier synthesis gate now records selected-slot matrices for
+  eligible source-unblocked rows, source-owned blockers, source-provenance
+  blockers, missing `TemplateResRef`, and divergent output. Direct live-object
+  and M-frame/server-dispatch traces expose the matrix plus active
+  source-provenance/divergent slot totals, so the next replay can compare the
+  remaining blocked gates before widening any source-blocked carrier emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

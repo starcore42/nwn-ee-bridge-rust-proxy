@@ -298,6 +298,8 @@ pub struct ExactLiveObjectRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots:
         live_object_update::ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots:
+        live_object_update::ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows:
@@ -1460,6 +1462,11 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add_assign(
                 rewrite
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots,
+            );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+            .saturating_add_assign(
+                rewrite
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots,
             );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output
