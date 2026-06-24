@@ -1001,9 +1001,11 @@ fn trace_live_object_exact_rewrite_summary(
         summary.exact_placeable_unproven_custom_carrier_writer_gap_slots();
     let unproven_carrier_slot_disposition =
         summary.exact_placeable_unproven_custom_carrier_slot_disposition();
-    let unproven_carrier_remaining_source_provenance_slots = summary
+    let unproven_carrier_residual_source_provenance_slots = summary
         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-        .remaining_blocked_source_provenance_after_source_trusted();
+        .residual_source_provenance_after_source_trusted();
+    let unproven_carrier_remaining_source_provenance_slots =
+        unproven_carrier_residual_source_provenance_slots.all();
     if unproven_carrier_disposition.skipped != 0 {
         tracing::info!(
             source = exact_rewrite.source,
@@ -1106,6 +1108,12 @@ fn trace_live_object_exact_rewrite_summary(
             family = family_name,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_slots =
                 ?unproven_carrier_remaining_source_provenance_slots,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_present =
+                !unproven_carrier_residual_source_provenance_slots.is_empty(),
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_missing_template_resref_slots =
+                ?unproven_carrier_residual_source_provenance_slots.missing_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_divergent_output_slots =
+                ?unproven_carrier_residual_source_provenance_slots.divergent_output,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_with_update =
                 unproven_carrier_remaining_source_provenance_slots.with_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_pre_add_update_only =
@@ -1833,6 +1841,12 @@ fn trace_live_object_exact_rewrite_summary(
                 .blocked_source_provenance_source_trusted_divergent_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_slots =
             ?unproven_carrier_remaining_source_provenance_slots,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_present =
+            !unproven_carrier_residual_source_provenance_slots.is_empty(),
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_missing_template_resref_slots =
+            ?unproven_carrier_residual_source_provenance_slots.missing_template_resref,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_divergent_output_slots =
+            ?unproven_carrier_residual_source_provenance_slots.divergent_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_with_update =
             unproven_carrier_remaining_source_provenance_slots.with_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_pre_add_update_only =
