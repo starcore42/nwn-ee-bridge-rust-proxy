@@ -11464,6 +11464,22 @@ mod diagnostic_tests {
             ),
             (
                 following_custom_carrier,
+                source_blocked_target,
+                true,
+                &missing_template_row,
+                false,
+                ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+            ),
+            (
+                add_only_carrier,
+                source_blocked_target,
+                true,
+                &source_unblocked_row,
+                true,
+                ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+            ),
+            (
+                following_custom_carrier,
                 source_unblocked_target,
                 false,
                 &missing_template_row,
@@ -11494,9 +11510,14 @@ mod diagnostic_tests {
                 output_divergent,
             );
             assert_eq!(gate, expected_gate);
+            let source_trusted_gate =
+                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row(
+                    row,
+                    output_divergent,
+                );
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-                .record(row_evidence, gate);
+                .record(row_evidence, gate, source_trusted_gate);
             row_evidence.record(&mut summary);
         }
 
@@ -11520,8 +11541,11 @@ mod diagnostic_tests {
         assert_eq!(
             slots.blocked_source_provenance,
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: 1,
+                with_custom_update: 1,
                 pre_add_update_only: 1,
                 pre_add_normal_update_only: 1,
+                add_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
         );
@@ -11536,6 +11560,29 @@ mod diagnostic_tests {
         assert_eq!(
             slots.blocked_source_provenance_read_mismatch_and_fragment_owned,
             slots.blocked_source_provenance
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_source_trusted_eligible,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                pre_add_update_only: 1,
+                pre_add_normal_update_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            }
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_source_trusted_missing_template_resref,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: 1,
+                with_custom_update: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            }
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_source_trusted_divergent_output,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                add_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            }
         );
         assert_eq!(
             slots.blocked_missing_template_resref,
@@ -15300,6 +15347,12 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub blocked_source_provenance_fragment_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance_read_mismatch_and_fragment_owned:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_source_trusted_eligible:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_source_trusted_missing_template_resref:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_source_trusted_divergent_output:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_missing_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_divergent_output: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
 }
@@ -15348,6 +15401,33 @@ enum ExactPlaceableUnprovenCustomCarrierSynthesisGate {
     BlockedSourceProvenance,
     BlockedMissingTemplateResRef,
     BlockedDivergentOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
+    Eligible,
+    BlockedMissingTemplateResRef,
+    BlockedDivergentOutput,
+}
+
+impl ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
+    fn from_row(row: &AreaPlaceableContextRow, output_divergent: bool) -> Self {
+        if row.module_template_resref.is_none() {
+            return Self::BlockedMissingTemplateResRef;
+        }
+        if output_divergent {
+            return Self::BlockedDivergentOutput;
+        }
+        Self::Eligible
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Eligible => "eligible",
+            Self::BlockedMissingTemplateResRef => "blocked-missing-template-resref",
+            Self::BlockedDivergentOutput => "blocked-divergent-output",
+        }
+    }
 }
 
 impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
@@ -15786,6 +15866,7 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
         &mut self,
         row_evidence: ExactPlaceableUnprovenCustomCarrierRowEvidence,
         gate: ExactPlaceableUnprovenCustomCarrierSynthesisGate,
+        source_trusted_gate: ExactPlaceableUnprovenCustomCarrierSourceTrustedGate,
     ) {
         let slot = row_evidence.slot();
         match gate {
@@ -15797,6 +15878,20 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             }
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance => {
                 self.blocked_source_provenance.increment_slot(slot);
+                match source_trusted_gate {
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible => {
+                        self.blocked_source_provenance_source_trusted_eligible
+                            .increment_slot(slot);
+                    }
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedMissingTemplateResRef => {
+                        self.blocked_source_provenance_source_trusted_missing_template_resref
+                            .increment_slot(slot);
+                    }
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedDivergentOutput => {
+                        self.blocked_source_provenance_source_trusted_divergent_output
+                            .increment_slot(slot);
+                    }
+                }
                 if let Some(blockers) = row_evidence.source_blockers() {
                     if blockers.read_mismatch_rows() != 0 {
                         self.blocked_source_provenance_read_mismatch
@@ -15834,6 +15929,14 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             .saturating_add_assign(rhs.blocked_source_provenance_fragment_owned);
         self.blocked_source_provenance_read_mismatch_and_fragment_owned
             .saturating_add_assign(rhs.blocked_source_provenance_read_mismatch_and_fragment_owned);
+        self.blocked_source_provenance_source_trusted_eligible
+            .saturating_add_assign(rhs.blocked_source_provenance_source_trusted_eligible);
+        self.blocked_source_provenance_source_trusted_missing_template_resref
+            .saturating_add_assign(
+                rhs.blocked_source_provenance_source_trusted_missing_template_resref,
+            );
+        self.blocked_source_provenance_source_trusted_divergent_output
+            .saturating_add_assign(rhs.blocked_source_provenance_source_trusted_divergent_output);
         self.blocked_missing_template_resref
             .saturating_add_assign(rhs.blocked_missing_template_resref);
         self.blocked_divergent_output
@@ -25168,6 +25271,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             row,
                             unproven_output_divergent,
                         );
+                    let source_trusted_gate =
+                        ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row(
+                            row,
+                            unproven_output_divergent,
+                        );
                     let row_source_blockers = row_evidence.source_blockers();
                     tracing::debug!(
                         object_id = format_args!("0x{:08X}", mention.object_id),
@@ -25182,6 +25290,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             row_evidence.slot().as_str(),
                         area_static_custom_carrier_unproven_synthesis_gate =
                             synthesis_gate.as_str(),
+                        area_static_custom_carrier_unproven_source_trusted_gate =
+                            source_trusted_gate.as_str(),
                         area_static_custom_carrier_unproven_source_read_mismatch =
                             row_source_blockers.is_some_and(|blockers| blockers.read_mismatch_rows() != 0),
                         area_static_custom_carrier_unproven_source_fragment_owned =
@@ -25192,7 +25302,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     );
                     summary
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-                        .record(row_evidence, synthesis_gate);
+                        .record(row_evidence, synthesis_gate, source_trusted_gate);
                     row_evidence.record(&mut summary);
                     if synthesis_gate.is_eligible() {
                         summary
@@ -32527,6 +32637,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 ?summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                     .blocked_source_provenance_read_mismatch_and_fragment_owned,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_eligible_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_source_trusted_eligible,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_missing_template_resref_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_source_trusted_missing_template_resref,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_divergent_output_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_source_trusted_divergent_output,
             add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_divergent_output_with_update =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots

@@ -1803,6 +1803,18 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                 .blocked_source_provenance
                 .add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_eligible_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_source_provenance_source_trusted_eligible,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_missing_template_resref_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_source_provenance_source_trusted_missing_template_resref,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_divergent_output_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_source_provenance_source_trusted_divergent_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_divergent_output_with_update =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots

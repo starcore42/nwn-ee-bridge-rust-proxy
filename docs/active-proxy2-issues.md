@@ -1192,6 +1192,13 @@ Current status:
   the same class flags. Next replay should compare these class slots before
   deciding whether any source-blocked field-rewrite carrier can safely emit a
   synthetic `U/09` custom branch.
+- 2026-06-25 follow-up static/live placeable source-trusted carrier gate:
+  packet bytes and synthesis policy are unchanged. Source-provenance-blocked
+  `A/09` unproven-carrier rows now also record the source-trusted next gate:
+  otherwise eligible, still missing `TemplateResRef`, or still divergent output.
+  Direct live-object and server-dispatch traces expose the slot matrices, so the
+  next replay can separate malformed `P/04` source blockers from rows that would
+  remain unsafe even if their source provenance were trusted.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
