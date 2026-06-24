@@ -10944,27 +10944,32 @@ mod diagnostic_tests {
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             following_normal_carrier,
-            true,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldRewrite,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             following_custom_carrier,
-            false,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceUnblocked,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             pre_add_normal_carrier,
-            true,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldRewrite,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             pre_add_custom_carrier,
-            false,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceUnblocked,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             add_only_carrier,
-            true,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldRewrite,
+        );
+        record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
+            &mut summary,
+            add_only_carrier,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldUnchanged,
         );
 
         assert_eq!(
@@ -11074,6 +11079,24 @@ mod diagnostic_tests {
                 pre_add_custom_update_only: 1,
                 add_only: 0,
             }
+        );
+        assert_eq!(
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::from_source_and_field_outcome(
+                false, false
+            ),
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceUnblocked
+        );
+        assert_eq!(
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::from_source_and_field_outcome(
+                true, true
+            ),
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldRewrite
+        );
+        assert_eq!(
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::from_source_and_field_outcome(
+                true, false
+            ),
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldUnchanged
         );
     }
 
@@ -14721,6 +14744,39 @@ pub struct ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactPlaceableUnprovenCustomCarrierWriterGapSource {
+    SourceUnblocked,
+    SourceBlockedFieldRewrite,
+    SourceBlockedFieldUnchanged,
+}
+
+impl ExactPlaceableUnprovenCustomCarrierWriterGapSource {
+    fn from_source_and_field_outcome(source_blocked: bool, field_rewritten: bool) -> Self {
+        match (source_blocked, field_rewritten) {
+            (false, _) => Self::SourceUnblocked,
+            (true, true) => Self::SourceBlockedFieldRewrite,
+            (true, false) => Self::SourceBlockedFieldUnchanged,
+        }
+    }
+
+    fn is_writer_gap_candidate(self) -> bool {
+        !matches!(self, Self::SourceBlockedFieldUnchanged)
+    }
+
+    fn is_source_blocked_writer_gap(self) -> bool {
+        matches!(self, Self::SourceBlockedFieldRewrite)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceUnblocked => "source-unblocked",
+            Self::SourceBlockedFieldRewrite => "source-blocked-field-rewrite",
+            Self::SourceBlockedFieldUnchanged => "source-blocked-field-unchanged",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableUpdateAppearanceCarrierSlot {
     FollowingNormalUpdate,
     FollowingCustomUpdate,
@@ -14820,8 +14876,12 @@ impl ExactPlaceableUpdateAppearanceCarrierSlot {
     fn record_unproven_custom_carrier_writer_gap(
         self,
         summary: &mut LiveObjectUpdateRewriteSummary,
-        source_blocked_writer_gap: bool,
+        source: ExactPlaceableUnprovenCustomCarrierWriterGapSource,
     ) {
+        if !source.is_writer_gap_candidate() {
+            return;
+        }
+        let source_blocked_writer_gap = source.is_source_blocked_writer_gap();
         match self {
             Self::FollowingNormalUpdate => {
                 summary
@@ -24269,13 +24329,29 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         add_record_rewritten_in_place,
                     );
                 }
-                if let Some(update_carrier) = unproven_custom_carrier_update_carrier
-                    && (!unproven_custom_carrier_source_blocked || add_record_rewritten_in_place)
-                {
+                if let Some(update_carrier) = unproven_custom_carrier_update_carrier {
+                    let writer_gap_source =
+                        ExactPlaceableUnprovenCustomCarrierWriterGapSource::from_source_and_field_outcome(
+                            unproven_custom_carrier_source_blocked,
+                            add_record_rewritten_in_place,
+                        );
+                    tracing::debug!(
+                        object_id = format_args!("0x{:08X}", mention.object_id),
+                        record_offset,
+                        record_end,
+                        area_resref = area_context.area_resref.as_str(),
+                        area_static_custom_carrier_unproven_writer_gap_source =
+                            writer_gap_source.as_str(),
+                        area_static_custom_carrier_unproven_writer_gap_candidate =
+                            writer_gap_source.is_writer_gap_candidate(),
+                        area_static_custom_carrier_unproven_selected_slot =
+                            update_carrier.selected_slot().as_str(),
+                        "server->client exact live-object placeable add custom carrier writer-gap source disposition"
+                    );
                     record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
                         &mut summary,
                         update_carrier,
-                        unproven_custom_carrier_source_blocked,
+                        writer_gap_source,
                     );
                 }
                 record_exact_placeable_base_identity_source_blocked_field_correlation(
@@ -24809,11 +24885,11 @@ fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlati
 fn record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
     summary: &mut LiveObjectUpdateRewriteSummary,
     update_carrier: ExactPlaceableUpdateAppearanceCarrier,
-    source_blocked_writer_gap: bool,
+    source: ExactPlaceableUnprovenCustomCarrierWriterGapSource,
 ) {
     update_carrier
         .selected_slot()
-        .record_unproven_custom_carrier_writer_gap(summary, source_blocked_writer_gap);
+        .record_unproven_custom_carrier_writer_gap(summary, source);
 }
 
 fn record_exact_placeable_base_identity_source_blocked_selection(

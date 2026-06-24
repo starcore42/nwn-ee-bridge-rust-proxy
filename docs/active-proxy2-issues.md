@@ -1131,6 +1131,14 @@ Current status:
   selected slot. Next replay should use the row-level slot plus source-blocked
   and source-unblocked aggregate buckets before changing any `U/09`
   custom-carrier writer behavior.
+- 2026-06-24 follow-up static/live placeable custom-carrier source disposition:
+  packet bytes and reconciliation policy are unchanged. Residual writer-gap
+  recording now uses a typed source-disposition classifier instead of a loose
+  boolean, splitting source-unblocked gaps, source-blocked rows with rewritten
+  `A/09` fields, and source-blocked rows whose fields stayed unchanged. The
+  last class remains suppressed as source-owned malformed `P/04` evidence, and
+  row traces emit the chosen source disposition before any `U/09`
+  custom-carrier writer rule is widened.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
