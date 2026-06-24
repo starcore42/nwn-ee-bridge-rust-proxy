@@ -1146,6 +1146,13 @@ Current status:
   buckets. Next replay can compare suppressed malformed `P/04` slot pressure
   against real `P/05` custom-carrier writer-gap slots before widening any
   `U/09` custom-carrier writer behavior.
+- 2026-06-24 follow-up static/live placeable unproven-carrier row evidence:
+  packet bytes and reconciliation policy are unchanged. The exact `A/09`
+  custom-carrier skip path now records each unproven row through one typed
+  selected-slot plus source-disposition evidence object, so skipped slots,
+  source-owned rows, and writer-gap slots cannot drift while the writer rule
+  remains gated. Next replay should inspect these row dispositions before
+  widening any `U/09` custom-carrier emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
