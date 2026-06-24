@@ -275,6 +275,11 @@ pub struct ExactLiveObjectRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons:
         live_object_update::ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows:
@@ -1260,6 +1265,30 @@ impl ExactLiveObjectRewriteSummary {
             .saturating_add(
                 rewrite.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
             );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked = self
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked
+            .saturating_add(
+                rewrite
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned,
+                );
+        self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned
+                .saturating_add(
+                    rewrite
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
+                );
         self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output =
             self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output
                 .saturating_add(

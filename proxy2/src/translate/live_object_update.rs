@@ -9242,6 +9242,22 @@ mod diagnostic_tests {
                     ..crate::translate::area::AreaPlaceableContextRow::default()
                 },
                 crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(resref_one),
+                    source_read_start: 64,
+                    source_read_end: 65,
+                    source_fragment_bit_start: 11,
+                    source_fragment_bit_end: 13,
+                    x: 1.0,
+                    y: 2.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
                     object_id: rewrite_object_id,
                     appearance: 0x0044,
                     x: 30.0,
@@ -9291,6 +9307,26 @@ mod diagnostic_tests {
         );
         assert_eq!(
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            1,
+            "the skipped fixed-output custom carrier should retain the malformed P/04 row provenance"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
             1
         );
         assert_eq!(
@@ -14597,6 +14633,11 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update_after_add_following_custom_rewrite_target_unavailable_reasons:
         ExactPlaceableCustomCarrierTargetUnavailableReasonSummary,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned: u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned:
+        u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows:
@@ -23068,6 +23109,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             summary
                                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
                                 .saturating_add(1);
+                        record_exact_placeable_unproven_custom_carrier_source_blockers(
+                            &mut summary,
+                            base_target,
+                        );
                         let update_carrier = exact_placeable_update_appearance_carrier_for_add(
                             area_context,
                             &claim,
@@ -23340,6 +23385,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 unproven_missing_template_resref_rows,
                             area_static_custom_carrier_unproven_output_divergent =
                                 unproven_output_divergent,
+                            area_static_custom_carrier_unproven_source_blocked =
+                                base_identity_source_blocked,
                             area_static_custom_carrier_unproven_pre_add_position_only_fixed_output =
                                 selection
                                     .identity_resolved_by_preceding_position_fixed_output_equivalence
@@ -23895,6 +23942,44 @@ fn placeable_identity_conflict_source_provenance_blocked(
     conflict.source_incompatible_static_rows != 0
         || conflict.source_read_mismatch_static_rows != 0
         || conflict.source_fragment_owned_static_rows != 0
+}
+
+fn record_exact_placeable_unproven_custom_carrier_source_blockers(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    base_target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+) {
+    let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = base_target
+    else {
+        return;
+    };
+    if !placeable_identity_conflict_source_provenance_blocked(conflict) {
+        return;
+    }
+
+    summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked = summary
+        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked
+        .saturating_add(1);
+    if conflict.source_read_mismatch_static_rows != 0 {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch
+                .saturating_add(1);
+    }
+    if conflict.source_fragment_owned_static_rows != 0 {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned
+                .saturating_add(1);
+    }
+    if conflict.source_read_mismatch_and_fragment_owned_static_rows != 0 {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned
+                .saturating_add(1);
+    }
 }
 
 fn record_exact_placeable_base_identity_source_blocked_selection(
@@ -30551,6 +30636,15 @@ fn trace_exact_placeable_reconciliation_summary(
             exact_placeable_reconciliation_emitted = emitted,
             add_module_custom_fixed_width_unproven_carrier_skipped =
                 summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked = summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch = summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch,
+            add_module_custom_fixed_width_unproven_carrier_source_fragment_owned = summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
             add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,

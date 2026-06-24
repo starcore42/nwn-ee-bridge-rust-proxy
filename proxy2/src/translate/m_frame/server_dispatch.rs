@@ -1645,6 +1645,15 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_template_resref_fixed_width_pre_add_update_only_position_output_equivalence,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped =
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output = summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows = summary

@@ -1061,6 +1061,17 @@ Current status:
   provenance, malformed `U/09`, and source-blocked field-correlation tests;
   next replay should compare combined-class counts against remaining source-
   blocked field rewrites before changing emitted packet behavior.
+- 2026-06-24 follow-up static/live placeable custom-carrier source blockers:
+  packet bytes and reconciliation policy are unchanged. Exact `A/09`
+  fixed-width custom-carrier blockers now retain the same `P/04` source
+  provenance class as base identity blockers: source-blocked, malformed
+  read-width, fragment-owned, and combined malformed+fragment-owned. The
+  live-object and M-frame debug summaries expose those buckets when a custom
+  carrier is skipped because only fixed A/09 output is proven. Verified with
+  focused fixed-output custom-carrier and source-blocked field-correlation
+  tests; next replay should compare these carrier-source buckets against
+  remaining source-blocked field rewrites before adding a custom carrier writer
+  rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
