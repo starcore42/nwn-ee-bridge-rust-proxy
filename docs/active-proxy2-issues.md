@@ -1027,6 +1027,18 @@ Current status:
   hgbridge-proxy2`. Next replay should use the new
   `*_field_rewrite_targets` versus `*_field_unchanged_targets` buckets to
   decide whether remaining source-blocked rows still need a writer rule.
+- 2026-06-24 follow-up static/live placeable source-blocked provenance-target
+  classification: packet bytes and reconciliation policy are unchanged. Exact
+  `P/05` placeable reconciliation now pairs every source-blocked selected
+  target with the `P/04` blocker class that made the base identity untrusted:
+  malformed read-width provenance, fragment-owned row bits, or both. The bridge
+  summary exposes add/update `*_source_blocked_read_mismatch_targets` and
+  `*_source_blocked_fragment_owned_targets`, so replay can distinguish
+  malformed area-row ownership from a live-object writer gap without deriving
+  it from broader conflict counters. Verified with the malformed-provenance
+  exact `U/09` regression; next replay should compare these blocker-class
+  target buckets against the field-rewrite/unchanged buckets before adding a
+  new `P/05` writer rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
