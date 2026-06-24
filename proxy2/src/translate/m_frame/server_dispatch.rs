@@ -1782,6 +1782,9 @@ fn trace_live_object_exact_rewrite_summary(
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets =
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output = summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows = summary

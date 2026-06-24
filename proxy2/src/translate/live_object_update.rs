@@ -11169,6 +11169,91 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_unproven_carrier_combined_only_source_blocker_counts_by_slot() {
+        let combined_only_conflict = crate::translate::area::AreaPlaceableContextIdentityConflict {
+            light_rows: 0,
+            static_rows: 1,
+            module_backed_static_rows: 0,
+            module_unbacked_static_rows: 0,
+            unproven_static_rows: 1,
+            source_incompatible_static_rows: 0,
+            source_read_mismatch_static_rows: 0,
+            source_fragment_owned_static_rows: 0,
+            source_read_mismatch_and_fragment_owned_static_rows: 1,
+            area_alias_rows: 0,
+            duplicate_object_id_rows: 0,
+        };
+        let row_evidence =
+            ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_target_and_field_outcome(
+                ExactPlaceableUpdateAppearanceCarrier::default(),
+                AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(
+                    combined_only_conflict,
+                ),
+                false,
+            );
+
+        assert_eq!(
+            row_evidence.source(),
+            ExactPlaceableUnprovenCustomCarrierWriterGapSource::SourceBlockedFieldUnchanged
+        );
+        assert!(
+            !row_evidence.is_writer_gap_candidate(),
+            "combined source-provenance blockers with unchanged fields remain source-owned evidence"
+        );
+
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+        row_evidence.record(&mut summary);
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            0
+        );
+
+        let source_blocker_slots = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots;
+        let add_only_slot = ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+            add_only: 1,
+            ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        };
+        assert_eq!(source_blocker_slots.source_blocked, add_only_slot);
+        assert_eq!(
+            source_blocker_slots.read_mismatch,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        );
+        assert_eq!(
+            source_blocker_slots.fragment_owned,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        );
+        assert_eq!(
+            source_blocker_slots.read_mismatch_and_fragment_owned,
+            add_only_slot
+        );
+
+        let slot_disposition = summary.exact_placeable_unproven_custom_carrier_slot_disposition();
+        assert_eq!(
+            slot_disposition.source_owned_without_field_rewrite,
+            add_only_slot
+        );
+        assert_eq!(
+            slot_disposition.writer_gap,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        );
+    }
+
+    #[test]
     fn exact_placeable_custom_carrier_target_decision_carries_module_target_unavailable_reason() {
         let target_resref = *b"plc_add_target\0\0";
         let row_without_custom_output = crate::translate::area::AreaPlaceableContextRow {
@@ -14811,6 +14896,14 @@ pub struct ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
     pub add_only: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots {
+    pub source_blocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub read_mismatch: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub fragment_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub read_mismatch_and_fragment_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableUnprovenCustomCarrierWriterGapSource {
     SourceUnblocked,
@@ -14892,6 +14985,9 @@ impl ExactPlaceableUnprovenCustomCarrierRowEvidence {
                 summary,
                 source_blockers,
             );
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots
+                .record(self.slot, source_blockers);
             record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
                 summary,
                 source_blockers,
@@ -15126,6 +15222,50 @@ impl ExactPlaceableUpdateAppearanceCarrierSlot {
 }
 
 impl ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+    fn increment_slot(&mut self, slot: ExactPlaceableUpdateAppearanceCarrierSlot) {
+        match slot {
+            ExactPlaceableUpdateAppearanceCarrierSlot::FollowingNormalUpdate => {
+                self.with_update = self.with_update.saturating_add(1);
+                self.with_normal_update = self.with_normal_update.saturating_add(1);
+            }
+            ExactPlaceableUpdateAppearanceCarrierSlot::FollowingCustomUpdate => {
+                self.with_update = self.with_update.saturating_add(1);
+                self.with_custom_update = self.with_custom_update.saturating_add(1);
+            }
+            ExactPlaceableUpdateAppearanceCarrierSlot::PreAddNormalUpdate => {
+                self.pre_add_update_only = self.pre_add_update_only.saturating_add(1);
+                self.pre_add_normal_update_only = self.pre_add_normal_update_only.saturating_add(1);
+            }
+            ExactPlaceableUpdateAppearanceCarrierSlot::PreAddCustomUpdate => {
+                self.pre_add_update_only = self.pre_add_update_only.saturating_add(1);
+                self.pre_add_custom_update_only = self.pre_add_custom_update_only.saturating_add(1);
+            }
+            ExactPlaceableUpdateAppearanceCarrierSlot::AddOnly => {
+                self.add_only = self.add_only.saturating_add(1);
+            }
+        }
+    }
+
+    fn saturating_add_assign(&mut self, rhs: Self) {
+        self.with_update = self.with_update.saturating_add(rhs.with_update);
+        self.with_normal_update = self
+            .with_normal_update
+            .saturating_add(rhs.with_normal_update);
+        self.with_custom_update = self
+            .with_custom_update
+            .saturating_add(rhs.with_custom_update);
+        self.pre_add_update_only = self
+            .pre_add_update_only
+            .saturating_add(rhs.pre_add_update_only);
+        self.pre_add_normal_update_only = self
+            .pre_add_normal_update_only
+            .saturating_add(rhs.pre_add_normal_update_only);
+        self.pre_add_custom_update_only = self
+            .pre_add_custom_update_only
+            .saturating_add(rhs.pre_add_custom_update_only);
+        self.add_only = self.add_only.saturating_add(rhs.add_only);
+    }
+
     fn saturating_sub_slots(self, rhs: Self) -> Self {
         Self {
             with_update: self.with_update.saturating_sub(rhs.with_update),
@@ -15153,6 +15293,38 @@ impl ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
         source_blocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     ) -> Self {
         self.saturating_sub_slots(source_blocked)
+    }
+}
+
+impl ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots {
+    fn record(
+        &mut self,
+        slot: ExactPlaceableUpdateAppearanceCarrierSlot,
+        blockers: AreaPlaceableSourceProvenanceBlockers,
+    ) {
+        if !blockers.any() {
+            return;
+        }
+        self.source_blocked.increment_slot(slot);
+        if blockers.read_mismatch_rows() != 0 {
+            self.read_mismatch.increment_slot(slot);
+        }
+        if blockers.fragment_owned_rows() != 0 {
+            self.fragment_owned.increment_slot(slot);
+        }
+        if blockers.read_mismatch_and_fragment_owned_rows() != 0 {
+            self.read_mismatch_and_fragment_owned.increment_slot(slot);
+        }
+    }
+
+    pub(crate) fn saturating_add_assign(&mut self, rhs: Self) {
+        self.source_blocked
+            .saturating_add_assign(rhs.source_blocked);
+        self.read_mismatch.saturating_add_assign(rhs.read_mismatch);
+        self.fragment_owned
+            .saturating_add_assign(rhs.fragment_owned);
+        self.read_mismatch_and_fragment_owned
+            .saturating_add_assign(rhs.read_mismatch_and_fragment_owned);
     }
 }
 
@@ -15548,6 +15720,8 @@ pub struct LiveObjectUpdateRewriteSummary {
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets:
         u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots:
+        ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows:
@@ -31752,6 +31926,9 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_blocker_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocker_slots,
             add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,

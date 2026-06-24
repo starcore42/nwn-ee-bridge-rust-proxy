@@ -1160,6 +1160,15 @@ Current status:
   selected-slot writer-gap counters. Next replay should compare row-level
   source disposition plus slot pressure before changing `U/09` custom-carrier
   emission.
+- 2026-06-25 follow-up static/live placeable source-blocker slot matrix:
+  packet bytes and reconciliation policy are unchanged. The shared `P/04`
+  source-provenance blocker predicate now treats the combined read-width plus
+  fragment-owned class as a blocker even when helper evidence carries only that
+  combined class, and exact `A/09` unproven custom-carrier summaries now retain
+  source-blocker class slots for source-blocked, read-mismatch, fragment-owned,
+  and combined rows. Direct and M-frame diagnostics expose the typed matrix, so
+  the next replay can compare slot pressure by malformed `P/04` class before
+  widening any `U/09` custom-carrier writer behavior.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

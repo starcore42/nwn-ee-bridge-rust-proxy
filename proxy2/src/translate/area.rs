@@ -767,6 +767,7 @@ impl AreaPlaceableSourceProvenanceBlockers {
         self.source_incompatible_static_rows != 0
             || self.source_read_mismatch_static_rows != 0
             || self.source_fragment_owned_static_rows != 0
+            || self.source_read_mismatch_and_fragment_owned_static_rows != 0
     }
 
     pub fn source_incompatible_rows(self) -> u16 {
@@ -9774,6 +9775,32 @@ mod public_static_direction_tests {
                 "read-mismatched and fragment-owning source row must expose the combined blocker: {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn source_provenance_blockers_any_counts_combined_only_rows() {
+        let conflict = AreaPlaceableContextIdentityConflict {
+            light_rows: 0,
+            static_rows: 1,
+            module_backed_static_rows: 0,
+            module_unbacked_static_rows: 0,
+            unproven_static_rows: 1,
+            source_incompatible_static_rows: 0,
+            source_read_mismatch_static_rows: 0,
+            source_fragment_owned_static_rows: 0,
+            source_read_mismatch_and_fragment_owned_static_rows: 1,
+            area_alias_rows: 0,
+            duplicate_object_id_rows: 0,
+        };
+
+        let blockers = conflict.source_provenance_blockers();
+        assert!(
+            blockers.any(),
+            "combined read-width plus fragment-owned provenance must not look source-unblocked"
+        );
+        assert_eq!(blockers.read_mismatch_rows(), 0);
+        assert_eq!(blockers.fragment_owned_rows(), 0);
+        assert_eq!(blockers.read_mismatch_and_fragment_owned_rows(), 1);
     }
 
     #[test]
