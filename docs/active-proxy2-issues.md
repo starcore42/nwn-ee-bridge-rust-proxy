@@ -1072,6 +1072,16 @@ Current status:
   tests; next replay should compare these carrier-source buckets against
   remaining source-blocked field rewrites before adding a custom carrier writer
   rule.
+- 2026-06-24 follow-up static/live placeable custom-carrier field outcomes:
+  packet bytes and reconciliation policy are unchanged. The source-blocked
+  fixed-output custom-carrier skip now records whether the same selected A/09
+  row rewrote fields or was field-unchanged, split by malformed read-width,
+  fragment-owned, and combined source-provenance classes. Direct live-object,
+  M-frame, and server-dispatch summaries carry the new buckets. Verified with
+  focused helper, fixed-output carrier, exact-placeable, formatter,
+  diff-check, and `cargo check -q -p hgbridge-proxy2`; next replay should
+  compare source-blocked custom-carrier `field_rewrite` versus
+  `field_unchanged` before adding a custom carrier writer rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

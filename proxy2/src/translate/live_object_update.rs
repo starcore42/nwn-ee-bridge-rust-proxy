@@ -8560,6 +8560,76 @@ mod diagnostic_tests {
         );
     }
 
+    #[test]
+    fn exact_placeable_unproven_carrier_source_blocked_field_correlation_splits_outcomes() {
+        let conflict = crate::translate::area::AreaPlaceableContextIdentityConflict {
+            light_rows: 0,
+            static_rows: 2,
+            module_backed_static_rows: 1,
+            module_unbacked_static_rows: 0,
+            unproven_static_rows: 1,
+            source_incompatible_static_rows: 1,
+            source_read_mismatch_static_rows: 1,
+            source_fragment_owned_static_rows: 1,
+            source_read_mismatch_and_fragment_owned_static_rows: 1,
+            area_alias_rows: 0,
+            duplicate_object_id_rows: 1,
+        };
+
+        let mut summary = LiveObjectUpdateRewriteSummary::default();
+        record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
+            &mut summary,
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
+            true,
+        );
+        record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
+            &mut summary,
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
+            false,
+        );
+
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
+            1
+        );
+    }
+
     fn test_placeable_static_selection<'a>(
         target: AreaPlaceableContextStaticReconciliationTarget<'a>,
     ) -> PlaceableStaticReconciliationSelection<'a> {
@@ -9327,6 +9397,46 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
             1
         );
         assert_eq!(
@@ -14637,6 +14747,22 @@ pub struct LiveObjectUpdateRewriteSummary {
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned: u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets:
+        u32,
+    pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets:
         u32,
     pub exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output:
         u32,
@@ -23093,6 +23219,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     mention.object_id,
                 );
                 let mut pending_custom_update_synthesis = None;
+                let mut unproven_custom_carrier_source_blocked = false;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
                     && is_custom_placeable_appearance(row.appearance)
@@ -23113,6 +23240,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             &mut summary,
                             base_target,
                         );
+                        unproven_custom_carrier_source_blocked = base_identity_source_blocked;
                         let update_carrier = exact_placeable_update_appearance_carrier_for_add(
                             area_context,
                             &claim,
@@ -23527,6 +23655,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 }
                 let add_record_rewritten_in_place = appearance_rewritten || state_rewritten;
                 let add_record_has_pending_synthesis = pending_custom_update_synthesis.is_some();
+                if unproven_custom_carrier_source_blocked {
+                    record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
+                        &mut summary,
+                        base_target,
+                        add_record_rewritten_in_place,
+                    );
+                }
                 record_exact_placeable_base_identity_source_blocked_field_correlation(
                     &mut summary,
                     b'A',
@@ -23979,6 +24114,87 @@ fn record_exact_placeable_unproven_custom_carrier_source_blockers(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned
                 .saturating_add(1);
+    }
+}
+
+fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
+    summary: &mut LiveObjectUpdateRewriteSummary,
+    base_target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    field_rewritten: bool,
+) {
+    let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = base_target
+    else {
+        return;
+    };
+    if !placeable_identity_conflict_source_provenance_blocked(conflict) {
+        return;
+    }
+
+    if field_rewritten {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets
+                .saturating_add(1);
+    } else {
+        summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets =
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets
+                .saturating_add(1);
+    }
+
+    let read_mismatch_blocked = conflict.source_read_mismatch_static_rows != 0;
+    let fragment_owned_blocked = conflict.source_fragment_owned_static_rows != 0;
+    let read_mismatch_and_fragment_owned_blocked =
+        conflict.source_read_mismatch_and_fragment_owned_static_rows != 0;
+    match field_rewritten {
+        true => {
+            if read_mismatch_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets
+                        .saturating_add(1);
+            }
+            if fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets
+                        .saturating_add(1);
+            }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets
+                        .saturating_add(1);
+            }
+        }
+        false => {
+            if read_mismatch_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets
+                        .saturating_add(1);
+            }
+            if fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets
+                        .saturating_add(1);
+            }
+            if read_mismatch_and_fragment_owned_blocked {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets
+                        .saturating_add(1);
+            }
+        }
     }
 }
 
@@ -30645,6 +30861,30 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_rewrite_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_field_unchanged_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_rewrite_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned_field_unchanged_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_rewrite_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets =
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
             add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
