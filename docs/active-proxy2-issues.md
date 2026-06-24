@@ -1169,6 +1169,14 @@ Current status:
   and combined rows. Direct and M-frame diagnostics expose the typed matrix, so
   the next replay can compare slot pressure by malformed `P/04` class before
   widening any `U/09` custom-carrier writer behavior.
+- 2026-06-25 follow-up static/live placeable source-unblocked writer-gap
+  synthesis: source-unblocked fixed-width `A/09` unproven-carrier rows now feed
+  the existing add-boundary synthetic `U/09` carrier path when the selected
+  module row has a concrete `TemplateResRef` and the fixed-output proof has no
+  divergent carrier output. Source-owned, source-blocked, missing-template, and
+  divergent-output rows remain gated and reported through the typed synthesis
+  gate. Next replay should inspect remaining blocked-source-provenance and
+  divergent-output gate pressure before widening source-blocked carriers.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
