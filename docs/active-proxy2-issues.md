@@ -1200,6 +1200,12 @@ Current status:
   blockers are still counted; missing-template and divergent-output rows remain
   blocked. Next replay should inspect any remaining blocked-source-provenance
   pressure by selected carrier slot.
+- 2026-06-25 follow-up static/live placeable residual source-provenance gates:
+  packet bytes and synthesis policy are unchanged. The `A/09` unproven-carrier
+  gate now derives residual blocked-source-provenance slots after subtracting
+  source-trusted eligible rows, so direct and M-frame diagnostics distinguish
+  remaining missing-template/divergent-output blockers from already-synthesized
+  source-trusted rows. Next replay should target only nonzero residual slots.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
