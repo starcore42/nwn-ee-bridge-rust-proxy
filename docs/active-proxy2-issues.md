@@ -1153,6 +1153,13 @@ Current status:
   source-owned rows, and writer-gap slots cannot drift while the writer rule
   remains gated. Next replay should inspect these row dispositions before
   widening any `U/09` custom-carrier emission.
+- 2026-06-25 follow-up static/live placeable unproven-carrier row recorder:
+  packet bytes and reconciliation policy are unchanged. The same typed row
+  evidence object now owns the aggregate skipped-row count, malformed `P/04`
+  source-provenance blocker counters, source field-outcome correlation, and
+  selected-slot writer-gap counters. Next replay should compare row-level
+  source disposition plus slot pressure before changing `U/09` custom-carrier
+  emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

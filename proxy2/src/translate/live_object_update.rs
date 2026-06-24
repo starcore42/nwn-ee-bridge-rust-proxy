@@ -8577,25 +8577,25 @@ mod diagnostic_tests {
         };
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
-        record_exact_placeable_unproven_custom_carrier_source_blockers(
-            &mut summary,
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
-        );
-        record_exact_placeable_unproven_custom_carrier_source_blockers(
-            &mut summary,
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
-        );
-        summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped = 3;
-        record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
-            &mut summary,
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
-            true,
-        );
-        record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
-            &mut summary,
-            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
-            false,
-        );
+        let unblocked_row = crate::translate::area::AreaPlaceableContextRow::default();
+        let source_blocked_target =
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict);
+        let source_unblocked_target =
+            AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(&unblocked_row);
+        let add_only_carrier = ExactPlaceableUpdateAppearanceCarrier::default();
+
+        for (base_target, field_rewritten) in [
+            (source_blocked_target, true),
+            (source_blocked_target, false),
+            (source_unblocked_target, false),
+        ] {
+            ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_target_and_field_outcome(
+                add_only_carrier,
+                base_target,
+                field_rewritten,
+            )
+            .record(&mut summary);
+        }
 
         assert_eq!(
             summary
@@ -8653,6 +8653,15 @@ mod diagnostic_tests {
         );
         assert_eq!(disposition.source_blocked_writer_gap_candidates, 1);
         assert_eq!(disposition.source_unblocked_writer_gap_candidates, 1);
+        let slot_disposition = summary.exact_placeable_unproven_custom_carrier_slot_disposition();
+        assert_eq!(slot_disposition.skipped.add_only, 3);
+        assert_eq!(slot_disposition.writer_gap.add_only, 2);
+        assert_eq!(slot_disposition.source_blocked_field_rewrite.add_only, 1);
+        assert_eq!(slot_disposition.source_unblocked.add_only, 1);
+        assert_eq!(
+            slot_disposition.source_owned_without_field_rewrite.add_only,
+            1
+        );
     }
 
     fn test_placeable_static_selection<'a>(
@@ -10941,23 +10950,65 @@ mod diagnostic_tests {
             ExactPlaceableUpdateAppearanceCarrierSlot::AddOnly
         );
 
-        for (carrier, source_blocked, field_rewritten) in [
-            (following_normal_carrier, true, true),
-            (following_custom_carrier, false, true),
-            (pre_add_normal_carrier, true, true),
-            (pre_add_custom_carrier, false, false),
-            (add_only_carrier, true, true),
-            (add_only_carrier, true, false),
+        let source_blocked_conflict =
+            crate::translate::area::AreaPlaceableContextIdentityConflict {
+                light_rows: 0,
+                static_rows: 2,
+                module_backed_static_rows: 1,
+                module_unbacked_static_rows: 0,
+                unproven_static_rows: 1,
+                source_incompatible_static_rows: 1,
+                source_read_mismatch_static_rows: 1,
+                source_fragment_owned_static_rows: 1,
+                source_read_mismatch_and_fragment_owned_static_rows: 1,
+                area_alias_rows: 0,
+                duplicate_object_id_rows: 1,
+            };
+        let source_blocked_target = AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(
+            source_blocked_conflict,
+        );
+        let source_unblocked_row = crate::translate::area::AreaPlaceableContextRow::default();
+        let source_unblocked_target =
+            AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(
+                &source_unblocked_row,
+            );
+
+        for (carrier, base_target, field_rewritten) in [
+            (following_normal_carrier, source_blocked_target, true),
+            (following_custom_carrier, source_unblocked_target, true),
+            (pre_add_normal_carrier, source_blocked_target, true),
+            (pre_add_custom_carrier, source_unblocked_target, false),
+            (add_only_carrier, source_blocked_target, true),
+            (add_only_carrier, source_blocked_target, false),
         ] {
             let row_evidence =
-                ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_and_field_outcome(
+                ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_target_and_field_outcome(
                     carrier,
-                    source_blocked,
+                    base_target,
                     field_rewritten,
                 );
             row_evidence.record(&mut summary);
         }
 
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped, 6,
+            "row evidence owns the aggregate skipped-row count"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            4,
+            "the same row evidence owns malformed P/04 source-provenance counts"
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            3
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+            1
+        );
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
@@ -14797,21 +14848,26 @@ impl ExactPlaceableUnprovenCustomCarrierWriterGapSource {
 struct ExactPlaceableUnprovenCustomCarrierRowEvidence {
     slot: ExactPlaceableUpdateAppearanceCarrierSlot,
     source: ExactPlaceableUnprovenCustomCarrierWriterGapSource,
+    source_blockers: Option<AreaPlaceableSourceProvenanceBlockers>,
+    field_rewritten: bool,
 }
 
 impl ExactPlaceableUnprovenCustomCarrierRowEvidence {
-    fn from_update_carrier_and_field_outcome(
+    fn from_update_carrier_target_and_field_outcome(
         carrier: ExactPlaceableUpdateAppearanceCarrier,
-        source_blocked: bool,
+        base_target: AreaPlaceableContextStaticReconciliationTarget<'_>,
         field_rewritten: bool,
     ) -> Self {
+        let source_blockers = placeable_static_target_source_provenance_blockers(base_target);
         Self {
             slot: carrier.selected_slot(),
             source:
                 ExactPlaceableUnprovenCustomCarrierWriterGapSource::from_source_and_field_outcome(
-                    source_blocked,
+                    source_blockers.is_some(),
                     field_rewritten,
                 ),
+            source_blockers,
+            field_rewritten,
         }
     }
 
@@ -14828,6 +14884,20 @@ impl ExactPlaceableUnprovenCustomCarrierRowEvidence {
     }
 
     fn record(self, summary: &mut LiveObjectUpdateRewriteSummary) {
+        summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
+            .saturating_add(1);
+        if let Some(source_blockers) = self.source_blockers {
+            record_exact_placeable_unproven_custom_carrier_source_blockers(
+                summary,
+                source_blockers,
+            );
+            record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
+                summary,
+                source_blockers,
+                self.field_rewritten,
+            );
+        }
         self.slot.record_unproven_custom_carrier(summary);
         self.slot
             .record_unproven_custom_carrier_writer_gap(summary, self.source);
@@ -24034,7 +24104,6 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     mention.object_id,
                 );
                 let mut pending_custom_update_synthesis = None;
-                let mut unproven_custom_carrier_source_blocked = false;
                 let mut unproven_custom_carrier_update_carrier = None;
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     target
@@ -24047,16 +24116,6 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_module_custom_appearance_skipped
                         .saturating_add(1);
                     if selection.custom_appearance_carrier_unproven() {
-                        summary
-                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped =
-                            summary
-                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped
-                                .saturating_add(1);
-                        record_exact_placeable_unproven_custom_carrier_source_blockers(
-                            &mut summary,
-                            base_target,
-                        );
-                        unproven_custom_carrier_source_blocked = base_identity_source_blocked;
                         let update_carrier = exact_placeable_update_appearance_carrier_for_add(
                             area_context,
                             &claim,
@@ -24433,18 +24492,11 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 }
                 let add_record_rewritten_in_place = appearance_rewritten || state_rewritten;
                 let add_record_has_pending_synthesis = pending_custom_update_synthesis.is_some();
-                if unproven_custom_carrier_source_blocked {
-                    record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
-                        &mut summary,
-                        base_target,
-                        add_record_rewritten_in_place,
-                    );
-                }
                 if let Some(update_carrier) = unproven_custom_carrier_update_carrier {
                     let row_evidence =
-                        ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_and_field_outcome(
+                        ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_target_and_field_outcome(
                             update_carrier,
-                            unproven_custom_carrier_source_blocked,
+                            base_target,
                             add_record_rewritten_in_place,
                         );
                     tracing::debug!(
@@ -24871,13 +24923,8 @@ fn placeable_static_target_source_provenance_blockers(
 
 fn record_exact_placeable_unproven_custom_carrier_source_blockers(
     summary: &mut LiveObjectUpdateRewriteSummary,
-    base_target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    blockers: AreaPlaceableSourceProvenanceBlockers,
 ) {
-    let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = base_target
-    else {
-        return;
-    };
-    let blockers = conflict.source_provenance_blockers();
     if !blockers.any() {
         return;
     }
@@ -24910,14 +24957,9 @@ fn record_exact_placeable_unproven_custom_carrier_source_blockers(
 
 fn record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
     summary: &mut LiveObjectUpdateRewriteSummary,
-    base_target: AreaPlaceableContextStaticReconciliationTarget<'_>,
+    blockers: AreaPlaceableSourceProvenanceBlockers,
     field_rewritten: bool,
 ) {
-    let AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict) = base_target
-    else {
-        return;
-    };
-    let blockers = conflict.source_provenance_blockers();
     if !blockers.any() {
         return;
     }
