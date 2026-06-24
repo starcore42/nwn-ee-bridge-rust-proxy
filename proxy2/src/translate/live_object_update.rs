@@ -9436,6 +9436,281 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_source_trusted_blocked_provenance_carrier_synthesizes_unique_output() {
+        let object_id = 0x8000_362Cu32;
+        let target_resref = *b"plc_src_trust\0\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+
+        let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable rewrites from the module-backed fixed-output row.
+            false, // trap disarmable.
+            false, // lockable rewrites from the module-backed fixed-output row.
+            false, // locked.
+            false, // unknown 0x1AC sibling.
+            true,  // name-valid.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("exact source-provenance-blocked A/09 plus following position U/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(target_resref),
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    source_read_start: 64,
+                    source_read_end: 65,
+                    source_fragment_bit_start: 11,
+                    source_fragment_bit_end: 13,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("source-trusted fixed-output carrier gap should synthesize a U/09 carrier");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(
+            summary.add_records_rewritten, 1,
+            "the source-blocked add is counted after its state rewrite and exact synthetic carrier claim"
+        );
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(
+            summary.exact_placeable_add_appearance_rewritten, 0,
+            "fixed-output carrier proof keeps the A/09 appearance fixed-width and emits custom appearance as U/09"
+        );
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_add_base_identity_source_blocked_resolved_targets,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_base_identity_source_blocked_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_fragment_owned,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            0
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_unproven_custom_carrier_writer_gap_slots()
+                .source_blocked
+                .add_only,
+            1
+        );
+        let synthesis_gate_slots = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots;
+        assert_eq!(synthesis_gate_slots.blocked_source_provenance.add_only, 1);
+        assert_eq!(
+            synthesis_gate_slots
+                .blocked_source_provenance_source_trusted_eligible
+                .add_only,
+            1
+        );
+        assert_eq!(
+            synthesis_gate_slots.blocked_source_provenance_source_trusted_missing_template_resref,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        );
+        assert_eq!(
+            synthesis_gate_slots.blocked_source_provenance_source_trusted_divergent_output,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_synthesized_custom_carrier_after_add_reasons(&summary, 1, 0, 0, 0);
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact A/09 + U/09 claim");
+        assert_eq!(claim.mentions.len(), 3);
+        assert_eq!(
+            claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "A/09 remains fixed-width while the custom appearance is synthesized as a U/09 carrier"
+        );
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(target_resref),
+            }),
+            "source-trusted provenance-blocked rows synthesize the module TemplateResRef"
+        );
+        assert_eq!(claim.mentions[1].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[1].fragment_bit_start,
+            claim.mentions[0].fragment_bit_end
+        );
+        assert_eq!(
+            claim.mentions[1].fragment_bit_end,
+            claim.mentions[0].fragment_bit_end
+        );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact A/09 fragment bits");
+        assert!(
+            rewritten_bits[CNW_FRAGMENT_HEADER_BITS + 4],
+            "the selected module row still owns the A/09 useable-state rewrite"
+        );
+        assert!(
+            rewritten_bits[CNW_FRAGMENT_HEADER_BITS + 6],
+            "the selected module row still owns the A/09 lockable-state rewrite"
+        );
+        let position = claim.mentions[2]
+            .position
+            .expect("following U/09 position should remain parser-owned after insertion");
+        assert_eq!(position.x_raw, 1000);
+        assert_eq!(position.y_raw, 2000);
+        assert_eq!(position.z_raw, z_raw);
+    }
+
+    #[test]
     fn exact_placeable_add_fixed_field_fixed_output_equivalence_suppresses_carrier() {
         let object_id = 0x8000_3628u32;
         let rewrite_object_id = 0x8000_3629u32;
@@ -11445,6 +11720,7 @@ mod diagnostic_tests {
                 &source_unblocked_row,
                 false,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::EligibleSourceUnblocked,
+                true,
             ),
             (
                 add_only_carrier,
@@ -11453,6 +11729,7 @@ mod diagnostic_tests {
                 &source_unblocked_row,
                 false,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceOwned,
+                false,
             ),
             (
                 pre_add_normal_carrier,
@@ -11461,6 +11738,7 @@ mod diagnostic_tests {
                 &source_unblocked_row,
                 false,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+                true,
             ),
             (
                 following_custom_carrier,
@@ -11469,6 +11747,7 @@ mod diagnostic_tests {
                 &missing_template_row,
                 false,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+                false,
             ),
             (
                 add_only_carrier,
@@ -11477,6 +11756,7 @@ mod diagnostic_tests {
                 &source_unblocked_row,
                 true,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+                false,
             ),
             (
                 following_custom_carrier,
@@ -11485,6 +11765,7 @@ mod diagnostic_tests {
                 &missing_template_row,
                 false,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedMissingTemplateResRef,
+                false,
             ),
             (
                 pre_add_custom_carrier,
@@ -11493,11 +11774,21 @@ mod diagnostic_tests {
                 &source_unblocked_row,
                 true,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedDivergentOutput,
+                false,
             ),
         ];
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
-        for (carrier, base_target, field_rewritten, row, output_divergent, expected_gate) in cases {
+        for (
+            carrier,
+            base_target,
+            field_rewritten,
+            row,
+            output_divergent,
+            expected_gate,
+            expected_synthesis_eligible,
+        ) in cases
+        {
             let row_evidence =
                 ExactPlaceableUnprovenCustomCarrierRowEvidence::from_update_carrier_target_and_field_outcome(
                     carrier,
@@ -11518,6 +11809,11 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                 .record(row_evidence, gate, source_trusted_gate);
+            assert_eq!(
+                gate.is_synthesis_eligible(source_trusted_gate),
+                expected_synthesis_eligible,
+                "only source-unblocked rows and source-trusted provenance-blocked field rewrites synthesize"
+            );
             row_evidence.record(&mut summary);
         }
 
@@ -15451,8 +15747,20 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
         Self::EligibleSourceUnblocked
     }
 
-    fn is_eligible(self) -> bool {
+    fn is_synthesis_eligible(
+        self,
+        source_trusted_gate: ExactPlaceableUnprovenCustomCarrierSourceTrustedGate,
+    ) -> bool {
+        // Malformed P/04 source provenance still blocks identity proof. Once a
+        // P/05 fixed-output row has rewritten fields, the source-trusted gate
+        // separately proves the custom carrier has a concrete, non-divergent
+        // module output.
         matches!(self, Self::EligibleSourceUnblocked)
+            || (matches!(self, Self::BlockedSourceProvenance)
+                && matches!(
+                    source_trusted_gate,
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible
+                ))
     }
 
     fn as_str(self) -> &'static str {
@@ -25304,7 +25612,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                         .record(row_evidence, synthesis_gate, source_trusted_gate);
                     row_evidence.record(&mut summary);
-                    if synthesis_gate.is_eligible() {
+                    if synthesis_gate.is_synthesis_eligible(source_trusted_gate) {
                         summary
                             .exact_placeable_add_module_custom_template_resref_fixed_width_skipped =
                             summary
