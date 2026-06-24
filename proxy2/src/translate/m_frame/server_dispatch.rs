@@ -997,6 +997,8 @@ fn trace_live_object_exact_rewrite_summary(
     let current_record_progress = unresolved_placeable_conflicts.current_record_progress;
     let unproven_carrier_disposition =
         summary.exact_placeable_unproven_custom_carrier_disposition();
+    let unproven_carrier_writer_gap_slots =
+        summary.exact_placeable_unproven_custom_carrier_writer_gap_slots();
     if unproven_carrier_disposition.skipped != 0 {
         tracing::info!(
             source = exact_rewrite.source,
@@ -1023,47 +1025,47 @@ fn trace_live_object_exact_rewrite_summary(
             source = exact_rewrite.source,
             family = family_name,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
+                unproven_carrier_writer_gap_slots.all.with_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update,
+                unproven_carrier_writer_gap_slots.all.with_normal_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update,
+                unproven_carrier_writer_gap_slots.all.with_custom_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only,
+                unproven_carrier_writer_gap_slots.all.pre_add_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only,
+                unproven_carrier_writer_gap_slots.all.pre_add_normal_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only,
+                unproven_carrier_writer_gap_slots.all.pre_add_custom_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+                unproven_carrier_writer_gap_slots.all.add_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update,
+                unproven_carrier_writer_gap_slots.source_blocked.with_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update,
+                unproven_carrier_writer_gap_slots.source_blocked.with_normal_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update,
+                unproven_carrier_writer_gap_slots.source_blocked.with_custom_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only,
+                unproven_carrier_writer_gap_slots.source_blocked.pre_add_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only,
+                unproven_carrier_writer_gap_slots.source_blocked.pre_add_normal_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only,
+                unproven_carrier_writer_gap_slots.source_blocked.pre_add_custom_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
+                unproven_carrier_writer_gap_slots.source_blocked.add_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_update =
+                unproven_carrier_writer_gap_slots.source_unblocked.with_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_normal_update =
+                unproven_carrier_writer_gap_slots.source_unblocked.with_normal_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_custom_update =
+                unproven_carrier_writer_gap_slots.source_unblocked.with_custom_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_update_only =
+                unproven_carrier_writer_gap_slots.source_unblocked.pre_add_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_normal_update_only =
+                unproven_carrier_writer_gap_slots.source_unblocked.pre_add_normal_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_custom_update_only =
+                unproven_carrier_writer_gap_slots.source_unblocked.pre_add_custom_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_add_only =
+                unproven_carrier_writer_gap_slots.source_unblocked.add_only,
             "server exact placeable fixed-output custom carrier writer-gap slots"
         );
     }
@@ -1798,27 +1800,48 @@ fn trace_live_object_exact_rewrite_summary(
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only =
             summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+            unproven_carrier_writer_gap_slots.all.with_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
+            unproven_carrier_writer_gap_slots.all.with_normal_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
+            unproven_carrier_writer_gap_slots.all.with_custom_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+            unproven_carrier_writer_gap_slots.all.pre_add_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
+            unproven_carrier_writer_gap_slots.all.pre_add_normal_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
+            unproven_carrier_writer_gap_slots.all.pre_add_custom_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
+            unproven_carrier_writer_gap_slots.all.add_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update,
+            unproven_carrier_writer_gap_slots.source_blocked.with_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update,
+            unproven_carrier_writer_gap_slots.source_blocked.with_normal_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update,
+            unproven_carrier_writer_gap_slots.source_blocked.with_custom_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only,
+            unproven_carrier_writer_gap_slots.source_blocked.pre_add_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only,
+            unproven_carrier_writer_gap_slots.source_blocked.pre_add_normal_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only,
+            unproven_carrier_writer_gap_slots.source_blocked.pre_add_custom_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
+            unproven_carrier_writer_gap_slots.source_blocked.add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_update =
+            unproven_carrier_writer_gap_slots.source_unblocked.with_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_normal_update =
+            unproven_carrier_writer_gap_slots.source_unblocked.with_normal_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_with_custom_update =
+            unproven_carrier_writer_gap_slots.source_unblocked.with_custom_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_update_only =
+            unproven_carrier_writer_gap_slots.source_unblocked.pre_add_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_normal_update_only =
+            unproven_carrier_writer_gap_slots.source_unblocked.pre_add_normal_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_pre_add_custom_update_only =
+            unproven_carrier_writer_gap_slots.source_unblocked.pre_add_custom_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_unblocked_writer_gap_add_only =
+            unproven_carrier_writer_gap_slots.source_unblocked.add_only,
         "server exact placeable surrounding fixed-output carrier blockers"
     );
 }

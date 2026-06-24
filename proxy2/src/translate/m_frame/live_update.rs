@@ -390,6 +390,45 @@ impl ExactLiveObjectRewriteSummary {
         )
     }
 
+    pub(crate) fn exact_placeable_unproven_custom_carrier_writer_gap_slots(
+        &self,
+    ) -> live_object_update::ExactPlaceableUnprovenCustomCarrierWriterGapSlotSummary {
+        live_object_update::ExactPlaceableUnprovenCustomCarrierWriterGapSlotSummary::from_slots(
+            live_object_update::ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update,
+                with_normal_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update,
+                with_custom_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update,
+                pre_add_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only,
+                pre_add_normal_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only,
+                pre_add_custom_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only,
+                add_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only,
+            },
+            live_object_update::ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update,
+                with_normal_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update,
+                with_custom_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update,
+                pre_add_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only,
+                pre_add_normal_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only,
+                pre_add_custom_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only,
+                add_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
+            },
+        )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_target_unavailable_resolution(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableResolution {
