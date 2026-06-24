@@ -11496,7 +11496,7 @@ mod diagnostic_tests {
             assert_eq!(gate, expected_gate);
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-                .record(row_evidence.slot(), gate);
+                .record(row_evidence, gate);
             row_evidence.record(&mut summary);
         }
 
@@ -11524,6 +11524,18 @@ mod diagnostic_tests {
                 pre_add_normal_update_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_read_mismatch,
+            slots.blocked_source_provenance
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_fragment_owned,
+            slots.blocked_source_provenance
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_read_mismatch_and_fragment_owned,
+            slots.blocked_source_provenance
         );
         assert_eq!(
             slots.blocked_missing_template_resref,
@@ -15284,6 +15296,10 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub eligible_source_unblocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_read_mismatch: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_fragment_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_read_mismatch_and_fragment_owned:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_missing_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_divergent_output: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
 }
@@ -15403,6 +15419,10 @@ impl ExactPlaceableUnprovenCustomCarrierRowEvidence {
 
     fn source(self) -> ExactPlaceableUnprovenCustomCarrierWriterGapSource {
         self.source
+    }
+
+    fn source_blockers(self) -> Option<AreaPlaceableSourceProvenanceBlockers> {
+        self.source_blockers
     }
 
     fn is_writer_gap_candidate(self) -> bool {
@@ -15764,9 +15784,10 @@ impl ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots {
 impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     fn record(
         &mut self,
-        slot: ExactPlaceableUpdateAppearanceCarrierSlot,
+        row_evidence: ExactPlaceableUnprovenCustomCarrierRowEvidence,
         gate: ExactPlaceableUnprovenCustomCarrierSynthesisGate,
     ) {
+        let slot = row_evidence.slot();
         match gate {
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::EligibleSourceUnblocked => {
                 self.eligible_source_unblocked.increment_slot(slot);
@@ -15776,6 +15797,20 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             }
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance => {
                 self.blocked_source_provenance.increment_slot(slot);
+                if let Some(blockers) = row_evidence.source_blockers() {
+                    if blockers.read_mismatch_rows() != 0 {
+                        self.blocked_source_provenance_read_mismatch
+                            .increment_slot(slot);
+                    }
+                    if blockers.fragment_owned_rows() != 0 {
+                        self.blocked_source_provenance_fragment_owned
+                            .increment_slot(slot);
+                    }
+                    if blockers.read_mismatch_and_fragment_owned_rows() != 0 {
+                        self.blocked_source_provenance_read_mismatch_and_fragment_owned
+                            .increment_slot(slot);
+                    }
+                }
             }
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedMissingTemplateResRef => {
                 self.blocked_missing_template_resref.increment_slot(slot);
@@ -15793,6 +15828,12 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             .saturating_add_assign(rhs.blocked_source_owned);
         self.blocked_source_provenance
             .saturating_add_assign(rhs.blocked_source_provenance);
+        self.blocked_source_provenance_read_mismatch
+            .saturating_add_assign(rhs.blocked_source_provenance_read_mismatch);
+        self.blocked_source_provenance_fragment_owned
+            .saturating_add_assign(rhs.blocked_source_provenance_fragment_owned);
+        self.blocked_source_provenance_read_mismatch_and_fragment_owned
+            .saturating_add_assign(rhs.blocked_source_provenance_read_mismatch_and_fragment_owned);
         self.blocked_missing_template_resref
             .saturating_add_assign(rhs.blocked_missing_template_resref);
         self.blocked_divergent_output
@@ -25127,6 +25168,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             row,
                             unproven_output_divergent,
                         );
+                    let row_source_blockers = row_evidence.source_blockers();
                     tracing::debug!(
                         object_id = format_args!("0x{:08X}", mention.object_id),
                         record_offset,
@@ -25140,11 +25182,17 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             row_evidence.slot().as_str(),
                         area_static_custom_carrier_unproven_synthesis_gate =
                             synthesis_gate.as_str(),
+                        area_static_custom_carrier_unproven_source_read_mismatch =
+                            row_source_blockers.is_some_and(|blockers| blockers.read_mismatch_rows() != 0),
+                        area_static_custom_carrier_unproven_source_fragment_owned =
+                            row_source_blockers.is_some_and(|blockers| blockers.fragment_owned_rows() != 0),
+                        area_static_custom_carrier_unproven_source_read_mismatch_and_fragment_owned =
+                            row_source_blockers.is_some_and(|blockers| blockers.read_mismatch_and_fragment_owned_rows() != 0),
                         "server->client exact live-object placeable add custom carrier writer-gap source disposition"
                     );
                     summary
                         .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-                        .record(row_evidence.slot(), synthesis_gate);
+                        .record(row_evidence, synthesis_gate);
                     row_evidence.record(&mut summary);
                     if synthesis_gate.is_eligible() {
                         summary
@@ -32467,6 +32515,18 @@ fn trace_exact_placeable_reconciliation_summary(
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                     .blocked_source_provenance
                     .add_only,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_read_mismatch_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_read_mismatch,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_fragment_owned_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_fragment_owned,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_read_mismatch_and_fragment_owned_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_read_mismatch_and_fragment_owned,
             add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_divergent_output_with_update =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
