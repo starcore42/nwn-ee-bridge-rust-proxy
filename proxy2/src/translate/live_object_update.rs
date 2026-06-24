@@ -11919,6 +11919,56 @@ mod diagnostic_tests {
             residual_source_provenance_slots.all(),
             "source-trusted eligible rows are no longer residual source-provenance blockers"
         );
+        let residual_source_provenance_blocker_slots =
+            slots.residual_source_provenance_blocker_slots;
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .missing_template_resref
+                .source_blocked,
+            residual_source_provenance_slots.missing_template_resref
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .missing_template_resref
+                .read_mismatch,
+            residual_source_provenance_slots.missing_template_resref
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .missing_template_resref
+                .fragment_owned,
+            residual_source_provenance_slots.missing_template_resref
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .missing_template_resref
+                .read_mismatch_and_fragment_owned,
+            residual_source_provenance_slots.missing_template_resref
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .divergent_output
+                .source_blocked,
+            residual_source_provenance_slots.divergent_output
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .divergent_output
+                .read_mismatch,
+            residual_source_provenance_slots.divergent_output
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .divergent_output
+                .fragment_owned,
+            residual_source_provenance_slots.divergent_output
+        );
+        assert_eq!(
+            residual_source_provenance_blocker_slots
+                .divergent_output
+                .read_mismatch_and_fragment_owned,
+            residual_source_provenance_slots.divergent_output
+        );
         assert_eq!(
             slots.blocked_missing_template_resref,
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
@@ -15688,6 +15738,8 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance_source_trusted_divergent_output:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub residual_source_provenance_blocker_slots:
+        ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceBlockerSlots,
     pub blocked_missing_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_divergent_output: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
 }
@@ -15696,6 +15748,12 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
 pub struct ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceGateSlots {
     pub missing_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub divergent_output: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceBlockerSlots {
+    pub missing_template_resref: ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots,
+    pub divergent_output: ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16236,6 +16294,32 @@ impl ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots {
     }
 }
 
+impl ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceBlockerSlots {
+    fn record(
+        &mut self,
+        slot: ExactPlaceableUpdateAppearanceCarrierSlot,
+        source_trusted_gate: ExactPlaceableUnprovenCustomCarrierSourceTrustedGate,
+        blockers: AreaPlaceableSourceProvenanceBlockers,
+    ) {
+        match source_trusted_gate {
+            ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible => {}
+            ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedMissingTemplateResRef => {
+                self.missing_template_resref.record(slot, blockers);
+            }
+            ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedDivergentOutput => {
+                self.divergent_output.record(slot, blockers);
+            }
+        }
+    }
+
+    pub(crate) fn saturating_add_assign(&mut self, rhs: Self) {
+        self.missing_template_resref
+            .saturating_add_assign(rhs.missing_template_resref);
+        self.divergent_output
+            .saturating_add_assign(rhs.divergent_output);
+    }
+}
+
 impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub(crate) fn residual_source_provenance_after_source_trusted(
         self,
@@ -16290,6 +16374,11 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
                     }
                 }
                 if let Some(blockers) = row_evidence.source_blockers() {
+                    self.residual_source_provenance_blocker_slots.record(
+                        slot,
+                        source_trusted_gate,
+                        blockers,
+                    );
                     if blockers.read_mismatch_rows() != 0 {
                         self.blocked_source_provenance_read_mismatch
                             .increment_slot(slot);
@@ -16334,6 +16423,8 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             );
         self.blocked_source_provenance_source_trusted_divergent_output
             .saturating_add_assign(rhs.blocked_source_provenance_source_trusted_divergent_output);
+        self.residual_source_provenance_blocker_slots
+            .saturating_add_assign(rhs.residual_source_provenance_blocker_slots);
         self.blocked_missing_template_resref
             .saturating_add_assign(rhs.blocked_missing_template_resref);
         self.blocked_divergent_output
@@ -32122,6 +32213,9 @@ fn trace_exact_placeable_reconciliation_summary(
         .residual_source_provenance_after_source_trusted();
     let unproven_carrier_remaining_source_provenance_slots =
         unproven_carrier_residual_source_provenance_slots.all();
+    let unproven_carrier_residual_source_provenance_blocker_slots = summary
+        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+        .residual_source_provenance_blocker_slots;
     tracing::debug!(
         area_resref = area_context.area_resref.as_str(),
         exact_placeable_reconciliation_emitted = emitted,
@@ -33059,6 +33153,12 @@ fn trace_exact_placeable_reconciliation_summary(
                 ?unproven_carrier_residual_source_provenance_slots.missing_template_resref,
             add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_divergent_output_slots =
                 ?unproven_carrier_residual_source_provenance_slots.divergent_output,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_source_blocker_slots =
+                ?unproven_carrier_residual_source_provenance_blocker_slots,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_missing_template_resref_source_blocker_slots =
+                ?unproven_carrier_residual_source_provenance_blocker_slots.missing_template_resref,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_divergent_output_source_blocker_slots =
+                ?unproven_carrier_residual_source_provenance_blocker_slots.divergent_output,
             add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_with_update =
                 unproven_carrier_remaining_source_provenance_slots.with_update,
             add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_pre_add_update_only =

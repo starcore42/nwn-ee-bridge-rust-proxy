@@ -1213,6 +1213,14 @@ Current status:
   and M-frame diagnostics, with the legacy aggregate preserved for compatibility.
   Next replay should target whichever residual reason has nonzero slots before
   any further `U/09` custom-carrier emission rule is widened.
+- 2026-06-25 follow-up static/live placeable residual source-provenance blocker
+  classes: packet bytes and synthesis policy are unchanged. Residual
+  missing-`TemplateResRef` and divergent-output gates now retain the malformed
+  `P/04` source-provenance class that produced them: read-width mismatch,
+  fragment-owned, or the combined class. Direct live-object and
+  M-frame/server-dispatch diagnostics expose these class slots so the next
+  replay can distinguish malformed area-row ownership from real custom-carrier
+  output ambiguity before widening any `U/09` carrier emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
