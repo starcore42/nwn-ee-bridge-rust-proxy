@@ -8577,6 +8577,15 @@ mod diagnostic_tests {
         };
 
         let mut summary = LiveObjectUpdateRewriteSummary::default();
+        record_exact_placeable_unproven_custom_carrier_source_blockers(
+            &mut summary,
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
+        );
+        record_exact_placeable_unproven_custom_carrier_source_blockers(
+            &mut summary,
+            AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
+        );
+        summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped = 3;
         record_exact_placeable_unproven_custom_carrier_source_blocked_field_correlation(
             &mut summary,
             AreaPlaceableContextStaticReconciliationTarget::IdentityBlocked(conflict),
@@ -8627,6 +8636,20 @@ mod diagnostic_tests {
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
             1
+        );
+        let disposition = summary.exact_placeable_unproven_custom_carrier_disposition();
+        assert_eq!(disposition.skipped, 3);
+        assert_eq!(disposition.source_blocked, 2);
+        assert_eq!(disposition.source_blocked_field_rewrite_targets, 1);
+        assert_eq!(disposition.source_blocked_field_unchanged_targets, 1);
+        assert_eq!(disposition.source_blocked_field_unclassified_targets, 0);
+        assert_eq!(
+            disposition.source_owned_without_field_rewrite, 1,
+            "source-blocked skips with unchanged add fields classify as P/04 ownership evidence"
+        );
+        assert_eq!(
+            disposition.writer_gap_candidates, 2,
+            "non-source-blocked skips plus source-blocked field rewrites remain writer-gap candidates"
         );
     }
 
@@ -9439,6 +9462,9 @@ mod diagnostic_tests {
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_read_mismatch_and_fragment_owned_field_unchanged_targets,
             1
         );
+        let disposition = summary.exact_placeable_unproven_custom_carrier_disposition();
+        assert_eq!(disposition.source_owned_without_field_rewrite, 1);
+        assert_eq!(disposition.writer_gap_candidates, 0);
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
@@ -14417,6 +14443,42 @@ impl ExactPlaceableCustomCarrierTargetUnavailableResolution {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableUnprovenCustomCarrierDisposition {
+    pub skipped: u32,
+    pub source_blocked: u32,
+    pub source_blocked_field_rewrite_targets: u32,
+    pub source_blocked_field_unchanged_targets: u32,
+    pub source_blocked_field_unclassified_targets: u32,
+    pub source_owned_without_field_rewrite: u32,
+    pub writer_gap_candidates: u32,
+}
+
+impl ExactPlaceableUnprovenCustomCarrierDisposition {
+    pub(crate) fn from_counts(
+        skipped: u32,
+        source_blocked: u32,
+        source_blocked_field_rewrite_targets: u32,
+        source_blocked_field_unchanged_targets: u32,
+    ) -> Self {
+        let classified_source_blocked = source_blocked_field_rewrite_targets
+            .saturating_add(source_blocked_field_unchanged_targets);
+        let source_blocked_field_unclassified_targets =
+            source_blocked.saturating_sub(classified_source_blocked);
+        let source_owned_without_field_rewrite = source_blocked_field_unchanged_targets;
+        let writer_gap_candidates = skipped.saturating_sub(source_owned_without_field_rewrite);
+        Self {
+            skipped,
+            source_blocked,
+            source_blocked_field_rewrite_targets,
+            source_blocked_field_unchanged_targets,
+            source_blocked_field_unclassified_targets,
+            source_owned_without_field_rewrite,
+            writer_gap_candidates,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveObjectUpdateRewriteSummary {
     pub old_declared: u32,
@@ -14834,6 +14896,17 @@ pub struct LiveObjectUpdateRewriteSummary {
 }
 
 impl LiveObjectUpdateRewriteSummary {
+    pub(crate) fn exact_placeable_unproven_custom_carrier_disposition(
+        &self,
+    ) -> ExactPlaceableUnprovenCustomCarrierDisposition {
+        ExactPlaceableUnprovenCustomCarrierDisposition::from_counts(
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+        )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_target_unavailable_resolution(
         &self,
     ) -> ExactPlaceableCustomCarrierTargetUnavailableResolution {
@@ -30016,6 +30089,8 @@ fn trace_exact_placeable_reconciliation_summary(
     if summary.add_records_examined == 0 && summary.update_records_examined == 0 {
         return;
     }
+    let unproven_carrier_disposition =
+        summary.exact_placeable_unproven_custom_carrier_disposition();
     tracing::debug!(
         area_resref = area_context.area_resref.as_str(),
         exact_placeable_reconciliation_emitted = emitted,
@@ -30841,6 +30916,23 @@ fn trace_exact_placeable_reconciliation_summary(
         );
     }
     if summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped != 0 {
+        tracing::debug!(
+            area_resref = area_context.area_resref.as_str(),
+            exact_placeable_reconciliation_emitted = emitted,
+            add_module_custom_fixed_width_unproven_carrier_skipped =
+                unproven_carrier_disposition.skipped,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked =
+                unproven_carrier_disposition.source_blocked,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite =
+                unproven_carrier_disposition.source_owned_without_field_rewrite,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked_with_field_rewrite =
+                unproven_carrier_disposition.source_blocked_field_rewrite_targets,
+            add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unclassified =
+                unproven_carrier_disposition.source_blocked_field_unclassified_targets,
+            add_module_custom_fixed_width_unproven_carrier_writer_gap_candidates =
+                unproven_carrier_disposition.writer_gap_candidates,
+            "server->client exact live-object placeable fixed-output carrier disposition"
+        );
         tracing::debug!(
             area_resref = area_context.area_resref.as_str(),
             exact_placeable_reconciliation_emitted = emitted,

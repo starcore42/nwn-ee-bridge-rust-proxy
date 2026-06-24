@@ -353,6 +353,17 @@ pub struct ExactLiveObjectRewriteSummary {
 }
 
 impl ExactLiveObjectRewriteSummary {
+    pub(crate) fn exact_placeable_unproven_custom_carrier_disposition(
+        &self,
+    ) -> live_object_update::ExactPlaceableUnprovenCustomCarrierDisposition {
+        live_object_update::ExactPlaceableUnprovenCustomCarrierDisposition::from_counts(
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_rewrite_targets,
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unchanged_targets,
+        )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_target_unavailable_resolution(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableResolution {

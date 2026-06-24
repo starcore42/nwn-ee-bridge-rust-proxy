@@ -995,6 +995,27 @@ fn trace_live_object_exact_rewrite_summary(
     let summary = exact_rewrite.summary;
     let unresolved = unresolved_placeable_conflicts.unresolved;
     let current_record_progress = unresolved_placeable_conflicts.current_record_progress;
+    let unproven_carrier_disposition =
+        summary.exact_placeable_unproven_custom_carrier_disposition();
+    if unproven_carrier_disposition.skipped != 0 {
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_skipped =
+                unproven_carrier_disposition.skipped,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked =
+                unproven_carrier_disposition.source_blocked,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite =
+                unproven_carrier_disposition.source_owned_without_field_rewrite,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_with_field_rewrite =
+                unproven_carrier_disposition.source_blocked_field_rewrite_targets,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_field_unclassified =
+                unproven_carrier_disposition.source_blocked_field_unclassified_targets,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_candidates =
+                unproven_carrier_disposition.writer_gap_candidates,
+            "server exact placeable fixed-output custom carrier disposition"
+        );
+    }
     tracing::info!(
         source = exact_rewrite.source,
         family = family_name,
