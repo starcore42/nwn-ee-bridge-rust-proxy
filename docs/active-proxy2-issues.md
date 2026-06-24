@@ -1039,6 +1039,17 @@ Current status:
   exact `U/09` regression; next replay should compare these blocker-class
   target buckets against the field-rewrite/unchanged buckets before adding a
   new `P/05` writer rule.
+- 2026-06-24 follow-up static/live placeable source-blocked field-class
+  correlation: packet bytes and reconciliation policy are unchanged. Exact
+  `P/05` placeable reconciliation now emits read-width-mismatch and
+  fragment-owned source-blocked targets split again by whether the selected
+  `P/05` add/update row rewrote fields or was byte/bit equivalent. This ties the
+  malformed `P/04` row ownership class to the actual writer outcome for the
+  same selected target, instead of requiring replay to subtract unrelated
+  aggregate counters. Verified with the malformed-provenance exact `U/09`
+  regression, the helper-level field-correlation regression, and focused
+  `exact_placeable_`; next replay can compare the class-specific rewrite versus
+  unchanged buckets before adding a new `P/05` writer rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
