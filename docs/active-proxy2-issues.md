@@ -1139,6 +1139,13 @@ Current status:
   last class remains suppressed as source-owned malformed `P/04` evidence, and
   row traces emit the chosen source disposition before any `U/09`
   custom-carrier writer rule is widened.
+- 2026-06-24 follow-up static/live placeable custom-carrier source-owned slots:
+  packet bytes and reconciliation policy are unchanged. Direct live-object and
+  M-frame summaries now derive source-owned/field-unchanged selected-slot
+  buckets beside writer-gap, source-blocked-field-rewrite, and source-unblocked
+  buckets. Next replay can compare suppressed malformed `P/04` slot pressure
+  against real `P/05` custom-carrier writer-gap slots before widening any
+  `U/09` custom-carrier writer behavior.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

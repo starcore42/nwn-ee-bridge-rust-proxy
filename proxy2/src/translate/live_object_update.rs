@@ -10941,6 +10941,18 @@ mod diagnostic_tests {
             ExactPlaceableUpdateAppearanceCarrierSlot::AddOnly
         );
 
+        for carrier in [
+            following_normal_carrier,
+            following_custom_carrier,
+            pre_add_normal_carrier,
+            pre_add_custom_carrier,
+            add_only_carrier,
+            add_only_carrier,
+        ] {
+            carrier
+                .selected_slot()
+                .record_unproven_custom_carrier(&mut summary);
+        }
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
             following_normal_carrier,
@@ -11078,6 +11090,37 @@ mod diagnostic_tests {
                 pre_add_normal_update_only: 0,
                 pre_add_custom_update_only: 1,
                 add_only: 0,
+            }
+        );
+        let slot_disposition = summary.exact_placeable_unproven_custom_carrier_slot_disposition();
+        assert_eq!(
+            slot_disposition.skipped,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: 2,
+                with_normal_update: 1,
+                with_custom_update: 1,
+                pre_add_update_only: 2,
+                pre_add_normal_update_only: 1,
+                pre_add_custom_update_only: 1,
+                add_only: 2,
+            }
+        );
+        assert_eq!(slot_disposition.writer_gap, slots.all);
+        assert_eq!(
+            slot_disposition.source_blocked_field_rewrite,
+            slots.source_blocked
+        );
+        assert_eq!(slot_disposition.source_unblocked, slots.source_unblocked);
+        assert_eq!(
+            slot_disposition.source_owned_without_field_rewrite,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: 0,
+                with_normal_update: 0,
+                with_custom_update: 0,
+                pre_add_update_only: 0,
+                pre_add_normal_update_only: 0,
+                pre_add_custom_update_only: 0,
+                add_only: 1,
             }
         );
         assert_eq!(
@@ -14998,29 +15041,33 @@ impl ExactPlaceableUpdateAppearanceCarrierSlot {
 }
 
 impl ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+    fn saturating_sub_slots(self, rhs: Self) -> Self {
+        Self {
+            with_update: self.with_update.saturating_sub(rhs.with_update),
+            with_normal_update: self
+                .with_normal_update
+                .saturating_sub(rhs.with_normal_update),
+            with_custom_update: self
+                .with_custom_update
+                .saturating_sub(rhs.with_custom_update),
+            pre_add_update_only: self
+                .pre_add_update_only
+                .saturating_sub(rhs.pre_add_update_only),
+            pre_add_normal_update_only: self
+                .pre_add_normal_update_only
+                .saturating_sub(rhs.pre_add_normal_update_only),
+            pre_add_custom_update_only: self
+                .pre_add_custom_update_only
+                .saturating_sub(rhs.pre_add_custom_update_only),
+            add_only: self.add_only.saturating_sub(rhs.add_only),
+        }
+    }
+
     pub(crate) fn source_unblocked_by(
         self,
         source_blocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     ) -> Self {
-        Self {
-            with_update: self.with_update.saturating_sub(source_blocked.with_update),
-            with_normal_update: self
-                .with_normal_update
-                .saturating_sub(source_blocked.with_normal_update),
-            with_custom_update: self
-                .with_custom_update
-                .saturating_sub(source_blocked.with_custom_update),
-            pre_add_update_only: self
-                .pre_add_update_only
-                .saturating_sub(source_blocked.pre_add_update_only),
-            pre_add_normal_update_only: self
-                .pre_add_normal_update_only
-                .saturating_sub(source_blocked.pre_add_normal_update_only),
-            pre_add_custom_update_only: self
-                .pre_add_custom_update_only
-                .saturating_sub(source_blocked.pre_add_custom_update_only),
-            add_only: self.add_only.saturating_sub(source_blocked.add_only),
-        }
+        self.saturating_sub_slots(source_blocked)
     }
 }
 
@@ -15040,6 +15087,31 @@ impl ExactPlaceableUnprovenCustomCarrierWriterGapSlotSummary {
             all,
             source_blocked,
             source_unblocked: all.source_unblocked_by(source_blocked),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExactPlaceableUnprovenCustomCarrierSlotDisposition {
+    pub skipped: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub source_owned_without_field_rewrite: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub writer_gap: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub source_blocked_field_rewrite: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub source_unblocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+}
+
+impl ExactPlaceableUnprovenCustomCarrierSlotDisposition {
+    pub(crate) fn from_slots(
+        skipped: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+        writer_gap: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+        source_blocked_field_rewrite: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    ) -> Self {
+        Self {
+            skipped,
+            source_owned_without_field_rewrite: skipped.saturating_sub_slots(writer_gap),
+            writer_gap,
+            source_blocked_field_rewrite,
+            source_unblocked: writer_gap.source_unblocked_by(source_blocked_field_rewrite),
         }
     }
 }
@@ -15534,6 +15606,31 @@ impl LiveObjectUpdateRewriteSummary {
                 add_only: self
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only,
             },
+        )
+    }
+
+    pub(crate) fn exact_placeable_unproven_custom_carrier_slot_disposition(
+        &self,
+    ) -> ExactPlaceableUnprovenCustomCarrierSlotDisposition {
+        let writer_gap_slots = self.exact_placeable_unproven_custom_carrier_writer_gap_slots();
+        ExactPlaceableUnprovenCustomCarrierSlotDisposition::from_slots(
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                with_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update,
+                with_normal_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update,
+                with_custom_update: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update,
+                pre_add_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only,
+                pre_add_normal_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only,
+                pre_add_custom_update_only: self
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only,
+                add_only: self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only,
+            },
+            writer_gap_slots.all,
+            writer_gap_slots.source_blocked,
         )
     }
 
@@ -30726,6 +30823,8 @@ fn trace_exact_placeable_reconciliation_summary(
         summary.exact_placeable_unproven_custom_carrier_disposition();
     let unproven_carrier_writer_gap_slots =
         summary.exact_placeable_unproven_custom_carrier_writer_gap_slots();
+    let unproven_carrier_slot_disposition =
+        summary.exact_placeable_unproven_custom_carrier_slot_disposition();
     tracing::debug!(
         area_resref = area_context.area_resref.as_str(),
         exact_placeable_reconciliation_emitted = emitted,
@@ -31650,6 +31749,34 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output_divergent =
                 summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_surrounding_position_fixed_output_divergent,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_update,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_normal_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_normal_update,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_custom_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_custom_update,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_update_only,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_normal_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_normal_update_only,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_custom_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_custom_update_only,
+            add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_add_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .add_only,
             add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
                 unproven_carrier_writer_gap_slots.all.with_update,
             add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =

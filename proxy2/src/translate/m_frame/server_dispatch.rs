@@ -999,6 +999,8 @@ fn trace_live_object_exact_rewrite_summary(
         summary.exact_placeable_unproven_custom_carrier_disposition();
     let unproven_carrier_writer_gap_slots =
         summary.exact_placeable_unproven_custom_carrier_writer_gap_slots();
+    let unproven_carrier_slot_disposition =
+        summary.exact_placeable_unproven_custom_carrier_slot_disposition();
     if unproven_carrier_disposition.skipped != 0 {
         tracing::info!(
             source = exact_rewrite.source,
@@ -1038,6 +1040,34 @@ fn trace_live_object_exact_rewrite_summary(
                 unproven_carrier_writer_gap_slots.all.pre_add_custom_update_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
                 unproven_carrier_writer_gap_slots.all.add_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_normal_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_normal_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_custom_update =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .with_custom_update,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_normal_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_normal_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_custom_update_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .pre_add_custom_update_only,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_add_only =
+                unproven_carrier_slot_disposition
+                    .source_owned_without_field_rewrite
+                    .add_only,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
                 unproven_carrier_writer_gap_slots.source_blocked.with_update,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
@@ -1814,6 +1844,34 @@ fn trace_live_object_exact_rewrite_summary(
             unproven_carrier_writer_gap_slots.all.pre_add_custom_update_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
             unproven_carrier_writer_gap_slots.all.add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_update =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .with_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_normal_update =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .with_normal_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_with_custom_update =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .with_custom_update,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_update_only =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .pre_add_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_normal_update_only =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .pre_add_normal_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_pre_add_custom_update_only =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .pre_add_custom_update_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_owned_without_field_rewrite_add_only =
+            unproven_carrier_slot_disposition
+                .source_owned_without_field_rewrite
+                .add_only,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
             unproven_carrier_writer_gap_slots.source_blocked.with_update,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
