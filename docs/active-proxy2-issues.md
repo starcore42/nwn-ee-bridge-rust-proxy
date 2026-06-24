@@ -1123,6 +1123,14 @@ Current status:
   traces emit the explicit source-unblocked slots, so the next replay can
   compare unblocked slot pressure without subtracting aggregate counters before
   widening any custom-carrier writer rule.
+- 2026-06-24 follow-up static/live placeable custom-carrier selected-slot
+  model: packet bytes and reconciliation policy are unchanged. The direct
+  `A/09` unproven custom-carrier skip path and residual writer-gap counters now
+  use one typed selected-slot classifier for following normal/custom `U/09`,
+  pre-add normal/custom `U/09`, and add-only rows, and the row trace emits the
+  selected slot. Next replay should use the row-level slot plus source-blocked
+  and source-unblocked aggregate buckets before changing any `U/09`
+  custom-carrier writer behavior.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

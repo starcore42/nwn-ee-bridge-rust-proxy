@@ -10902,42 +10902,68 @@ mod diagnostic_tests {
             ..normal_record
         };
         let mut summary = LiveObjectUpdateRewriteSummary::default();
+        let following_normal_carrier = ExactPlaceableUpdateAppearanceCarrier {
+            following_normal: Some(normal_record),
+            ..ExactPlaceableUpdateAppearanceCarrier::default()
+        };
+        let following_custom_carrier = ExactPlaceableUpdateAppearanceCarrier {
+            following_custom: Some(custom_record),
+            ..ExactPlaceableUpdateAppearanceCarrier::default()
+        };
+        let pre_add_normal_carrier = ExactPlaceableUpdateAppearanceCarrier {
+            pre_add_normal: Some(normal_record),
+            ..ExactPlaceableUpdateAppearanceCarrier::default()
+        };
+        let pre_add_custom_carrier = ExactPlaceableUpdateAppearanceCarrier {
+            pre_add_custom: Some(custom_record),
+            ..ExactPlaceableUpdateAppearanceCarrier::default()
+        };
+        let add_only_carrier = ExactPlaceableUpdateAppearanceCarrier::default();
+
+        assert_eq!(
+            following_normal_carrier.selected_slot(),
+            ExactPlaceableUpdateAppearanceCarrierSlot::FollowingNormalUpdate
+        );
+        assert_eq!(
+            following_custom_carrier.selected_slot(),
+            ExactPlaceableUpdateAppearanceCarrierSlot::FollowingCustomUpdate
+        );
+        assert_eq!(
+            pre_add_normal_carrier.selected_slot(),
+            ExactPlaceableUpdateAppearanceCarrierSlot::PreAddNormalUpdate
+        );
+        assert_eq!(
+            pre_add_custom_carrier.selected_slot(),
+            ExactPlaceableUpdateAppearanceCarrierSlot::PreAddCustomUpdate
+        );
+        assert_eq!(
+            add_only_carrier.selected_slot(),
+            ExactPlaceableUpdateAppearanceCarrierSlot::AddOnly
+        );
 
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
-            ExactPlaceableUpdateAppearanceCarrier {
-                following_normal: Some(normal_record),
-                ..ExactPlaceableUpdateAppearanceCarrier::default()
-            },
+            following_normal_carrier,
             true,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
-            ExactPlaceableUpdateAppearanceCarrier {
-                following_custom: Some(custom_record),
-                ..ExactPlaceableUpdateAppearanceCarrier::default()
-            },
+            following_custom_carrier,
             false,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
-            ExactPlaceableUpdateAppearanceCarrier {
-                pre_add_normal: Some(normal_record),
-                ..ExactPlaceableUpdateAppearanceCarrier::default()
-            },
+            pre_add_normal_carrier,
             true,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
-            ExactPlaceableUpdateAppearanceCarrier {
-                pre_add_custom: Some(custom_record),
-                ..ExactPlaceableUpdateAppearanceCarrier::default()
-            },
+            pre_add_custom_carrier,
             false,
         );
         record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
             &mut summary,
-            ExactPlaceableUpdateAppearanceCarrier::default(),
+            add_only_carrier,
             true,
         );
 
@@ -14692,6 +14718,223 @@ pub struct ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
     pub pre_add_normal_update_only: u32,
     pub pre_add_custom_update_only: u32,
     pub add_only: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactPlaceableUpdateAppearanceCarrierSlot {
+    FollowingNormalUpdate,
+    FollowingCustomUpdate,
+    PreAddNormalUpdate,
+    PreAddCustomUpdate,
+    AddOnly,
+}
+
+impl ExactPlaceableUpdateAppearanceCarrierSlot {
+    fn from_carrier(carrier: ExactPlaceableUpdateAppearanceCarrier) -> Self {
+        if let Some(selected_following) = carrier.selected_following() {
+            return if selected_following.is_custom() {
+                Self::FollowingCustomUpdate
+            } else {
+                Self::FollowingNormalUpdate
+            };
+        }
+        if let Some(selected_pre_add) = carrier.selected_pre_add() {
+            return if selected_pre_add.is_custom() {
+                Self::PreAddCustomUpdate
+            } else {
+                Self::PreAddNormalUpdate
+            };
+        }
+        Self::AddOnly
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FollowingNormalUpdate => "following-normal-update",
+            Self::FollowingCustomUpdate => "following-custom-update",
+            Self::PreAddNormalUpdate => "pre-add-normal-update",
+            Self::PreAddCustomUpdate => "pre-add-custom-update",
+            Self::AddOnly => "add-only",
+        }
+    }
+
+    fn record_unproven_custom_carrier(self, summary: &mut LiveObjectUpdateRewriteSummary) {
+        match self {
+            Self::FollowingNormalUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update
+                        .saturating_add(1);
+            }
+            Self::FollowingCustomUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update
+                        .saturating_add(1);
+            }
+            Self::PreAddNormalUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only
+                        .saturating_add(1);
+            }
+            Self::PreAddCustomUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only
+                        .saturating_add(1);
+            }
+            Self::AddOnly => {
+                summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
+                        .saturating_add(1);
+            }
+        }
+    }
+
+    fn record_unproven_custom_carrier_writer_gap(
+        self,
+        summary: &mut LiveObjectUpdateRewriteSummary,
+        source_blocked_writer_gap: bool,
+    ) {
+        match self {
+            Self::FollowingNormalUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update
+                        .saturating_add(1);
+                if source_blocked_writer_gap {
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update
+                            .saturating_add(1);
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update
+                            .saturating_add(1);
+                }
+            }
+            Self::FollowingCustomUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update
+                        .saturating_add(1);
+                if source_blocked_writer_gap {
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update
+                            .saturating_add(1);
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update
+                            .saturating_add(1);
+                }
+            }
+            Self::PreAddNormalUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only
+                        .saturating_add(1);
+                if source_blocked_writer_gap {
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only
+                            .saturating_add(1);
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only
+                            .saturating_add(1);
+                }
+            }
+            Self::PreAddCustomUpdate => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only
+                        .saturating_add(1);
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only
+                        .saturating_add(1);
+                if source_blocked_writer_gap {
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only
+                            .saturating_add(1);
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only
+                            .saturating_add(1);
+                }
+            }
+            Self::AddOnly => {
+                summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only
+                        .saturating_add(1);
+                if source_blocked_writer_gap {
+                    summary
+                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
+                        summary
+                            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only
+                            .saturating_add(1);
+                }
+            }
+        }
+    }
 }
 
 impl ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
@@ -23650,6 +23893,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             mention.record_end,
                         );
                         unproven_custom_carrier_update_carrier = Some(update_carrier);
+                        let update_carrier_slot = update_carrier.selected_slot();
                         trace_exact_placeable_fixed_width_custom_add_candidate(
                             area_context,
                             mention,
@@ -23657,50 +23901,9 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             add_claim,
                             update_carrier,
                         );
-                        if let Some(selected_following) = update_carrier.selected_following() {
-                            summary
-                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update =
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_update
-                                    .saturating_add(1);
-                            if selected_following.is_custom() {
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update =
-                                    summary
-                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_custom_update
-                                        .saturating_add(1);
-                            } else {
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update =
-                                    summary
-                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_with_normal_update
-                                        .saturating_add(1);
-                            }
-                        } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
-                            summary
-                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only =
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_update_only
-                                    .saturating_add(1);
-                            if selected_pre_add.is_custom() {
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only =
-                                    summary
-                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_custom_update_only
-                                        .saturating_add(1);
-                            } else {
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only =
-                                    summary
-                                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_pre_add_normal_update_only
-                                        .saturating_add(1);
-                            }
-                        } else {
-                            summary
-                                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only =
-                                summary
-                                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_add_only
-                                    .saturating_add(1);
+                        update_carrier_slot.record_unproven_custom_carrier(&mut summary);
+                        if update_carrier_slot == ExactPlaceableUpdateAppearanceCarrierSlot::AddOnly
+                        {
                             if selection
                                 .identity_resolved_by_following_position_fixed_output_equivalence
                             {
@@ -23917,6 +24120,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 unproven_output_divergent,
                             area_static_custom_carrier_unproven_source_blocked =
                                 base_identity_source_blocked,
+                            area_static_custom_carrier_unproven_selected_slot =
+                                update_carrier_slot.as_str(),
                             area_static_custom_carrier_unproven_pre_add_position_only_fixed_output =
                                 selection
                                     .identity_resolved_by_preceding_position_fixed_output_equivalence
@@ -24606,100 +24811,9 @@ fn record_exact_placeable_unproven_custom_carrier_writer_gap_slot(
     update_carrier: ExactPlaceableUpdateAppearanceCarrier,
     source_blocked_writer_gap: bool,
 ) {
-    if let Some(selected_following) = update_carrier.selected_following() {
-        summary
-            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_update
-                .saturating_add(1);
-        if source_blocked_writer_gap {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_update
-                    .saturating_add(1);
-        }
-        if selected_following.is_custom() {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_custom_update
-                    .saturating_add(1);
-            if source_blocked_writer_gap {
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update =
-                    summary
-                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_custom_update
-                        .saturating_add(1);
-            }
-        } else {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_with_normal_update
-                    .saturating_add(1);
-            if source_blocked_writer_gap {
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update =
-                    summary
-                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_with_normal_update
-                        .saturating_add(1);
-            }
-        }
-    } else if let Some(selected_pre_add) = update_carrier.selected_pre_add() {
-        summary
-            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_update_only
-                .saturating_add(1);
-        if source_blocked_writer_gap {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_update_only
-                    .saturating_add(1);
-        }
-        if selected_pre_add.is_custom() {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_custom_update_only
-                    .saturating_add(1);
-            if source_blocked_writer_gap {
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only =
-                    summary
-                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_custom_update_only
-                        .saturating_add(1);
-            }
-        } else {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_pre_add_normal_update_only
-                    .saturating_add(1);
-            if source_blocked_writer_gap {
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only =
-                    summary
-                        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_pre_add_normal_update_only
-                        .saturating_add(1);
-            }
-        }
-    } else {
-        summary
-            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only =
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_writer_gap_add_only
-                .saturating_add(1);
-        if source_blocked_writer_gap {
-            summary
-                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only =
-                summary
-                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_source_blocked_writer_gap_add_only
-                    .saturating_add(1);
-        }
-    }
+    update_carrier
+        .selected_slot()
+        .record_unproven_custom_carrier_writer_gap(summary, source_blocked_writer_gap);
 }
 
 fn record_exact_placeable_base_identity_source_blocked_selection(
@@ -27245,6 +27359,10 @@ struct ExactPlaceableUpdateAppearanceCarrier {
 }
 
 impl ExactPlaceableUpdateAppearanceCarrier {
+    fn selected_slot(self) -> ExactPlaceableUpdateAppearanceCarrierSlot {
+        ExactPlaceableUpdateAppearanceCarrierSlot::from_carrier(self)
+    }
+
     fn has_following(self) -> bool {
         self.following_normal.is_some() || self.following_custom.is_some()
     }
