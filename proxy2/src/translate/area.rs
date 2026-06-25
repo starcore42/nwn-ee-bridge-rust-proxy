@@ -950,12 +950,21 @@ struct LegacyAreaSourceTailProof {
 }
 
 pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
-    rewrite_area_client_area_payload_with_module_context(payload, None)
+    rewrite_area_client_area_payload_with_module_context_fallback(payload, None, true)
 }
 
+#[cfg(test)]
 pub(crate) fn rewrite_area_client_area_payload_with_module_context(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<AreaRewriteSummary> {
+    rewrite_area_client_area_payload_with_module_context_fallback(payload, module_context, true)
+}
+
+pub(crate) fn rewrite_area_client_area_payload_with_module_context_fallback(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
@@ -967,14 +976,20 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context(
 
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
     if declared == 0 {
-        if let Some(summary) =
-            rewrite_declared_zero_area_client_area_payload(payload, module_context)
-        {
+        if let Some(summary) = rewrite_declared_zero_area_client_area_payload(
+            payload,
+            module_context,
+            allow_shared_module_context_fallback,
+        ) {
             return Some(summary);
         }
     }
 
-    rewrite_declared_area_client_area_payload(payload, module_context)
+    rewrite_declared_area_client_area_payload(
+        payload,
+        module_context,
+        allow_shared_module_context_fallback,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -986,10 +1001,12 @@ enum AreaRewriteDiagnosticMode {
 fn rewrite_declared_area_client_area_payload(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> Option<AreaRewriteSummary> {
     rewrite_declared_area_client_area_payload_with_mode(
         payload,
         module_context,
+        allow_shared_module_context_fallback,
         AreaRewriteDiagnosticMode::Normal,
     )
 }
@@ -997,6 +1014,7 @@ fn rewrite_declared_area_client_area_payload(
 fn rewrite_declared_area_client_area_payload_with_mode(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
     diagnostic_mode: AreaRewriteDiagnosticMode,
 ) -> Option<AreaRewriteSummary> {
     let declared = read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?;
@@ -1067,12 +1085,13 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         tracing::warn!("Area_ClientArea rewrite skipped: static layout unavailable");
         return None;
     }
-    let static_layout = select_area_static_layout_for_rewrite(
+    let static_layout = select_area_static_layout_for_rewrite_with_shared_context_fallback(
         payload,
         fragment_offset,
         legacy_area_object_id,
         &static_layout,
         module_context,
+        allow_shared_module_context_fallback,
     );
 
     let area_resref_was_plausible = area_resref_plausible(&area_resref);
@@ -1087,15 +1106,17 @@ fn rewrite_declared_area_client_area_payload_with_mode(
         == AreaNameEncoding::DiamondNoAreaName
         && compact_packet_area_resref_fragments(&working_payload, fragment_offset)
             .is_some_and(|fragments| fragments.len() >= 2);
-    let module_resource_area_repair = repair_compact_area_from_module_resource(
-        &mut working_payload,
-        fragment_offset,
-        legacy_area_object_id,
-        &static_layout,
-        !area_resref_was_plausible || fragmented_cexo_resource_repair_required,
-        diagnostic_mode == AreaRewriteDiagnosticMode::Normal,
-        module_context,
-    );
+    let module_resource_area_repair =
+        repair_compact_area_from_module_resource_with_shared_context_fallback(
+            &mut working_payload,
+            fragment_offset,
+            legacy_area_object_id,
+            &static_layout,
+            !area_resref_was_plausible || fragmented_cexo_resource_repair_required,
+            diagnostic_mode == AreaRewriteDiagnosticMode::Normal,
+            module_context,
+            allow_shared_module_context_fallback,
+        );
     if let Some(resource_info) = module_resource_area_repair.as_ref() {
         area_resref = resource_info.resref.clone();
     } else if !area_resref_was_plausible {
@@ -1197,12 +1218,13 @@ fn rewrite_declared_area_client_area_payload_with_mode(
     .unwrap_or(0);
     let module_resource_static_placeable_repair_info =
         module_resource_area_repair.as_ref().cloned().or_else(|| {
-            module_area_resource_info_for_named_static_placeables(
+            module_area_resource_info_for_named_static_placeables_with_shared_context_fallback(
                 &working_payload,
                 working_fragment_offset,
                 &tile_scan,
                 &area_resref,
                 module_context,
+                allow_shared_module_context_fallback,
             )
         });
     let module_resource_static_placeable_repairs = module_resource_static_placeable_repair_info
@@ -1467,6 +1489,7 @@ fn rewrite_declared_area_client_area_payload_with_mode(
 fn rewrite_declared_zero_area_client_area_payload(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
         return None;
@@ -1498,6 +1521,7 @@ fn rewrite_declared_zero_area_client_area_payload(
         let Some(mut summary) = rewrite_declared_area_client_area_payload_with_mode(
             &mut staged,
             module_context,
+            allow_shared_module_context_fallback,
             AreaRewriteDiagnosticMode::DeclaredZeroProbe,
         ) else {
             continue;
@@ -2116,6 +2140,7 @@ struct ModuleStaticPlaceableContextClaim {
     template_resref: Option<[u8; 16]>,
 }
 
+#[cfg(test)]
 fn repair_compact_area_from_module_resource(
     payload: &mut Vec<u8>,
     fragment_offset: usize,
@@ -2124,6 +2149,28 @@ fn repair_compact_area_from_module_resource(
     allow_fragmented_cexo_name_repair: bool,
     allow_valid_scan_empty_tail_rewrite: bool,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<ModuleAreaResourceInfo> {
+    repair_compact_area_from_module_resource_with_shared_context_fallback(
+        payload,
+        fragment_offset,
+        legacy_area_object_id,
+        layout,
+        allow_fragmented_cexo_name_repair,
+        allow_valid_scan_empty_tail_rewrite,
+        module_context,
+        true,
+    )
+}
+
+fn repair_compact_area_from_module_resource_with_shared_context_fallback(
+    payload: &mut Vec<u8>,
+    fragment_offset: usize,
+    legacy_area_object_id: u32,
+    layout: &AreaStaticLayout,
+    allow_fragmented_cexo_name_repair: bool,
+    allow_valid_scan_empty_tail_rewrite: bool,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> Option<ModuleAreaResourceInfo> {
     if layout.dialect != AreaStaticDialect::Legacy169 {
         return None;
@@ -2148,12 +2195,13 @@ fn repair_compact_area_from_module_resource(
 
     let packet_width = read_area_u32(payload, fragment_offset, layout.width_read_offset)?;
     let packet_height = read_area_u32(payload, fragment_offset, layout.height_read_offset)?;
-    let info = module_area_resource_info_for_compact_packet(
+    let info = module_area_resource_info_for_compact_packet_with_shared_context_fallback(
         payload,
         fragment_offset,
         legacy_area_object_id,
         layout,
         module_context,
+        allow_shared_module_context_fallback,
     )?;
     if info.width == 0
         || info.height == 0
@@ -3567,12 +3615,31 @@ fn scan_area_tile_stream_from_layout(
     }
 }
 
+#[cfg(test)]
 fn select_area_static_layout_for_rewrite(
     payload: &[u8],
     fragment_offset: usize,
     legacy_area_object_id: u32,
     primary: &AreaStaticLayout,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> AreaStaticLayout {
+    select_area_static_layout_for_rewrite_with_shared_context_fallback(
+        payload,
+        fragment_offset,
+        legacy_area_object_id,
+        primary,
+        module_context,
+        true,
+    )
+}
+
+fn select_area_static_layout_for_rewrite_with_shared_context_fallback(
+    payload: &[u8],
+    fragment_offset: usize,
+    legacy_area_object_id: u32,
+    primary: &AreaStaticLayout,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> AreaStaticLayout {
     if primary.area_name_encoding != AreaNameEncoding::CExoString {
         return primary.clone();
@@ -3587,13 +3654,16 @@ fn select_area_static_layout_for_rewrite(
     let Some(no_name_layout) = diamond_no_area_name_static_layout(payload, fragment_offset) else {
         return primary.clone();
     };
-    let Some(resource_info) = module_area_resource_info_for_compact_packet(
-        payload,
-        fragment_offset,
-        legacy_area_object_id,
-        &no_name_layout,
-        module_context,
-    ) else {
+    let Some(resource_info) =
+        module_area_resource_info_for_compact_packet_with_shared_context_fallback(
+            payload,
+            fragment_offset,
+            legacy_area_object_id,
+            &no_name_layout,
+            module_context,
+            allow_shared_module_context_fallback,
+        )
+    else {
         return primary.clone();
     };
 
@@ -5362,6 +5432,7 @@ struct GffLayout {
     list_indices_count: usize,
 }
 
+#[cfg(test)]
 fn module_area_resource_info_for_compact_packet(
     payload: &[u8],
     fragment_offset: usize,
@@ -5369,7 +5440,25 @@ fn module_area_resource_info_for_compact_packet(
     layout: &AreaStaticLayout,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<ModuleAreaResourceInfo> {
-    let owned_context = if module_context.is_none() {
+    module_area_resource_info_for_compact_packet_with_shared_context_fallback(
+        payload,
+        fragment_offset,
+        legacy_area_object_id,
+        layout,
+        module_context,
+        true,
+    )
+}
+
+fn module_area_resource_info_for_compact_packet_with_shared_context_fallback(
+    payload: &[u8],
+    fragment_offset: usize,
+    legacy_area_object_id: u32,
+    layout: &AreaStaticLayout,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
+) -> Option<ModuleAreaResourceInfo> {
+    let owned_context = if module_context.is_none() && allow_shared_module_context_fallback {
         crate::translate::module::observed_module_context()
     } else {
         None
@@ -5662,12 +5751,31 @@ fn module_area_resource_info_for_compact_packet(
     (matches.len() == 1).then(|| matches.remove(0))
 }
 
+#[cfg(test)]
 fn module_area_resource_info_for_named_static_placeables(
     payload: &[u8],
     fragment_offset: usize,
     scan: &AreaTileStreamScan,
     area_resref: &str,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
+) -> Option<ModuleAreaResourceInfo> {
+    module_area_resource_info_for_named_static_placeables_with_shared_context_fallback(
+        payload,
+        fragment_offset,
+        scan,
+        area_resref,
+        module_context,
+        true,
+    )
+}
+
+fn module_area_resource_info_for_named_static_placeables_with_shared_context_fallback(
+    payload: &[u8],
+    fragment_offset: usize,
+    scan: &AreaTileStreamScan,
+    area_resref: &str,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
 ) -> Option<ModuleAreaResourceInfo> {
     if !area_resref_plausible(area_resref) || !scan.valid {
         return None;
@@ -5676,7 +5784,7 @@ fn module_area_resource_info_for_named_static_placeables(
         payload,
         HIGH_LEVEL_HEADER_BYTES.checked_add(scan.layout.tileset_read_offset)?,
     )?;
-    let owned_context = if module_context.is_none() {
+    let owned_context = if module_context.is_none() && allow_shared_module_context_fallback {
         crate::translate::module::observed_module_context()
     } else {
         None
@@ -12276,6 +12384,57 @@ mod tests {
         assert!(proof.read_end == summary.new_read_size);
         assert_eq!(proof.fragment_bits_consumed, proof.fragment_bits_available);
         assert!(ee_area_client_area_payload_shape_valid(&payload));
+    }
+
+    #[test]
+    fn session_area_rewrite_does_not_borrow_shared_module_context() {
+        let _context_guard = module_context_test_guard();
+        crate::translate::module::remember_observed_module_context_for_tests(
+            crate::translate::module::ObservedModuleContext {
+                localized_name: "Dark R".to_string(),
+                module_resref: "Dark_R".to_string(),
+                areas: vec![
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Inn L".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "Dead s Marsh".to_string(),
+                    },
+                    crate::translate::module::ObservedModuleArea {
+                        object_id: 0x8000_0000,
+                        name: "T Dark R s Ruins".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let mut direct_payload = LOCAL_DARK_RANGER_INN_COMPACT.to_vec();
+        let direct_summary = rewrite_area_client_area_payload_with_module_context_fallback(
+            &mut direct_payload,
+            None,
+            true,
+        )
+        .expect("direct replay helpers may use the shared observed Module_Info context");
+        assert_eq!(direct_summary.area_resref, "innofthelasthope");
+        assert!(
+            direct_summary
+                .rewrite_kinds
+                .contains(&AreaRewriteKind::LegacyDiamondModuleResourceAreaRepair)
+        );
+
+        let mut session_payload = LOCAL_DARK_RANGER_INN_COMPACT.to_vec();
+        assert!(
+            rewrite_area_client_area_payload_with_module_context_fallback(
+                &mut session_payload,
+                None,
+                false,
+            )
+            .is_none(),
+            "session callers with no observed Module_Info context must not borrow a stale shared context"
+        );
+        assert_eq!(session_payload, LOCAL_DARK_RANGER_INN_COMPACT);
     }
 
     #[cfg(hgbridge_private_fixtures)]

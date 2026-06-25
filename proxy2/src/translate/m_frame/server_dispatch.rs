@@ -3272,13 +3272,16 @@ fn translate_area_client_area(
     let _ = scope;
     let observed_module_context =
         module_resource_runtime.and_then(|runtime| runtime.observed_module_context());
+    let allow_shared_module_context_fallback = module_resource_runtime.is_none();
     tracing::debug!(
         has_observed_module_context = observed_module_context.is_some(),
+        allow_shared_module_context_fallback,
         "server Area_ClientArea translator checking runtime Module_Info context"
     );
-    match area::rewrite_area_client_area_payload_with_module_context(
+    match area::rewrite_area_client_area_payload_with_module_context_fallback(
         payload,
         observed_module_context.as_ref(),
+        allow_shared_module_context_fallback,
     ) {
         Some(summary) => ServerTranslatorOutcome::Claim(ServerTranslatorClaim {
             area_rewrite: Some(summary),
