@@ -15,6 +15,7 @@ pub(crate) mod area;
 pub(crate) mod area_change_day_night;
 pub(crate) mod area_visual_effect;
 pub(crate) mod baseitems;
+mod bm;
 mod bn;
 pub(crate) mod camera;
 pub(crate) mod char_list;
@@ -460,6 +461,22 @@ impl SessionTranslator {
             (Direction::ServerToClientSynthetic, Packet::Bn(_))
             | (Direction::ServerToClientSynthetic, Packet::M(_)) => {
                 Ok(Emit::Packet(bytes.to_vec()))
+            }
+            (Direction::ServerToClient, Packet::UnknownTopLevel(bytes)) => {
+                if let Some(claim) = bm::claim_legacy_server_master_control(bytes) {
+                    tracing::info!(
+                        tag = claim.tag,
+                        len = bytes.len(),
+                        account_name_len = claim.account_name_len,
+                        cd_key_count = claim.cd_key_count.unwrap_or(0),
+                        "legacy BM master/auth control consumed before EE client"
+                    );
+                    return Ok(Emit::Consumed);
+                }
+                anyhow::bail!(
+                    "unclassified top-level packet in {} direction",
+                    direction.as_str()
+                )
             }
             (_, Packet::UnknownTopLevel(_)) => {
                 anyhow::bail!(
