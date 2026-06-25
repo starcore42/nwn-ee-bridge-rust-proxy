@@ -1221,6 +1221,15 @@ Current status:
   M-frame/server-dispatch diagnostics expose these class slots so the next
   replay can distinguish malformed area-row ownership from real custom-carrier
   output ambiguity before widening any `U/09` carrier emission.
+- 2026-06-25 follow-up pre-add custom carrier source resrefs: fixed-width
+  `A/09` unproven-carrier rows with missing module `TemplateResRef` now
+  synthesize the add-boundary custom `U/09` carrier only when the selected
+  same-lifecycle pre-add custom `U/09` supplies a parser-owned source resref
+  whose appearance matches the fixed-width add. Following custom rows still
+  remain later packet-authored state, not fallback proof. Next replay should
+  inspect any remaining residual missing-template or divergent-output slots by
+  selected carrier scope before widening source-carried resrefs beyond this
+  pre-add custom case.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

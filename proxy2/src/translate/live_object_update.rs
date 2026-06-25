@@ -9727,6 +9727,168 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_pre_add_custom_source_carrier_supplies_missing_template_resref() {
+        let object_id = 0x8000_363Du32;
+        let source_resref = *b"plc_pre_source\0\0";
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&source_resref);
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            true,  // useable already matches.
+            false, // trap disarmable.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("pre-add custom U/09 plus fixed-width A/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 30.0,
+                    y: 40.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact pre-add custom carrier");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            add_offset,
+            add_end,
+        );
+        assert_eq!(
+            carrier.source_carried_template_resref_for_add(&area_context.static_rows[0]),
+            Some(source_resref),
+            "only the selected pre-add custom U/09 may supply a missing add TemplateResRef"
+        );
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("pre-add custom source carrier should synthesize a post-add U/09");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 1);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_fixed_field_fixed_output_equivalence,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_missing,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_missing_template_resref
+                .pre_add_custom_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_synthesized_custom_carrier_after_add_reasons(&summary, 0, 0, 0, 1);
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+
+        let claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite exact U/09 + A/09 + U/09");
+        assert_eq!(claim.mentions.len(), 3);
+        assert_eq!(
+            claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            }),
+            "A/09 remains fixed-width and packet-authored"
+        );
+        assert_eq!(
+            claim.mentions[2].record_offset, add_end,
+            "the synthetic carrier is inserted at the add boundary"
+        );
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(source_resref),
+            }),
+            "the synthetic U/09 carries the parser-owned pre-add source resref"
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_start,
+            claim.mentions[1].fragment_bit_end
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_end,
+            claim.mentions[1].fragment_bit_end
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_fixed_field_fixed_output_equivalence_suppresses_carrier() {
         let object_id = 0x8000_3628u32;
         let rewrite_object_id = 0x8000_3629u32;
@@ -11720,6 +11882,7 @@ mod diagnostic_tests {
             ..crate::translate::area::AreaPlaceableContextRow::default()
         };
         let missing_template_row = crate::translate::area::AreaPlaceableContextRow {
+            appearance: 0xFFFE,
             module_template_resref: None,
             ..crate::translate::area::AreaPlaceableContextRow::default()
         };
@@ -11787,6 +11950,15 @@ mod diagnostic_tests {
                 pre_add_custom_carrier,
                 source_unblocked_target,
                 false,
+                &missing_template_row,
+                false,
+                ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedMissingTemplateResRef,
+                true,
+            ),
+            (
+                pre_add_custom_carrier,
+                source_unblocked_target,
+                false,
                 &source_unblocked_row,
                 true,
                 ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedDivergentOutput,
@@ -11818,9 +11990,10 @@ mod diagnostic_tests {
             );
             assert_eq!(gate, expected_gate);
             let source_trusted_gate =
-                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row(
+                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row_and_carrier(
                     row,
                     output_divergent,
+                    carrier,
                 );
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
@@ -11974,6 +12147,8 @@ mod diagnostic_tests {
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
                 with_update: 1,
                 with_custom_update: 1,
+                pre_add_update_only: 1,
+                pre_add_custom_update_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
         );
@@ -15810,9 +15985,18 @@ enum ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
 }
 
 impl ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
-    fn from_row(row: &AreaPlaceableContextRow, output_divergent: bool) -> Self {
+    fn from_row_and_carrier(
+        row: &AreaPlaceableContextRow,
+        output_divergent: bool,
+        carrier: ExactPlaceableUpdateAppearanceCarrier,
+    ) -> Self {
         if row.module_template_resref.is_none() {
-            return Self::BlockedMissingTemplateResRef;
+            if carrier
+                .source_carried_template_resref_for_add(row)
+                .is_none()
+            {
+                return Self::BlockedMissingTemplateResRef;
+            }
         }
         if output_divergent {
             return Self::BlockedDivergentOutput;
@@ -15857,13 +16041,16 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
         // Malformed P/04 source provenance still blocks identity proof. Once a
         // P/05 fixed-output row has rewritten fields, the source-trusted gate
         // separately proves the custom carrier has a concrete, non-divergent
-        // module output.
+        // module output, or a parser-owned pre-add custom U/09 supplied the
+        // missing TemplateResRef.
         matches!(self, Self::EligibleSourceUnblocked)
-            || (matches!(self, Self::BlockedSourceProvenance)
-                && matches!(
-                    source_trusted_gate,
-                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible
-                ))
+            || (matches!(
+                self,
+                Self::BlockedSourceProvenance | Self::BlockedMissingTemplateResRef
+            ) && matches!(
+                source_trusted_gate,
+                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible
+            ))
     }
 
     fn as_str(self) -> &'static str {
@@ -25760,9 +25947,10 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             unproven_output_divergent,
                         );
                     let source_trusted_gate =
-                        ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row(
+                        ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row_and_carrier(
                             row,
                             unproven_output_divergent,
+                            update_carrier,
                         );
                     let row_source_blockers = row_evidence.source_blockers();
                     tracing::debug!(
@@ -25780,6 +25968,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             synthesis_gate.as_str(),
                         area_static_custom_carrier_unproven_source_trusted_gate =
                             source_trusted_gate.as_str(),
+                        area_static_custom_carrier_unproven_source_carried_template_resref =
+                            ?update_carrier.source_carried_template_resref_for_add(row),
                         area_static_custom_carrier_unproven_source_read_mismatch =
                             row_source_blockers.is_some_and(|blockers| blockers.read_mismatch_rows() != 0),
                         area_static_custom_carrier_unproven_source_fragment_owned =
@@ -29052,6 +29242,14 @@ impl ExactPlaceableUpdateAppearanceCarrier {
     ) -> Option<ExactPlaceableCustomCarrierSynthesisInsertion> {
         self.synthesis_decision(row).insertion()
     }
+
+    fn source_carried_template_resref_for_add(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]> {
+        self.selected_pre_add()
+            .and_then(|selected| selected.source_carried_template_resref_for_add(row))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29230,6 +29428,18 @@ impl SelectedExactPlaceableUpdateAppearanceCarrier {
             && target_decision.state()
                 == ExactPlaceableCustomCarrierRewriteTargetState::TargetUnavailable
             && self.matches_module_row(row)
+    }
+
+    fn source_carried_template_resref_for_add(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]> {
+        match self {
+            Self::Custom(record) if record.source_appearance == row.appearance => {
+                record.source_resref
+            }
+            Self::Custom(_) | Self::Normal(_) => None,
+        }
     }
 }
 
@@ -29965,32 +30175,37 @@ fn pending_placeable_custom_appearance_update_after_add(
     row: &AreaPlaceableContextRow,
     insertion: ExactPlaceableCustomCarrierSynthesisInsertion,
 ) -> Option<PendingPlaceableCustomAppearanceUpdate> {
-    let target_resref = row.module_template_resref?;
     match insertion {
         ExactPlaceableCustomCarrierSynthesisInsertion::AfterAdd {
             origin,
             unavailable_reason,
             insertion_carrier,
-        } => Some(PendingPlaceableCustomAppearanceUpdate {
-            original_insert_offset: mention.record_end,
-            anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
-                original_record_offset: mention.record_offset,
-                original_record_end: mention.record_end,
-                opcode: b'A',
-                expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
-                fragment_bit_start: mention.fragment_bit_start,
-                fragment_bit_end: mention.fragment_bit_end,
-                source_appearance: add_claim.live_object_appearance(),
-            },
-            object_id: add_claim.object_id,
-            fragment_bit_cursor: add_claim.layout.next_bit_cursor,
-            appearance: row.appearance,
-            template_resref: target_resref,
-            insertion_origin: origin,
-            insertion_carrier,
-            insertion_target_unavailable_reason: unavailable_reason,
-            anchor_rewrite_already_counted: false,
-        }),
+        } => {
+            let target_resref = row.module_template_resref.or_else(|| {
+                insertion_carrier
+                    .and_then(|carrier| carrier.source_carried_template_resref_for_add(row))
+            })?;
+            Some(PendingPlaceableCustomAppearanceUpdate {
+                original_insert_offset: mention.record_end,
+                anchor: PlaceableCustomAppearanceUpdateInsertionAnchor {
+                    original_record_offset: mention.record_offset,
+                    original_record_end: mention.record_end,
+                    opcode: b'A',
+                    expected_record: PlaceableCustomAppearanceUpdateAnchorRecord::PlaceableAdd,
+                    fragment_bit_start: mention.fragment_bit_start,
+                    fragment_bit_end: mention.fragment_bit_end,
+                    source_appearance: add_claim.live_object_appearance(),
+                },
+                object_id: add_claim.object_id,
+                fragment_bit_cursor: add_claim.layout.next_bit_cursor,
+                appearance: row.appearance,
+                template_resref: target_resref,
+                insertion_origin: origin,
+                insertion_carrier,
+                insertion_target_unavailable_reason: unavailable_reason,
+                anchor_rewrite_already_counted: false,
+            })
+        }
     }
 }
 
@@ -30081,6 +30296,19 @@ impl PlaceableCustomAppearanceUpdateInsertionCarrier {
             },
             target_decision: selection.target_decision(),
         }
+    }
+
+    fn source_carried_template_resref_for_add(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]> {
+        if self.scope != ExactPlaceableCustomCarrierCounterScope::PreAddCustom {
+            return None;
+        }
+        if self.source_appearance.appearance != row.appearance {
+            return None;
+        }
+        self.source_appearance.resref
     }
 }
 
