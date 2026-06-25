@@ -1147,6 +1147,9 @@ fn trace_live_object_exact_rewrite_summary(
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_source_carried_template_resref_slots =
                 ?unproven_carrier_synthesis_resolution
                     .source_provenance_synthesized_source_carried_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_carried_template_resref_blocked_divergent_output,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_synthesized_slots =
                 ?unproven_carrier_synthesis_resolution
                     .residual_source_provenance
@@ -1886,6 +1889,10 @@ fn trace_live_object_exact_rewrite_summary(
             ?summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                 .blocked_source_provenance_source_trusted_divergent_output,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_source_carried_divergent_output_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_source_provenance_source_trusted_source_carried_divergent_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_slots =
             ?unproven_carrier_remaining_source_provenance_slots,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_present =
@@ -1921,6 +1928,10 @@ fn trace_live_object_exact_rewrite_summary(
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                 .blocked_divergent_output
                 .add_only,
+        exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_divergent_output_source_carried_template_resref_slots =
+            ?summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_divergent_output_source_carried_template_resref,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output = summary
             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output,
         exact_placeable_add_module_custom_fixed_width_unproven_carrier_fixed_field_fixed_output_missing_template_resref_rows = summary

@@ -1253,6 +1253,15 @@ Current status:
   `TemplateResRef`; next replay should inspect remaining residual
   missing-template/divergent slots after excluding these guarded source-carried
   conflicts.
+- 2026-06-25 follow-up source-carried divergent slot split: packet bytes and
+  synthesis policy are unchanged. Source-carried pre-add custom
+  `TemplateResRef` rows blocked by divergent module output now have separate
+  gate and synthesis-resolution slot counters, including source-provenance
+  blocked rows. Direct live-object and M-frame/server-dispatch diagnostics
+  preserve the broad divergent counters while exposing the source-carried
+  divergent sub-bucket. Next replay should compare that sub-bucket against the
+  remaining residual missing-template/divergent slots before changing carrier
+  emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
