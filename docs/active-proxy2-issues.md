@@ -1262,6 +1262,14 @@ Current status:
   divergent sub-bucket. Next replay should compare that sub-bucket against the
   remaining residual missing-template/divergent slots before changing carrier
   emission.
+- 2026-06-25 follow-up source-carried divergent residual split: packet bytes
+  and synthesis policy are unchanged. The shared unproven-carrier synthesis
+  resolution now splits source-carried divergent rows into source-unblocked and
+  source-provenance components, then derives residual source-provenance slots
+  after subtracting source-carried divergence. Direct live-object and
+  M-frame/server-dispatch diagnostics expose the post-subtraction residual, so
+  the next replay should target only true missing-template or non-source-carried
+  divergent output before widening carrier emission.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

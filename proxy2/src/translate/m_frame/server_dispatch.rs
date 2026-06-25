@@ -1009,6 +1009,9 @@ fn trace_live_object_exact_rewrite_summary(
         unproven_carrier_residual_source_provenance_slots.all();
     let unproven_carrier_residual_source_provenance_blocker_slots =
         unproven_carrier_synthesis_resolution.residual_source_provenance_blockers;
+    let unproven_carrier_residual_after_source_carried_divergence =
+        unproven_carrier_synthesis_resolution
+            .residual_source_provenance_after_source_carried_divergence();
     if unproven_carrier_disposition.skipped != 0 {
         tracing::info!(
             source = exact_rewrite.source,
@@ -1147,6 +1150,12 @@ fn trace_live_object_exact_rewrite_summary(
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_source_carried_template_resref_slots =
                 ?unproven_carrier_synthesis_resolution
                     .source_provenance_synthesized_source_carried_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_source_unblocked_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_unblocked_source_carried_template_resref_blocked_divergent_output,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_source_provenance_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_provenance_source_carried_template_resref_blocked_divergent_output,
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_slots =
                 ?unproven_carrier_synthesis_resolution
                     .source_carried_template_resref_blocked_divergent_output,
@@ -1162,6 +1171,12 @@ fn trace_live_object_exact_rewrite_summary(
                 ?unproven_carrier_synthesis_resolution
                     .residual_source_provenance
                     .divergent_output,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.all(),
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_missing_template_resref_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.missing_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_divergent_output_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.divergent_output,
             "server exact placeable fixed-output custom carrier source-carried synthesis resolution"
         );
     }

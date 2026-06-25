@@ -12427,6 +12427,41 @@ mod diagnostic_tests {
             "source-carried rows blocked by divergent module output need their own replay bucket"
         );
         assert_eq!(
+            synthesis_resolution
+                .source_unblocked_source_carried_template_resref_blocked_divergent_output,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                pre_add_update_only: 1,
+                pre_add_custom_update_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            },
+            "source-unblocked source-carried divergence is not residual P/04 source provenance"
+        );
+        assert_eq!(
+            synthesis_resolution
+                .source_provenance_source_carried_template_resref_blocked_divergent_output,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                pre_add_update_only: 1,
+                pre_add_custom_update_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            },
+            "source-provenance source-carried divergence must be subtractable from residual divergence"
+        );
+        assert_eq!(
+            synthesis_resolution.residual_source_provenance_after_source_carried_divergence(),
+            ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceGateSlots {
+                missing_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                    with_update: 1,
+                    with_custom_update: 1,
+                    ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+                },
+                divergent_output: ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                    add_only: 1,
+                    ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+                },
+            },
+            "remaining source-provenance divergence excludes source-carried pre-add custom resrefs"
+        );
+        assert_eq!(
             synthesis_resolution.residual_source_provenance,
             residual_source_provenance_slots
         );
@@ -16294,6 +16329,10 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
         ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceGateSlots,
     pub residual_source_provenance_blockers:
         ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceBlockerSlots,
+    pub source_unblocked_source_carried_template_resref_blocked_divergent_output:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub source_provenance_source_carried_template_resref_blocked_divergent_output:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub source_carried_template_resref_blocked_divergent_output:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
 }
@@ -16918,11 +16957,15 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
         let source_provenance_synthesized_module_template_resref = source_provenance_synthesized
             .saturating_sub_slots(source_provenance_synthesized_source_carried_template_resref);
         let residual_source_provenance = slots.residual_source_provenance_after_source_trusted();
-        let source_carried_template_resref_blocked_divergent_output = slots
-            .blocked_divergent_output_source_carried_template_resref
-            .saturating_add_slots(
-                slots.blocked_source_provenance_source_trusted_source_carried_divergent_output,
-            );
+        let source_unblocked_source_carried_template_resref_blocked_divergent_output =
+            slots.blocked_divergent_output_source_carried_template_resref;
+        let source_provenance_source_carried_template_resref_blocked_divergent_output =
+            slots.blocked_source_provenance_source_trusted_source_carried_divergent_output;
+        let source_carried_template_resref_blocked_divergent_output =
+            source_unblocked_source_carried_template_resref_blocked_divergent_output
+                .saturating_add_slots(
+                    source_provenance_source_carried_template_resref_blocked_divergent_output,
+                );
         debug_assert_eq!(
             source_provenance_synthesized_module_template_resref.saturating_add_slots(
                 source_provenance_synthesized_source_carried_template_resref,
@@ -16933,6 +16976,17 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
             source_provenance_synthesized.saturating_add_slots(residual_source_provenance.all()),
             slots.blocked_source_provenance
         );
+        debug_assert_eq!(
+            residual_source_provenance
+                .divergent_output
+                .saturating_sub_slots(
+                    source_provenance_source_carried_template_resref_blocked_divergent_output,
+                )
+                .saturating_add_slots(
+                    source_provenance_source_carried_template_resref_blocked_divergent_output,
+                ),
+            residual_source_provenance.divergent_output
+        );
         Self {
             eligible_source_unblocked: slots.eligible_source_unblocked,
             eligible_source_carried_template_resref: slots.eligible_source_carried_template_resref,
@@ -16940,6 +16994,8 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
             source_provenance_synthesized_source_carried_template_resref,
             residual_source_provenance,
             residual_source_provenance_blockers: slots.residual_source_provenance_blocker_slots,
+            source_unblocked_source_carried_template_resref_blocked_divergent_output,
+            source_provenance_source_carried_template_resref_blocked_divergent_output,
             source_carried_template_resref_blocked_divergent_output,
         }
     }
@@ -16956,6 +17012,20 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
     ) -> ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
         self.eligible_source_carried_template_resref
             .saturating_add_slots(self.source_provenance_synthesized_source_carried_template_resref)
+    }
+
+    pub(crate) fn residual_source_provenance_after_source_carried_divergence(
+        self,
+    ) -> ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceGateSlots {
+        ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceGateSlots {
+            missing_template_resref: self.residual_source_provenance.missing_template_resref,
+            divergent_output: self
+                .residual_source_provenance
+                .divergent_output
+                .saturating_sub_slots(
+                    self.source_provenance_source_carried_template_resref_blocked_divergent_output,
+                ),
+        }
     }
 }
 
@@ -33186,6 +33256,9 @@ fn trace_exact_placeable_reconciliation_summary(
         unproven_carrier_residual_source_provenance_slots.all();
     let unproven_carrier_residual_source_provenance_blocker_slots =
         unproven_carrier_synthesis_resolution.residual_source_provenance_blockers;
+    let unproven_carrier_residual_after_source_carried_divergence =
+        unproven_carrier_synthesis_resolution
+            .residual_source_provenance_after_source_carried_divergence();
     tracing::debug!(
         area_resref = area_context.area_resref.as_str(),
         exact_placeable_reconciliation_emitted = emitted,
@@ -34294,6 +34367,12 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_source_carried_template_resref_slots =
                 ?unproven_carrier_synthesis_resolution
                     .source_provenance_synthesized_source_carried_template_resref,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_source_unblocked_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_unblocked_source_carried_template_resref_blocked_divergent_output,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_source_provenance_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_provenance_source_carried_template_resref_blocked_divergent_output,
             add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_synthesized_slots =
                 ?unproven_carrier_synthesis_resolution
                     .residual_source_provenance
@@ -34309,6 +34388,12 @@ fn trace_exact_placeable_reconciliation_summary(
             add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_blocked_divergent_output_slots =
                 ?unproven_carrier_synthesis_resolution
                     .source_carried_template_resref_blocked_divergent_output,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.all(),
+            add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_missing_template_resref_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.missing_template_resref,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_source_carried_divergence_divergent_output_slots =
+                ?unproven_carrier_residual_after_source_carried_divergence.divergent_output,
             "server->client exact live-object placeable source-carried carrier synthesis resolution"
         );
     }
