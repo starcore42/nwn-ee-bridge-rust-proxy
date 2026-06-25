@@ -1270,6 +1270,16 @@ Current status:
   M-frame/server-dispatch diagnostics expose the post-subtraction residual, so
   the next replay should target only true missing-template or non-source-carried
   divergent output before widening carrier emission.
+- 2026-06-25 follow-up mixed source-carried carrier selection: fixed-width
+  `A/09` rows missing module `TemplateResRef` now let a selected pre-add custom
+  `U/09` source-carried resref drive add-boundary custom-carrier synthesis even
+  when a following normal `U/09` remains later packet-authored state. This
+  changes packet output for that generalized mixed-carrier shape by inserting
+  the add-boundary custom `U/09` from the verified add cursor, while leaving
+  the later normal update shifted but otherwise packet-authored. Verified with
+  `exact_placeable_add_pre_add_source_carrier_survives_following_normal_update`;
+  next replay should inspect only residual cases with no selected pre-add custom
+  source resref or with concrete divergent custom output.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

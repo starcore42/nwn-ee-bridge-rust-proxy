@@ -9897,6 +9897,176 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_pre_add_source_carrier_survives_following_normal_update() {
+        let object_id = 0x8000_363Fu32;
+        let source_resref = *b"plc_src_before\0\0";
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&source_resref);
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        let following_normal_offset = live.len();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0x0011u16.to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot rewrites from the selected module row.
+            true,  // useable already matches.
+            false, // trap disarmable.
+            true,  // lockable already matches.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits)
+            .expect("pre-add custom U/09 plus fixed A/09 plus following normal U/09 payload");
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 30.0,
+                    y: 40.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let pre_claim = claim_payload_if_verified(&payload)
+            .expect("pre-rewrite exact pre-add custom + add + following normal carrier");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            add_offset,
+            add_end,
+        );
+        assert_eq!(
+            carrier
+                .selected_following()
+                .map(|selected| selected.record().record_offset),
+            Some(following_normal_offset),
+            "the following normal update is still visible as later packet-authored state"
+        );
+        assert_eq!(
+            carrier.source_carried_template_resref_for_add(&area_context.static_rows[0]),
+            Some(source_resref),
+            "the selected pre-add custom U/09 supplies the add-boundary custom resref"
+        );
+        assert_eq!(
+            carrier.synthesis_policy(&area_context.static_rows[0]),
+            ExactPlaceableCustomCarrierSynthesisPolicy::SynthesizesAfterAddPreAddCustomTargetUnavailable,
+            "missing TemplateResRef synthesis must use the source-carried pre-add custom row, not the later normal state"
+        );
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("source-carried pre-add custom resref should synthesize before the following normal update");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            1
+        );
+        assert_synthesized_custom_carrier_after_add_reasons(&summary, 0, 0, 0, 1);
+        assert_eq!(
+            summary.bytes_inserted,
+            (LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES) as u32
+        );
+
+        let claim = claim_payload_if_verified(&payload)
+            .expect("post-rewrite exact pre-add custom + A/09 + synthetic U/09 + following U/09");
+        assert_eq!(claim.mentions.len(), 4);
+        assert_eq!(claim.mentions[2].record_offset, add_end);
+        assert_eq!(
+            claim.mentions[2].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(source_resref),
+            }),
+            "the synthetic add-boundary U/09 uses the parser-owned pre-add source resref"
+        );
+        assert_eq!(
+            claim.mentions[3].record_offset,
+            following_normal_offset
+                + LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+            "the later normal update is shifted by the synthesized custom carrier"
+        );
+        assert_eq!(
+            claim.mentions[3].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            "the following normal row remains later packet-authored state"
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_start,
+            claim.mentions[1].fragment_bit_end
+        );
+        assert_eq!(
+            claim.mentions[2].fragment_bit_end,
+            claim.mentions[1].fragment_bit_end
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_source_carried_resref_blocks_divergent_module_carrier() {
         let object_id = 0x8000_363Eu32;
         let source_resref = *b"plc_src_carried\0";
@@ -30020,6 +30190,15 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         self,
         row: &AreaPlaceableContextRow,
     ) -> ExactPlaceableCustomCarrierSynthesisDecision {
+        if let Some(selected) = self.selected_source_carried_pre_add_custom_for_add(row) {
+            return ExactPlaceableCustomCarrierSynthesisDecision::from_selection(
+                ExactPlaceableCustomCarrierSynthesisSelection::new(
+                    ExactPlaceableCustomCarrierCounterScope::from_pre_add_carrier(selected),
+                    selected,
+                    row,
+                ),
+            );
+        }
         if let Some(selected) = self.selected_following() {
             return ExactPlaceableCustomCarrierSynthesisDecision::from_selection(
                 ExactPlaceableCustomCarrierSynthesisSelection::new(
@@ -30059,8 +30238,20 @@ impl ExactPlaceableUpdateAppearanceCarrier {
         self,
         row: &AreaPlaceableContextRow,
     ) -> Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]> {
-        self.selected_pre_add()
+        self.selected_source_carried_pre_add_custom_for_add(row)
             .and_then(|selected| selected.source_carried_template_resref_for_add(row))
+    }
+
+    fn selected_source_carried_pre_add_custom_for_add(
+        self,
+        row: &AreaPlaceableContextRow,
+    ) -> Option<SelectedExactPlaceableUpdateAppearanceCarrier> {
+        if row.module_template_resref.is_some() {
+            return None;
+        }
+        let selected = self.selected_pre_add()?;
+        selected.source_carried_template_resref_for_add(row)?;
+        Some(selected)
     }
 }
 
