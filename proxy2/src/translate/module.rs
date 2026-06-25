@@ -341,6 +341,8 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
     if replaced_len <= RESREF_BYTES || replacement_end > payload.len() {
         return None;
     }
+    let legacy_observed_context =
+        observed_context_from_legacy_hak_module_info_payload(payload, &view, &hak_block);
     payload.splice(replacement_start..replacement_end, module_resref);
 
     let removed_resource_bytes = replaced_len.checked_sub(RESREF_BYTES)?;
@@ -351,8 +353,9 @@ fn rewrite_legacy_hak_module_info_payload_at_zero(payload: &mut Vec<u8>) -> Opti
     let table_rewrite = rewrite_load_module_resource_name_table_tail(payload, area_count_offset);
     let _ = normalize_ee_module_info_official_campaign_byte(payload);
     let final_declared = read_le_u32(payload, 3)?;
-    let observed_context =
-        observed_context_from_ee_module_info_payload(payload).map(remember_observed_module_context);
+    let observed_context = legacy_observed_context
+        .or_else(|| observed_context_from_ee_module_info_payload(payload))
+        .map(remember_observed_module_context);
 
     Some(RewriteSummary {
         offset: 0,
@@ -572,6 +575,81 @@ fn remember_compact_module_context(compact: &CompactLegacyModuleInfo) -> Observe
             .collect(),
     };
     remember_observed_module_context(context)
+}
+
+fn observed_context_from_legacy_hak_module_info_payload(
+    payload: &[u8],
+    view: &ModuleInfoView,
+    hak_block: &LegacyHakBlock,
+) -> Option<ObservedModuleContext> {
+    let declared = usize::try_from(view.declared).ok()?;
+    let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let module_name = read_raw_string_bounded_value(payload, &mut cursor, declared)?;
+    let localized_name = read_raw_string_bounded_value(payload, &mut cursor, declared)?;
+    skip_exact(payload, &mut cursor, 1, declared)?;
+
+    let module_resref = hak_block.module_resref.clone().unwrap_or_default();
+    let areas = observed_area_table_prefix_from_legacy_module_info(
+        payload,
+        hak_block.area_count_offset,
+        hak_block.resource_count,
+        declared,
+    )?;
+    let localized_name = localized_name
+        .or(module_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| module_resref.clone());
+
+    Some(ObservedModuleContext {
+        localized_name,
+        module_resref,
+        areas,
+    })
+}
+
+fn observed_area_table_prefix_from_legacy_module_info(
+    payload: &[u8],
+    count_offset: usize,
+    resource_count: u32,
+    declared: usize,
+) -> Option<Vec<ObservedModuleArea>> {
+    if resource_count == 0
+        || resource_count > MAX_MODULE_RESOURCE_COUNT
+        || count_offset.checked_add(CNW_LENGTH_BYTES)? > declared
+        || declared > payload.len()
+        || read_le_u32(payload, count_offset)? != resource_count
+    {
+        return None;
+    }
+
+    let mut cursor = count_offset.checked_add(CNW_LENGTH_BYTES)?;
+    let mut areas = Vec::new();
+    for _ in 0..resource_count {
+        if cursor.checked_add(8)? > declared {
+            break;
+        }
+        let object_id = read_le_u32(payload, cursor)?;
+        if !is_likely_area_resource_id(object_id) {
+            break;
+        }
+        cursor = cursor.checked_add(CNW_LENGTH_BYTES)?;
+        let name = match read_raw_string_bounded_value(payload, &mut cursor, declared) {
+            Some(Some(name)) if !name.trim().is_empty() && name.len() <= MAX_AREA_NAME_LENGTH => {
+                name
+            }
+            _ => break,
+        };
+        areas.push(ObservedModuleArea { object_id, name });
+    }
+
+    if areas.is_empty()
+        || (areas.len() as u32 != resource_count
+            && areas.len() < ZERO_NAME_TERMINATOR_MIN_ENTRIES as usize)
+    {
+        return None;
+    }
+
+    Some(areas)
 }
 
 fn observed_context_from_ee_module_info_payload(payload: &[u8]) -> Option<ObservedModuleContext> {
@@ -2486,6 +2564,18 @@ mod tests {
         assert_eq!(summary.resource_count, 1);
         assert_eq!(summary.resource_name_count, 1);
         assert!(summary.removed_hak_bytes > 0);
+        let observed_context = summary
+            .observed_context
+            .as_ref()
+            .expect("legacy Module_Info should record area context");
+        assert_eq!(
+            observed_context.localized_name,
+            "Path of Ascension CEP Legends"
+        );
+        assert_eq!(observed_context.module_resref, "poa_mod");
+        assert_eq!(observed_context.areas.len(), 1);
+        assert_eq!(observed_context.areas[0].object_id, 0x8000_0001);
+        assert_eq!(observed_context.areas[0].name, "Armor Shop");
 
         let mut cursor = 7;
         assert_eq!(
@@ -2508,6 +2598,49 @@ mod tests {
         );
         cursor += RESREF_BYTES;
         assert_eq!(read_le_u32(&payload, cursor), Some(1));
+    }
+
+    #[test]
+    fn records_legacy_area_context_before_overdeclared_resource_tail_rewrite() {
+        let owned_areas = (0..33)
+            .map(|index| (0x8000_0000_u32 + index, format!("Observed Area {index}")))
+            .collect::<Vec<_>>();
+        let area_refs = owned_areas
+            .iter()
+            .map(|(object_id, name)| (*object_id, name.as_str()))
+            .collect::<Vec<_>>();
+        let mut payload = legacy_module_info_payload(
+            "Path of Ascension CEP Legends",
+            "Path of Ascension CEP Legends",
+            0x02,
+            "cep23_v1",
+            &["cep2_top_v23", "cep2_custom"],
+            "",
+            &area_refs,
+        );
+        let view = parse_module_info(&payload).expect("legacy Module_Info view");
+        let hak_block = find_legacy_hak_block(&payload, &view).expect("legacy HAK block");
+        write_le_u32(&mut payload, hak_block.area_count_offset, 40)
+            .expect("overdeclare resource table count");
+
+        let summary = rewrite_module_info_payload(&mut payload)
+            .expect("legacy Module_Info should be claimed and rewritten");
+
+        assert_eq!(summary.resource_count, 40);
+        let observed_context = summary
+            .observed_context
+            .as_ref()
+            .expect("legacy area-table prefix should record runtime context before tail rewrite");
+        assert_eq!(
+            observed_context.localized_name,
+            "Path of Ascension CEP Legends"
+        );
+        assert_eq!(observed_context.module_resref, "");
+        assert_eq!(observed_context.areas.len(), owned_areas.len());
+        assert_eq!(observed_context.areas[0].object_id, 0x8000_0000);
+        assert_eq!(observed_context.areas[0].name, "Observed Area 0");
+        assert_eq!(observed_context.areas[32].object_id, 0x8000_0020);
+        assert_eq!(observed_context.areas[32].name, "Observed Area 32");
     }
 
     #[test]
