@@ -1280,6 +1280,13 @@ Current status:
   `exact_placeable_add_pre_add_source_carrier_survives_following_normal_update`;
   next replay should inspect only residual cases with no selected pre-add custom
   source resref or with concrete divergent custom output.
+- 2026-06-25 follow-up source-carried blocker-class residual split: packet
+  bytes and synthesis policy are unchanged. The shared `A/09` unproven-carrier
+  synthesis resolution now retains malformed `P/04` source blocker classes for
+  source-carried divergent rows separately, then exposes post-subtraction
+  residual blocker classes in direct live-object and M-frame/server-dispatch
+  diagnostics. Next replay should target only non-source-carried residual
+  blocker classes before widening any carrier emission rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
