@@ -1941,7 +1941,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_diamond_seq26_gui_inventory_missing_add_opcodes_rewrite_to_exact_ee_shape() {
+    fn local_diamond_seq26_gui_inventory_missing_add_opcodes_stays_quarantined() {
         let mut payload = include_bytes!(
             "../../../fixtures/live_object/local_diamond_seq26_gui_inventory_missing_add_opcode_20260518_legacy.bin"
         )
@@ -1959,22 +1959,18 @@ mod tests {
             "normalization must not salvage past the first unclaimed G I 00 row"
         );
 
-        let summary = rewrite_payload_to_exact_ee_if_possible(&mut payload, None)
-            .expect("typed GUI item-add repair should rewrite missing inner add opcodes");
+        let normalized = payload.clone();
         assert!(
-            summary.changed(),
-            "the GUI compatibility row must be an explicit semantic rewrite"
-        );
-        let claim = claim_payload_if_verified(&payload)
-            .expect("rewritten GUI inventory/repository burst must be exact EE live-object shape");
-        assert!(
-            claim.live_gui_item_create_records >= 8,
-            "fixture should retain the five inventory and three repository item-create rows"
+            rewrite_payload_to_exact_ee_if_possible(&mut payload, None).is_none(),
+            "later G I 00 rows still lack decompile-backed item-name/active-property bit proof"
         );
         assert_eq!(
-            claim.live_bytes_length + 7,
-            claim.declared,
-            "declared CNW read window should exactly cover the rewritten GUI live bytes"
+            payload, normalized,
+            "failed GUI item-create proof must roll back the proven first-row repair"
+        );
+        assert!(
+            claim_payload_if_verified(&payload).is_none(),
+            "shifted local Diamond GUI inventory burst remains quarantine evidence"
         );
     }
 

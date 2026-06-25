@@ -680,10 +680,27 @@ pub(super) fn is_zero_fragment_storage_span_before_legacy_live_gui_prefix(
     span_start: usize,
     span_end: usize,
 ) -> bool {
+    is_zero_fragment_storage_span_before_legacy_live_gui_prefix_with_policy(
+        bytes, span_start, span_end, false,
+    )
+}
+
+fn is_zero_fragment_storage_span_before_legacy_live_gui_prefix_with_policy(
+    bytes: &[u8],
+    span_start: usize,
+    span_end: usize,
+    allow_missing_inventory_add_opcode: bool,
+) -> bool {
     if span_start >= span_end
         || span_end > bytes.len()
         || span_end.saturating_sub(span_start) > MAX_GUI_ZERO_FRAGMENT_STORAGE_BYTES
-        || explicit_legacy_live_gui_item_create_prefix(bytes, span_end, bytes.len()).is_none()
+        || legacy_live_gui_item_create_prefix_with_missing_policy(
+            bytes,
+            span_end,
+            bytes.len(),
+            allow_missing_inventory_add_opcode,
+        )
+        .is_none()
     {
         return false;
     }
@@ -1184,7 +1201,9 @@ pub(super) fn remove_zero_fragment_storage_after_verified_live_gui_item_record_f
         return None;
     }
     let span_end = find_legacy_live_gui_item_fragment_span_end(bytes, record_end)?;
-    if !is_zero_fragment_storage_span_before_legacy_live_gui_prefix(bytes, record_end, span_end) {
+    if !is_zero_fragment_storage_span_before_legacy_live_gui_prefix_with_policy(
+        bytes, record_end, span_end, true,
+    ) {
         return None;
     }
     let bytes_removed = span_end.saturating_sub(record_end);

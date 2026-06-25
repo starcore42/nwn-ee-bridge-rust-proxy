@@ -2463,6 +2463,44 @@ fn live_gui_missing_inventory_add_opcode_rewrites_only_with_item_bit_proof() {
 }
 
 #[test]
+fn live_gui_zero_storage_before_missing_inventory_add_prefix_removes_after_verified_row() {
+    // The zero storage belongs to the already-verified previous GUI item row,
+    // not to the following `G I 00` row. The following row still has to prove
+    // its item-create bits before its missing inner `A` can be repaired.
+    let mut first = ee_shaped_gui_inventory_model_type2_item_create_live_bytes();
+    first[2] = 0x00;
+    let first_len = first.len();
+    let mut second = ee_shaped_gui_inventory_model_type2_item_create_live_bytes();
+    second[2] = 0x00;
+    second[6] = 1;
+
+    let storage = [0x00];
+    let mut live = first;
+    live.extend_from_slice(&storage);
+    live.extend_from_slice(&second);
+
+    let item_bits = vec![false, false, false, true, false, false];
+    let mut owned_bits = item_bits.clone();
+    owned_bits.extend_from_slice(&item_bits);
+    let mut payload = live_object_payload_with_bits(&live, owned_bits);
+
+    let rewrite = super::rewrite_update_records_payload_if_possible(&mut payload)
+        .expect("verified GUI row should remove zero storage before a repair-candidate sibling");
+    assert_eq!(rewrite.live_gui_missing_add_opcodes_repaired, 2);
+    assert_eq!(rewrite.interleaved_fragment_spans_promoted, 1);
+    assert_eq!(
+        rewrite.interleaved_fragment_bytes_promoted,
+        storage.len() as u32
+    );
+    assert_eq!(rewrite.new_live_bytes_length, first_len * 2);
+
+    let claim = super::claim_payload_if_verified(&payload)
+        .expect("both repaired GUI item-create rows should exact-claim");
+    assert_eq!(claim.live_gui_item_create_records, 2);
+    assert_eq!(claim.live_gui_fragment_bits, (item_bits.len() * 2) as u32);
+}
+
+#[test]
 fn exact_adapter_rolls_back_prior_update_before_terminal_gui_missing_item_bits() {
     // Generalized XP2 seq19 terminal handoff: a prior legacy update may stage
     // a valid EE bit insertion, and `W current total` may follow it, but W is
