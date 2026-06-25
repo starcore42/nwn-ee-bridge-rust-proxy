@@ -9897,6 +9897,216 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_add_source_carried_resref_blocks_divergent_module_carrier() {
+        let object_id = 0x8000_363Eu32;
+        let source_resref = *b"plc_src_carried\0";
+        let module_resref = *b"plc_module_row\0\0";
+        let z_raw = encode_ee_position_z(0.0).expect("test z should encode");
+
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_APPEARANCE_MASK.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&source_resref);
+
+        let add_offset = live.len();
+        live.extend_from_slice(&[b'A', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&0u32.to_le_bytes());
+        live.push(5);
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&visual_transform::EE_OBJECT_VISUAL_TRANSFORM_IDENTITY_BYTES);
+        let add_end = live.len();
+
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&LEGACY_UPDATE_POSITION_MASK.to_le_bytes());
+        live.extend_from_slice(&1000u16.to_le_bytes());
+        live.extend_from_slice(&2000u16.to_le_bytes());
+        live.extend_from_slice(&((z_raw >> 2) as u16).to_le_bytes());
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            false, // direct CExoString name branch.
+            false, // reputation/visual selector.
+            false, // no optional object id bytes.
+            false, // static/plot stays packet-authored.
+            false, // useable rewrites from the module-backed fixed-output row.
+            false, // trap disarmable.
+            false, // lockable rewrites from the module-backed fixed-output row.
+            false, // locked already matches.
+            false, // unknown 0x1AC sibling stays packet-authored.
+            true,  // name-valid stays packet-authored.
+            false, // EE-only light/visual guard before the transform map.
+        ]);
+        fragment_bits.extend([(z_raw & 0b10) != 0, (z_raw & 0b01) != 0]);
+        let mut payload = live_object_payload_from_parts(&live, &fragment_bits).expect(
+            "pre-add custom U/09 plus fixed-width A/09 plus following position U/09 payload",
+        );
+
+        let module_state = crate::translate::area::AreaPlaceableContextState {
+            static_object: true,
+            useable: true,
+            trap_flag: false,
+            trap_disarmable: false,
+            lockable: true,
+            locked: false,
+        };
+        let area_context = crate::translate::area::AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: None,
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+                crate::translate::area::AreaPlaceableContextRow {
+                    object_id,
+                    appearance: 0xFFFE,
+                    module_template_resref: Some(module_resref),
+                    x: 10.0,
+                    y: 20.0,
+                    z: 0.0,
+                    object_id_confidence:
+                        crate::translate::area::AreaPlaceableContextObjectIdConfidence::DuplicateObjectId,
+                    module_state: Some(module_state),
+                    ..crate::translate::area::AreaPlaceableContextRow::default()
+                },
+            ],
+            ..crate::translate::area::AreaPlaceableContext::default()
+        };
+
+        let pre_claim =
+            claim_payload_if_verified(&payload).expect("pre-rewrite exact pre-add custom carrier");
+        let carrier = exact_placeable_update_appearance_carrier_for_add(
+            &area_context,
+            &pre_claim,
+            object_id,
+            add_offset,
+            add_end,
+        );
+        assert_eq!(
+            carrier.source_carried_template_resref_for_add(&area_context.static_rows[0]),
+            Some(source_resref),
+            "the selected pre-add custom U/09 supplies a candidate resref"
+        );
+
+        let summary = rewrite_update_records_payload_with_area_context_if_possible(
+            &mut payload,
+            Some(&area_context),
+        )
+        .expect("divergent source-carried carrier should keep the add state rewrite");
+        assert_eq!(summary.add_records_examined, 1);
+        assert_eq!(summary.update_records_examined, 2);
+        assert_eq!(summary.add_records_rewritten, 1);
+        assert_eq!(summary.update_records_rewritten, 0);
+        assert_eq!(summary.exact_placeable_add_state_rewritten, 1);
+        assert_eq!(
+            summary.exact_placeable_add_identity_resolved_by_following_position,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_equivalence,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_identity_resolved_by_following_position_fixed_output_missing_template_resref_rows,
+            1
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_template_resref_missing,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_fixed_output,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_following_position_only_fixed_output,
+            0,
+            "the selected carrier slot is pre-add custom, not add-only"
+        );
+        assert_eq!(
+            summary.exact_placeable_add_module_custom_fixed_width_unproven_carrier_output_divergent,
+            1,
+            "the source-carried resref conflicts with the concrete module carrier"
+        );
+        let synthesis_gate_slots = summary
+            .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots;
+        assert_eq!(
+            synthesis_gate_slots
+                .eligible_source_carried_template_resref
+                .pre_add_custom_update_only,
+            0
+        );
+        assert_eq!(
+            synthesis_gate_slots
+                .blocked_missing_template_resref
+                .pre_add_custom_update_only,
+            0,
+            "the row has source-carried resref proof, so the blocker is divergence"
+        );
+        assert_eq!(
+            synthesis_gate_slots
+                .blocked_divergent_output
+                .pre_add_custom_update_only,
+            1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_template_resref_fixed_width_synthesized_update,
+            0
+        );
+        assert_eq!(summary.bytes_inserted, 0);
+        let post_claim =
+            claim_payload_if_verified(&payload).expect("post-rewrite payload remains exact");
+        assert_eq!(post_claim.mentions.len(), 3);
+        assert_eq!(
+            post_claim.mentions[0].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: Some(source_resref),
+            })
+        );
+        assert_eq!(
+            post_claim.mentions[1].placeable_appearance,
+            Some(LiveObjectPlaceableAppearance {
+                appearance: 0xFFFE,
+                resref: None,
+            })
+        );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[post_claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact source-carried divergent A/09 fragment bits");
+        assert!(
+            rewritten_bits[CNW_FRAGMENT_HEADER_BITS + 4],
+            "the selected module row still owns the A/09 useable-state rewrite"
+        );
+        assert!(
+            rewritten_bits[CNW_FRAGMENT_HEADER_BITS + 6],
+            "the selected module row still owns the A/09 lockable-state rewrite"
+        );
+        let position = post_claim.mentions[2]
+            .position
+            .expect("following U/09 position should remain parser-owned");
+        assert_eq!(position.x_raw, 1000);
+        assert_eq!(position.y_raw, 2000);
+        assert_eq!(position.z_raw, z_raw);
+    }
+
+    #[test]
     fn exact_placeable_add_fixed_field_fixed_output_equivalence_suppresses_carrier() {
         let object_id = 0x8000_3628u32;
         let rewrite_object_id = 0x8000_3629u32;
@@ -16136,6 +16346,12 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
                 ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleSourceCarriedTemplateResRef
             ) {
                 return Self::EligibleSourceCarriedTemplateResRef;
+            }
+            if matches!(
+                source_trusted_gate,
+                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedDivergentOutput
+            ) {
+                return Self::BlockedDivergentOutput;
             }
             return Self::BlockedMissingTemplateResRef;
         }
@@ -25936,6 +26152,19 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                     .exact_placeable_add_module_custom_template_resref_missing
                                     .saturating_add(1);
                         }
+                        let source_carried_output_divergent =
+                            source_carried_template_resref_output_divergent_for_add(
+                                area_context,
+                                &claim,
+                                mention.object_id,
+                                mention.record_offset,
+                                mention.record_end,
+                                add_claim,
+                                selection,
+                                row,
+                                update_carrier,
+                            );
+                        unproven_output_divergent |= source_carried_output_divergent;
                         summary
                             .exact_placeable_add_module_custom_fixed_width_unproven_carrier_missing_template_resref_rows =
                             summary
@@ -25998,6 +26227,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 unproven_missing_template_resref_rows,
                             area_static_custom_carrier_unproven_output_divergent =
                                 unproven_output_divergent,
+                            area_static_custom_carrier_unproven_source_carried_output_divergent =
+                                source_carried_output_divergent,
                             area_static_custom_carrier_unproven_source_blocked =
                                 base_identity_source_blocked,
                             area_static_custom_carrier_unproven_selected_slot =
@@ -26153,6 +26384,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             source_trusted_gate.as_str(),
                         area_static_custom_carrier_unproven_source_carried_template_resref =
                             ?update_carrier.source_carried_template_resref_for_add(row),
+                        area_static_custom_carrier_unproven_effective_output_divergent =
+                            unproven_output_divergent,
                         area_static_custom_carrier_unproven_source_read_mismatch =
                             row_source_blockers.is_some_and(|blockers| blockers.read_mismatch_rows() != 0),
                         area_static_custom_carrier_unproven_source_fragment_owned =
@@ -29208,6 +29441,23 @@ fn placeable_add_output_for_module_static_row(
     })
 }
 
+fn placeable_add_output_for_module_static_row_with_effective_resref(
+    row: &AreaPlaceableContextRow,
+    effective_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+) -> Option<PlaceableAddOutput> {
+    let module_state = row.module_state?;
+    let custom_resref = if is_custom_placeable_appearance(row.appearance) {
+        Some(row.module_template_resref.or(effective_resref)?)
+    } else {
+        None
+    };
+    Some(PlaceableAddOutput {
+        appearance: row.appearance,
+        module_state,
+        custom_resref,
+    })
+}
+
 fn placeable_add_fixed_output_for_module_static_row(
     row: &AreaPlaceableContextRow,
 ) -> Option<PlaceableAddFixedOutput> {
@@ -29221,6 +29471,218 @@ fn placeable_add_output_missing_template_resref_for_module_static_row(
     row: &AreaPlaceableContextRow,
 ) -> bool {
     is_custom_placeable_appearance(row.appearance) && row.module_template_resref.is_none()
+}
+
+fn source_carried_template_resref_output_divergent_for_add(
+    area_context: &AreaPlaceableContext,
+    claim_summary: &LiveObjectUpdateClaimSummary,
+    object_id: u32,
+    add_record_offset: usize,
+    add_record_end: usize,
+    add_claim: VerifiedPlaceableAddExactClaim,
+    selection: PlaceableStaticReconciliationSelection<'_>,
+    selected_row: &AreaPlaceableContextRow,
+    carrier: ExactPlaceableUpdateAppearanceCarrier,
+) -> bool {
+    if selected_row.module_template_resref.is_some() {
+        return false;
+    }
+    let Some(source_resref) = carrier.source_carried_template_resref_for_add(selected_row) else {
+        return false;
+    };
+    let Some(selected_fixed_output) =
+        placeable_add_fixed_output_for_module_static_row(selected_row)
+    else {
+        return false;
+    };
+    let Some(selected_effective_output) =
+        placeable_add_output_for_module_static_row_with_effective_resref(
+            selected_row,
+            Some(source_resref),
+        )
+    else {
+        return false;
+    };
+
+    if selection.identity_resolved_by_fixed_field_fixed_output_equivalence
+        && fixed_output_candidate_set_has_divergent_custom_output(
+            area_context,
+            object_id,
+            selected_fixed_output,
+            selected_effective_output,
+            |row| module_static_row_matches_verified_add_fixed_fields(row, add_claim),
+        )
+    {
+        return true;
+    }
+
+    if selection.identity_resolved_by_following_position_fixed_output_equivalence
+        && let Some(position) =
+            following_update_position_for_add(claim_summary, object_id, add_record_end)
+        && fixed_output_candidate_set_has_divergent_custom_output(
+            area_context,
+            object_id,
+            selected_fixed_output,
+            selected_effective_output,
+            |row| {
+                module_static_row_matches_raw_position(
+                    row,
+                    position.x_raw,
+                    position.y_raw,
+                    position.z_raw,
+                )
+            },
+        )
+    {
+        return true;
+    }
+
+    if selection.identity_resolved_by_preceding_position_fixed_output_equivalence
+        && let Some(position) =
+            preceding_update_position_for_add(claim_summary, object_id, add_record_offset)
+        && fixed_output_candidate_set_has_divergent_custom_output(
+            area_context,
+            object_id,
+            selected_fixed_output,
+            selected_effective_output,
+            |row| {
+                module_static_row_matches_raw_position(
+                    row,
+                    position.x_raw,
+                    position.y_raw,
+                    position.z_raw,
+                )
+            },
+        )
+    {
+        return true;
+    }
+
+    if selection.identity_surrounding_position_conflict {
+        if let Some(position) =
+            following_update_position_for_add(claim_summary, object_id, add_record_end)
+            && fixed_output_candidate_set_has_divergent_custom_output(
+                area_context,
+                object_id,
+                selected_fixed_output,
+                selected_effective_output,
+                |row| {
+                    module_static_row_matches_raw_position(
+                        row,
+                        position.x_raw,
+                        position.y_raw,
+                        position.z_raw,
+                    )
+                },
+            )
+        {
+            return true;
+        }
+        if let Some(position) =
+            preceding_update_position_for_add(claim_summary, object_id, add_record_offset)
+            && fixed_output_candidate_set_has_divergent_custom_output(
+                area_context,
+                object_id,
+                selected_fixed_output,
+                selected_effective_output,
+                |row| {
+                    module_static_row_matches_raw_position(
+                        row,
+                        position.x_raw,
+                        position.y_raw,
+                        position.z_raw,
+                    )
+                },
+            )
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn fixed_output_candidate_set_has_divergent_custom_output(
+    area_context: &AreaPlaceableContext,
+    object_id: u32,
+    selected_fixed_output: PlaceableAddFixedOutput,
+    selected_effective_output: PlaceableAddOutput,
+    mut matches_candidate: impl FnMut(&AreaPlaceableContextRow) -> bool,
+) -> bool {
+    let overlap = area_context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    for matched in overlap.rows() {
+        let Some(row) = matched.static_row_with_compatible_source_provenance() else {
+            continue;
+        };
+        if !matches_candidate(row) {
+            continue;
+        }
+        if placeable_add_fixed_output_for_module_static_row(row) != Some(selected_fixed_output) {
+            continue;
+        }
+        if let Some(output) = placeable_add_output_for_module_static_row(row)
+            && output != selected_effective_output
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn following_update_position_for_add(
+    claim_summary: &LiveObjectUpdateClaimSummary,
+    object_id: u32,
+    add_record_end: usize,
+) -> Option<LiveObjectRecordPosition> {
+    for mention in &claim_summary.mentions {
+        if mention.record_offset < add_record_end {
+            continue;
+        }
+        if mention.object_type != PLACEABLE_OBJECT_TYPE
+            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+        {
+            continue;
+        }
+        match mention.opcode {
+            b'U' => {
+                if let Some(position) = mention.position {
+                    return Some(position);
+                }
+            }
+            b'A' | b'D' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn preceding_update_position_for_add(
+    claim_summary: &LiveObjectUpdateClaimSummary,
+    object_id: u32,
+    add_record_offset: usize,
+) -> Option<LiveObjectRecordPosition> {
+    for mention in claim_summary.mentions.iter().rev() {
+        if mention.record_offset >= add_record_offset {
+            continue;
+        }
+        if mention.object_type != PLACEABLE_OBJECT_TYPE
+            || !object_ids::equivalent_legacy_external_object_ids(mention.object_id, object_id)
+        {
+            continue;
+        }
+        match mention.opcode {
+            b'U' => {
+                if let Some(position) = mention.position {
+                    return Some(position);
+                }
+            }
+            b'A' | b'D' => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn module_static_row_matches_verified_add_fixed_fields(

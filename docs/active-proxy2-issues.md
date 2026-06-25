@@ -1245,6 +1245,14 @@ Current status:
   M-frame/server-dispatch traces consume the same summary, so the next replay
   should use the source-carried synthesis-resolution event before widening any
   residual carrier rule.
+- 2026-06-25 follow-up source-carried divergent carrier guard:
+  source-carried pre-add custom `TemplateResRef` synthesis now compares the
+  effective source-carried add output against concrete module carrier outputs
+  in the same fixed-output proof set. Divergent source/module carriers remain
+  blocked as divergent output even when the selected row lacks a module
+  `TemplateResRef`; next replay should inspect remaining residual
+  missing-template/divergent slots after excluding these guarded source-carried
+  conflicts.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and
