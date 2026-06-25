@@ -44,16 +44,14 @@ pub(super) fn try_parse_generic_inventory_claim_matching_fragment_bits(
         (
             candidate.cursor,
             candidate.bits,
-            candidate.required_true_bits,
-            candidate.required_false_bits,
+            candidate.normalized_fragment_requirements(),
         )
     });
     candidates.dedup_by_key(|candidate| {
         (
             candidate.cursor,
             candidate.bits,
-            candidate.required_true_bits,
-            candidate.required_false_bits,
+            candidate.normalized_fragment_requirements(),
         )
     });
     (candidates.len() == 1).then(|| candidates[0])
@@ -552,6 +550,21 @@ mod tests {
         body
     }
 
+    fn rich_category_body(second_entries: usize) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&(second_entries as u16).to_le_bytes());
+        for index in 0..second_entries {
+            body.extend_from_slice(&(0x8000_0040u32 + index as u32).to_le_bytes());
+            body.extend_from_slice(&[0x01, 0x02, 0x03]);
+        }
+        for _ in 0..2 {
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+        }
+        body
+    }
+
     #[test]
     fn inventory_0001_compact_branch_requires_false_bool() {
         // Diamond sub_455940 (00455AAD..00455D80) and EE sub_1407B4F70
@@ -848,6 +861,42 @@ mod tests {
             "the 0x0800 selector must not be counted as a fourth 0x2000 BOOL"
         );
         assert_eq!(missing_0800_cursor, 0);
+    }
+
+    #[test]
+    fn inventory_2a24_high_fragment_index_selectors_are_preserved() {
+        // HG Docks gameplay produced an I/0x2A24 self-inventory update with
+        // hundreds of rich-category BOOLs before the later 0x0200 and 0x0800
+        // selectors. Those selector requirements are still exact even when
+        // their bit positions are beyond a single machine-sized bitset.
+        let rich_second_entries = 65usize;
+        let mut body = rich_category_body(rich_second_entries);
+        body.extend_from_slice(&0u16.to_le_bytes()); // 0x0004 first icon count
+        body.extend_from_slice(&0u16.to_le_bytes()); // 0x0004 second icon count
+        body.extend_from_slice(&0u32.to_le_bytes()); // 0x0200 DWORD zero-count branch
+        body.extend_from_slice(&inventory_2000_body(&[], &[0x8000_0043]));
+        body.extend_from_slice(&[
+            0xAA, 0xBB, 0x10, 0x11, 0x12, 0x13, 0xCC, 0xDD, 0x20, 0x21, 0x22, 0x23,
+        ]);
+        let record = inventory_mask_record(0x2A24, &body);
+
+        let rich_bits = rich_second_entries * 2;
+        let expected_bits = rich_bits + 2 + 3 + 1;
+        let mut fragment_bits = vec![false; expected_bits];
+        fragment_bits[rich_bits + 2 + 3] = true; // 0x0800 true-tail selector
+
+        let mut bit_cursor = 0usize;
+        let claim = advance_verified_inventory_record(
+            &record,
+            0,
+            record.len(),
+            &fragment_bits,
+            &mut bit_cursor,
+        )
+        .expect("high-index 0x0200/0x0800 selectors should still exact-claim");
+
+        assert_eq!(claim.fragment_bits, expected_bits);
+        assert_eq!(bit_cursor, expected_bits);
     }
 
     #[test]

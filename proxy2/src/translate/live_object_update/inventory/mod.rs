@@ -17,6 +17,7 @@ const MAX_REASONABLE_VALUE_GROUPS: u8 = 64;
 const MAX_REASONABLE_FEATURE25_OBJECTS: u32 = 128;
 const LEGACY_INVENTORY_GUI_HAND_TRAP_OWNER: u32 = 0xFFFF_FFEC;
 const LEGACY_INVENTORY_CURRENT_PLAYER_OWNER: u32 = 0xFFFF_FFFE;
+const MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS: usize = 8;
 const GENERIC_INVENTORY_PARSE_MASK: u16 = 0x0001
     | 0x0002
     | LEGACY_INVENTORY_LEGACY_ICON_LIST_MASK
@@ -61,8 +62,8 @@ pub(super) struct InventoryFragmentBitRepair {
 struct GenericInventoryCandidate {
     cursor: usize,
     bits: usize,
-    required_true_bits: u128,
-    required_false_bits: u128,
+    required_fragment_bits: [(usize, bool); MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS],
+    required_fragment_bit_count: usize,
 }
 
 impl GenericInventoryCandidate {
@@ -70,8 +71,9 @@ impl GenericInventoryCandidate {
         Self {
             cursor,
             bits,
-            required_true_bits: 0,
-            required_false_bits: 0,
+            required_fragment_bits: [(usize::MAX, false);
+                MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS],
+            required_fragment_bit_count: 0,
         }
     }
 
@@ -84,38 +86,29 @@ impl GenericInventoryCandidate {
     }
 
     fn require_fragment_bit(mut self, bit_index: usize, value: bool) -> Option<Self> {
-        if bit_index >= u128::BITS as usize {
+        for index in 0..self.required_fragment_bit_count {
+            let (existing_index, existing_value) = self.required_fragment_bits[index];
+            if existing_index == bit_index {
+                return (existing_value == value).then_some(self);
+            }
+        }
+
+        if self.required_fragment_bit_count >= MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS {
             return None;
         }
-        let bit = 1u128 << bit_index;
-        if value {
-            if (self.required_false_bits & bit) != 0 {
-                return None;
-            }
-            self.required_true_bits |= bit;
-        } else {
-            if (self.required_true_bits & bit) != 0 {
-                return None;
-            }
-            self.required_false_bits |= bit;
-        }
+        self.required_fragment_bits[self.required_fragment_bit_count] = (bit_index, value);
+        self.required_fragment_bit_count += 1;
         Some(self)
     }
 
     fn fragment_requirements_match(self, fragment_bits: &[bool], bit_cursor: usize) -> bool {
-        for bit_index in 0..u128::BITS as usize {
-            let bit = 1u128 << bit_index;
-            let expected = if (self.required_true_bits & bit) != 0 {
-                Some(true)
-            } else if (self.required_false_bits & bit) != 0 {
-                Some(false)
-            } else {
-                None
+        for index in 0..self.required_fragment_bit_count {
+            let (bit_index, expected) = self.required_fragment_bits[index];
+            let Some(target) = bit_cursor.checked_add(bit_index) else {
+                return false;
             };
-            if let Some(expected) = expected {
-                if fragment_bits.get(bit_cursor.saturating_add(bit_index)) != Some(&expected) {
-                    return false;
-                }
+            if fragment_bits.get(target) != Some(&expected) {
+                return false;
             }
         }
         true
@@ -126,16 +119,16 @@ impl GenericInventoryCandidate {
         fragment_bits: &mut [bool],
         bit_cursor: usize,
     ) -> bool {
-        for bit_index in 0..u128::BITS as usize {
-            let bit = 1u128 << bit_index;
+        for index in 0..self.required_fragment_bit_count {
+            let (bit_index, expected) = self.required_fragment_bits[index];
             let Some(target) = bit_cursor.checked_add(bit_index) else {
                 return false;
             };
-            if (self.required_false_bits & bit) != 0 {
+            if !expected {
                 if fragment_bits.get(target) != Some(&false) {
                     return false;
                 }
-            } else if (self.required_true_bits & bit) != 0 {
+            } else {
                 let Some(slot) = fragment_bits.get_mut(target) else {
                     return false;
                 };
@@ -143,6 +136,14 @@ impl GenericInventoryCandidate {
             }
         }
         true
+    }
+
+    fn normalized_fragment_requirements(
+        self,
+    ) -> [(usize, bool); MAX_GENERIC_INVENTORY_REQUIRED_FRAGMENT_BITS] {
+        let mut requirements = self.required_fragment_bits;
+        requirements[..self.required_fragment_bit_count].sort_unstable();
+        requirements
     }
 }
 
