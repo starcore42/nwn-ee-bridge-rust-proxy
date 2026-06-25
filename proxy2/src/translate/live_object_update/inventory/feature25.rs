@@ -301,10 +301,14 @@ pub(super) fn try_parse_inventory_2a00_prefix_shape(
     scan_end: usize,
 ) -> Option<InventoryRecordPrefixClaim> {
     let prefix = try_parse_inventory_2a00_zero_feature25_prefix(bytes, record_offset, scan_end)?;
+    // `0x2A00` still has to prove the following `0x0800` selector before bytes
+    // after the Feature-25 lists can be classified. A true selector owns the
+    // next twelve read-buffer bytes, so this ambiguous prefix cannot authorize
+    // interleaved fragment promotion.
     Some(InventoryRecordPrefixClaim {
         read_end: prefix.read_end,
         fragment_bits: 3,
-        interleaved_fragment_tail_allowed: prefix.read_end < scan_end,
+        interleaved_fragment_tail_allowed: false,
     })
 }
 

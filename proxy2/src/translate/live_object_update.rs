@@ -25607,6 +25607,7 @@ fn rewrite_update_records_payload_with_area_context_inner(
                 }
             }
             last_verified_record_end = record_end;
+            last_verified_record_allows_trailing_fragment_promotion = false;
             last_verified_creature_4408_record_end = None;
             last_verified_creature_effect_only_record_end = None;
             last_verified_creature_0047_fragment_prefix_record_end = None;

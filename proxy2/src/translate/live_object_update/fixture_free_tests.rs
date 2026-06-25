@@ -3970,6 +3970,76 @@ fn creature_4408_inventory_2a00_gq_terminal_bit_rolls_back_prior_rewrite() {
 }
 
 #[test]
+fn inventory_2a00_true_tail_before_gq_keeps_full_boundary() {
+    let mut live = inventory_2a00_word_list_live_bytes(
+        &[0x0005, 0x0006, 0x0007, 0x0105, 0x0106, 0x0107],
+        &[0xFFFF_FFFE, 0x8000_000D],
+        Some([
+            0x0E, 0x0D, 0x0D, 0x0A, 0x13, 0x0A, 0x0C, 0x0D, 0x0F, 0x0A, 0x13, 0x0A,
+        ]),
+    );
+    let inventory_end = live.len();
+    live.extend_from_slice(&[b'G', b'Q', 0]);
+
+    let prefix = super::inventory::try_get_legacy_live_inventory_prefix_claim(&live, 0, live.len())
+        .expect("0x2A00 prefix should be recognizable before GQ");
+    assert_eq!(
+        prefix.read_end,
+        inventory_end - 12,
+        "the prefix cursor stops before the 0x0800 true-tail body"
+    );
+    assert!(
+        !prefix.interleaved_fragment_tail_allowed,
+        "0x2A00 cannot promote bytes after Feature-25 until the 0x0800 selector is proven"
+    );
+    assert_eq!(
+        super::boundary::find_next_legacy_live_object_sub_message_boundary_after(
+            &live,
+            0,
+            live.len()
+        ),
+        inventory_end,
+        "the live-object boundary must keep the 0x0800 true tail inside the inventory record"
+    );
+}
+
+#[test]
+fn creature_4408_inventory_2a00_gq_delete_stream_stays_quarantined_after_terminal_bits() {
+    // Server-perspective Diamond replay 2026-06-26 captured this direct
+    // GameObjUpdate_LiveObject stream: count=1 `U/5 0x4408`, a six-entry
+    // current-player `I/0x2A00` word-list row, one `GQ` link row, and three
+    // creature deletes. The status-effect row is the same no-target Low Light
+    // Vision shape as the zero-count repair fixtures; it needs the EE
+    // ObjectVisualTransformData identity map before the later records can own
+    // their exact cursors.
+    let mut payload = vec![
+        0x50, 0x05, 0x01, 0x6F, 0x00, 0x00, 0x00, 0x55, 0x05, 0xFE, 0xFF, 0xFF, 0xFF, 0x08, 0x44,
+        0x00, 0x00, 0x01, 0x00, 0x41, 0xF3, 0x00, 0x90, 0x00, 0x72, 0x00, 0x00, 0x00, 0x90, 0x00,
+        0x49, 0xFE, 0xFF, 0xFF, 0xFF, 0x00, 0x2A, 0x06, 0x00, 0x00, 0x00, 0x05, 0x00, 0x06, 0x00,
+        0x07, 0x00, 0x05, 0x01, 0x06, 0x01, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+        0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0x0D, 0x00, 0x00, 0x80, 0x0E, 0x0D, 0x0D, 0x0A, 0x13, 0x0A,
+        0x0C, 0x0D, 0x0F, 0x0A, 0x13, 0x0A, 0x47, 0x51, 0x01, 0x02, 0x01, 0x41, 0x01, 0x00, 0x80,
+        0xFF, 0x01, 0x00, 0x44, 0x05, 0x1E, 0x00, 0x00, 0x80, 0x44, 0x05, 0x0F, 0x00, 0x00, 0x80,
+        0x44, 0x05, 0x0B, 0x00, 0x00, 0x80, 0x9E, 0x0F, 0xF2, 0x80,
+    ];
+
+    assert!(
+        super::claim_payload_if_verified(&payload).is_none(),
+        "raw compact 0x4408 status-effect rows are still Diamond-shaped"
+    );
+    let original = payload.clone();
+
+    assert!(
+        super::rewrite_update_records_payload_if_possible(&mut payload).is_none(),
+        "the stream validates through 0x4408, I/0x2A00, GQ, and deletes, but six terminal bits remain unowned"
+    );
+    assert_eq!(
+        payload, original,
+        "failed terminal-tail proof must roll back the 0x4408 identity-map rewrite and preserve replay evidence"
+    );
+}
+
+#[test]
 fn trigger_add_owns_name_state_bits_before_geometry() {
     // Diamond `sub_4552E0` and EE `sub_1407B1670` read the same trigger add
     // order: name selector/payload, two state BOOLs, an optional third state

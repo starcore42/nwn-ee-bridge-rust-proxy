@@ -43,7 +43,7 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
         if let Some(prefix) =
             inventory::try_get_legacy_live_inventory_prefix_claim(bytes, offset, scan_end)
         {
-            if !prefix.interleaved_fragment_tail_allowed
+            if prefix.interleaved_fragment_tail_allowed
                 && prefix.read_end > offset
                 && prefix.read_end < scan_end
             {

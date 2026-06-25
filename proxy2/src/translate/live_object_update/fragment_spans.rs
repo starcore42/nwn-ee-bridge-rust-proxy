@@ -112,6 +112,9 @@ pub(super) fn promote_inventory_interleaved_fragment_span_for_ee(
 
     let prefix =
         inventory::try_get_legacy_live_inventory_prefix_claim(live_bytes, offset, *record_end)?;
+    if !prefix.interleaved_fragment_tail_allowed {
+        return None;
+    }
     let available_bits = fragment_bits.len().saturating_sub(bit_cursor);
     let missing_bits = prefix.fragment_bits.saturating_sub(available_bits);
     // Legacy inventory records can carry their CNW fragment storage interleaved
