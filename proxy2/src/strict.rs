@@ -3281,8 +3281,14 @@ fn validate_bnxi(packet: &BnPacket<'_>) -> StrictDecision {
     // EE `RequestExtendedServerInfo` serializes:
     // BNXI, UDP port, three counted strings, four build header bytes where the
     // fourth byte is the build-number length, then three more counted build
-    // strings. This exact cursor walk catches both overflow and trailing data.
+    // strings. EE's server-side `HandleBNXIMessage` accepts the shorter
+    // six-byte request envelope too, and live Diamond/HG source traffic emits
+    // that minimal `BNXI + UDP port` form. The minimal form is a verified
+    // legacy discovery probe; only the longer EE form proves a client build.
     let bytes = packet.bytes;
+    if bytes.len() == 6 {
+        return StrictDecision::allow("BN", packet.tag.name(), "known-legacy-bnxi-probe");
+    }
     if bytes.len() < 16 {
         return StrictDecision::quarantine("BN", packet.tag.name(), "BNXI-too-short");
     }
@@ -3353,6 +3359,25 @@ mod bn_synthetic_direction_tests {
 
         assert_eq!(decision.verdict, Verdict::Allow);
         assert_eq!(decision.reason, "known-ee-server-enumerate-response");
+    }
+
+    #[test]
+    fn client_bnxi_accepts_legacy_probe_and_full_ee_request() {
+        let legacy = decide(
+            Direction::ClientToServer,
+            b"BNXI\x00\x14",
+            StrictProfile::Player,
+        );
+        assert_eq!(legacy.verdict, Verdict::Allow);
+        assert_eq!(legacy.reason, "known-legacy-bnxi-probe");
+
+        let full = [
+            b'B', b'N', b'X', b'I', 0x69, 0xC9, 0, 0, 0, 0, 0, 2, 4, b'8', b'1', b'9', b'3', 2,
+            b'3', b'7', 2, b'1', b'7', 8, b'2', b'6', b'c', b'6', b'e', b'5', b'7', b'3',
+        ];
+        let full = decide(Direction::ClientToServer, &full, StrictProfile::Player);
+        assert_eq!(full.verdict, Verdict::Allow);
+        assert_eq!(full.reason, "known-ee-extended-info-request");
     }
 
     #[test]

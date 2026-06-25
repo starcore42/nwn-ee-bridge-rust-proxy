@@ -143,10 +143,6 @@ pub enum ClientTranslation {
 
 pub enum ServerTranslation {
     Packet(Vec<u8>),
-    PacketRetireSession {
-        packet: Vec<u8>,
-        reason: &'static str,
-    },
 }
 
 pub fn translate_client_to_server(
@@ -232,29 +228,44 @@ pub fn translate_client_to_server(
             }
         }
         BnTag::Bnxi => {
-            if let Some(build) = bnxi::claim_client_to_legacy_if_verified(bytes) {
-                state.remember_client_build(build);
-                let response =
-                    bnxr::build_proxy_owned_bnxr_response(bnxr::ProxyExtendedInfoResponse {
-                        server_port,
-                        module_name: discovery_module_name,
-                        advertisement: nwsync_advertisement,
-                    })?;
-                if nwsync_advertisement.is_some() {
-                    state.remember_nwsync_advertised_to_client();
+            if let Some(request) = bnxi::claim_client_to_legacy_if_verified(bytes) {
+                match request {
+                    bnxi::ClientRequest::EeExtended { udp_port, build } => {
+                        state.remember_client_build(build);
+                        let response = bnxr::build_proxy_owned_bnxr_response(
+                            bnxr::ProxyExtendedInfoResponse {
+                                server_port,
+                                module_name: discovery_module_name,
+                                advertisement: nwsync_advertisement,
+                            },
+                        )?;
+                        if nwsync_advertisement.is_some() {
+                            state.remember_nwsync_advertised_to_client();
+                        }
+                        tracing::info!(
+                            tag = "BNXI",
+                            udp_port,
+                            client_major = build.major,
+                            client_minor = build.minor,
+                            client_revision = build.revision,
+                            nwsync = nwsync_advertisement.is_some(),
+                            response_len = response.len(),
+                            module_name = discovery_module_name,
+                            "BN packet semantically claimed as verified EE extended-info request; consuming and queuing exact proxy-owned EE BNXR response"
+                        );
+                        state.enqueue_server_to_client(response);
+                        return Ok(ClientTranslation::Consumed);
+                    }
+                    bnxi::ClientRequest::LegacyProbe { udp_port } => {
+                        tracing::info!(
+                            tag = "BNXI",
+                            udp_port,
+                            len = bytes.len(),
+                            "BN packet semantically claimed as verified legacy extended-info probe; forwarding to legacy server"
+                        );
+                        return Ok(ClientTranslation::Packet(bytes.to_vec()));
+                    }
                 }
-                tracing::info!(
-                    tag = "BNXI",
-                    client_major = build.major,
-                    client_minor = build.minor,
-                    client_revision = build.revision,
-                    nwsync = nwsync_advertisement.is_some(),
-                    response_len = response.len(),
-                    module_name = discovery_module_name,
-                    "BN packet semantically claimed as verified extended-info request; consuming and queuing exact proxy-owned EE BNXR response"
-                );
-                state.enqueue_server_to_client(response);
-                return Ok(ClientTranslation::Consumed);
             }
         }
         _ => {}
@@ -315,12 +326,9 @@ pub fn translate_server_to_client(
                 tracing::info!(
                     tag = "BNDP",
                     len = bytes.len(),
-                    "BN packet semantically claimed as verified EE disconnect reason; proxy session will retire after delivery"
+                    "BN packet semantically claimed as verified EE disconnect reason/control"
                 );
-                return Ok(ServerTranslation::PacketRetireSession {
-                    packet: bytes.to_vec(),
-                    reason: "server-bndp-disconnect",
-                });
+                return Ok(ServerTranslation::Packet(bytes.to_vec()));
             }
         }
         BnTag::Bner => {
@@ -396,11 +404,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_bndp_is_verified_disconnect_event_not_plain_noop() {
-        // EE `HandleBNDPMessage` accepts this exact eight-byte reason-code
-        // form. Once the legacy server sends it, the proxy must deliver the
-        // verified disconnect to EE and then retire the session instead of
-        // continuing to translate reliable-window M acks for a dead session.
+    fn server_bndp_is_verified_control_not_session_retire() {
+        // Live Diamond HG traffic can send this exact eight-byte BNDP control
+        // between BNCS and BNCR, then continue through BNVS/BNVR into gameplay.
+        // The proxy must deliver the verified EE-valid control without tearing
+        // down the translator state that the following verifier packets need.
         let packet = b"BNDP\xCE\x16\x00\x00";
         let mut state = SessionState::default();
 
@@ -408,14 +416,71 @@ mod tests {
             .expect("BNDP reason-code shape must be claimed");
 
         match translated {
-            ServerTranslation::PacketRetireSession {
-                packet: out,
-                reason,
-            } => {
-                assert_eq!(out, packet);
-                assert_eq!(reason, "server-bndp-disconnect");
-            }
-            ServerTranslation::Packet(_) => panic!("server BNDP must retire the proxy session"),
+            ServerTranslation::Packet(out) => assert_eq!(out, packet),
         }
+    }
+
+    #[test]
+    fn client_short_bnxi_probe_forwards_without_ee_build_proof() {
+        let identity = DiamondIdentity::default();
+        let mut state = SessionState::default();
+
+        let translated = translate_client_to_server(
+            b"BNXI\x00\x14",
+            &identity,
+            5120,
+            8109,
+            3,
+            5133,
+            "Higher Ground (Party 2-3)",
+            "Path of Ascension CEP Legends",
+            None,
+            &mut state,
+        )
+        .expect("legacy BNXI probe must be claimed");
+
+        match translated {
+            ClientTranslation::Packet(packet) => assert_eq!(packet, b"BNXI\x00\x14"),
+            _ => panic!("legacy BNXI probe must be forwarded to the legacy server"),
+        }
+        assert!(state.latest_client_build().is_none());
+        assert!(state.take_pending_server_to_client_packets().is_empty());
+    }
+
+    #[test]
+    fn client_full_bnxi_consumes_and_records_ee_build() {
+        let identity = DiamondIdentity::default();
+        let mut state = SessionState::default();
+        let packet = [
+            b'B', b'N', b'X', b'I', 0x69, 0xC9, 0, 0, 0, 0, 0, 2, 4, b'8', b'1', b'9', b'3', 2,
+            b'3', b'7', 2, b'1', b'7', 8, b'2', b'6', b'c', b'6', b'e', b'5', b'7', b'3',
+        ];
+
+        let translated = translate_client_to_server(
+            &packet,
+            &identity,
+            5120,
+            8109,
+            3,
+            5133,
+            "Higher Ground (Party 2-3)",
+            "Path of Ascension CEP Legends",
+            None,
+            &mut state,
+        )
+        .expect("full EE BNXI must be claimed");
+
+        assert!(matches!(translated, ClientTranslation::Consumed));
+        assert_eq!(
+            state.latest_client_build(),
+            Some(bnxi::ClientBuild {
+                major: 8193,
+                minor: 37,
+                revision: 17
+            })
+        );
+        let pending = state.take_pending_server_to_client_packets();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].starts_with(b"BNXR"));
     }
 }

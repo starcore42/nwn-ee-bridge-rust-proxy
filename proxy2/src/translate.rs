@@ -447,9 +447,6 @@ impl SessionTranslator {
                 )?;
                 match translated {
                     bn::ServerTranslation::Packet(packet) => Ok(Emit::Packet(packet)),
-                    bn::ServerTranslation::PacketRetireSession { packet, reason } => {
-                        Ok(Emit::PacketRetireSession { packet, reason })
-                    }
                 }
             }
             (Direction::ClientToServer, Packet::M(_)) => {

@@ -2,11 +2,17 @@
 //!
 //! EE `RequestExtendedServerInfo` serializes `BNXI`, a UDP port, three counted
 //! strings, a four-byte build header whose fourth byte is the build-number
-//! length, and three more counted build strings. The Diamond dispatcher routes
-//! `BNXI` on the server-mode side, so this exact cursor walk is a verified
-//! request parser. The proxy still answers EE with a proxy-owned `BNXR`
-//! discovery response from module/profile state instead of relying on the
-//! legacy server to answer an EE pre-connect discovery request.
+//! length, and three more counted build strings. Diamond can also send a
+//! six-byte `BNXI` probe containing only the tag and UDP port; live HG traffic
+//! captured on 2026-06-25 showed `42 4E 58 49 00 14`. The Diamond dispatcher
+//! routes `BNXI` on the server-mode side, so both forms are explicit verified
+//! request parsers rather than generic BN pass-through.
+//!
+//! The proxy answers the full EE form with a proxy-owned `BNXR` discovery
+//! response from module/profile state instead of relying on the legacy server
+//! to answer an EE pre-connect discovery request. The legacy six-byte form is
+//! forwarded to the legacy server and deliberately does not prove an EE client
+//! build.
 //!
 //! The same packet is also our earliest decompile-backed proof of the EE
 //! client's own protocol build. Later, `BNVR` advertises the proxy-owned
@@ -26,8 +32,23 @@ impl ClientBuild {
     }
 }
 
-pub(super) fn claim_client_to_legacy_if_verified(bytes: &[u8]) -> Option<ClientBuild> {
-    if bytes.get(..4)? != b"BNXI" || bytes.len() < 16 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientRequest {
+    LegacyProbe { udp_port: u16 },
+    EeExtended { udp_port: u16, build: ClientBuild },
+}
+
+pub(super) fn claim_client_to_legacy_if_verified(bytes: &[u8]) -> Option<ClientRequest> {
+    if bytes.get(..4)? != b"BNXI" {
+        return None;
+    }
+
+    let udp_port = u16::from_le_bytes([*bytes.get(4)?, *bytes.get(5)?]);
+    if bytes.len() == 6 {
+        return Some(ClientRequest::LegacyProbe { udp_port });
+    }
+
+    if bytes.len() < 16 {
         return None;
     }
 
@@ -51,11 +72,13 @@ pub(super) fn claim_client_to_legacy_if_verified(bytes: &[u8]) -> Option<ClientB
     let revision = consume_counted(bytes, &mut cursor)?;
     let _build_hash = consume_counted(bytes, &mut cursor)?;
 
-    (cursor == bytes.len()).then_some(ClientBuild {
+    let build = ClientBuild {
         major: parse_ascii_u32(build_number)?,
         minor: parse_ascii_u32(minor)?,
         revision: parse_ascii_u32(revision)?,
-    })
+    };
+
+    (cursor == bytes.len()).then_some(ClientRequest::EeExtended { udp_port, build })
 }
 
 fn consume_counted<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
@@ -82,15 +105,23 @@ mod tests {
             b'3', b'7', 2, b'1', b'7', 8, b'2', b'6', b'c', b'6', b'e', b'5', b'7', b'3',
         ];
 
-        let build = claim_client_to_legacy_if_verified(&packet).expect("BNXI build");
-        assert_eq!(
-            build,
-            ClientBuild {
-                major: 8193,
-                minor: 37,
-                revision: 17
-            }
-        );
+        let request = claim_client_to_legacy_if_verified(&packet).expect("BNXI request");
+        let ClientRequest::EeExtended { udp_port, build } = request else {
+            panic!("full BNXI must parse as EE extended request");
+        };
+
+        assert_eq!(udp_port, 0xC969);
+        assert_eq!(build.major, 8193);
+        assert_eq!(build.minor, 37);
+        assert_eq!(build.revision, 17);
         assert!(build.satisfies(8193, 35, 0));
+    }
+
+    #[test]
+    fn parses_legacy_six_byte_probe_without_build_proof() {
+        let request =
+            claim_client_to_legacy_if_verified(b"BNXI\x00\x14").expect("legacy BNXI probe");
+
+        assert_eq!(request, ClientRequest::LegacyProbe { udp_port: 0x1400 });
     }
 }
