@@ -1230,6 +1230,13 @@ Current status:
   inspect any remaining residual missing-template or divergent-output slots by
   selected carrier scope before widening source-carried resrefs beyond this
   pre-add custom case.
+- 2026-06-25 follow-up source-carried carrier gate: packet bytes and synthesis
+  output are unchanged. The same pre-add custom source-carried `TemplateResRef`
+  rule is now a first-class synthesis gate instead of a residual
+  missing-template blocker, and source-provenance-blocked rows separately report
+  the source-carried subslot while retaining malformed `P/04` blocker classes.
+  Next replay should compare remaining true missing-template/divergent slots
+  after source-carried rows are excluded.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

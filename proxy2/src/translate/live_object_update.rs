@@ -9838,9 +9838,17 @@ mod diagnostic_tests {
         assert_eq!(
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-                .blocked_missing_template_resref
+                .eligible_source_carried_template_resref
                 .pre_add_custom_update_only,
             1
+        );
+        assert_eq!(
+            summary
+                .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                .blocked_missing_template_resref
+                .pre_add_custom_update_only,
+            0,
+            "a parser-owned pre-add custom resref is not a residual missing-template blocker"
         );
         assert_eq!(
             summary
@@ -11938,6 +11946,15 @@ mod diagnostic_tests {
                 false,
             ),
             (
+                pre_add_custom_carrier,
+                source_blocked_target,
+                true,
+                &missing_template_row,
+                false,
+                ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance,
+                true,
+            ),
+            (
                 following_custom_carrier,
                 source_unblocked_target,
                 false,
@@ -11952,7 +11969,7 @@ mod diagnostic_tests {
                 false,
                 &missing_template_row,
                 false,
-                ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedMissingTemplateResRef,
+                ExactPlaceableUnprovenCustomCarrierSynthesisGate::EligibleSourceCarriedTemplateResRef,
                 true,
             ),
             (
@@ -11983,18 +12000,19 @@ mod diagnostic_tests {
                     base_target,
                     field_rewritten,
                 );
-            let gate = ExactPlaceableUnprovenCustomCarrierSynthesisGate::from_row_evidence(
-                row_evidence,
-                row,
-                output_divergent,
-            );
-            assert_eq!(gate, expected_gate);
             let source_trusted_gate =
                 ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row_and_carrier(
                     row,
                     output_divergent,
                     carrier,
                 );
+            let gate = ExactPlaceableUnprovenCustomCarrierSynthesisGate::from_row_evidence(
+                row_evidence,
+                row,
+                output_divergent,
+                source_trusted_gate,
+            );
+            assert_eq!(gate, expected_gate);
             summary
                 .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                 .record(row_evidence, gate, source_trusted_gate);
@@ -12017,6 +12035,14 @@ mod diagnostic_tests {
             }
         );
         assert_eq!(
+            slots.eligible_source_carried_template_resref,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                pre_add_update_only: 1,
+                pre_add_custom_update_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            }
+        );
+        assert_eq!(
             slots.blocked_source_owned,
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
                 add_only: 1,
@@ -12028,8 +12054,9 @@ mod diagnostic_tests {
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
                 with_update: 1,
                 with_custom_update: 1,
-                pre_add_update_only: 1,
+                pre_add_update_only: 2,
                 pre_add_normal_update_only: 1,
+                pre_add_custom_update_only: 1,
                 add_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
@@ -12049,8 +12076,17 @@ mod diagnostic_tests {
         assert_eq!(
             slots.blocked_source_provenance_source_trusted_eligible,
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
-                pre_add_update_only: 1,
+                pre_add_update_only: 2,
                 pre_add_normal_update_only: 1,
+                pre_add_custom_update_only: 1,
+                ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
+            }
+        );
+        assert_eq!(
+            slots.blocked_source_provenance_source_trusted_source_carried_template_resref,
+            ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
+                pre_add_update_only: 1,
+                pre_add_custom_update_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
         );
@@ -12147,8 +12183,6 @@ mod diagnostic_tests {
             ExactPlaceableUnprovenCustomCarrierWriterGapSlots {
                 with_update: 1,
                 with_custom_update: 1,
-                pre_add_update_only: 1,
-                pre_add_custom_update_only: 1,
                 ..ExactPlaceableUnprovenCustomCarrierWriterGapSlots::default()
             }
         );
@@ -15901,6 +15935,7 @@ pub struct ExactPlaceableUnprovenCustomCarrierSourceBlockerSlots {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub eligible_source_unblocked: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub eligible_source_carried_template_resref: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_owned: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance_read_mismatch: ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
@@ -15908,6 +15943,8 @@ pub struct ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub blocked_source_provenance_read_mismatch_and_fragment_owned:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance_source_trusted_eligible:
+        ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
+    pub blocked_source_provenance_source_trusted_source_carried_template_resref:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
     pub blocked_source_provenance_source_trusted_missing_template_resref:
         ExactPlaceableUnprovenCustomCarrierWriterGapSlots,
@@ -15971,6 +16008,7 @@ impl ExactPlaceableUnprovenCustomCarrierWriterGapSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableUnprovenCustomCarrierSynthesisGate {
     EligibleSourceUnblocked,
+    EligibleSourceCarriedTemplateResRef,
     BlockedSourceOwned,
     BlockedSourceProvenance,
     BlockedMissingTemplateResRef,
@@ -15979,7 +16017,8 @@ enum ExactPlaceableUnprovenCustomCarrierSynthesisGate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
-    Eligible,
+    EligibleModuleTemplateResRef,
+    EligibleSourceCarriedTemplateResRef,
     BlockedMissingTemplateResRef,
     BlockedDivergentOutput,
 }
@@ -15997,16 +16036,28 @@ impl ExactPlaceableUnprovenCustomCarrierSourceTrustedGate {
             {
                 return Self::BlockedMissingTemplateResRef;
             }
+            if output_divergent {
+                return Self::BlockedDivergentOutput;
+            }
+            return Self::EligibleSourceCarriedTemplateResRef;
         }
         if output_divergent {
             return Self::BlockedDivergentOutput;
         }
-        Self::Eligible
+        Self::EligibleModuleTemplateResRef
+    }
+
+    fn is_eligible(self) -> bool {
+        matches!(
+            self,
+            Self::EligibleModuleTemplateResRef | Self::EligibleSourceCarriedTemplateResRef
+        )
     }
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Eligible => "eligible",
+            Self::EligibleModuleTemplateResRef => "eligible-module-template-resref",
+            Self::EligibleSourceCarriedTemplateResRef => "eligible-source-carried-template-resref",
             Self::BlockedMissingTemplateResRef => "blocked-missing-template-resref",
             Self::BlockedDivergentOutput => "blocked-divergent-output",
         }
@@ -16018,6 +16069,7 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
         row_evidence: ExactPlaceableUnprovenCustomCarrierRowEvidence,
         row: &AreaPlaceableContextRow,
         output_divergent: bool,
+        source_trusted_gate: ExactPlaceableUnprovenCustomCarrierSourceTrustedGate,
     ) -> Self {
         if !row_evidence.is_writer_gap_candidate() {
             return Self::BlockedSourceOwned;
@@ -16026,6 +16078,12 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
             return Self::BlockedSourceProvenance;
         }
         if row.module_template_resref.is_none() {
+            if matches!(
+                source_trusted_gate,
+                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleSourceCarriedTemplateResRef
+            ) {
+                return Self::EligibleSourceCarriedTemplateResRef;
+            }
             return Self::BlockedMissingTemplateResRef;
         }
         if output_divergent {
@@ -16044,18 +16102,14 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGate {
         // module output, or a parser-owned pre-add custom U/09 supplied the
         // missing TemplateResRef.
         matches!(self, Self::EligibleSourceUnblocked)
-            || (matches!(
-                self,
-                Self::BlockedSourceProvenance | Self::BlockedMissingTemplateResRef
-            ) && matches!(
-                source_trusted_gate,
-                ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible
-            ))
+            || matches!(self, Self::EligibleSourceCarriedTemplateResRef)
+            || (matches!(self, Self::BlockedSourceProvenance) && source_trusted_gate.is_eligible())
     }
 
     fn as_str(self) -> &'static str {
         match self {
             Self::EligibleSourceUnblocked => "eligible-source-unblocked",
+            Self::EligibleSourceCarriedTemplateResRef => "eligible-source-carried-template-resref",
             Self::BlockedSourceOwned => "blocked-source-owned",
             Self::BlockedSourceProvenance => "blocked-source-provenance",
             Self::BlockedMissingTemplateResRef => "blocked-missing-template-resref",
@@ -16489,7 +16543,8 @@ impl ExactPlaceableUnprovenCustomCarrierResidualSourceProvenanceBlockerSlots {
         blockers: AreaPlaceableSourceProvenanceBlockers,
     ) {
         match source_trusted_gate {
-            ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible => {}
+            ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleModuleTemplateResRef
+            | ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleSourceCarriedTemplateResRef => {}
             ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedMissingTemplateResRef => {
                 self.missing_template_resref.record(slot, blockers);
             }
@@ -16541,14 +16596,24 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::EligibleSourceUnblocked => {
                 self.eligible_source_unblocked.increment_slot(slot);
             }
+            ExactPlaceableUnprovenCustomCarrierSynthesisGate::EligibleSourceCarriedTemplateResRef => {
+                self.eligible_source_carried_template_resref
+                    .increment_slot(slot);
+            }
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceOwned => {
                 self.blocked_source_owned.increment_slot(slot);
             }
             ExactPlaceableUnprovenCustomCarrierSynthesisGate::BlockedSourceProvenance => {
                 self.blocked_source_provenance.increment_slot(slot);
                 match source_trusted_gate {
-                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::Eligible => {
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleModuleTemplateResRef => {
                         self.blocked_source_provenance_source_trusted_eligible
+                            .increment_slot(slot);
+                    }
+                    ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::EligibleSourceCarriedTemplateResRef => {
+                        self.blocked_source_provenance_source_trusted_eligible
+                            .increment_slot(slot);
+                        self.blocked_source_provenance_source_trusted_source_carried_template_resref
                             .increment_slot(slot);
                     }
                     ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::BlockedMissingTemplateResRef => {
@@ -16592,6 +16657,8 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
     pub(crate) fn saturating_add_assign(&mut self, rhs: Self) {
         self.eligible_source_unblocked
             .saturating_add_assign(rhs.eligible_source_unblocked);
+        self.eligible_source_carried_template_resref
+            .saturating_add_assign(rhs.eligible_source_carried_template_resref);
         self.blocked_source_owned
             .saturating_add_assign(rhs.blocked_source_owned);
         self.blocked_source_provenance
@@ -16604,6 +16671,10 @@ impl ExactPlaceableUnprovenCustomCarrierSynthesisGateSlots {
             .saturating_add_assign(rhs.blocked_source_provenance_read_mismatch_and_fragment_owned);
         self.blocked_source_provenance_source_trusted_eligible
             .saturating_add_assign(rhs.blocked_source_provenance_source_trusted_eligible);
+        self.blocked_source_provenance_source_trusted_source_carried_template_resref
+            .saturating_add_assign(
+                rhs.blocked_source_provenance_source_trusted_source_carried_template_resref,
+            );
         self.blocked_source_provenance_source_trusted_missing_template_resref
             .saturating_add_assign(
                 rhs.blocked_source_provenance_source_trusted_missing_template_resref,
@@ -25940,17 +26011,18 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             base_target,
                             add_record_rewritten_in_place,
                         );
-                    let synthesis_gate =
-                        ExactPlaceableUnprovenCustomCarrierSynthesisGate::from_row_evidence(
-                            row_evidence,
-                            row,
-                            unproven_output_divergent,
-                        );
                     let source_trusted_gate =
                         ExactPlaceableUnprovenCustomCarrierSourceTrustedGate::from_row_and_carrier(
                             row,
                             unproven_output_divergent,
                             update_carrier,
+                        );
+                    let synthesis_gate =
+                        ExactPlaceableUnprovenCustomCarrierSynthesisGate::from_row_evidence(
+                            row_evidence,
+                            row,
+                            unproven_output_divergent,
+                            source_trusted_gate,
                         );
                     let row_source_blockers = row_evidence.source_blockers();
                     tracing::debug!(
@@ -33361,10 +33433,18 @@ fn trace_exact_placeable_reconciliation_summary(
                 ?summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                     .blocked_source_provenance_read_mismatch_and_fragment_owned,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_eligible_source_carried_template_resref_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .eligible_source_carried_template_resref,
             add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_eligible_slots =
                 ?summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
                     .blocked_source_provenance_source_trusted_eligible,
+            add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_source_carried_template_resref_slots =
+                ?summary
+                    .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
+                    .blocked_source_provenance_source_trusted_source_carried_template_resref,
             add_module_custom_fixed_width_unproven_carrier_synthesis_blocked_source_provenance_source_trusted_missing_template_resref_slots =
                 ?summary
                     .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
