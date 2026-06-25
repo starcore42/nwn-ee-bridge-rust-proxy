@@ -144,7 +144,10 @@ fn claim_list_response(payload: &[u8]) -> Option<CharListClaimSummary> {
 /// plain `CExoString`s and ignored those bits, which let a structurally
 /// different list response through as "known". This reader keeps the byte
 /// cursor and fragment cursor coupled: a packet is claimed only when both
-/// cursors end exactly on the declared decompile-backed boundary.
+/// cursors end exactly on the declared decompile-backed boundary. As with the
+/// other CNW translators, lower bits after the final-byte cursor are preserved
+/// as unowned padding; `GetWriteMessage` only refreshes the high final-count
+/// header bits.
 struct CharListListResponseReader<'a> {
     read_buffer: &'a [u8],
     declared: usize,
@@ -276,23 +279,6 @@ impl<'a> CharListListResponseReader<'a> {
     fn finished_exactly(&self) -> bool {
         self.cursor == self.declared
             && self.consumed_fragment_bits() == self.meaningful_fragment_bits
-            && self.fragment_padding_zero()
-    }
-
-    fn fragment_padding_zero(&self) -> bool {
-        let consumed = self.consumed_fragment_bits();
-        let Some(total_bits) = self.fragments.len().checked_mul(8) else {
-            return false;
-        };
-        for bit_index in consumed..total_bits {
-            let Some(byte) = self.fragments.get(bit_index / 8).copied() else {
-                return false;
-            };
-            if byte & (0x80 >> (bit_index % 8)) != 0 {
-                return false;
-            }
-        }
-        true
     }
 }
 
@@ -446,18 +432,23 @@ mod tests {
     }
 
     fn build_list_response_fixture(character_count: u16, fragment_header: u8) -> Vec<u8> {
+        build_list_response_fixture_with_fragment(character_count, &[fragment_header])
+    }
+
+    fn build_list_response_fixture_with_fragment(character_count: u16, fragment: &[u8]) -> Vec<u8> {
         let mut read = Vec::new();
         read.extend_from_slice(&character_count.to_le_bytes());
-        push_character(&mut read, "Starcore-Druid 6.0", "starcore-druid60");
-        if character_count > 1 {
-            push_character(&mut read, "Starcore-Wizard 6.0", "starcore-wiz60");
+        for index in 0..character_count {
+            let first_name = format!("Character {index}");
+            let bic_resref = format!("char{index:02}");
+            push_character(&mut read, &first_name, &bic_resref);
         }
 
         let declared = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + read.len();
         let mut payload = vec![b'P', CHAR_LIST_MAJOR, LIST_RESPONSE_MINOR];
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&read);
-        payload.push(fragment_header);
+        payload.extend_from_slice(fragment);
         payload
     }
 
@@ -543,12 +534,36 @@ mod tests {
     }
 
     #[test]
-    fn rejects_list_response_with_nonzero_fragment_padding_bits() {
+    fn claims_list_response_with_nonzero_fragment_padding_bits() {
         let mut payload = build_list_response_fixture(1, 0b1010_0111);
+
+        let summary = claim_payload_if_verified(&mut payload)
+            .expect("unused final-byte padding bits must round-trip without blocking claim");
+
+        assert_eq!(summary.kind, CharListClaimKind::ListResponse);
+        assert_eq!(summary.character_count, 1);
+    }
+
+    #[test]
+    fn claims_list_response_with_multi_byte_fragment_padding_roundtrip() {
+        let mut payload =
+            build_list_response_fixture_with_fragment(7, &[0b0010_0000, 0, 0b0100_1100]);
+
+        let summary = claim_payload_if_verified(&mut payload)
+            .expect("multi-byte list response fragment padding should round-trip");
+
+        assert_eq!(summary.kind, CharListClaimKind::ListResponse);
+        assert_eq!(summary.character_count, 7);
+        assert_eq!(summary.fragment_bytes, 3);
+    }
+
+    #[test]
+    fn rejects_list_response_with_meaningful_fragment_bit_shift() {
+        let mut payload = build_list_response_fixture(1, 0b1010_1000);
 
         assert!(
             claim_payload_if_verified(&mut payload).is_none(),
-            "unused CharList_ListResponse fragment bits are not owned by the EE reader"
+            "meaningful CharList_ListResponse selector bits must match the byte cursor"
         );
     }
 
