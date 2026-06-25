@@ -1001,14 +1001,14 @@ fn trace_live_object_exact_rewrite_summary(
         summary.exact_placeable_unproven_custom_carrier_writer_gap_slots();
     let unproven_carrier_slot_disposition =
         summary.exact_placeable_unproven_custom_carrier_slot_disposition();
-    let unproven_carrier_residual_source_provenance_slots = summary
-        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-        .residual_source_provenance_after_source_trusted();
+    let unproven_carrier_synthesis_resolution =
+        summary.exact_placeable_unproven_custom_carrier_synthesis_resolution();
+    let unproven_carrier_residual_source_provenance_slots =
+        unproven_carrier_synthesis_resolution.residual_source_provenance;
     let unproven_carrier_remaining_source_provenance_slots =
         unproven_carrier_residual_source_provenance_slots.all();
-    let unproven_carrier_residual_source_provenance_blocker_slots = summary
-        .exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots
-        .residual_source_provenance_blocker_slots;
+    let unproven_carrier_residual_source_provenance_blocker_slots =
+        unproven_carrier_synthesis_resolution.residual_source_provenance_blockers;
     if unproven_carrier_disposition.skipped != 0 {
         tracing::info!(
             source = exact_rewrite.source,
@@ -1130,6 +1130,36 @@ fn trace_live_object_exact_rewrite_summary(
             exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_remaining_source_provenance_after_source_trusted_add_only =
                 unproven_carrier_remaining_source_provenance_slots.add_only,
             "server exact placeable fixed-output custom carrier residual source-provenance gates"
+        );
+        tracing::info!(
+            source = exact_rewrite.source,
+            family = family_name,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_eligible_source_unblocked_slots =
+                ?unproven_carrier_synthesis_resolution.eligible_source_unblocked,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_carried_template_resref_synthesized_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_carried_template_resref_synthesized(),
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_slots =
+                ?unproven_carrier_synthesis_resolution.source_provenance_synthesized(),
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_module_template_resref_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_provenance_synthesized_module_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_source_provenance_synthesized_source_carried_template_resref_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .source_provenance_synthesized_source_carried_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_synthesized_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .residual_source_provenance
+                    .all(),
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_synthesized_missing_template_resref_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .residual_source_provenance
+                    .missing_template_resref,
+            exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_residual_source_provenance_after_synthesized_divergent_output_slots =
+                ?unproven_carrier_synthesis_resolution
+                    .residual_source_provenance
+                    .divergent_output,
+            "server exact placeable fixed-output custom carrier source-carried synthesis resolution"
         );
     }
     tracing::info!(

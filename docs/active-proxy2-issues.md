@@ -1237,6 +1237,14 @@ Current status:
   the source-carried subslot while retaining malformed `P/04` blocker classes.
   Next replay should compare remaining true missing-template/divergent slots
   after source-carried rows are excluded.
+- 2026-06-25 follow-up source-carried residual resolution: packet bytes and
+  synthesis output are unchanged. The `A/09` unproven-carrier synthesis
+  diagnostics now derive a shared resolution summary that splits source-carried
+  synthesized slots, source-provenance synthesized slots, and the remaining
+  missing-template/divergent residual slots. Direct live-object and
+  M-frame/server-dispatch traces consume the same summary, so the next replay
+  should use the source-carried synthesis-resolution event before widening any
+  residual carrier rule.
 - 2026-06-12 follow-up exact placeable reconciliation summary diagnostics:
   packet bytes and reconciliation policy are unchanged. The exact `A/09`/`U/09`
   pass now records unique-module-backed, identity-blocked, no-overlap, and

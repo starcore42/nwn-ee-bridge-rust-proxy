@@ -458,6 +458,14 @@ impl ExactLiveObjectRewriteSummary {
         )
     }
 
+    pub(crate) fn exact_placeable_unproven_custom_carrier_synthesis_resolution(
+        &self,
+    ) -> live_object_update::ExactPlaceableUnprovenCustomCarrierSynthesisResolution {
+        live_object_update::ExactPlaceableUnprovenCustomCarrierSynthesisResolution::from_gate_slots(
+            self.exact_placeable_add_module_custom_fixed_width_unproven_carrier_synthesis_gate_slots,
+        )
+    }
+
     pub(crate) fn exact_placeable_custom_carrier_target_unavailable_resolution(
         &self,
     ) -> live_object_update::ExactPlaceableCustomCarrierTargetUnavailableResolution {
