@@ -2203,11 +2203,6 @@ fn translate_custom_token(
 ) -> ServerTranslatorOutcome {
     if custom_token::claim_or_rewrite_payload_if_verified(payload).is_some() {
         claimed()
-    } else if crate::strict::module_info_shape_valid(payload) {
-        tracing::info!(
-            "server Module_Info already matches the EE reader shape; semantic no-op claim retained behind exact strict validation"
-        );
-        claimed()
     } else {
         ServerTranslatorOutcome::None
     }
@@ -3297,6 +3292,27 @@ fn translate_module_info(
     _: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if crate::strict::module_info_shape_valid(payload) {
+        if let (Some(runtime), Some(context)) = (
+            module_resource_runtime,
+            module::observed_context_from_ee_module_info_payload(payload),
+        ) {
+            if !runtime.observe_module_context(context) {
+                tracing::warn!(
+                    "server exact EE Module_Info observed module context was not accepted by runtime"
+                );
+                return ServerTranslatorOutcome::None;
+            }
+            tracing::debug!(
+                "server exact EE Module_Info observed module context recorded in runtime"
+            );
+        }
+        tracing::info!(
+            "server Module_Info already matches the EE reader shape; semantic no-op claim retained behind exact strict validation"
+        );
+        return claimed();
+    }
+
     let mut candidate = payload.clone();
     if let Some(summary) = module::rewrite_module_info_payload(&mut candidate) {
         if let Some(runtime) = module_resource_runtime {
@@ -3557,6 +3573,76 @@ fn rewrite_direct_semantic_frame_if_claimed(
         proof: semantic_rewrite_summary.verified_proof(),
         packet: rewritten,
     }))
+}
+
+#[cfg(test)]
+mod module_info_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn dispatcher_claims_exact_ee_module_info_as_module_info() {
+        let mut payload = exact_ee_module_info_payload();
+        let original = payload.clone();
+        let runtime = module_resources::ModuleResourceRuntime::default();
+
+        assert!(
+            crate::strict::module_info_shape_valid(&payload),
+            "test payload should already match EE Module_Info"
+        );
+
+        let rewrite = rewrite_single_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            Some(&runtime),
+            None,
+            None,
+        );
+
+        assert!(!rewrite.should_quarantine());
+        assert!(rewrite.any_rewrite());
+        assert_eq!(rewrite.verified_family(), VerifiedFamily::ModuleInfo);
+        assert_eq!(
+            payload, original,
+            "exact EE Module_Info is a no-op semantic claim"
+        );
+        let context = runtime
+            .observed_module_context()
+            .expect("exact EE Module_Info should seed session module context");
+        assert_eq!(context.localized_name, "Path of Ascension CEP Legends");
+        assert_eq!(context.module_resref, "poa_mod");
+        assert_eq!(context.areas.len(), 1);
+        assert_eq!(context.areas[0].object_id, 0x8000_0001);
+        assert_eq!(context.areas[0].name, "Armor Shop");
+    }
+
+    fn exact_ee_module_info_payload() -> Vec<u8> {
+        let mut payload = vec![b'P', 0x03, 0x01, 0, 0, 0, 0];
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        payload.push(0x02);
+        write_test_resref16(&mut payload, "poa_mod");
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+        write_test_string(&mut payload, "Armor Shop");
+        payload.push(0);
+        let declared = u32::try_from(payload.len()).expect("test payload length fits u32");
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.push(0);
+        payload
+    }
+
+    fn write_test_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    fn write_test_resref16(out: &mut Vec<u8>, value: &str) {
+        assert!(value.len() <= 16);
+        let mut bytes = [0u8; 16];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        out.extend_from_slice(&bytes);
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

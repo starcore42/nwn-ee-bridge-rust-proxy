@@ -652,7 +652,9 @@ fn observed_area_table_prefix_from_legacy_module_info(
     Some(areas)
 }
 
-fn observed_context_from_ee_module_info_payload(payload: &[u8]) -> Option<ObservedModuleContext> {
+pub(crate) fn observed_context_from_ee_module_info_payload(
+    payload: &[u8],
+) -> Option<ObservedModuleContext> {
     // Parse the same EE `CNWCModule::LoadModule` read-window shape this module
     // just emitted: two strings, one module byte, module CResRef, then
     // OBJECTID/CExoString area rows. This keeps later resource-backed
