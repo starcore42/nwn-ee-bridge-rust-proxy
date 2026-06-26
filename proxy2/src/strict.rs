@@ -19,7 +19,7 @@ use crate::{
         area_visual_effect, camera, char_list, chat, client_char_list, client_character_sheet,
         client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
         client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object_update, login, module, play_module_character_list,
+        inventory, journal, live_object_update, login, module, party, play_module_character_list,
         player_list, quickbar, safe_projectile, sound,
     },
 };
@@ -1350,7 +1350,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x03 && high.minor == 0x02 && empty_high_level_shape_valid(payload)
         }
         VerifiedFamily::ClientParty => {
-            high.major == 0x0E && high.minor == 0x02 && party_get_list_payload_shape_valid(payload)
+            high.major == 0x0E && high.minor == 0x02 && party_shape_valid(payload)
         }
         VerifiedFamily::ClientQuickbar => {
             high.major == 0x1E
@@ -1415,14 +1415,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ModuleTime => {
             high.major == 0x03 && high.minor == 0x03 && module_time_shape_valid(payload)
         }
-        VerifiedFamily::Party => {
-            high.major == 0x0E
-                && match high.minor {
-                    0x02 => party_get_list_payload_shape_valid(payload),
-                    0x01 | 0x03..=0x0E => party_cnw_wrapped_payload_shape_valid(payload),
-                    _ => false,
-                }
-        }
+        VerifiedFamily::Party => high.major == 0x0E && party_shape_valid(payload),
         VerifiedFamily::PlayModuleCharacterList => {
             high.major == 0x31
                 && play_module_character_list::claim_payload_if_verified(payload).is_some()
@@ -1670,10 +1663,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x0C, 0x01 | 0x02) => {
             HighPayloadValidation::Exact(inventory::claim_payload_if_verified(payload).is_some())
         }
-        (0x0E, 0x02) => HighPayloadValidation::Exact(party_get_list_payload_shape_valid(payload)),
-        (0x0E, 0x01 | 0x03..=0x0E) => {
-            HighPayloadValidation::Exact(party_cnw_wrapped_payload_shape_valid(payload))
-        }
+        (0x0E, 0x01..=0x0E) => HighPayloadValidation::Exact(party_shape_valid(payload)),
         (0x10, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(camera::claim_payload_if_verified(payload).is_some())
         }
@@ -1734,20 +1724,6 @@ fn client_login_waypoint_response_shape_valid(payload: &[u8]) -> bool {
         && declared < payload.len()
         && payload.len() == declared + 1
         && payload[declared] == 0x60
-}
-
-fn cnw_wrapped_payload_shape_valid(
-    payload: &[u8],
-    min_declared: usize,
-    max_fragment_bytes: usize,
-) -> bool {
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    declared >= min_declared
-        && declared <= payload.len()
-        && payload.len().saturating_sub(declared) <= max_fragment_bytes
 }
 
 fn coalesced_window_shape_valid(bytes: &[u8], view: &crate::packet::m::MFrameView) -> bool {
@@ -2436,29 +2412,12 @@ fn cnw_fragment_bool(payload: &[u8], declared: usize, semantic_bit_index: usize)
     Some((byte & (0x80 >> (bit_index % 8))) != 0)
 }
 
-fn party_cnw_wrapped_payload_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed classification:
-    // EE's packet table names 0x0E01..0x0E0E as the Party family, and the
-    // exported CNWSMessage Party_List / TransferObjectControl senders use the
-    // normal CNWMessage write-buffer path. The exact read payload is variable
-    // for member lists, so strict mode validates the CNW wrapper boundary
-    // here and leaves semantic field parsing to the translate/party module.
-    const MIN_CNW_DECLARED_BYTES: usize = 3 + 4;
-    const MAX_REASONABLE_PARTY_FRAGMENT_BYTES: usize = 32;
-
-    cnw_wrapped_payload_shape_valid(
-        payload,
-        MIN_CNW_DECLARED_BYTES,
-        MAX_REASONABLE_PARTY_FRAGMENT_BYTES,
-    )
-}
-
-fn party_get_list_payload_shape_valid(payload: &[u8]) -> bool {
-    // EE sends the Party_GetList request as a bare high-level tag with no
-    // CNWMessage read payload; server-to-client party list/control responses
-    // use the CNW-wrapped sender path and are validated by the generic party
-    // wrapper check.
-    payload.len() == 3 || party_cnw_wrapped_payload_shape_valid(payload)
+fn party_shape_valid(payload: &[u8]) -> bool {
+    // Reuse the focused party owner instead of accepting a generic CNW wrapper.
+    // `P/0E/01 Party_List` has a decompile-backed member count followed by one
+    // OBJECTIDServer per row; strict mode must not admit a wrapper whose count
+    // and body length disagree.
+    party::claim_payload_if_verified(payload).is_some()
 }
 
 fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
@@ -2995,6 +2954,26 @@ mod tests {
     }
 
     #[test]
+    fn strict_party_list_counts_declared_member_rows() {
+        let empty_party = build_party_list(&[]);
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Party,
+            &empty_party
+        ));
+        assert!(exact_high_payload_shape_valid(&empty_party));
+
+        let missing_member = build_party_list_with_count(2, &[]);
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Party, &missing_member),
+            "Party_List count must match the decompiled OBJECTID row count"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&missing_member),
+            "known-opcode strict validation must share the focused Party owner"
+        );
+    }
+
+    #[test]
     fn strict_client_char_list_uses_focused_fragment_tail_owner() {
         let request = vec![0x70, 0x11, 0x01];
         assert!(verified_family_inflated_payload_valid(
@@ -3156,6 +3135,27 @@ mod tests {
         payload.push(0x01);
         payload.extend_from_slice(b"starcore-druid60");
         payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn build_party_list(member_ids: &[u32]) -> Vec<u8> {
+        build_party_list_with_count(member_ids.len() as u32, member_ids)
+    }
+
+    fn build_party_list_with_count(count: u32, member_ids: &[u32]) -> Vec<u8> {
+        const PARTY_LIST_READ_START: usize = 3 + 4;
+        const PARTY_LIST_COUNT_BYTES: usize = 4;
+        const EMPTY_FRAGMENT_BYTE: u8 = 0x60;
+
+        let declared = PARTY_LIST_READ_START + PARTY_LIST_COUNT_BYTES + member_ids.len() * 4;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x70, 0x0E, 0x01]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&count.to_le_bytes());
+        for id in member_ids {
+            payload.extend_from_slice(&id.to_le_bytes());
+        }
+        payload.push(EMPTY_FRAGMENT_BYTE);
         payload
     }
 
