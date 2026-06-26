@@ -2986,6 +2986,36 @@ mod tests {
     }
 
     #[test]
+    fn strict_party_rejects_unmodeled_control_wrappers() {
+        let get_list = vec![0x70, 0x0E, 0x02];
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientParty,
+            &get_list
+        ));
+        assert!(exact_high_payload_shape_valid(&get_list));
+
+        let get_list_cnw = build_party_control_wrapper(0x02);
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::ClientParty, &get_list_cnw),
+            "Party_GetList is only owned as the exact no-body client request"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&get_list_cnw),
+            "known-opcode strict validation must reject the same unowned GetList wrapper"
+        );
+
+        let transfer_control = build_party_control_wrapper(0x0E);
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Party, &transfer_control),
+            "unmodeled party control minors must not validate as generic CNW wrappers"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&transfer_control),
+            "known-opcode strict validation must not allow unmodeled Party control wrappers"
+        );
+    }
+
+    #[test]
     fn strict_client_char_list_uses_focused_fragment_tail_owner() {
         let request = vec![0x70, 0x11, 0x01];
         assert!(verified_family_inflated_payload_valid(
@@ -3167,6 +3197,17 @@ mod tests {
         for id in member_ids {
             payload.extend_from_slice(&id.to_le_bytes());
         }
+        payload.push(EMPTY_FRAGMENT_BYTE);
+        payload
+    }
+
+    fn build_party_control_wrapper(minor: u8) -> Vec<u8> {
+        const PARTY_READ_START: usize = 3 + 4;
+        const EMPTY_FRAGMENT_BYTE: u8 = 0x60;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x70, 0x0E, minor]);
+        payload.extend_from_slice(&(PARTY_READ_START as u32).to_le_bytes());
         payload.push(EMPTY_FRAGMENT_BYTE);
         payload
     }

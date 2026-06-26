@@ -266,7 +266,7 @@ fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLe
                 )
         }
         "ClientGuiInventory" => high.major == 0x0D && matches!(high.minor, 0x01 | 0x02),
-        "ClientParty" => high.major == 0x0E && matches!(high.minor, 0x01..=0x0E),
+        "ClientParty" => high.major == 0x0E && high.minor == 0x02,
         "ClientCharList" => high.major == 0x11 && matches!(high.minor, 0x01 | 0x03),
         "Dialog" => high.major == 0x14 && high.minor == 0x03,
         "ClientCharacterSheet" => high.major == 0x15 && high.minor == 0x01,
@@ -301,7 +301,7 @@ mod tests {
             ("ClientInput", high(0x06, 0x01)),
             ("ClientInput", high(0x06, 0x11)),
             ("ClientGuiInventory", high(0x0D, 0x02)),
-            ("ClientParty", high(0x0E, 0x0E)),
+            ("ClientParty", high(0x0E, 0x02)),
             ("ClientCharList", high(0x11, 0x03)),
             ("Dialog", high(0x14, 0x03)),
             ("ClientCharacterSheet", high(0x15, 0x01)),
@@ -328,7 +328,7 @@ mod tests {
             ("ClientArea", high(0x04, 0x01)),
             ("ClientInput", high(0x06, 0x04)),
             ("ClientGuiInventory", high(0x0D, 0x03)),
-            ("ClientParty", high(0x0E, 0x0F)),
+            ("ClientParty", high(0x0E, 0x0E)),
             ("ClientCharList", high(0x11, 0x04)),
             ("Dialog", high(0x14, 0x01)),
             ("ClientCharacterSheet", high(0x15, 0x02)),

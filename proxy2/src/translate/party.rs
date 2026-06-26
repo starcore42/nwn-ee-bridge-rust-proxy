@@ -6,7 +6,9 @@
 //! wrapper, is the EE layout already the correct opposite-dialect layout?
 //!
 //! Decompile evidence:
-//! - EE's message-name table maps `0x0E01..0x0E0E` to the Party family.
+//! - EE's message-name table maps `0x0E01..0x0E0E` to the Party family, but
+//!   that table is only a classifier.  Every minor still needs a typed owner
+//!   before strict mode may forward it.
 //! - `CNWSMessage::SendServerToPlayerParty_List` creates a CNW write message,
 //!   writes a 32-bit party-member count, writes one `WriteOBJECTIDServer`
 //!   value per listed member, then sends family `0x0E` with the caller-supplied
@@ -15,6 +17,9 @@
 //!   `P 0E 01`, declared `0x0B`, DWORD count `0`, plus one trailing fragment
 //!   byte. No semantic bytes need to change; this module claims that exact
 //!   shape as a verified no-op.
+//! - Client `Party_GetList` is currently owned only as the exact no-body
+//!   high-level signal.  Other party control minors remain unclaimed until
+//!   their branch-specific reader payloads are modeled.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -42,7 +47,6 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<PartyClaimSummary> {
     match (high.major, high.minor) {
         (PARTY_MAJOR, PARTY_LIST_MINOR) => claim_party_list(payload, high.minor),
         (PARTY_MAJOR, PARTY_GET_LIST_MINOR) => claim_party_get_list(payload, high.minor),
-        (PARTY_MAJOR, 0x03..=0x0E) => claim_party_cnw_wrapper(payload, high.minor),
         _ => None,
     }
 }
@@ -64,15 +68,12 @@ fn claim_party_list(payload: &[u8], minor: u8) -> Option<PartyClaimSummary> {
 }
 
 fn claim_party_get_list(payload: &[u8], minor: u8) -> Option<PartyClaimSummary> {
-    if payload.len() == HIGH_LEVEL_HEADER_BYTES {
-        return Some(PartyClaimSummary {
-            minor,
-            declared: HIGH_LEVEL_HEADER_BYTES,
-            read_bytes: 0,
-            fragment_bytes: 0,
-        });
-    }
-    claim_party_cnw_wrapper(payload, minor)
+    (payload.len() == HIGH_LEVEL_HEADER_BYTES).then_some(PartyClaimSummary {
+        minor,
+        declared: HIGH_LEVEL_HEADER_BYTES,
+        read_bytes: 0,
+        fragment_bytes: 0,
+    })
 }
 
 fn claim_party_cnw_wrapper(payload: &[u8], minor: u8) -> Option<PartyClaimSummary> {
@@ -95,4 +96,76 @@ fn claim_party_cnw_wrapper(payload: &[u8], minor: u8) -> Option<PartyClaimSummar
         read_bytes: declared - READ_START,
         fragment_bytes: payload.len() - declared,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claims_party_list_with_matching_member_count() {
+        let payload = party_list_payload(&[0x8000_0001, 0x8000_0002]);
+        let claim = claim_payload_if_verified(&payload).expect("party list should claim");
+
+        assert_eq!(claim.minor, PARTY_LIST_MINOR);
+        assert_eq!(
+            claim.declared,
+            READ_START + PARTY_LIST_COUNT_BYTES + 2 * OBJECT_ID_BYTES
+        );
+        assert_eq!(
+            claim.read_bytes,
+            PARTY_LIST_COUNT_BYTES + 2 * OBJECT_ID_BYTES
+        );
+        assert_eq!(claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn rejects_party_list_with_count_body_mismatch() {
+        let mut payload = party_list_payload(&[0x8000_0001]);
+        payload[READ_START..READ_START + 4].copy_from_slice(&2u32.to_le_bytes());
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn claims_party_get_list_only_as_no_body_signal() {
+        let no_body = [0x70, PARTY_MAJOR, PARTY_GET_LIST_MINOR];
+        let claim = claim_payload_if_verified(&no_body).expect("party get-list should claim");
+
+        assert_eq!(claim.minor, PARTY_GET_LIST_MINOR);
+        assert_eq!(claim.declared, HIGH_LEVEL_HEADER_BYTES);
+        assert_eq!(claim.read_bytes, 0);
+        assert_eq!(claim.fragment_bytes, 0);
+
+        let cnw_empty = [
+            0x70,
+            PARTY_MAJOR,
+            PARTY_GET_LIST_MINOR,
+            READ_START as u8,
+            0,
+            0,
+            0,
+            0x60,
+        ];
+        assert!(claim_payload_if_verified(&cnw_empty).is_none());
+    }
+
+    #[test]
+    fn rejects_unmodeled_party_control_minors_even_when_cnw_shaped() {
+        let payload = [0x70, PARTY_MAJOR, 0x0E, READ_START as u8, 0, 0, 0, 0x60];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    fn party_list_payload(member_ids: &[u32]) -> Vec<u8> {
+        let declared = READ_START + PARTY_LIST_COUNT_BYTES + member_ids.len() * OBJECT_ID_BYTES;
+        let mut payload = vec![0x50, PARTY_MAJOR, PARTY_LIST_MINOR];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&(member_ids.len() as u32).to_le_bytes());
+        for member_id in member_ids {
+            payload.extend_from_slice(&member_id.to_le_bytes());
+        }
+        payload.push(0x60);
+        payload
+    }
 }
