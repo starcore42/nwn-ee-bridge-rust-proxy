@@ -1343,12 +1343,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x06 && client_input::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientLogin => {
-            high.major == 0x02
-                && match high.minor {
-                    0x0D => client_login_waypoint_response_shape_valid(payload),
-                    0x11 => client_login_server_subdirectory_shape_valid(payload),
-                    _ => false,
-                }
+            high.major == 0x02 && client_login::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientModule => {
             high.major == 0x03
@@ -1621,11 +1616,8 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => {
             HighPayloadValidation::Exact(login::claim_payload_if_verified(payload).is_some())
         }
-        (0x02, 0x0D) => {
-            HighPayloadValidation::Exact(client_login_waypoint_response_shape_valid(payload))
-        }
-        (0x02, 0x11) => {
-            HighPayloadValidation::Exact(client_login_server_subdirectory_shape_valid(payload))
+        (0x02, 0x0D | 0x11) => {
+            HighPayloadValidation::Exact(client_login::claim_payload_if_verified(payload).is_some())
         }
         (0x03, 0x01) => HighPayloadValidation::Exact(module_info_shape_valid(payload)),
         (0x03, 0x02) => HighPayloadValidation::Exact(
@@ -1712,27 +1704,6 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
 
 fn empty_high_level_shape_valid(payload: &[u8]) -> bool {
     payload.len() == 3
-}
-
-fn client_login_server_subdirectory_shape_valid(payload: &[u8]) -> bool {
-    client_login::server_subdirectory_character_shape_valid(payload)
-}
-
-fn client_login_waypoint_response_shape_valid(payload: &[u8]) -> bool {
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    let Some(tag_len) = read_le_u32(payload, 7).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    let expected_declared = 11usize.saturating_add(tag_len);
-    declared == expected_declared
-        && tag_len <= 0x20
-        && declared < payload.len()
-        && payload.len() == declared + 1
-        && payload[declared] == 0x60
 }
 
 fn coalesced_window_shape_valid(bytes: &[u8], view: &crate::packet::m::MFrameView) -> bool {
@@ -2608,6 +2579,47 @@ mod tests {
     }
 
     #[test]
+    fn strict_client_login_uses_focused_owner() {
+        let server_subdirectory =
+            build_client_login_server_subdirectory_character(b"febrieltestxilo");
+        assert!(
+            client_login::claim_payload_if_verified(&server_subdirectory).is_some(),
+            "focused ClientLogin owner accepts the exact server-subdirectory character request"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientLogin,
+            &server_subdirectory,
+        ));
+        assert!(exact_high_payload_shape_valid(&server_subdirectory));
+
+        let waypoint = build_client_login_waypoint_response(b"");
+        assert!(
+            client_login::claim_payload_if_verified(&waypoint).is_some(),
+            "focused ClientLogin owner accepts the empty waypoint response branch"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientLogin,
+            &waypoint,
+        ));
+        assert!(exact_high_payload_shape_valid(&waypoint));
+
+        let mut trailing = server_subdirectory;
+        trailing.push(0);
+        assert!(
+            client_login::claim_payload_if_verified(&trailing).is_none(),
+            "ClientLogin owns no bytes after the final empty fragment cursor"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientLogin,
+            &trailing,
+        ));
+        assert!(
+            !exact_high_payload_shape_valid(&trailing),
+            "known-high validation must share the focused ClientLogin owner"
+        );
+    }
+
+    #[test]
     fn strict_client_side_message_uses_focused_feedback_owner() {
         let text = b"abcdefghijklmnop";
         let declared = 3 + 4 + 2 + 4 + text.len();
@@ -3136,6 +3148,30 @@ mod tests {
         payload.push(mask);
         payload.extend_from_slice(body);
         payload.extend_from_slice(tail);
+        payload
+    }
+
+    fn build_client_login_server_subdirectory_character(resref: &[u8]) -> Vec<u8> {
+        const RESREF_BYTES: usize = 16;
+
+        assert!(resref.len() <= RESREF_BYTES);
+        let declared = 3 + 4 + RESREF_BYTES;
+        let mut payload = vec![0x70, 0x02, 0x11];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        let mut fixed_resref = [0u8; RESREF_BYTES];
+        fixed_resref[..resref.len()].copy_from_slice(resref);
+        payload.extend_from_slice(&fixed_resref);
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_client_login_waypoint_response(tag: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + tag.len();
+        let mut payload = vec![0x70, 0x02, 0x0D];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+        payload.extend_from_slice(tag);
+        payload.push(0x60);
         payload
     }
 
