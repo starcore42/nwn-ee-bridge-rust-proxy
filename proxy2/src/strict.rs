@@ -16,11 +16,12 @@ use crate::{
     },
     translate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
-        area_visual_effect, camera, char_list, chat, client_char_list, client_character_sheet,
-        client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
-        client_server_admin, client_side_message, cutscene, dialog, game_obj_update,
-        gameplay_stream, gui_timing_event, inventory, journal, live_object_update, loadbar, login,
-        module, party, play_module_character_list, player_list, quickbar, safe_projectile, sound,
+        area_visual_effect, camera, char_list, chat, client_area, client_char_list,
+        client_character_sheet, client_gui_event, client_gui_inventory, client_input, client_login,
+        client_module, client_quickbar, client_server_admin, client_server_status,
+        client_side_message, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
+        inventory, journal, live_object_update, loadbar, login, module, party,
+        play_module_character_list, player_list, quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1319,7 +1320,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x33 && cutscene::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientArea => {
-            high.major == 0x04 && high.minor == 0x03 && empty_high_level_shape_valid(payload)
+            high.major == 0x04
+                && high.minor == 0x03
+                && client_area::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientCharList => client_char_list_shape_valid(payload),
         VerifiedFamily::ClientCharacterSheet => {
@@ -1347,7 +1350,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 }
         }
         VerifiedFamily::ClientModule => {
-            high.major == 0x03 && high.minor == 0x02 && empty_high_level_shape_valid(payload)
+            high.major == 0x03
+                && high.minor == 0x02
+                && client_module::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientParty => {
             high.major == 0x0E && high.minor == 0x02 && party_shape_valid(payload)
@@ -1359,7 +1364,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::ClientServerAdmin => false,
         VerifiedFamily::ClientServerStatus => {
-            high.major == 0x01 && high.minor == 0x00 && empty_high_level_shape_valid(payload)
+            high.major == 0x01
+                && high.minor == 0x00
+                && client_server_status::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientSideMessage => {
             high.major == 0x12 && high.minor == 0x0B && client_side_message_shape_valid(payload)
@@ -1608,7 +1615,9 @@ fn known_high_payload_shape_valid(payload: &[u8], profile: StrictProfile) -> boo
 
 fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValidation {
     match (high.major, high.minor) {
-        (0x01, 0x00) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x01, 0x00) => HighPayloadValidation::Exact(
+            client_server_status::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x01, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
         (0x01, 0x03) => {
             HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload))
@@ -1623,14 +1632,18 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(client_login_server_subdirectory_shape_valid(payload))
         }
         (0x03, 0x01) => HighPayloadValidation::Exact(module_info_shape_valid(payload)),
-        (0x03, 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x03, 0x02) => HighPayloadValidation::Exact(
+            client_module::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x03, 0x03) => HighPayloadValidation::Exact(module_time_shape_valid(payload)),
         (0x03, 0x0E) => HighPayloadValidation::Exact(module::module_end_game_shape_valid(payload)),
         (0x04, 0x01) => HighPayloadValidation::Exact(area_client_area_shape_valid(payload)),
         (0x04, 0x02) => HighPayloadValidation::Exact(
             area_visual_effect::claim_payload_if_verified(payload).is_some(),
         ),
-        (0x04, 0x03) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x04, 0x03) => {
+            HighPayloadValidation::Exact(client_area::claim_payload_if_verified(payload).is_some())
+        }
         (0x04, 0x06) => HighPayloadValidation::Exact(
             area_change_day_night::claim_payload_if_verified(payload).is_some(),
         ),
@@ -2717,6 +2730,49 @@ mod tests {
             VerifiedFamily::Login,
             &login_confirm,
         ));
+    }
+
+    #[test]
+    fn strict_bare_client_signals_use_focused_owners() {
+        let cases = [
+            (VerifiedFamily::ClientServerStatus, [0x50, 0x01, 0x00]),
+            (VerifiedFamily::ClientModule, [0x50, 0x03, 0x02]),
+            (VerifiedFamily::ClientArea, [0x50, 0x04, 0x03]),
+        ];
+
+        for (family, exact) in cases {
+            assert!(bare_client_signal_claimed(family, &exact));
+            assert!(verified_family_inflated_payload_valid(family, &exact));
+            assert!(exact_high_payload_shape_valid(&exact));
+
+            let mut body_bearing = exact.to_vec();
+            body_bearing.push(0x60);
+
+            assert!(!bare_client_signal_claimed(family, &body_bearing));
+            assert!(
+                !verified_family_inflated_payload_valid(family, &body_bearing),
+                "{family:?} must not accept generic non-empty client signal bodies"
+            );
+            assert!(
+                !exact_high_payload_shape_valid(&body_bearing),
+                "known-high validation must share {family:?}'s focused bare-signal owner"
+            );
+        }
+
+        fn bare_client_signal_claimed(family: VerifiedFamily, payload: &[u8]) -> bool {
+            match family {
+                VerifiedFamily::ClientServerStatus => {
+                    client_server_status::claim_payload_if_verified(payload).is_some()
+                }
+                VerifiedFamily::ClientModule => {
+                    client_module::claim_payload_if_verified(payload).is_some()
+                }
+                VerifiedFamily::ClientArea => {
+                    client_area::claim_payload_if_verified(payload).is_some()
+                }
+                _ => false,
+            }
+        }
     }
 
     #[test]
