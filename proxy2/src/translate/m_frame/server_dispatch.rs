@@ -612,34 +612,34 @@ fn is_module_info_high_level_payload(payload: &[u8]) -> bool {
 
 fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) -> bool {
     match family_name {
-        "SetCustomToken" => high.major == 0x32,
-        "Login" => high.major == 0x02,
+        "SetCustomToken" => high.major == 0x32 && matches!(high.minor, 0x01 | 0x02),
+        "Login" => high.major == 0x02 && matches!(high.minor, 0x05 | 0x0A | 0x0C | 0x10 | 0x12),
         "Module_Time" => high.major == 0x03 && high.minor == 0x03,
         "Module_EndGame" => high.major == 0x03 && high.minor == 0x0E,
-        "Camera" => high.major == 0x10,
-        "Cutscene" => high.major == 0x33,
+        "Camera" => high.major == 0x10 && matches!(high.minor, 0x01..=0x05),
+        "Cutscene" => high.major == 0x33 && matches!(high.minor, 0x01 | 0x03..=0x07),
         "ServerStatus_ModuleResources" => high.major == 0x01 && high.minor == 0x03,
-        "LoadBar" => high.major == 0x2C,
+        "LoadBar" => high.major == 0x2C && matches!(high.minor, 0x01..=0x03),
         "GuiTimingEvent_Info" => high.major == 0x30 && high.minor == 0x01,
-        "ClientSideMessage" => high.major == 0x12,
-        "Journal" => high.major == 0x1C,
-        "Chat" => high.major == 0x09,
-        "Sound" => high.major == 0x17,
-        "Ambient" => high.major == 0x28,
-        "Dialog" => high.major == 0x14,
-        "Inventory" => high.major == 0x0C,
+        "ClientSideMessage" => high.major == 0x12 && high.minor == 0x0B,
+        "Journal" => high.major == 0x1C && matches!(high.minor, 0x01..=0x05 | 0x07..=0x09 | 0x0C),
+        "Chat" => high.major == 0x09 && matches!(high.minor, 0x04 | 0x05 | 0x07..=0x0C),
+        "Sound" => high.major == 0x17 && high.minor == 0x03,
+        "Ambient" => high.major == 0x28 && matches!(high.minor, 0x01..=0x08),
+        "Dialog" => high.major == 0x14 && matches!(high.minor, 0x01 | 0x02 | 0x04 | 0x05),
+        "Inventory" => high.major == 0x0C && matches!(high.minor, 0x01 | 0x02),
         "GameObjUpdate_ObjControl" => high.major == 0x05 && high.minor == 0x02,
         "GameObjUpdate_VisEffect" => high.major == 0x05 && high.minor == 0x03,
         "GameObjUpdate_DestroyItem" => high.major == 0x05 && high.minor == 0x07,
         "Area_VisualEffect" => high.major == 0x04 && high.minor == 0x02,
         "Area_ChangeDayNight" => high.major == 0x04 && high.minor == 0x06,
         "SafeProjectile" => high.major == 0x22 && high.minor == 0x01,
-        "Party" => high.major == 0x0E,
-        "PlayModuleCharacterList" => high.major == 0x31,
-        "GuiQuickbar" => high.major == 0x1E,
+        "Party" => high.major == 0x0E && matches!(high.minor, 0x01..=0x0E),
+        "PlayModuleCharacterList" => high.major == 0x31 && matches!(high.minor, 0x01..=0x03),
+        "GuiQuickbar" => high.major == 0x1E && high.minor == 0x01,
         "CNWPrefixedFragmentsTransportOnly" => true,
-        "CharList" => high.major == 0x11,
-        "PlayerList" => high.major == 0x0A,
+        "CharList" => high.major == 0x11 && matches!(high.minor, 0x02 | 0x04),
+        "PlayerList" => high.major == 0x0A && matches!(high.minor, 0x01..=0x03),
         "GameObjUpdate_LiveObjectPrefixedFragments"
         | "GameObjUpdate_LiveObjectExactRecords"
         | "GameObjUpdate_LiveObjectAddRecords"
@@ -3810,6 +3810,71 @@ mod module_info_dispatch_tests {
             "GameObjUpdate_LiveObjectDeclaredLengthRepair",
             object_control
         ));
+
+        for (family_name, high) in [
+            (
+                "Login",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x02,
+                    minor: 0x0D,
+                },
+            ),
+            (
+                "Camera",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x10,
+                    minor: 0x0A,
+                },
+            ),
+            (
+                "Cutscene",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x33,
+                    minor: 0x02,
+                },
+            ),
+            (
+                "Dialog",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x14,
+                    minor: 0x03,
+                },
+            ),
+            (
+                "GuiQuickbar",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x1E,
+                    minor: 0x02,
+                },
+            ),
+            (
+                "Journal",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x1C,
+                    minor: 0x0A,
+                },
+            ),
+            (
+                "Sound",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x17,
+                    minor: 0x02,
+                },
+            ),
+        ] {
+            assert!(
+                !translator_may_claim_parsed_high_level(family_name, high),
+                "{family_name} must not probe unsupported same-major minor {:#04x}",
+                high.minor
+            );
+        }
 
         assert!(translator_may_claim_parsed_high_level(
             "CNWPrefixedFragmentsTransportOnly",
