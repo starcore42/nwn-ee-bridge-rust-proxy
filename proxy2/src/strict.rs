@@ -18,9 +18,9 @@ use crate::{
         ContinuationOwner, VerifiedFamily, VerifiedProof, ambient, area, area_change_day_night,
         area_visual_effect, camera, char_list, chat, client_char_list, client_character_sheet,
         client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
-        client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object_update, loadbar, login, module, party,
-        play_module_character_list, player_list, quickbar, safe_projectile, sound,
+        client_server_admin, client_side_message, cutscene, dialog, game_obj_update,
+        gameplay_stream, gui_timing_event, inventory, journal, live_object_update, loadbar, login,
+        module, party, play_module_character_list, player_list, quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1362,7 +1362,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x01 && high.minor == 0x00 && empty_high_level_shape_valid(payload)
         }
         VerifiedFamily::ClientSideMessage => {
-            high.major == 0x12 && high.minor == 0x0B && client_side_feedback_shape_valid(payload)
+            high.major == 0x12 && high.minor == 0x0B && client_side_message_shape_valid(payload)
         }
         VerifiedFamily::Dialog => {
             high.major == 0x14 && dialog::claim_payload_if_verified(payload).is_some()
@@ -1669,7 +1669,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         }
         (0x11, 0x02 | 0x04) => HighPayloadValidation::Exact(char_list_shape_valid(payload)),
         (0x11, 0x01 | 0x03) => HighPayloadValidation::Exact(client_char_list_shape_valid(payload)),
-        (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_feedback_shape_valid(payload)),
+        (0x12, 0x0B) => HighPayloadValidation::Exact(client_side_message_shape_valid(payload)),
         (0x14, 0x01 | 0x02 | 0x03 | 0x04 | 0x05) => {
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
         }
@@ -2115,7 +2115,7 @@ fn sound_shape_valid(payload: &[u8]) -> bool {
     sound::claim_payload_if_verified(payload).is_some()
 }
 
-fn client_side_feedback_shape_valid(payload: &[u8]) -> bool {
+fn client_side_message_shape_valid(payload: &[u8]) -> bool {
     // Decompile-backed shape:
     // `CNWSCreature::SendFeedbackMessage` stores the feedback id in
     // `CNWCCMessageData` slot 9, then calls
@@ -2125,44 +2125,9 @@ fn client_side_feedback_shape_valid(payload: &[u8]) -> bool {
     // a small set of optional fields selected by the feedback id. For feedback
     // id `0xCC`, it calls `WriteCExoString(..., 0x20)`, whose decompile writes
     // a direct DWORD length followed by the text bytes. The strict gate
-    // therefore validates the family/minor-specific CNW cursor instead of
-    // allowing every known client-side-message opcode.
-    const MIN_DECLARED_BYTES: usize = 3 + 4 + 2;
-    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 64;
-    const MAX_FEEDBACK_TEXT_BYTES: usize = 4096;
-    const MAX_FIXED_ARGUMENT_BYTES: usize = 64;
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < MIN_DECLARED_BYTES
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_OBSERVED_FRAGMENT_BYTES
-    {
-        return false;
-    }
-
-    let tail_start = MIN_DECLARED_BYTES;
-    let tail_len = declared - tail_start;
-    if tail_len == 0 {
-        return true;
-    }
-
-    if let Some(string_len) =
-        read_le_u32(payload, tail_start).and_then(|value| usize::try_from(value).ok())
-    {
-        if string_len <= MAX_FEEDBACK_TEXT_BYTES
-            && tail_start
-                .checked_add(4)
-                .and_then(|text_start| text_start.checked_add(string_len))
-                == Some(declared)
-        {
-            return true;
-        }
-    }
-
-    tail_len <= MAX_FIXED_ARGUMENT_BYTES && tail_len % 4 == 0
+    // therefore validates through the focused semantic owner instead of
+    // carrying a second local copy of the feedback cursor rules in strict mode.
+    client_side_message::claim_payload_if_verified(payload).is_some()
 }
 
 fn set_custom_token_shape_valid(payload: &[u8]) -> bool {
@@ -2751,6 +2716,56 @@ mod tests {
         assert!(verified_family_inflated_payload_valid(
             VerifiedFamily::Login,
             &login_confirm,
+        ));
+    }
+
+    #[test]
+    fn strict_client_side_message_uses_focused_feedback_owner() {
+        let text = b"abcdefghijklmnop";
+        let declared = 3 + 4 + 2 + 4 + text.len();
+        let mut exact_feedback = vec![0x50, 0x12, 0x0B];
+        exact_feedback.extend_from_slice(&(declared as u32).to_le_bytes());
+        exact_feedback.extend_from_slice(&0x00CCu16.to_le_bytes());
+        exact_feedback.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        exact_feedback.extend_from_slice(text);
+        exact_feedback.push(0x60);
+
+        assert!(client_side_message::claim_payload_if_verified(&exact_feedback).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientSideMessage,
+            &exact_feedback,
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_feedback));
+
+        let mut legacy_feedback = vec![0x50, 0x12, 0x0B];
+        legacy_feedback.extend_from_slice(&0x94u32.to_le_bytes());
+        legacy_feedback.extend_from_slice(&0x00CCu16.to_le_bytes());
+        legacy_feedback.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        legacy_feedback.extend_from_slice(text);
+        legacy_feedback.push(0x60);
+
+        assert!(client_side_message::claim_payload_if_verified(&legacy_feedback).is_none());
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::ClientSideMessage,
+                &legacy_feedback,
+            ),
+            "strict validation must not accept a legacy feedback preamble before the semantic owner rewrites it"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&legacy_feedback),
+            "known-high validation must share the focused ClientSideMessage owner"
+        );
+
+        let mut rewritten_feedback = legacy_feedback;
+        assert!(
+            client_side_message::claim_or_rewrite_payload_if_verified(&mut rewritten_feedback)
+                .is_some()
+        );
+        assert!(client_side_message::claim_payload_if_verified(&rewritten_feedback).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientSideMessage,
+            &rewritten_feedback,
         ));
     }
 
