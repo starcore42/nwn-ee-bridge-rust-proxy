@@ -109,8 +109,9 @@ pub(super) fn find_next_legacy_live_object_sub_message_boundary_after(
             return record_end;
         }
         if read_u32_le(bytes, offset + 6) == Some(0x0000_4408) {
-            let legacy_4408_end =
-                offset.saturating_add(minimum_legacy_creature_4408_record_length_at(bytes, offset));
+            let legacy_4408_end = offset.saturating_add(
+                minimum_legacy_creature_status_scalar_record_length_at(bytes, offset, 1),
+            );
             if legacy_4408_end < scan_end
                 && inventory::try_get_missing_current_player_2a00_record_end(
                     bytes,
@@ -1704,7 +1705,7 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // interior `A` effect bytes as real `A/5` submessage boundaries. The
         // count-zero malformed XP2 family is still kept at the prior one-row
         // floor so its focused count repair can own that exact shape.
-        return minimum_legacy_creature_4408_record_length_at(bytes, offset);
+        return minimum_legacy_creature_status_scalar_record_length_at(bytes, offset, 1);
     }
 
     if raw_mask == 0x0000_0008 {
@@ -1777,17 +1778,16 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
         // count, encoded 3-byte effect entries, four WORD scalar/status values,
         // then visibility/self-visibility BOOLs in the fragment bitstream.
         //
-        // HG captures can carry the malformed count-zero shape followed by the
-        // same known three encoded effects that the focused creature translator
-        // repairs before EE emission. Those interior effect bytes include `A`
-        // markers, so the generic boundary scanner must not consider a later
-        // live-object boundary until the decompile-owned fixed read span has
-        // been crossed.
+        // HG captures can also carry the malformed count-zero shape followed
+        // by the same known three encoded effects that the focused creature
+        // translator repairs before EE emission. Nonzero counts are already
+        // decompile-owned by the compact status list, so use the captured count
+        // for normal rows and keep the three-row floor only for count zero.
         //
         // This remains only a lower bound. The real semantic claim, count
         // repair, scalar cursor proof, and exact ten fragment-bit proof stay in
         // creature.rs.
-        return LEGACY_UPDATE_HEADER_BYTES + 2 + 9 + 8;
+        return minimum_legacy_creature_status_scalar_record_length_at(bytes, offset, 3);
     }
 
     if raw_mask == 0x0000_C40F {
@@ -1811,14 +1811,22 @@ fn minimum_legacy_creature_update_record_length_at(bytes: &[u8], offset: usize) 
     LEGACY_UPDATE_HEADER_BYTES
 }
 
-fn minimum_legacy_creature_4408_record_length_at(bytes: &[u8], offset: usize) -> usize {
+fn minimum_legacy_creature_status_scalar_record_length_at(
+    bytes: &[u8],
+    offset: usize,
+    zero_count_effect_rows: usize,
+) -> usize {
     let Some(count) = read_u16_le(bytes, offset + LEGACY_UPDATE_HEADER_BYTES) else {
         return LEGACY_UPDATE_HEADER_BYTES;
     };
     if count > 256 {
         return LEGACY_UPDATE_HEADER_BYTES;
     }
-    let effect_rows = if count == 0 { 1 } else { usize::from(count) };
+    let effect_rows = if count == 0 {
+        zero_count_effect_rows
+    } else {
+        usize::from(count)
+    };
     LEGACY_UPDATE_HEADER_BYTES + 2 + effect_rows * 3 + 8
 }
 
@@ -1880,6 +1888,66 @@ pub(super) fn looks_like_legacy_live_object_id_value(object_id: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn c408_status_live_bytes(effect_rows: &[(u8, u16)]) -> Vec<u8> {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', 0x05]);
+        live.extend_from_slice(&0xFFFF_FFF9u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_C408u32.to_le_bytes());
+        live.extend_from_slice(&(effect_rows.len() as u16).to_le_bytes());
+        for (opcode, row) in effect_rows {
+            live.push(*opcode);
+            live.extend_from_slice(&row.to_le_bytes());
+        }
+        live.extend_from_slice(&[0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00]);
+        live
+    }
+
+    #[test]
+    fn c408_boundary_uses_nonzero_status_count_before_inventory() {
+        let mut live = c408_status_live_bytes(&[(b'A', 0x00F3)]);
+        let c408_end = live.len();
+        live.extend_from_slice(&[b'I']);
+        live.extend_from_slice(&0xFFFF_FFF9u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_2B00u32.to_le_bytes());
+
+        assert_eq!(
+            c408_end,
+            LEGACY_UPDATE_HEADER_BYTES + 2 + 3 + 8,
+            "test packet must model the compact one-row C408 read body"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            c408_end,
+            "a nonzero C408 effect count owns only count * 3 compact row bytes before the scalar suffix"
+        );
+    }
+
+    #[test]
+    fn c408_boundary_keeps_zero_count_three_row_repair_floor() {
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', 0x05]);
+        live.extend_from_slice(&0xFFFF_FFF9u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_C408u32.to_le_bytes());
+        live.extend_from_slice(&0u16.to_le_bytes());
+        live.extend_from_slice(&[b'A', 0xF3, 0x00, b'D', 0xB6, 0x00, b'A', 0x24, 0x00]);
+        live.extend_from_slice(&[0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00]);
+        let c408_end = live.len();
+        live.extend_from_slice(&[b'I']);
+        live.extend_from_slice(&0xFFFF_FFF9u32.to_le_bytes());
+        live.extend_from_slice(&0x0000_2B00u32.to_le_bytes());
+
+        assert_eq!(
+            c408_end,
+            LEGACY_UPDATE_HEADER_BYTES + 2 + 9 + 8,
+            "test packet must model the older count-zero three-row repair floor"
+        );
+        assert_eq!(
+            find_next_legacy_live_object_sub_message_boundary_after(&live, 0, live.len()),
+            c408_end,
+            "count-zero C408 still needs the prior three-row floor so the repair path can own the malformed source"
+        );
+    }
 
     #[test]
     fn ee_placeable_update_boundary_uses_vector_orientation_span() {
