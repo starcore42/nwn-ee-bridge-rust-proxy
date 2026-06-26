@@ -582,6 +582,17 @@ fn is_live_object_high_level_payload(payload: &[u8]) -> bool {
     )
 }
 
+fn is_area_client_area_high_level_payload(payload: &[u8]) -> bool {
+    matches!(
+        (
+            payload.get(0).copied(),
+            payload.get(1).copied(),
+            payload.get(2).copied()
+        ),
+        (Some(b'P'), Some(0x04), Some(0x01))
+    )
+}
+
 fn rewrite_live_object_high_level_payload_for_ee(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
@@ -3258,6 +3269,10 @@ fn translate_area_client_area(
     scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
+    if !is_area_client_area_high_level_payload(payload) {
+        return ServerTranslatorOutcome::None;
+    }
+
     // `Area_ClientArea` is a semantic CNW payload; the reliable-window
     // transport may carry it either as the whole deflated reassembly or as a
     // deflated primary record inside a coalesced M datagram. The EE/Diamond
@@ -3614,6 +3629,29 @@ mod module_info_dispatch_tests {
         assert_eq!(context.areas.len(), 1);
         assert_eq!(context.areas[0].object_id, 0x8000_0001);
         assert_eq!(context.areas[0].name, "Armor Shop");
+    }
+
+    #[test]
+    fn area_translator_ignores_module_info_family() {
+        let mut payload = exact_ee_module_info_payload();
+        let original = payload.clone();
+        let runtime = module_resources::ModuleResourceRuntime::default();
+
+        assert!(!is_area_client_area_high_level_payload(&payload));
+        assert!(matches!(
+            translate_area_client_area(
+                &mut payload,
+                None,
+                SemanticScope::CoalescedSpan,
+                Some(&runtime),
+            ),
+            ServerTranslatorOutcome::None
+        ));
+        assert_eq!(payload, original);
+        assert!(
+            runtime.observed_module_context().is_none(),
+            "Area_ClientArea must not observe Module_Info context from a different family"
+        );
     }
 
     fn exact_ee_module_info_payload() -> Vec<u8> {
