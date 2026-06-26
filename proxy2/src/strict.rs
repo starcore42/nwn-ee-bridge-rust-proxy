@@ -19,8 +19,8 @@ use crate::{
         area_visual_effect, camera, char_list, chat, client_char_list, client_character_sheet,
         client_gui_event, client_gui_inventory, client_input, client_login, client_quickbar,
         client_server_admin, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object_update, login, module, party, play_module_character_list,
-        player_list, quickbar, safe_projectile, sound,
+        inventory, journal, live_object_update, loadbar, login, module, party,
+        play_module_character_list, player_list, quickbar, safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -2105,37 +2105,10 @@ fn quickbar_placeholder_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn loadbar_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // EE `CNWSMessage::SendServerToPlayerLoadBar_StartStallEvent` and
-    // `_EndStallEvent` write one DWORD stall-event id, while
-    // `_UpdateStallEvent` writes that id plus one DWORD progress value.
-    // Diamond exposes the same LoadBar family and observed 1.69/HG payloads
-    // use the same declared CNW read-window shape. Validate that read cursor
-    // exactly; the trailing CNW fragment bytes are bounded separately.
-    const READ_START: usize = 3 + 4;
-    const ONE_DWORD_DECLARED: usize = READ_START + 4;
-    const TWO_DWORD_DECLARED: usize = READ_START + 8;
-    const MAX_FRAGMENT_BYTES: usize = 8;
-
-    let Some(high) = HighLevel::parse(payload) else {
-        return false;
-    };
-    if high.major != 0x2C {
-        return false;
-    }
-    let expected_declared = match high.minor {
-        0x01 | 0x03 => ONE_DWORD_DECLARED,
-        0x02 => TWO_DWORD_DECLARED,
-        _ => return false,
-    };
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-
-    declared == expected_declared
-        && declared <= payload.len()
-        && payload.len().saturating_sub(declared) <= MAX_FRAGMENT_BYTES
+    // Strict validation must share the typed LoadBar owner. `LoadBar_End`
+    // owns four result bits in the CNW fragment stream; accepting a generic
+    // declared window would let shifted fragment tails pass as UI progress.
+    loadbar::claim_payload_if_verified(payload).is_some()
 }
 
 fn sound_shape_valid(payload: &[u8]) -> bool {
@@ -2951,6 +2924,45 @@ mod tests {
                 "journal quest-screen minor {minor:#04x} should reject trailing bytes"
             );
         }
+    }
+
+    #[test]
+    fn strict_loadbar_uses_focused_fragment_owner() {
+        let start = loadbar::start_payload(2);
+        let end = loadbar::end_success_payload(2);
+
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::LoadBar,
+            &start
+        ));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::LoadBar,
+            &end
+        ));
+        assert!(exact_high_payload_shape_valid(&start));
+        assert!(exact_high_payload_shape_valid(&end));
+
+        let mut shifted_end = end;
+        *shifted_end.last_mut().expect("fragment tail") = 0x60;
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::LoadBar, &shifted_end),
+            "LoadBar_End must prove the decompiled four result bits"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&shifted_end),
+            "known-opcode strict validation must share the focused LoadBar owner"
+        );
+
+        let mut tail_slack = start;
+        tail_slack.push(0);
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::LoadBar, &tail_slack),
+            "LoadBar has no multi-byte fragment-tail owner"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&tail_slack),
+            "known-opcode strict validation must reject unowned LoadBar tail slack"
+        );
     }
 
     #[test]

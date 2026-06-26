@@ -32,11 +32,12 @@ const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 
 const LOADBAR_ONE_DWORD_DECLARED: u32 = (READ_START + CNW_LENGTH_BYTES) as u32;
 const LOADBAR_TWO_DWORD_DECLARED: u32 = (READ_START + 2 * CNW_LENGTH_BYTES) as u32;
-const MAX_LOADBAR_FRAGMENT_BYTES: usize = 8;
 
 const START_FRAGMENT_BYTE: u8 = 0x60;
 const END_SUCCESS_FRAGMENT_BYTE: u8 = 0xE0;
-const UPDATE_FRAGMENT_BYTE: u8 = 0xE0;
+const UPDATE_FRAGMENT_BYTE: u8 = 0x60;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+const END_RESULT_BITS: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LoadBarClaimSummary {
@@ -62,9 +63,15 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LoadBarClaimSummary> 
     }
 
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
-    if declared != expected_declared
-        || payload.len().saturating_sub(declared) > MAX_LOADBAR_FRAGMENT_BYTES
-    {
+    if declared != expected_declared || declared >= payload.len() {
+        return None;
+    }
+    let expected_fragment_bits = match high.minor {
+        LOADBAR_START_MINOR | LOADBAR_UPDATE_MINOR => CNW_FRAGMENT_HEADER_BITS,
+        LOADBAR_END_MINOR => CNW_FRAGMENT_HEADER_BITS + END_RESULT_BITS,
+        _ => return None,
+    };
+    if !exact_single_fragment_tail(payload, declared, expected_fragment_bits) {
         return None;
     }
 
@@ -79,6 +86,14 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<LoadBarClaimSummary> 
         read_dwords,
         fragment_bytes: payload.len() - declared,
     })
+}
+
+fn exact_single_fragment_tail(payload: &[u8], declared: usize, expected_final_bits: usize) -> bool {
+    let tail = match payload.get(declared..) {
+        Some([tail]) => *tail,
+        _ => return false,
+    };
+    usize::from((tail & 0xE0) >> 5) == expected_final_bits
 }
 
 pub fn start_payload(stall_event_id: u32) -> Vec<u8> {
@@ -114,4 +129,69 @@ pub fn update_payload(stall_event_id: u32, progress: u32) -> Vec<u8> {
     payload.extend_from_slice(&progress.to_le_bytes());
     payload.push(UPDATE_FRAGMENT_BYTE);
     payload
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claims_exact_start_update_and_end_fragment_tails() {
+        let start = start_payload(2);
+        let update = update_payload(2, 50);
+        let end = end_success_payload(2);
+
+        let start_claim = claim_payload_if_verified(&start).expect("LoadBar_Start should claim");
+        assert_eq!(start_claim.minor, LOADBAR_START_MINOR);
+        assert_eq!(start_claim.declared, LOADBAR_ONE_DWORD_DECLARED as usize);
+        assert_eq!(start_claim.read_dwords, 1);
+        assert_eq!(start_claim.fragment_bytes, 1);
+
+        let update_claim = claim_payload_if_verified(&update).expect("LoadBar_Update should claim");
+        assert_eq!(update_claim.minor, LOADBAR_UPDATE_MINOR);
+        assert_eq!(update_claim.declared, LOADBAR_TWO_DWORD_DECLARED as usize);
+        assert_eq!(update_claim.read_dwords, 2);
+        assert_eq!(update_claim.fragment_bytes, 1);
+
+        let end_claim = claim_payload_if_verified(&end).expect("LoadBar_End should claim");
+        assert_eq!(end_claim.minor, LOADBAR_END_MINOR);
+        assert_eq!(end_claim.declared, LOADBAR_ONE_DWORD_DECLARED as usize);
+        assert_eq!(end_claim.read_dwords, 1);
+        assert_eq!(end_claim.fragment_bytes, 1);
+    }
+
+    #[test]
+    fn rejects_loadbar_fragment_tails_with_wrong_final_bit_count() {
+        let mut start = start_payload(2);
+        *start.last_mut().expect("fragment tail") = END_SUCCESS_FRAGMENT_BYTE;
+        assert!(
+            claim_payload_if_verified(&start).is_none(),
+            "LoadBar_Start owns no result bits"
+        );
+
+        let mut update = update_payload(2, 50);
+        *update.last_mut().expect("fragment tail") = END_SUCCESS_FRAGMENT_BYTE;
+        assert!(
+            claim_payload_if_verified(&update).is_none(),
+            "LoadBar_Update owns read-buffer DWORDs, not result bits"
+        );
+
+        let mut end = end_success_payload(2);
+        *end.last_mut().expect("fragment tail") = START_FRAGMENT_BYTE;
+        assert!(
+            claim_payload_if_verified(&end).is_none(),
+            "LoadBar_End must own the four result bits"
+        );
+    }
+
+    #[test]
+    fn rejects_loadbar_fragment_tail_slack() {
+        let mut start = start_payload(2);
+        start.push(0);
+
+        assert!(
+            claim_payload_if_verified(&start).is_none(),
+            "LoadBar has no decompiled multi-byte fragment tail owner"
+        );
+    }
 }

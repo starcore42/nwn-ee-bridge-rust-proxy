@@ -46,7 +46,7 @@ pub(crate) mod inventory;
 pub(crate) mod journal;
 mod live_object;
 pub(crate) mod live_object_update;
-mod loadbar;
+pub(crate) mod loadbar;
 pub(crate) mod login;
 mod m_frame;
 pub(crate) mod module;
