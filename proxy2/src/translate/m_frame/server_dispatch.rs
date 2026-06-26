@@ -593,6 +593,17 @@ fn is_area_client_area_high_level_payload(payload: &[u8]) -> bool {
     )
 }
 
+fn is_module_info_high_level_payload(payload: &[u8]) -> bool {
+    matches!(
+        (
+            payload.get(0).copied(),
+            payload.get(1).copied(),
+            payload.get(2).copied()
+        ),
+        (Some(b'P' | 0x70), Some(0x03), Some(0x01))
+    )
+}
+
 fn rewrite_live_object_high_level_payload_for_ee(
     payload: &mut Vec<u8>,
     latest_area_placeables: Option<&area::AreaPlaceableContext>,
@@ -3304,7 +3315,7 @@ fn translate_area_client_area(
 fn translate_module_info(
     payload: &mut Vec<u8>,
     _: Option<&area::AreaPlaceableContext>,
-    _: SemanticScope,
+    scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
     if crate::strict::module_info_shape_valid(payload) {
@@ -3326,6 +3337,16 @@ fn translate_module_info(
             "server Module_Info already matches the EE reader shape; semantic no-op claim retained behind exact strict validation"
         );
         return claimed();
+    }
+
+    let starts_with_module_info = is_module_info_high_level_payload(payload);
+    if !starts_with_module_info {
+        if HighLevel::parse(payload).is_some() {
+            return ServerTranslatorOutcome::None;
+        }
+        if !matches!(scope, SemanticScope::DeflatedReassembly) {
+            return ServerTranslatorOutcome::None;
+        }
     }
 
     let mut candidate = payload.clone();
@@ -3654,6 +3675,40 @@ mod module_info_dispatch_tests {
         );
     }
 
+    #[test]
+    fn module_translator_does_not_scan_inside_other_high_level_family() {
+        let mut payload = vec![b'P', 0x05, 0x02, 0, 0, 0, 0, 0xAA];
+        let declared = u32::try_from(payload.len()).expect("prefix length fits u32");
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&legacy_module_info_payload());
+        let original = payload.clone();
+        let runtime = module_resources::ModuleResourceRuntime::default();
+
+        let rewrite = rewrite_single_inflated_payload_for_ee(
+            &mut payload,
+            None,
+            SemanticScope::CoalescedSpan,
+            Some(&runtime),
+            None,
+            None,
+        );
+
+        assert!(rewrite.should_quarantine());
+        assert!(!rewrite.any_rewrite());
+        assert_eq!(
+            rewrite.quarantine_reason,
+            Some("unclaimed-known-high-level")
+        );
+        assert_eq!(
+            payload, original,
+            "embedded Module_Info bytes must not retag a sibling high-level family"
+        );
+        assert!(
+            runtime.observed_module_context().is_none(),
+            "Module_Info context must come only from a Module_Info-owned payload"
+        );
+    }
+
     fn exact_ee_module_info_payload() -> Vec<u8> {
         let mut payload = vec![b'P', 0x03, 0x01, 0, 0, 0, 0];
         write_test_string(&mut payload, "Path of Ascension CEP Legends");
@@ -3680,6 +3735,26 @@ mod module_info_dispatch_tests {
         let mut bytes = [0u8; 16];
         bytes[..value.len()].copy_from_slice(value.as_bytes());
         out.extend_from_slice(&bytes);
+    }
+
+    fn legacy_module_info_payload() -> Vec<u8> {
+        let mut payload = vec![b'P', 0x03, 0x01, 0, 0, 0, 0];
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        payload.push(0x02);
+        write_test_string(&mut payload, "cep23_v1");
+        write_test_string(&mut payload, "");
+        payload.push(2);
+        write_test_resref16(&mut payload, "cep2_top_v23");
+        write_test_resref16(&mut payload, "cep2_custom");
+        write_test_resref16(&mut payload, "poa_mod");
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+        write_test_string(&mut payload, "Armor Shop");
+        payload.push(0);
+        let declared = u32::try_from(payload.len() - 1).expect("legacy payload length fits u32");
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload
     }
 }
 
