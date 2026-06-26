@@ -99,7 +99,10 @@ pub(super) fn translate_client_frame(
     if high.major == DEVICE_ADVERTISE_PROPERTY_MAJOR
         && high.minor == DEVICE_ADVERTISE_PROPERTY_MINOR
     {
-        return consume_device_advertise_property(&bytes, view);
+        if device_advertise_property_payload_valid(payload) {
+            return consume_device_advertise_property(&bytes, view, payload);
+        }
+        return consume_unclaimed_client_high_level(&bytes, view);
     }
 
     let mut translated_payload = payload.to_vec();
@@ -340,6 +343,10 @@ fn device_advertise_property_unit_end(payload: &[u8]) -> Option<usize> {
     Some(end)
 }
 
+fn device_advertise_property_payload_valid(payload: &[u8]) -> bool {
+    device_advertise_property_unit_end(payload) == Some(payload.len())
+}
+
 fn read_le_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
     Some(u32::from_le_bytes(slice))
@@ -504,7 +511,12 @@ fn consume_unclaimed_client_high_level(
 fn consume_device_advertise_property(
     bytes: &[u8],
     view: &MFrameView,
+    payload: &[u8],
 ) -> anyhow::Result<ClientFrameTranslation> {
+    if !device_advertise_property_payload_valid(payload) {
+        anyhow::bail!("client Device_AdvertiseProperty payload did not match verified EE shape");
+    }
+
     tracing::info!(
         old_len = bytes.len(),
         sequence = view.sequence,
@@ -577,6 +589,15 @@ mod tests {
         packet
     }
 
+    fn valid_device_advertise_property_payload() -> Vec<u8> {
+        let mut payload = vec![0x70, 0x36, 0x01];
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.push(b'x');
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
     #[test]
     fn claimed_area_loaded_duplicate_rewrites_to_empty_progress_frame() {
         let packet = build_client_m_frame(0x1234, 0x0056, &[0x70, 0x04, 0x03]);
@@ -605,11 +626,7 @@ mod tests {
 
     #[test]
     fn mixed_primary_payload_consumes_device_and_forwards_claimed_unit() {
-        let mut payload = vec![0x70, 0x36, 0x01];
-        payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.push(b'x');
-        payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        let mut payload = valid_device_advertise_property_payload();
         payload.extend_from_slice(&[0x70, 0x11, 0x01]);
 
         let packet = build_client_m_frame(0x0034, 0x0007, &payload);
@@ -635,12 +652,12 @@ mod tests {
 
     #[test]
     fn device_advertise_property_becomes_empty_server_paced_carrier() {
-        let packet =
-            build_client_m_frame(0x002A, 0x0003, &[0x70, 0x36, 0x01, 0x04, 0x00, 0x00, 0x00]);
+        let payload = valid_device_advertise_property_payload();
+        let packet = build_client_m_frame(0x002A, 0x0003, &payload);
         let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
 
-        let translated =
-            consume_device_advertise_property(&packet, &view).expect("device should consume");
+        let translated = consume_device_advertise_property(&packet, &view, &payload)
+            .expect("device should consume");
 
         assert_eq!(translated.family, VerifiedFamily::ConsumedEmptyMFrame);
         assert_eq!(translated.proxy_ack_client_sequence, None);
@@ -656,6 +673,30 @@ mod tests {
         assert_eq!(out_view.packetized_sequence, 1);
         assert_eq!(out_view.payload_length, 0);
         assert_eq!(out_view.trailing_payload_length, 0);
+    }
+
+    #[test]
+    fn malformed_device_advertise_property_is_not_semantically_claimed() {
+        let payload = [0x70, 0x36, 0x01, 0x04, 0x00, 0x00, 0x00];
+        let packet = build_client_m_frame(0x002B, 0x0003, &payload);
+        let view = MFrameView::parse(&packet).expect("fixture should parse as M frame");
+
+        assert!(!device_advertise_property_payload_valid(&payload));
+        assert!(
+            consume_device_advertise_property(&packet, &view, &payload).is_err(),
+            "major/minor alone must not prove Device_AdvertiseProperty ownership"
+        );
+
+        let mut state = SemanticSessionState::default();
+        let translated = translate_client_frame(packet, &view, &mut state)
+            .expect("malformed client high-level is isolated through the quarantine path");
+        assert_eq!(translated.family, VerifiedFamily::ConsumedEmptyMFrame);
+        let out = translated
+            .packet
+            .expect("unclaimed client high-level should still be isolated from Diamond");
+        let out_view = MFrameView::parse(&out).expect("empty quarantine carrier should parse");
+        assert!(out_view.crc_valid);
+        assert_eq!(out_view.payload_length, 0);
     }
 
     #[test]
