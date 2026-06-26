@@ -1696,8 +1696,7 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x28, 0x01..=0x08) => {
             HighPayloadValidation::Exact(ambient::claim_payload_if_verified(payload).is_some())
         }
-        (0x31, 0x01 | 0x02) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
-        (0x31, 0x03) => HighPayloadValidation::Exact(
+        (0x31, 0x01 | 0x02 | 0x03) => HighPayloadValidation::Exact(
             play_module_character_list::claim_payload_if_verified(payload).is_some(),
         ),
         (0x32, 0x01 | 0x02) => {
@@ -3007,6 +3006,39 @@ mod tests {
             !exact_high_payload_shape_valid(&transfer_control),
             "known-opcode strict validation must not allow unmodeled Party control wrappers"
         );
+    }
+
+    #[test]
+    fn strict_play_module_character_list_uses_focused_owner_for_empty_controls() {
+        for minor in [0x01, 0x02] {
+            let payload = [0x50, 0x31, minor];
+            assert!(
+                play_module_character_list::claim_payload_if_verified(&payload).is_some(),
+                "focused PlayModuleCharacterList owner should claim minor {minor:#04x}"
+            );
+            assert!(
+                verified_family_inflated_payload_valid(
+                    VerifiedFamily::PlayModuleCharacterList,
+                    &payload,
+                ),
+                "verified-family proof must share the focused PlayModuleCharacterList owner"
+            );
+            assert!(
+                exact_high_payload_shape_valid(&payload),
+                "known-opcode strict validation must share the focused PlayModuleCharacterList owner"
+            );
+
+            let mut trailing = payload.to_vec();
+            trailing.push(0);
+            assert!(
+                play_module_character_list::claim_payload_if_verified(&trailing).is_none(),
+                "focused owner must reject trailing bytes for minor {minor:#04x}"
+            );
+            assert!(
+                !exact_high_payload_shape_valid(&trailing),
+                "known-opcode strict validation must reject the same trailing bytes"
+            );
+        }
     }
 
     #[test]
