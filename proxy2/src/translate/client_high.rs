@@ -31,7 +31,11 @@ pub struct ClientHighConsumedSummary {
 }
 
 pub fn claim_consumed_payload_if_verified(payload: &[u8]) -> Option<ClientHighConsumedSummary> {
-    if let Some(summary) = client_gui_event::claim_payload_if_verified(payload) {
+    let high = HighLevel::parse(payload)?;
+
+    if client_translator_may_claim_parsed_high_level("ClientGuiEvent", high)
+        && let Some(summary) = client_gui_event::claim_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = summary.packet_name,
             event_a = summary.event_a,
@@ -59,42 +63,54 @@ pub fn claim_or_rewrite_payload_if_verified(
 ) -> Option<ClientHighClaimSummary> {
     let high = HighLevel::parse(payload)?;
 
-    if let Some(summary) = client_server_status::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientServerStatus", high)
+        && let Some(summary) = client_server_status::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientServerStatus",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientServerStatus,
         });
     }
-    if let Some(summary) = client_char_list::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientCharList", high)
+        && let Some(summary) = client_char_list::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientCharList",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientCharList,
         });
     }
-    if let Some(summary) = play_module_character_list::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("PlayModuleCharacterList", high)
+        && let Some(summary) = play_module_character_list::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "PlayModuleCharacterList",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::PlayModuleCharacterList,
         });
     }
-    if let Some(summary) = client_login::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientLogin", high)
+        && let Some(summary) = client_login::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientLogin",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientLogin,
         });
     }
-    if let Some(summary) = client_module::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientModule", high)
+        && let Some(summary) = client_module::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientModule",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientModule,
         });
     }
-    if let Some(summary) = client_gui_inventory::claim_or_rewrite_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientGuiInventory", high)
+        && let Some(summary) = client_gui_inventory::claim_or_rewrite_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = summary.packet_name,
             kind = ?summary.kind,
@@ -110,7 +126,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientGuiInventory,
         });
     }
-    if let Some(summary) = client_character_sheet::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientCharacterSheet", high)
+        && let Some(summary) = client_character_sheet::claim_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = summary.packet_name,
             status = summary.status,
@@ -125,8 +143,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientCharacterSheet,
         });
     }
-    if let Some(summary) =
-        client_input::claim_or_rewrite_payload_if_verified_with_state(payload, state)
+    if client_translator_may_claim_parsed_high_level("ClientInput", high)
+        && let Some(summary) =
+            client_input::claim_or_rewrite_payload_if_verified_with_state(payload, state)
     {
         tracing::info!(
             packet_name = summary.packet_name,
@@ -143,7 +162,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientInput,
         });
     }
-    if let Some(summary) = dialog::claim_client_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("Dialog", high)
+        && let Some(summary) = dialog::claim_client_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = high.name(),
             kind = ?summary.kind,
@@ -157,7 +178,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::Dialog,
         });
     }
-    if let Some(summary) = journal::claim_client_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientJournal", high)
+        && let Some(summary) = journal::claim_client_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = high.name(),
             minor = summary.minor,
@@ -171,7 +194,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::Journal,
         });
     }
-    if let Some(summary) = client_quickbar::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientQuickbar", high)
+        && let Some(summary) = client_quickbar::claim_payload_if_verified(payload)
+    {
         tracing::info!(
             packet_name = summary.packet_name,
             slot = summary.slot,
@@ -185,14 +210,18 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientQuickbar,
         });
     }
-    if let Some(summary) = client_area::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientArea", high)
+        && let Some(summary) = client_area::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientArea",
             packet_name: summary.packet_name,
             verified_family: VerifiedFamily::ClientArea,
         });
     }
-    if let Some(_summary) = party::claim_payload_if_verified(payload) {
+    if client_translator_may_claim_parsed_high_level("ClientParty", high)
+        && let Some(_summary) = party::claim_payload_if_verified(payload)
+    {
         return Some(ClientHighClaimSummary {
             family_name: "ClientParty",
             packet_name: high.name(),
@@ -209,4 +238,123 @@ pub fn claim_or_rewrite_payload_if_verified(
         "client high-level payload has no semantic owner"
     );
     None
+}
+
+fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) -> bool {
+    match family_name {
+        "ClientServerStatus" => high.major == 0x01 && high.minor == 0x00,
+        "ClientLogin" => high.major == 0x02 && matches!(high.minor, 0x0D | 0x11),
+        "ClientModule" => high.major == 0x03 && high.minor == 0x02,
+        "ClientArea" => high.major == 0x04 && high.minor == 0x03,
+        "ClientInput" => {
+            high.major == 0x06
+                && matches!(
+                    high.minor,
+                    0x01 | 0x02
+                        | 0x03
+                        | 0x05
+                        | 0x06
+                        | 0x07
+                        | 0x09
+                        | 0x0A
+                        | 0x0B
+                        | 0x0C
+                        | 0x0D
+                        | 0x0E
+                        | 0x10
+                        | 0x11
+                )
+        }
+        "ClientGuiInventory" => high.major == 0x0D && matches!(high.minor, 0x01 | 0x02),
+        "ClientParty" => high.major == 0x0E && matches!(high.minor, 0x01..=0x0E),
+        "ClientCharList" => high.major == 0x11 && matches!(high.minor, 0x01 | 0x03),
+        "Dialog" => high.major == 0x14 && high.minor == 0x03,
+        "ClientCharacterSheet" => high.major == 0x15 && high.minor == 0x01,
+        "ClientJournal" => high.major == 0x1C && matches!(high.minor, 0x0A | 0x0B),
+        "ClientQuickbar" => high.major == 0x1E && high.minor == 0x02,
+        "PlayModuleCharacterList" => high.major == 0x31 && matches!(high.minor, 0x01..=0x03),
+        "ClientGuiEvent" => high.major == 0x35 && high.minor == 0x01,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn high(major: u8, minor: u8) -> HighLevel {
+        HighLevel {
+            envelope: 0x70,
+            major,
+            minor,
+        }
+    }
+
+    #[test]
+    fn client_translator_filter_accepts_owned_high_level_families() {
+        for (family_name, high) in [
+            ("ClientServerStatus", high(0x01, 0x00)),
+            ("ClientLogin", high(0x02, 0x0D)),
+            ("ClientLogin", high(0x02, 0x11)),
+            ("ClientModule", high(0x03, 0x02)),
+            ("ClientArea", high(0x04, 0x03)),
+            ("ClientInput", high(0x06, 0x01)),
+            ("ClientInput", high(0x06, 0x11)),
+            ("ClientGuiInventory", high(0x0D, 0x02)),
+            ("ClientParty", high(0x0E, 0x0E)),
+            ("ClientCharList", high(0x11, 0x03)),
+            ("Dialog", high(0x14, 0x03)),
+            ("ClientCharacterSheet", high(0x15, 0x01)),
+            ("ClientJournal", high(0x1C, 0x0A)),
+            ("ClientQuickbar", high(0x1E, 0x02)),
+            ("PlayModuleCharacterList", high(0x31, 0x03)),
+            ("ClientGuiEvent", high(0x35, 0x01)),
+        ] {
+            assert!(
+                client_translator_may_claim_parsed_high_level(family_name, high),
+                "{family_name} should probe owned client high-level {:02X}/{:02X}",
+                high.major,
+                high.minor
+            );
+        }
+    }
+
+    #[test]
+    fn client_translator_filter_rejects_sibling_high_level_families() {
+        for (family_name, high) in [
+            ("ClientServerStatus", high(0x01, 0x03)),
+            ("ClientLogin", high(0x02, 0x10)),
+            ("ClientModule", high(0x03, 0x01)),
+            ("ClientArea", high(0x04, 0x01)),
+            ("ClientInput", high(0x06, 0x04)),
+            ("ClientGuiInventory", high(0x0D, 0x03)),
+            ("ClientParty", high(0x0E, 0x0F)),
+            ("ClientCharList", high(0x11, 0x04)),
+            ("Dialog", high(0x14, 0x01)),
+            ("ClientCharacterSheet", high(0x15, 0x02)),
+            ("ClientJournal", high(0x1C, 0x09)),
+            ("ClientQuickbar", high(0x1E, 0x01)),
+            ("PlayModuleCharacterList", high(0x31, 0x04)),
+            ("ClientGuiEvent", high(0x35, 0x02)),
+        ] {
+            assert!(
+                !client_translator_may_claim_parsed_high_level(family_name, high),
+                "{family_name} must not probe unsupported client high-level {:02X}/{:02X}",
+                high.major,
+                high.minor
+            );
+        }
+    }
+
+    #[test]
+    fn client_translator_filter_rejects_cross_family_major() {
+        assert!(!client_translator_may_claim_parsed_high_level(
+            "ClientInput",
+            high(0x04, 0x03)
+        ));
+        assert!(!client_translator_may_claim_parsed_high_level(
+            "ClientArea",
+            high(0x06, 0x01)
+        ));
+    }
 }
