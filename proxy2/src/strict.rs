@@ -19,9 +19,10 @@ use crate::{
         area_visual_effect, camera, char_list, chat, client_area, client_char_list,
         client_character_sheet, client_gui_event, client_gui_inventory, client_input, client_login,
         client_module, client_quickbar, client_server_admin, client_server_status,
-        client_side_message, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object_update, loadbar, login, module, module_time, party,
-        play_module_character_list, player_list, quickbar, safe_projectile, sound,
+        client_side_message, custom_token, cutscene, dialog, game_obj_update, gameplay_stream,
+        gui_timing_event, inventory, journal, live_object_update, loadbar, login, module,
+        module_time, party, play_module_character_list, player_list, quickbar, safe_projectile,
+        sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1433,12 +1434,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && player_list_shape_valid(payload)
         }
         VerifiedFamily::SetCustomToken => {
-            high.major == 0x32
-                && match high.minor {
-                    0x01 => set_custom_token_shape_valid(payload),
-                    0x02 => set_custom_token_list_shape_valid(payload),
-                    _ => false,
-                }
+            high.major == 0x32 && custom_token::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ServerStatusStatus => {
             high.major == 0x01 && high.minor == 0x01 && empty_high_level_shape_valid(payload)
@@ -1704,8 +1700,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x31, 0x03) => HighPayloadValidation::Exact(
             play_module_character_list::claim_payload_if_verified(payload).is_some(),
         ),
-        (0x32, 0x01) => HighPayloadValidation::Exact(set_custom_token_shape_valid(payload)),
-        (0x32, 0x02) => HighPayloadValidation::Exact(set_custom_token_list_shape_valid(payload)),
+        (0x32, 0x01 | 0x02) => {
+            HighPayloadValidation::Exact(custom_token::claim_payload_if_verified(payload).is_some())
+        }
         (0x33, 0x01 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07) => {
             HighPayloadValidation::Exact(cutscene::claim_payload_if_verified(payload).is_some())
         }
@@ -2088,117 +2085,6 @@ fn client_side_message_shape_valid(payload: &[u8]) -> bool {
     // therefore validates through the focused semantic owner instead of
     // carrying a second local copy of the feedback cursor rules in strict mode.
     client_side_message::claim_payload_if_verified(payload).is_some()
-}
-
-fn set_custom_token_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // `CNWSMessage::SendServerToPlayerSetCustomToken` sizes the write message
-    // as string_length + 8, writes a 32-bit token id, then writes a
-    // `CExoString` with a 32-bit length prefix. The declared CNW window must
-    // exactly consume those fields; the one extra byte observed in legacy M
-    // packetization is accepted only as a trailing fragment byte.
-    custom_token_payload_shape_valid(payload, 0x01)
-}
-
-fn set_custom_token_list_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // `CNWSMessage::SendServerToPlayerSetCustomTokenList` writes a 32-bit
-    // token count, then `(DWORD token id, CExoString value)` for each entry.
-    // A zero-count list is therefore exactly `P 32 02`, declared 11, count 0,
-    // plus the observed legacy packetized fragment terminator byte.
-    custom_token_payload_shape_valid(payload, 0x02)
-}
-
-fn custom_token_payload_shape_valid(payload: &[u8], expected_minor: u8) -> bool {
-    const READ_START: usize = 3 + 4;
-    const MAX_REASONABLE_CUSTOM_TOKEN_BYTES: usize = 4096;
-    const MAX_REASONABLE_CUSTOM_TOKEN_COUNT: usize = 4096;
-    const MAX_OBSERVED_FRAGMENT_BYTES: usize = 1;
-
-    if HighLevel::parse(payload)
-        .map(|high| high.major != 0x32 || high.minor != expected_minor)
-        .unwrap_or(true)
-    {
-        return false;
-    }
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < READ_START
-        || declared >= payload.len()
-        || payload.len().saturating_sub(declared) > MAX_OBSERVED_FRAGMENT_BYTES
-    {
-        return false;
-    }
-
-    let mut cursor = READ_START;
-    match expected_minor {
-        0x01 => {
-            cursor = match cursor.checked_add(4) {
-                Some(cursor) if cursor <= declared => cursor,
-                _ => return false,
-            };
-            cursor = match custom_token_c_exo_string_end(
-                payload,
-                cursor,
-                declared,
-                MAX_REASONABLE_CUSTOM_TOKEN_BYTES,
-            ) {
-                Some(cursor) => cursor,
-                None => return false,
-            };
-        }
-        0x02 => {
-            let Some(count) =
-                read_le_u32(payload, cursor).and_then(|value| usize::try_from(value).ok())
-            else {
-                return false;
-            };
-            if count > MAX_REASONABLE_CUSTOM_TOKEN_COUNT {
-                return false;
-            }
-            cursor = match cursor.checked_add(4) {
-                Some(cursor) => cursor,
-                None => return false,
-            };
-            for _ in 0..count {
-                cursor = match cursor.checked_add(4) {
-                    Some(cursor) if cursor <= declared => cursor,
-                    _ => return false,
-                };
-                cursor = match custom_token_c_exo_string_end(
-                    payload,
-                    cursor,
-                    declared,
-                    MAX_REASONABLE_CUSTOM_TOKEN_BYTES,
-                ) {
-                    Some(cursor) => cursor,
-                    None => return false,
-                };
-            }
-        }
-        _ => return false,
-    }
-
-    cursor == declared
-}
-
-fn custom_token_c_exo_string_end(
-    payload: &[u8],
-    cursor: usize,
-    declared: usize,
-    max_string_bytes: usize,
-) -> Option<usize> {
-    let length = read_le_u32(payload, cursor).and_then(|value| usize::try_from(value).ok())?;
-    if length > max_string_bytes {
-        return None;
-    }
-    cursor
-        .checked_add(4)?
-        .checked_add(length)
-        .filter(|end| *end <= declared)
 }
 
 fn server_status_module_resources_shape_valid(payload: &[u8]) -> bool {
@@ -3012,6 +2898,46 @@ mod tests {
     }
 
     #[test]
+    fn strict_custom_token_uses_focused_owner() {
+        let exact_set = build_custom_token_set(0x1234, b"hello");
+        assert!(
+            custom_token::claim_payload_if_verified(&exact_set).is_some(),
+            "focused SetCustomToken owner accepts exact CNW token payloads"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::SetCustomToken,
+            &exact_set
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_set));
+
+        let exact_list =
+            build_custom_token_list_with_count(2, &[(0x1234, &b"a"[..]), (0x5678, &b"bc"[..])]);
+        assert!(
+            custom_token::claim_payload_if_verified(&exact_list).is_some(),
+            "focused SetCustomTokenList owner accepts counted token rows"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::SetCustomToken,
+            &exact_list
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_list));
+
+        let malformed = build_custom_token_list_with_count(2, &[(0x1234, &b"a"[..])]);
+        assert!(
+            custom_token::claim_payload_if_verified(&malformed).is_none(),
+            "malformed custom token lists are owned only by the rewrite path"
+        );
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::SetCustomToken, &malformed),
+            "verified SetCustomToken proof must not bypass the focused owner"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&malformed),
+            "known-opcode strict validation must share the focused custom-token owner"
+        );
+    }
+
+    #[test]
     fn strict_party_list_counts_declared_member_rows() {
         let empty_party = build_party_list(&[]);
         assert!(verified_family_inflated_payload_valid(
@@ -3265,6 +3191,37 @@ mod tests {
         payload.extend_from_slice(&[0x70, 0x0E, minor]);
         payload.extend_from_slice(&(PARTY_READ_START as u32).to_le_bytes());
         payload.push(EMPTY_FRAGMENT_BYTE);
+        payload
+    }
+
+    fn build_custom_token_set(token_id: u32, value: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4 + value.len();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x32, 0x01]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&token_id.to_le_bytes());
+        payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        payload.extend_from_slice(value);
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_custom_token_list_with_count(count: u32, entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let body_len = 4 + entries
+            .iter()
+            .map(|(_, value)| 4 + 4 + value.len())
+            .sum::<usize>();
+        let declared = 3 + 4 + body_len;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x32, 0x02]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&count.to_le_bytes());
+        for (token_id, value) in entries {
+            payload.extend_from_slice(&token_id.to_le_bytes());
+            payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            payload.extend_from_slice(value);
+        }
+        payload.push(0x60);
         payload
     }
 

@@ -40,6 +40,30 @@ pub struct CustomTokenRewriteSummary {
     pub reason: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CustomTokenClaimSummary {
+    pub minor: u8,
+    pub declared: usize,
+    pub token_count: u32,
+}
+
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<CustomTokenClaimSummary> {
+    if !is_custom_token_payload(payload) {
+        return None;
+    }
+
+    let parsed = parse_valid_custom_token_payload(payload)?;
+    if !parsed.valid {
+        return None;
+    }
+
+    Some(CustomTokenClaimSummary {
+        minor: payload[2],
+        declared: read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)? as usize,
+        token_count: observed_token_count(payload).unwrap_or(0),
+    })
+}
+
 pub fn claim_or_rewrite_payload_if_verified(
     payload: &mut Vec<u8>,
 ) -> Option<CustomTokenRewriteSummary> {
@@ -182,4 +206,83 @@ fn observed_token_count(payload: &[u8]) -> Option<u32> {
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     Some(u32::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_token_payload(token_id: u32, value: &[u8]) -> Vec<u8> {
+        let declared = READ_START + 4 + 4 + value.len();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[
+            HIGH_LEVEL_ENVELOPE,
+            CUSTOM_TOKEN_MAJOR,
+            CUSTOM_TOKEN_SET_MINOR,
+        ]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&token_id.to_le_bytes());
+        payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        payload.extend_from_slice(value);
+        payload.push(0x60);
+        payload
+    }
+
+    fn list_token_payload(entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let body_len = 4 + entries
+            .iter()
+            .map(|(_, value)| 4 + 4 + value.len())
+            .sum::<usize>();
+        let declared = READ_START + body_len;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[
+            HIGH_LEVEL_ENVELOPE,
+            CUSTOM_TOKEN_MAJOR,
+            CUSTOM_TOKEN_LIST_MINOR,
+        ]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (token_id, value) in entries {
+            payload.extend_from_slice(&token_id.to_le_bytes());
+            payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            payload.extend_from_slice(value);
+        }
+        payload.push(0x60);
+        payload
+    }
+
+    #[test]
+    fn claims_exact_set_custom_token_payload() {
+        let payload = set_token_payload(0x1234, b"hello");
+
+        let claim = claim_payload_if_verified(&payload).expect("custom token should claim");
+
+        assert_eq!(claim.minor, CUSTOM_TOKEN_SET_MINOR);
+        assert_eq!(claim.declared, READ_START + 4 + 4 + 5);
+        assert_eq!(claim.token_count, 1);
+    }
+
+    #[test]
+    fn claims_exact_set_custom_token_list_payload() {
+        let payload = list_token_payload(&[(0x1234, &b"a"[..]), (0x5678, &b"bc"[..])]);
+
+        let claim = claim_payload_if_verified(&payload).expect("custom token list should claim");
+
+        assert_eq!(claim.minor, CUSTOM_TOKEN_LIST_MINOR);
+        assert_eq!(claim.declared, READ_START + 4 + (4 + 4 + 1) + (4 + 4 + 2));
+        assert_eq!(claim.token_count, 2);
+    }
+
+    #[test]
+    fn malformed_custom_token_is_rewrite_only() {
+        let mut payload = list_token_payload(&[(0x1234, &b"a"[..])]);
+        payload[3..7].copy_from_slice(&(READ_START as u32).to_le_bytes());
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+
+        let summary = rewrite_payload_if_possible(&mut payload)
+            .expect("malformed custom token should be rewritten");
+        assert_eq!(summary.reason, "malformed-custom-token-cnw-window");
+        assert!(claim_payload_if_verified(&payload).is_some());
+    }
 }

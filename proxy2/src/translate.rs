@@ -34,7 +34,7 @@ pub(crate) mod client_server_admin;
 pub(crate) mod client_server_status;
 pub(crate) mod client_side_message;
 mod cnw_message;
-mod custom_token;
+pub(crate) mod custom_token;
 pub(crate) mod cutscene;
 pub(crate) mod diagnostics;
 pub(crate) mod dialog;
