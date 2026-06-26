@@ -51,7 +51,7 @@ pub(crate) mod login;
 mod m_frame;
 pub(crate) mod module;
 mod module_resources;
-mod module_time;
+pub(crate) mod module_time;
 pub(crate) mod party;
 pub(crate) mod placeables;
 pub(crate) mod play_module_character_list;

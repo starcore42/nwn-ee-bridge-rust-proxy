@@ -20,7 +20,7 @@ use crate::{
         client_character_sheet, client_gui_event, client_gui_inventory, client_input, client_login,
         client_module, client_quickbar, client_server_admin, client_server_status,
         client_side_message, cutscene, dialog, game_obj_update, gameplay_stream, gui_timing_event,
-        inventory, journal, live_object_update, loadbar, login, module, party,
+        inventory, journal, live_object_update, loadbar, login, module, module_time, party,
         play_module_character_list, player_list, quickbar, safe_projectile, sound,
     },
 };
@@ -1805,63 +1805,10 @@ fn coalesced_payload_shape_valid(
 }
 
 fn module_time_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // EE `CNWSMessage::SendServerToPlayerModuleUpdate_Time` emits server
-    // message 03/03 by creating a CNW read message, writing one update mask
-    // byte, then conditionally writing byte/dword fields for mask bits 0x01,
-    // 0x02, 0x04, 0x08, and 0x10. The 1.69 capture is byte-identical for
-    // the simple time-of-day case (`mask=0x02`, one value byte), so this is a
-    // verified no-op translator path rather than a permissive passthrough.
-    const HEADER_AND_DECLARED_LEN: usize = 7;
-    const MASK_OFFSET: usize = HEADER_AND_DECLARED_LEN;
-    const MAX_OBSERVED_TRAILING_BYTES: usize = 1;
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared <= MASK_OFFSET
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_OBSERVED_TRAILING_BYTES
-    {
-        return false;
-    }
-
-    let mask = payload[MASK_OFFSET];
-    if mask == 0 || (mask & !0x1F) != 0 {
-        return false;
-    }
-
-    let mut cursor = MASK_OFFSET + 1;
-    if (mask & 0x01) != 0 {
-        if cursor >= declared {
-            return false;
-        }
-        let time_state = payload[cursor];
-        cursor += 1;
-        if matches!(time_state, 3 | 4) {
-            cursor = match cursor.checked_add(4) {
-                Some(next) if next <= declared => next,
-                _ => return false,
-            };
-        }
-    }
-    for bit in [0x02, 0x04, 0x08] {
-        if (mask & bit) != 0 {
-            cursor = match cursor.checked_add(1) {
-                Some(next) if next <= declared => next,
-                _ => return false,
-            };
-        }
-    }
-    if (mask & 0x10) != 0 {
-        cursor = match cursor.checked_add(4) {
-            Some(next) if next <= declared => next,
-            _ => return false,
-        };
-    }
-
-    cursor == declared
+    // Strict validation must share the focused Module_Time owner. The packet
+    // has a mask-driven read-buffer body and consumes no CNW BOOLs, so local
+    // copies of the cursor walk can drift on zero masks or fragment-tail bits.
+    module_time::claim_payload_if_verified(payload).is_some()
 }
 
 fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
@@ -2998,6 +2945,34 @@ mod tests {
     }
 
     #[test]
+    fn strict_module_time_uses_focused_fragment_owner() {
+        let zero_mask = build_module_time(0, &[], &[0x60]);
+        assert!(
+            module_time::claim_payload_if_verified(&zero_mask).is_some(),
+            "focused Module_Time owner accepts the exact zero-mask cursor"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ModuleTime,
+            &zero_mask
+        ));
+        assert!(exact_high_payload_shape_valid(&zero_mask));
+
+        let data_bits = build_module_time(0x02, &[0x12], &[0x80]);
+        assert!(
+            module_time::claim_payload_if_verified(&data_bits).is_none(),
+            "Module_Time owns no fragment BOOLs"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ModuleTime,
+            &data_bits
+        ));
+        assert!(
+            !exact_high_payload_shape_valid(&data_bits),
+            "known-opcode strict validation must share the focused Module_Time owner"
+        );
+    }
+
+    #[test]
     fn strict_loadbar_uses_focused_fragment_owner() {
         let start = loadbar::start_payload(2);
         let end = loadbar::end_success_payload(2);
@@ -3171,6 +3146,16 @@ mod tests {
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(body);
         payload.push(0x60);
+        payload
+    }
+
+    fn build_module_time(mask: u8, body: &[u8], tail: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 1 + body.len();
+        let mut payload = vec![b'P', 0x03, 0x03];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(mask);
+        payload.extend_from_slice(body);
+        payload.extend_from_slice(tail);
         payload
     }
 
