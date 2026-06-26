@@ -506,7 +506,13 @@ fn rewrite_single_inflated_payload_for_ee(
 
     dump_live_object_probe_if_enabled(payload, "server-dispatch-original-probe");
 
+    let parsed_high = HighLevel::parse(payload);
     for translator in SERVER_TO_CLIENT_TRANSLATORS {
+        if parsed_high.is_some_and(|high| {
+            !translator_may_claim_parsed_high_level(translator.family_name, high)
+        }) {
+            continue;
+        }
         let outcome = if translator.family_name == "GuiQuickbar" {
             translate_quickbar_with_registry(payload, object_registry)
         } else {
@@ -602,6 +608,50 @@ fn is_module_info_high_level_payload(payload: &[u8]) -> bool {
         ),
         (Some(b'P' | 0x70), Some(0x03), Some(0x01))
     )
+}
+
+fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) -> bool {
+    match family_name {
+        "SetCustomToken" => high.major == 0x32,
+        "Login" => high.major == 0x02,
+        "Module_Time" => high.major == 0x03 && high.minor == 0x03,
+        "Module_EndGame" => high.major == 0x03 && high.minor == 0x0E,
+        "Camera" => high.major == 0x10,
+        "Cutscene" => high.major == 0x33,
+        "ServerStatus_ModuleResources" => high.major == 0x01 && high.minor == 0x03,
+        "LoadBar" => high.major == 0x2C,
+        "GuiTimingEvent_Info" => high.major == 0x30 && high.minor == 0x01,
+        "ClientSideMessage" => high.major == 0x12,
+        "Journal" => high.major == 0x1C,
+        "Chat" => high.major == 0x09,
+        "Sound" => high.major == 0x17,
+        "Ambient" => high.major == 0x28,
+        "Dialog" => high.major == 0x14,
+        "Inventory" => high.major == 0x0C,
+        "GameObjUpdate_ObjControl" => high.major == 0x05 && high.minor == 0x02,
+        "GameObjUpdate_VisEffect" => high.major == 0x05 && high.minor == 0x03,
+        "GameObjUpdate_DestroyItem" => high.major == 0x05 && high.minor == 0x07,
+        "Area_VisualEffect" => high.major == 0x04 && high.minor == 0x02,
+        "Area_ChangeDayNight" => high.major == 0x04 && high.minor == 0x06,
+        "SafeProjectile" => high.major == 0x22 && high.minor == 0x01,
+        "Party" => high.major == 0x0E,
+        "PlayModuleCharacterList" => high.major == 0x31,
+        "GuiQuickbar" => high.major == 0x1E,
+        "CNWPrefixedFragmentsTransportOnly" => true,
+        "CharList" => high.major == 0x11,
+        "PlayerList" => high.major == 0x0A,
+        "GameObjUpdate_LiveObjectPrefixedFragments"
+        | "GameObjUpdate_LiveObjectExactRecords"
+        | "GameObjUpdate_LiveObjectAddRecords"
+        | "GameObjUpdate_LiveObjectUpdateRecords"
+        | "GameObjUpdate_LiveObjectClaimedRecords"
+        | "GameObjUpdate_LiveObjectDeclaredLengthRepair" => {
+            high.major == 0x05 && high.minor == 0x01
+        }
+        "Area_ClientArea" => high.major == 0x04 && high.minor == 0x01,
+        "Module_Info" => high.major == 0x03 && high.minor == 0x01,
+        _ => true,
+    }
 }
 
 fn rewrite_live_object_high_level_payload_for_ee(
@@ -3707,6 +3757,64 @@ mod module_info_dispatch_tests {
             runtime.observed_module_context().is_none(),
             "Module_Info context must come only from a Module_Info-owned payload"
         );
+    }
+
+    #[test]
+    fn dispatcher_translator_filter_rejects_sibling_high_level_families() {
+        let module_info = HighLevel {
+            envelope: b'P',
+            major: 0x03,
+            minor: 0x01,
+        };
+        assert!(translator_may_claim_parsed_high_level(
+            "Module_Info",
+            module_info
+        ));
+        assert!(!translator_may_claim_parsed_high_level(
+            "Area_ClientArea",
+            module_info
+        ));
+        assert!(!translator_may_claim_parsed_high_level(
+            "Module_Time",
+            module_info
+        ));
+
+        let area_client_area = HighLevel {
+            envelope: b'P',
+            major: 0x04,
+            minor: 0x01,
+        };
+        assert!(translator_may_claim_parsed_high_level(
+            "Area_ClientArea",
+            area_client_area
+        ));
+        assert!(!translator_may_claim_parsed_high_level(
+            "Area_VisualEffect",
+            area_client_area
+        ));
+        assert!(!translator_may_claim_parsed_high_level(
+            "Module_Info",
+            area_client_area
+        ));
+
+        let object_control = HighLevel {
+            envelope: b'P',
+            major: 0x05,
+            minor: 0x02,
+        };
+        assert!(translator_may_claim_parsed_high_level(
+            "GameObjUpdate_ObjControl",
+            object_control
+        ));
+        assert!(!translator_may_claim_parsed_high_level(
+            "GameObjUpdate_LiveObjectDeclaredLengthRepair",
+            object_control
+        ));
+
+        assert!(translator_may_claim_parsed_high_level(
+            "CNWPrefixedFragmentsTransportOnly",
+            module_info
+        ));
     }
 
     fn exact_ee_module_info_payload() -> Vec<u8> {
