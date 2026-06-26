@@ -1683,8 +1683,8 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(dialog::claim_payload_if_verified(payload).is_some())
         }
         (0x17, 0x03) => HighPayloadValidation::Exact(sound_shape_valid(payload)),
-        (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0C) => {
-            HighPayloadValidation::Exact(journal::claim_payload_if_verified(payload).is_some())
+        (0x1C, 0x01..=0x05 | 0x07 | 0x08 | 0x0A | 0x0B | 0x0C) => {
+            HighPayloadValidation::Exact(journal_shape_valid(payload))
         }
         (0x1E, 0x01) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
         (0x1E, 0x02) => {
@@ -2826,6 +2826,28 @@ mod tests {
             assert!(
                 !verified_family_inflated_payload_valid(VerifiedFamily::Journal, &trailing),
                 "journal quest-screen minor {minor:#04x} should reject trailing bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_known_high_journal_uses_focused_client_owner() {
+        for minor in [0x0A, 0x0B] {
+            let payload = vec![0x70, 0x1C, minor];
+            assert!(
+                journal::claim_client_payload_if_verified(&payload).is_some(),
+                "focused client Journal owner should claim quest-screen minor {minor:#04x}"
+            );
+            assert!(
+                exact_high_payload_shape_valid(&payload),
+                "known-high validation must share the focused client Journal owner"
+            );
+
+            let mut trailing = payload;
+            trailing.push(0);
+            assert!(
+                !exact_high_payload_shape_valid(&trailing),
+                "known-high validation must reject trailing client Journal bytes"
             );
         }
     }
