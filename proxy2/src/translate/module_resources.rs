@@ -30,7 +30,11 @@ const MODULE_RUNNING_MINOR: u8 = 0x03;
 const RESREF_BYTES: usize = 16;
 const MAX_SERVER_STATUS_STRING: usize = 4096;
 const MAX_MODULE_RESOURCES_PAYLOAD: usize = 4096;
+const MAX_NWSYNC_STRING: usize = 255;
+const MAX_MODULE_RESOURCE_STRING: usize = 4096;
 const MAX_OBSERVED_HAK_COUNT: usize = 255;
+const MODULE_RESOURCES_FRAGMENT_BYTES: usize = 1;
+const MODULE_RESOURCES_FINAL_BITS: u8 = 4;
 
 use crate::nwsync::Advertisement;
 
@@ -46,6 +50,16 @@ pub struct ModuleResourcesRewriteSummary {
     pub profile_name: String,
     pub resource_source: &'static str,
     pub custom_tlk: Option<String>,
+    pub hak_count: usize,
+    pub nwsync_advertised: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleResourcesClaimSummary {
+    pub declared: usize,
+    pub fragment_bytes: usize,
+    pub status_module_name_len: usize,
+    pub custom_tlk_len: usize,
     pub hak_count: usize,
     pub nwsync_advertised: bool,
 }
@@ -248,6 +262,86 @@ impl ModuleResourceWriter {
     }
 }
 
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ModuleResourcesClaimSummary> {
+    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
+        || !is_high_level_envelope(payload[0])
+        || payload[1] != SERVER_STATUS_MAJOR
+        || payload[2] != MODULE_RUNNING_MINOR
+    {
+        return None;
+    }
+
+    let declared = usize::try_from(read_u32_le(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES || declared > payload.len() {
+        return None;
+    }
+
+    let fragment = payload.get(declared..)?;
+    let nwsync_advertised = exact_module_resources_fragment_bool(fragment)?;
+
+    let mut cursor = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+    let (next, status_module_name_len) =
+        read_c_exo_string(payload, cursor, declared, MAX_SERVER_STATUS_STRING)?;
+    cursor = next;
+
+    if nwsync_advertised {
+        let (next, _) = read_c_exo_string(payload, cursor, declared, MAX_NWSYNC_STRING)?;
+        cursor = next;
+
+        if payload.get(cursor).copied() != Some(1) {
+            return None;
+        }
+        cursor += 1;
+
+        let (next, _) = read_c_exo_string(payload, cursor, declared, MAX_NWSYNC_STRING)?;
+        cursor = next;
+
+        let manifest_count = payload.get(cursor).copied().map(usize::from)?;
+        cursor += 1;
+        for _ in 0..manifest_count {
+            let (next, _) = read_c_exo_string(payload, cursor, declared, MAX_NWSYNC_STRING)?;
+            cursor = next.checked_add(2)?;
+            if cursor > declared {
+                return None;
+            }
+        }
+    }
+
+    let (next, custom_tlk_len) =
+        read_c_exo_string(payload, cursor, declared, MAX_MODULE_RESOURCE_STRING)?;
+    cursor = next;
+
+    let (next, _) = read_c_exo_string(payload, cursor, declared, MAX_MODULE_RESOURCE_STRING)?;
+    cursor = next;
+
+    let hak_count = payload.get(cursor).copied().map(usize::from)?;
+    cursor += 1;
+    if hak_count > MAX_OBSERVED_HAK_COUNT {
+        return None;
+    }
+
+    for _ in 0..hak_count {
+        let resref = payload.get(cursor..cursor + RESREF_BYTES)?;
+        if !fixed_resref16_bytes_are_valid(resref) {
+            return None;
+        }
+        cursor += RESREF_BYTES;
+    }
+
+    if cursor != declared {
+        return None;
+    }
+
+    Some(ModuleResourcesClaimSummary {
+        declared,
+        fragment_bytes: fragment.len(),
+        status_module_name_len,
+        custom_tlk_len,
+        hak_count,
+        nwsync_advertised,
+    })
+}
+
 pub fn rewrite_server_status_module_resources_payload(
     payload: &mut Vec<u8>,
     runtime: &ModuleResourceRuntime,
@@ -405,6 +499,37 @@ fn read_leading_string_from_read_buffer(read_buffer: &[u8]) -> Option<String> {
     )
 }
 
+fn read_c_exo_string(
+    payload: &[u8],
+    cursor: usize,
+    declared: usize,
+    max_string_bytes: usize,
+) -> Option<(usize, usize)> {
+    let length = usize::try_from(read_u32_le(payload, cursor)?).ok()?;
+    if length > max_string_bytes {
+        return None;
+    }
+    let end = cursor.checked_add(CNW_LENGTH_BYTES)?.checked_add(length)?;
+    if end > declared {
+        return None;
+    }
+    Some((end, length))
+}
+
+fn exact_module_resources_fragment_bool(fragment: &[u8]) -> Option<bool> {
+    if fragment.len() != MODULE_RESOURCES_FRAGMENT_BYTES {
+        return None;
+    }
+    let byte = fragment[0];
+    if (byte & 0xE0) >> 5 != MODULE_RESOURCES_FINAL_BITS {
+        return None;
+    }
+    if byte & 0x0F != 0 {
+        return None;
+    }
+    Some((byte & 0x10) != 0)
+}
+
 fn pack_cnw_msb_bits(mut bits: Vec<bool>) -> Option<Vec<u8>> {
     if bits.len() < 3 {
         return None;
@@ -434,6 +559,22 @@ fn is_resref_char(byte: u8) -> bool {
 fn fixed_resref_value_is_valid(value: &str) -> bool {
     let value = value.trim().strip_suffix(".tlk").unwrap_or(value.trim());
     !value.is_empty() && value.len() <= RESREF_BYTES && value.bytes().all(is_resref_char)
+}
+
+fn fixed_resref16_bytes_are_valid(bytes: &[u8]) -> bool {
+    if bytes.len() != RESREF_BYTES {
+        return false;
+    }
+
+    let mut cursor = 0;
+    while cursor < bytes.len() && bytes[cursor] != 0 {
+        if !is_resref_char(bytes[cursor]) {
+            return false;
+        }
+        cursor += 1;
+    }
+
+    cursor != 0 && bytes[cursor..].iter().all(|byte| *byte == 0)
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
@@ -474,6 +615,41 @@ mod tests {
         assert_eq!(&payload[..3], &[b'P', 0x01, 0x03]);
         assert_eq!(read_u32_le(&payload, 3), Some(summary.new_declared));
         assert!(summary.new_declared > summary.old_declared);
+    }
+
+    #[test]
+    fn exact_ee_module_resources_claim_rejects_fragment_tail_slack() {
+        let runtime = ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+
+        let (payload, rewrite) =
+            build_server_status_module_resources_payload(&runtime, "Path of Ascension")
+                .expect("module-resource payload");
+        let claim = claim_payload_if_verified(&payload).expect("exact EE module resources claim");
+
+        assert_eq!(claim.declared, rewrite.new_declared as usize);
+        assert_eq!(claim.fragment_bytes, 1);
+        assert_eq!(claim.status_module_name_len, "Path of Ascension".len());
+        assert_eq!(claim.custom_tlk_len, "cep23_v1".len());
+        assert_eq!(claim.hak_count, 2);
+        assert!(!claim.nwsync_advertised);
+
+        let mut tail_slack = payload.clone();
+        tail_slack.push(0);
+        assert!(
+            claim_payload_if_verified(&tail_slack).is_none(),
+            "LoadModuleResources owns exactly one fragment byte"
+        );
+
+        let mut shifted_fragment = payload;
+        *shifted_fragment.last_mut().expect("fragment byte") = 0x60;
+        assert!(
+            claim_payload_if_verified(&shifted_fragment).is_none(),
+            "LoadModuleResources must expose the NWSync BOOL at the EE writer cursor"
+        );
     }
 
     #[test]

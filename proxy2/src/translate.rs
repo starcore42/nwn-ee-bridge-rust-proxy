@@ -50,7 +50,7 @@ pub(crate) mod loadbar;
 pub(crate) mod login;
 mod m_frame;
 pub(crate) mod module;
-mod module_resources;
+pub(crate) mod module_resources;
 pub(crate) mod module_time;
 pub(crate) mod party;
 pub(crate) mod placeables;

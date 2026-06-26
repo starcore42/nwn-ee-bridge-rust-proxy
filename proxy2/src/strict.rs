@@ -21,8 +21,8 @@ use crate::{
         client_module, client_quickbar, client_server_admin, client_server_status,
         client_side_message, custom_token, cutscene, dialog, game_obj_update, gameplay_stream,
         gui_timing_event, inventory, journal, live_object_update, loadbar, login, module,
-        module_time, party, play_module_character_list, player_list, quickbar, safe_projectile,
-        sound,
+        module_resources, module_time, party, play_module_character_list, player_list, quickbar,
+        safe_projectile, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1437,7 +1437,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ServerStatusModuleResources => {
             high.major == 0x01
                 && high.minor == 0x03
-                && server_status_module_resources_shape_valid(payload)
+                && module_resources::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::SafeProjectile => {
             high.major == 0x22
@@ -1610,9 +1610,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             client_server_status::claim_payload_if_verified(payload).is_some(),
         ),
         (0x01, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
-        (0x01, 0x03) => {
-            HighPayloadValidation::Exact(server_status_module_running_shape_valid(payload))
-        }
+        (0x01, 0x03) => HighPayloadValidation::Exact(
+            module_resources::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => {
             HighPayloadValidation::Exact(login::claim_payload_if_verified(payload).is_some())
         }
@@ -1821,18 +1821,6 @@ fn cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize)
             .saturating_add(final_bits)
     };
     valid_bits >= CNW_FRAGMENT_HEADER_BITS.saturating_add(semantic_bool_count)
-}
-
-fn server_status_module_running_shape_valid(payload: &[u8]) -> bool {
-    // Decompile-backed shape:
-    // EE `CNWCMessage::HandleServerToPlayerServerStatus` reads a leading
-    // status `CExoString` for high-level 0x01/0x03, then
-    // `CNWCModule::LoadModuleResources` consumes one fragment BOOL for the
-    // optional NWSync advertisement. When that BOOL is true, EE reads:
-    // root hash string, a single repository-count byte, repository URL string,
-    // manifest count byte, manifest records, module resource name/description,
-    // then a byte HAK count followed by fixed 16-byte HAK resrefs.
-    server_status_module_resources_shape_valid(payload)
 }
 
 pub(crate) fn module_info_shape_valid(payload: &[u8]) -> bool {
@@ -2057,92 +2045,6 @@ fn client_side_message_shape_valid(payload: &[u8]) -> bool {
     client_side_message::claim_payload_if_verified(payload).is_some()
 }
 
-fn server_status_module_resources_shape_valid(payload: &[u8]) -> bool {
-    const READ_START: usize = 3 + 4;
-    const MAX_SERVER_STATUS_STRING: usize = 4096;
-    const MAX_NWSYNC_STRING: usize = 255;
-    const MAX_MODULE_RESOURCE_STRING: usize = 4096;
-    const MAX_HAK_COUNT: usize = 255;
-    const RESREF_BYTES: usize = 16;
-    const MAX_FRAGMENT_BYTES: usize = 8;
-
-    let Some(high) = HighLevel::parse(payload) else {
-        return false;
-    };
-    if high.major != 0x01 || high.minor != 0x03 {
-        return false;
-    }
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < READ_START
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES
-    {
-        return false;
-    }
-
-    let mut cursor = READ_START;
-    cursor = match cnw_string_end(payload, cursor, declared, MAX_SERVER_STATUS_STRING) {
-        Some(cursor) => cursor,
-        None => return false,
-    };
-
-    let Some(nwsync_advertised) = cnw_fragment_bool(payload, declared, 0) else {
-        return false;
-    };
-    if nwsync_advertised {
-        cursor = match cnw_string_end(payload, cursor, declared, MAX_NWSYNC_STRING) {
-            Some(cursor) => cursor,
-            None => return false,
-        };
-        if payload.get(cursor).copied() != Some(1) {
-            return false;
-        }
-        cursor += 1;
-        cursor = match cnw_string_end(payload, cursor, declared, MAX_NWSYNC_STRING) {
-            Some(cursor) => cursor,
-            None => return false,
-        };
-        let Some(manifest_count) = payload.get(cursor).copied().map(usize::from) else {
-            return false;
-        };
-        cursor += 1;
-        for _ in 0..manifest_count {
-            cursor = match cnw_string_end(payload, cursor, declared, MAX_NWSYNC_STRING) {
-                Some(cursor) => cursor,
-                None => return false,
-            };
-            cursor = match cursor.checked_add(2) {
-                Some(cursor) if cursor <= declared => cursor,
-                _ => return false,
-            };
-        }
-    }
-
-    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_RESOURCE_STRING) {
-        Some(cursor) => cursor,
-        None => return false,
-    };
-    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_RESOURCE_STRING) {
-        Some(cursor) => cursor,
-        None => return false,
-    };
-    let Some(hak_count) = payload.get(cursor).copied().map(usize::from) else {
-        return false;
-    };
-    if hak_count > MAX_HAK_COUNT {
-        return false;
-    }
-    cursor += 1;
-    cursor
-        .checked_add(hak_count.saturating_mul(RESREF_BYTES))
-        .map(|end| end == declared)
-        .unwrap_or(false)
-}
-
 fn cnw_string_end(
     payload: &[u8],
     cursor: usize,
@@ -2157,13 +2059,6 @@ fn cnw_string_end(
         .checked_add(4)?
         .checked_add(length)
         .filter(|end| *end <= declared)
-}
-
-fn cnw_fragment_bool(payload: &[u8], declared: usize, semantic_bit_index: usize) -> Option<bool> {
-    let fragment = payload.get(declared..)?;
-    let bit_index = 3usize.checked_add(semantic_bit_index)?;
-    let byte = *fragment.get(bit_index / 8)?;
-    Some((byte & (0x80 >> (bit_index % 8))) != 0)
 }
 
 fn party_shape_valid(payload: &[u8]) -> bool {
@@ -2889,6 +2784,56 @@ mod tests {
             !exact_high_payload_shape_valid(&data_bits),
             "known-opcode strict validation must share the focused Module_Time owner"
         );
+    }
+
+    #[test]
+    fn strict_server_status_module_resources_uses_focused_owner() {
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+        let (payload, _) = module_resources::build_server_status_module_resources_payload(
+            &runtime,
+            "Path of Ascension",
+        )
+        .expect("module-resource payload");
+
+        assert!(
+            module_resources::claim_payload_if_verified(&payload).is_some(),
+            "focused ServerStatus_ModuleResources owner claims exact EE payloads"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ServerStatusModuleResources,
+            &payload
+        ));
+        assert!(exact_high_payload_shape_valid(&payload));
+
+        let mut tail_slack = payload.clone();
+        tail_slack.push(0);
+        assert!(
+            module_resources::claim_payload_if_verified(&tail_slack).is_none(),
+            "focused owner rejects unowned fragment tail slack"
+        );
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::ServerStatusModuleResources,
+                &tail_slack,
+            ),
+            "verified-family proof must share the focused module-resource owner"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&tail_slack),
+            "known-opcode strict validation must share the focused module-resource owner"
+        );
+
+        let mut shifted_fragment = payload;
+        *shifted_fragment.last_mut().expect("fragment byte") = 0x60;
+        assert!(
+            module_resources::claim_payload_if_verified(&shifted_fragment).is_none(),
+            "focused owner rejects shifted fragment headers"
+        );
+        assert!(!exact_high_payload_shape_valid(&shifted_fragment));
     }
 
     #[test]
