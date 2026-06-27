@@ -1371,19 +1371,13 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x14 && dialog::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::GameObjUpdateObjectControl => {
-            high.major == 0x05
-                && high.minor == 0x02
-                && game_obj_update::claim_obj_control_payload_if_verified(payload).is_some()
+            high.major == 0x05 && game_obj_update_shape_valid(payload, 0x02)
         }
         VerifiedFamily::GameObjUpdateVisEffect => {
-            high.major == 0x05
-                && high.minor == 0x03
-                && game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some()
+            high.major == 0x05 && game_obj_update_shape_valid(payload, 0x03)
         }
         VerifiedFamily::GameObjUpdateDestroyItem => {
-            high.major == 0x05
-                && high.minor == 0x07
-                && game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some()
+            high.major == 0x05 && game_obj_update_shape_valid(payload, 0x07)
         }
         VerifiedFamily::GuiTimingEvent => {
             high.major == 0x30
@@ -1640,15 +1634,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             area_change_day_night::claim_payload_if_verified(payload).is_some(),
         ),
         (0x05, 0x01) => HighPayloadValidation::Exact(live_object_shape_valid(payload)),
-        (0x05, 0x02) => HighPayloadValidation::Exact(
-            game_obj_update::claim_obj_control_payload_if_verified(payload).is_some(),
-        ),
-        (0x05, 0x03) => HighPayloadValidation::Exact(
-            game_obj_update::claim_vis_effect_payload_if_verified(payload).is_some(),
-        ),
-        (0x05, 0x07) => HighPayloadValidation::Exact(
-            game_obj_update::claim_destroy_item_payload_if_verified(payload).is_some(),
-        ),
+        (0x05, 0x02 | 0x03 | 0x07) => {
+            HighPayloadValidation::Exact(game_obj_update_shape_valid(payload, high.minor))
+        }
         (
             0x06,
             0x01 | 0x02 | 0x03 | 0x05 | 0x06 | 0x07 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E
@@ -1935,6 +1923,12 @@ fn live_object_shape_valid(payload: &[u8]) -> bool {
     // walks decompile-backed live-object record boundaries and requires full
     // cursor consumption before this family can be considered translated.
     live_object_update::claim_payload_if_verified(payload).is_some()
+}
+
+fn game_obj_update_shape_valid(payload: &[u8], expected_minor: u8) -> bool {
+    game_obj_update::claim_payload_if_verified(payload)
+        .map(|summary| summary.minor == expected_minor)
+        .unwrap_or(false)
 }
 
 fn player_list_shape_valid(payload: &[u8]) -> bool {
@@ -2633,6 +2627,73 @@ mod tests {
                 0x50, 0x33, 0x04, 0x0A, 0x00, 0x00, 0x00, 0x0A, 0xD7, 0x23, 0x3C, 0x60
             ],
         ));
+    }
+
+    #[test]
+    fn strict_game_obj_update_uses_shared_family_owner_for_sibling_minors() {
+        let obj_control = [
+            0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF,
+            0xFF, 0x73,
+        ];
+        let vis_effect = [
+            0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00, 0xD8,
+            0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x61,
+        ];
+        let destroy_item = [
+            0x50, 0x05, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x67, 0x2C, 0x00, 0x80, 0x7C,
+        ];
+        let cases: [(VerifiedFamily, &[u8], u8); 3] = [
+            (
+                VerifiedFamily::GameObjUpdateObjectControl,
+                obj_control.as_slice(),
+                0x02,
+            ),
+            (
+                VerifiedFamily::GameObjUpdateVisEffect,
+                vis_effect.as_slice(),
+                0x03,
+            ),
+            (
+                VerifiedFamily::GameObjUpdateDestroyItem,
+                destroy_item.as_slice(),
+                0x07,
+            ),
+        ];
+
+        for (family, payload, expected_minor) in cases {
+            let summary = game_obj_update::claim_payload_if_verified(payload)
+                .expect("shared GameObjUpdate owner should claim exact sibling payload");
+            assert_eq!(summary.minor, expected_minor);
+            assert!(verified_family_inflated_payload_valid(family, payload));
+            assert!(exact_high_payload_shape_valid(payload));
+
+            let mut trailing = payload.to_vec();
+            trailing.push(0);
+            assert!(game_obj_update::claim_payload_if_verified(&trailing).is_none());
+            assert!(
+                !verified_family_inflated_payload_valid(family, &trailing),
+                "verified {family:?} must reject bytes outside the focused owner"
+            );
+            assert!(
+                !exact_high_payload_shape_valid(&trailing),
+                "known-high validation must share the focused GameObjUpdate owner"
+            );
+        }
+
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::GameObjUpdateObjectControl,
+                &vis_effect
+            ),
+            "family-specific strict proof must still check the shared owner's minor"
+        );
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::GameObjUpdateVisEffect,
+                &destroy_item
+            ),
+            "family-specific strict proof must not accept a sibling GameObjUpdate minor"
+        );
     }
 
     #[test]
