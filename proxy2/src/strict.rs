@@ -462,7 +462,7 @@ fn server_zlib_stream_empty_progress_valid(direction: Direction, family: Verifie
 
 fn verified_family_direction_valid(direction: Direction, family: VerifiedFamily) -> bool {
     match family {
-        VerifiedFamily::Chat => matches!(
+        VerifiedFamily::Chat | VerifiedFamily::Login => matches!(
             direction,
             Direction::ServerToClient | Direction::ServerToClientSynthetic
         ),
@@ -2446,6 +2446,59 @@ mod tests {
         assert!(
             !exact_high_payload_shape_valid(&trailing),
             "known-high validation must share the focused ClientLogin owner"
+        );
+    }
+
+    #[test]
+    fn strict_login_verified_proofs_are_server_owned() {
+        let login_confirm = [0x50, 0x02, 0x05];
+        assert!(login::claim_payload_if_verified(&login_confirm).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Login,
+            &login_confirm,
+        ));
+        assert!(
+            exact_high_payload_shape_valid(&login_confirm),
+            "directionless known-opcode validation still recognizes exact Login payloads"
+        );
+        assert!(verified_gameplay_stream_payload_valid(
+            Direction::ServerToClient,
+            &[VerifiedFamily::Login],
+            &login_confirm,
+        ));
+        assert!(!verified_gameplay_stream_payload_valid(
+            Direction::ClientToServer,
+            &[VerifiedFamily::Login],
+            &login_confirm,
+        ));
+
+        let frame = build_client_raw_m_frame(0x004E, 0x000B, &login_confirm, &[]);
+        for direction in [
+            Direction::ServerToClient,
+            Direction::ServerToClientSynthetic,
+        ] {
+            let decision = decide_verified_translated(direction, VerifiedFamily::Login, &frame);
+            assert!(
+                decision.allowed(),
+                "{direction:?} should allow Login: {decision:?}"
+            );
+        }
+
+        let client_decision =
+            decide_verified_translated(Direction::ClientToServer, VerifiedFamily::Login, &frame);
+        assert_eq!(client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(client_decision.family, "M/verified-direction");
+        assert_eq!(client_decision.reason, "verified-family-wrong-direction");
+
+        let coalesced_client_decision = decide_verified_coalesced_window_translated(
+            Direction::ClientToServer,
+            &[VerifiedProof::family(VerifiedFamily::Login)],
+            &frame,
+        );
+        assert_eq!(coalesced_client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(
+            coalesced_client_decision.reason,
+            "coalesced-record-proof-invalid"
         );
     }
 
