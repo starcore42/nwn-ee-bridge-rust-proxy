@@ -1367,9 +1367,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientSideMessage => {
             high.major == 0x12 && high.minor == 0x0B && client_side_message_shape_valid(payload)
         }
-        VerifiedFamily::Dialog => {
-            high.major == 0x14 && dialog::claim_payload_if_verified(payload).is_some()
-        }
+        VerifiedFamily::Dialog => high.major == 0x14 && server_dialog_shape_valid(payload),
         VerifiedFamily::GameObjUpdateObjectControl => {
             high.major == 0x05 && game_obj_update_shape_valid(payload, 0x02)
         }
@@ -1925,6 +1923,13 @@ fn client_side_message_shape_valid(payload: &[u8]) -> bool {
     client_side_message::claim_payload_if_verified(payload).is_some()
 }
 
+fn server_dialog_shape_valid(payload: &[u8]) -> bool {
+    // `VerifiedFamily::Dialog` is emitted by the server dispatch table, so its
+    // proof must not also admit client `Dialog_Reply` traffic. Directionless
+    // known-opcode validation still uses the broader dialog owner below.
+    dialog::claim_server_payload_if_verified(payload).is_some()
+}
+
 fn party_shape_valid(payload: &[u8]) -> bool {
     // Reuse the focused party owner instead of accepting a generic CNW wrapper.
     // `P/0E/01 Party_List` has a decompile-backed member count followed by one
@@ -2469,6 +2474,38 @@ mod tests {
         );
 
         assert!(decision.allowed(), "{decision:?}");
+    }
+
+    #[test]
+    fn strict_dialog_verified_family_uses_server_owner_only() {
+        let server_close = [0x50, 0x14, 0x05];
+        assert!(dialog::claim_server_payload_if_verified(&server_close).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Dialog,
+            &server_close,
+        ));
+        assert!(exact_high_payload_shape_valid(&server_close));
+
+        let client_reply = build_client_dialog_reply_payload();
+        assert!(dialog::claim_client_payload_if_verified(&client_reply).is_some());
+        assert!(dialog::claim_server_payload_if_verified(&client_reply).is_none());
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Dialog, &client_reply),
+            "server Dialog proofs must not also admit client Dialog_Reply payloads"
+        );
+        assert!(
+            exact_high_payload_shape_valid(&client_reply),
+            "directionless known-opcode validation may still recognize exact client dialog payloads"
+        );
+
+        let mut trailing_server_close = server_close.to_vec();
+        trailing_server_close.push(0);
+        assert!(dialog::claim_server_payload_if_verified(&trailing_server_close).is_none());
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::Dialog,
+            &trailing_server_close,
+        ));
+        assert!(!exact_high_payload_shape_valid(&trailing_server_close));
     }
 
     #[test]
@@ -3193,6 +3230,26 @@ mod tests {
         payload.extend_from_slice(&[0x70, 0x06, minor]);
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(body);
+        payload.push(0x60);
+        payload
+    }
+
+    fn build_client_dialog_reply_payload() -> Vec<u8> {
+        const HIGH_LEVEL_HEADER_BYTES: usize = 3;
+        const CNW_LENGTH_BYTES: usize = 4;
+        const OBJECT_ID_BYTES: usize = 4;
+        const DWORD_BYTES: usize = 4;
+        const BYTE_BYTES: usize = 1;
+        const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+        const DECLARED: usize =
+            READ_START + OBJECT_ID_BYTES + DWORD_BYTES + BYTE_BYTES + DWORD_BYTES;
+
+        let mut payload = vec![0x70, 0x14, 0x03];
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        payload.extend_from_slice(&0x8000_0003u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload.push(0x60);
         payload
     }
