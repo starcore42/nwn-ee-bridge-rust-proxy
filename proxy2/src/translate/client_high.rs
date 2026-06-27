@@ -162,7 +162,7 @@ pub fn claim_or_rewrite_payload_if_verified(
             verified_family: VerifiedFamily::ClientInput,
         });
     }
-    if client_translator_may_claim_parsed_high_level("Dialog", high)
+    if client_translator_may_claim_parsed_high_level("ClientDialog", high)
         && let Some(summary) = dialog::claim_client_payload_if_verified(payload)
     {
         tracing::info!(
@@ -173,9 +173,9 @@ pub fn claim_or_rewrite_payload_if_verified(
             "client Dialog payload validated for Diamond/1.69"
         );
         return Some(ClientHighClaimSummary {
-            family_name: "Dialog",
+            family_name: "ClientDialog",
             packet_name: high.name(),
-            verified_family: VerifiedFamily::Dialog,
+            verified_family: VerifiedFamily::ClientDialog,
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientJournal", high)
@@ -268,7 +268,7 @@ fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLe
         "ClientGuiInventory" => high.major == 0x0D && matches!(high.minor, 0x01 | 0x02),
         "ClientParty" => high.major == 0x0E && high.minor == 0x02,
         "ClientCharList" => high.major == 0x11 && matches!(high.minor, 0x01 | 0x03),
-        "Dialog" => high.major == 0x14 && high.minor == 0x03,
+        "ClientDialog" => high.major == 0x14 && high.minor == 0x03,
         "ClientCharacterSheet" => high.major == 0x15 && high.minor == 0x01,
         "ClientJournal" => high.major == 0x1C && matches!(high.minor, 0x0A | 0x0B),
         "ClientQuickbar" => high.major == 0x1E && high.minor == 0x02,
@@ -303,7 +303,7 @@ mod tests {
             ("ClientGuiInventory", high(0x0D, 0x02)),
             ("ClientParty", high(0x0E, 0x02)),
             ("ClientCharList", high(0x11, 0x03)),
-            ("Dialog", high(0x14, 0x03)),
+            ("ClientDialog", high(0x14, 0x03)),
             ("ClientCharacterSheet", high(0x15, 0x01)),
             ("ClientJournal", high(0x1C, 0x0A)),
             ("ClientQuickbar", high(0x1E, 0x02)),
@@ -330,7 +330,7 @@ mod tests {
             ("ClientGuiInventory", high(0x0D, 0x03)),
             ("ClientParty", high(0x0E, 0x0E)),
             ("ClientCharList", high(0x11, 0x04)),
-            ("Dialog", high(0x14, 0x01)),
+            ("ClientDialog", high(0x14, 0x01)),
             ("ClientCharacterSheet", high(0x15, 0x02)),
             ("ClientJournal", high(0x1C, 0x09)),
             ("ClientQuickbar", high(0x1E, 0x01)),
@@ -356,5 +356,27 @@ mod tests {
             "ClientArea",
             high(0x06, 0x01)
         ));
+    }
+
+    #[test]
+    fn client_dialog_reply_emits_client_dialog_family() {
+        const READ_START: usize = 3 + 4;
+        const DECLARED: usize = READ_START + 4 + 4 + 1 + 4;
+
+        let mut payload = vec![0x70, 0x14, 0x03];
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        payload.extend_from_slice(&0x8000_0003u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.push(0x60);
+
+        let mut state = SemanticSessionState::default();
+        let claim = claim_or_rewrite_payload_if_verified(&mut payload, &mut state)
+            .expect("client Dialog_Reply should be claimed");
+
+        assert_eq!(claim.family_name, "ClientDialog");
+        assert_eq!(claim.packet_name, "Dialog_Reply");
+        assert_eq!(claim.verified_family, VerifiedFamily::ClientDialog);
     }
 }

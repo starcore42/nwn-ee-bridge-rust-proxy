@@ -1331,6 +1331,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && high.minor == 0x01
                 && client_character_sheet::claim_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::ClientDialog => high.major == 0x14 && client_dialog_shape_valid(payload),
         VerifiedFamily::ClientGuiEvent => {
             high.major == 0x35
                 && high.minor == 0x01
@@ -1941,6 +1942,13 @@ fn server_dialog_shape_valid(payload: &[u8]) -> bool {
     dialog::claim_server_payload_if_verified(payload).is_some()
 }
 
+fn client_dialog_shape_valid(payload: &[u8]) -> bool {
+    // Client high-level routing emits this proof for `Dialog_Reply`. Keep it
+    // separate from the server Dialog proof so translated client replies do
+    // not depend on the directionless known-opcode fallback.
+    dialog::claim_client_payload_if_verified(payload).is_some()
+}
+
 fn party_shape_valid(payload: &[u8]) -> bool {
     // Reuse the focused party owner instead of accepting a generic CNW wrapper.
     // `P/0E/01 Party_List` has a decompile-backed member count followed by one
@@ -2488,11 +2496,15 @@ mod tests {
     }
 
     #[test]
-    fn strict_dialog_verified_family_uses_server_owner_only() {
+    fn strict_dialog_splits_server_and_client_verified_owners() {
         let server_close = [0x50, 0x14, 0x05];
         assert!(dialog::claim_server_payload_if_verified(&server_close).is_some());
         assert!(verified_family_inflated_payload_valid(
             VerifiedFamily::Dialog,
+            &server_close,
+        ));
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientDialog,
             &server_close,
         ));
         assert!(exact_high_payload_shape_valid(&server_close));
@@ -2503,6 +2515,10 @@ mod tests {
         assert!(
             !verified_family_inflated_payload_valid(VerifiedFamily::Dialog, &client_reply),
             "server Dialog proofs must not also admit client Dialog_Reply payloads"
+        );
+        assert!(
+            verified_family_inflated_payload_valid(VerifiedFamily::ClientDialog, &client_reply),
+            "client Dialog_Reply payloads must validate through the client Dialog proof"
         );
         assert!(
             exact_high_payload_shape_valid(&client_reply),
@@ -2517,6 +2533,14 @@ mod tests {
             &trailing_server_close,
         ));
         assert!(!exact_high_payload_shape_valid(&trailing_server_close));
+
+        let mut trailing_client_reply = client_reply;
+        trailing_client_reply.push(0);
+        assert!(dialog::claim_client_payload_if_verified(&trailing_client_reply).is_none());
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientDialog,
+            &trailing_client_reply,
+        ));
     }
 
     #[test]
