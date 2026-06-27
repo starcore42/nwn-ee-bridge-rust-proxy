@@ -231,6 +231,14 @@ pub fn decide_verified_translated(
                 );
             }
 
+            if !verified_family_direction_valid(direction, family) {
+                return StrictDecision::quarantine(
+                    "M/verified-direction",
+                    family.as_str(),
+                    "verified-family-wrong-direction",
+                );
+            }
+
             if view.payload_length == 0 && view.trailing_payload_length == 0 {
                 if family == VerifiedFamily::ConsumedEmptyMFrame {
                     return StrictDecision::allow(
@@ -452,6 +460,16 @@ fn server_zlib_stream_empty_progress_valid(direction: Direction, family: Verifie
     }
 }
 
+fn verified_family_direction_valid(direction: Direction, family: VerifiedFamily) -> bool {
+    match family {
+        VerifiedFamily::Chat => matches!(
+            direction,
+            Direction::ServerToClient | Direction::ServerToClientSynthetic
+        ),
+        _ => true,
+    }
+}
+
 pub fn decide_verified_proof_translated(
     direction: Direction,
     proof: &VerifiedProof,
@@ -534,7 +552,7 @@ fn decide_verified_gameplay_stream_translated(
                         "deflated-inflate-failed",
                     );
                 };
-                if verified_gameplay_stream_payload_valid(families, &inflated) {
+                if verified_gameplay_stream_payload_valid(direction, families, &inflated) {
                     return StrictDecision::allow(
                         "M/verified-gameplay-stream-deflated",
                         "GameplayStream",
@@ -568,7 +586,7 @@ fn decide_verified_gameplay_stream_translated(
                         "high-payload-overflow",
                     );
                 };
-                if verified_gameplay_stream_payload_valid(families, payload) {
+                if verified_gameplay_stream_payload_valid(direction, families, payload) {
                     return StrictDecision::allow(
                         "M/verified-gameplay-stream",
                         "GameplayStream",
@@ -778,9 +796,12 @@ fn coalesced_record_proof_valid(
             family @ (VerifiedFamily::ServerZlibStreamContinuation { .. }
             | VerifiedFamily::ServerZlibZeroFillWindow { .. }),
         ) => payload.is_empty() && server_zlib_stream_empty_progress_valid(direction, *family),
-        VerifiedProof::Family(family) => coalesced_family_payload_valid(*family, payload, deflated),
+        VerifiedProof::Family(family) => {
+            verified_family_direction_valid(direction, *family)
+                && coalesced_family_payload_valid(*family, payload, deflated)
+        }
         VerifiedProof::GameplayStream(families) => {
-            coalesced_gameplay_stream_payload_valid(families, payload, deflated)
+            coalesced_gameplay_stream_payload_valid(direction, families, payload, deflated)
         }
         VerifiedProof::CoalescedWindow(_) => false,
     }
@@ -828,6 +849,7 @@ fn coalesced_family_payload_valid(
 }
 
 fn coalesced_gameplay_stream_payload_valid(
+    direction: Direction,
     families: &[VerifiedFamily],
     payload: &[u8],
     deflated: Option<(bool, usize)>,
@@ -851,7 +873,7 @@ fn coalesced_gameplay_stream_payload_valid(
             );
             return false;
         };
-        let valid = verified_gameplay_stream_payload_valid(families, &inflated);
+        let valid = verified_gameplay_stream_payload_valid(direction, families, &inflated);
         if !valid {
             dump_strict_gameplay_stream_reject(
                 families,
@@ -864,7 +886,7 @@ fn coalesced_gameplay_stream_payload_valid(
     }
 
     HighLevel::parse(payload)
-        .map(|_| verified_gameplay_stream_payload_valid(families, payload))
+        .map(|_| verified_gameplay_stream_payload_valid(direction, families, payload))
         .unwrap_or(false)
 }
 
@@ -926,7 +948,11 @@ fn dump_strict_payload_reject(
         );
     }
 }
-fn verified_gameplay_stream_payload_valid(families: &[VerifiedFamily], payload: &[u8]) -> bool {
+fn verified_gameplay_stream_payload_valid(
+    direction: Direction,
+    families: &[VerifiedFamily],
+    payload: &[u8],
+) -> bool {
     let split = gameplay_stream::split_inflated_gameplay(payload);
     if !split.complete || split.units.len() != families.len() {
         return false;
@@ -938,7 +964,8 @@ fn verified_gameplay_stream_payload_valid(families: &[VerifiedFamily], payload: 
         .zip(families)
         .all(|(unit, family)| match unit {
             gameplay_stream::GameplayUnit::HighLevel(message) => {
-                verified_family_inflated_payload_valid(*family, message.payload)
+                verified_family_direction_valid(direction, *family)
+                    && verified_family_inflated_payload_valid(*family, message.payload)
             }
             gameplay_stream::GameplayUnit::Continuation(_)
             | gameplay_stream::GameplayUnit::PendingFragment(_)
@@ -1209,7 +1236,7 @@ pub fn decide_verified_proof_translated_batch(
                     "batch-deflated-inflate-failed",
                 ));
             };
-            if verified_gameplay_stream_payload_valid(families, &inflated) {
+            if verified_gameplay_stream_payload_valid(direction, families, &inflated) {
                 return Some(StrictDecision::allow(
                     "M/verified-gameplay-stream-batch",
                     "GameplayStream",
@@ -2563,6 +2590,62 @@ mod tests {
         assert_eq!(
             feedback.reason,
             "verified-family-deflated-continuation-frame"
+        );
+    }
+
+    #[test]
+    fn strict_chat_verified_proofs_are_server_owned() {
+        let text = b"Bridge ready";
+        let declared = 3 + 4 + 4 + text.len();
+        let mut chat_server_tell = vec![0x50, 0x09, 0x05];
+        chat_server_tell.extend_from_slice(&(declared as u32).to_le_bytes());
+        chat_server_tell.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        chat_server_tell.extend_from_slice(text);
+        chat_server_tell.push(0x60);
+
+        assert!(chat::claim_payload_if_verified(&chat_server_tell).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Chat,
+            &chat_server_tell,
+        ));
+        assert!(verified_gameplay_stream_payload_valid(
+            Direction::ServerToClient,
+            &[VerifiedFamily::Chat],
+            &chat_server_tell,
+        ));
+        assert!(!verified_gameplay_stream_payload_valid(
+            Direction::ClientToServer,
+            &[VerifiedFamily::Chat],
+            &chat_server_tell,
+        ));
+
+        let frame = build_client_raw_m_frame(0x004E, 0x000B, &chat_server_tell, &[]);
+        for direction in [
+            Direction::ServerToClient,
+            Direction::ServerToClientSynthetic,
+        ] {
+            let decision = decide_verified_translated(direction, VerifiedFamily::Chat, &frame);
+            assert!(
+                decision.allowed(),
+                "{direction:?} should allow Chat: {decision:?}"
+            );
+        }
+
+        let client_decision =
+            decide_verified_translated(Direction::ClientToServer, VerifiedFamily::Chat, &frame);
+        assert_eq!(client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(client_decision.family, "M/verified-direction");
+        assert_eq!(client_decision.reason, "verified-family-wrong-direction");
+
+        let coalesced_client_decision = decide_verified_coalesced_window_translated(
+            Direction::ClientToServer,
+            &[VerifiedProof::family(VerifiedFamily::Chat)],
+            &frame,
+        );
+        assert_eq!(coalesced_client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(
+            coalesced_client_decision.reason,
+            "coalesced-record-proof-invalid"
         );
     }
 
