@@ -1468,8 +1468,6 @@ fn verified_family_allows_deflated_continuation(family: VerifiedFamily) -> bool 
             | VerifiedFamily::CharList
             | VerifiedFamily::Chat
             | VerifiedFamily::Cutscene
-            | VerifiedFamily::ClientCharacterSheet
-            | VerifiedFamily::ClientGuiEvent
             | VerifiedFamily::ClientSideMessage
             | VerifiedFamily::Dialog
             | VerifiedFamily::GameObjUpdateObjectControl
@@ -2468,6 +2466,37 @@ mod tests {
             VerifiedFamily::ClientSideMessage,
             &rewritten_feedback,
         ));
+    }
+
+    #[test]
+    fn server_zlib_continuation_rejects_client_originated_families() {
+        let continuation = build_m_opaque_continuation_frame(&[0x99, 0x88, 0x77]);
+
+        for family in [
+            VerifiedFamily::ClientCharacterSheet,
+            VerifiedFamily::ClientGuiEvent,
+        ] {
+            let decision =
+                decide_verified_translated(Direction::ServerToClient, family, &continuation);
+            assert_eq!(
+                decision.verdict,
+                Verdict::Quarantine,
+                "{family:?} must not own a server zlib continuation: {decision:?}"
+            );
+            assert_eq!(decision.reason, "verified-family-unclassified-M-payload");
+        }
+
+        let feedback = decide_verified_translated(
+            Direction::ServerToClient,
+            VerifiedFamily::ClientSideMessage,
+            &continuation,
+        );
+        assert_eq!(feedback.verdict, Verdict::Allow);
+        assert_eq!(feedback.family, "M/verified-deflated-continuation");
+        assert_eq!(
+            feedback.reason,
+            "verified-family-deflated-continuation-frame"
+        );
     }
 
     #[test]
@@ -3613,6 +3642,14 @@ mod tests {
         let mut packet = vec![b'M', 0, 0, 0, 1, 0, 0, 0x0E, 0, 1, 0, 0];
         packet.extend_from_slice(&payload);
         write_be_u16(&mut packet, 10, payload.len() as u16);
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
+    }
+
+    fn build_m_opaque_continuation_frame(payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![b'M', 0, 0, 0, 0x3C, 0, 0x4D, 0x08, 0, 0, 0, 0];
+        assert!(write_be_u16(&mut packet, 10, payload.len() as u16));
+        packet.extend_from_slice(payload);
         assert!(encode_legacy_m_crc(&mut packet));
         packet
     }
