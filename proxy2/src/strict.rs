@@ -2855,6 +2855,51 @@ mod tests {
     }
 
     #[test]
+    fn strict_chat_splits_in_gameplay_stream() {
+        let chat_talk_ref = [
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x60,
+        ];
+        assert!(
+            chat::claim_payload_if_verified(&chat_talk_ref).is_some(),
+            "focused Chat owner accepts the exact strref row"
+        );
+
+        let mut stream = chat_talk_ref.to_vec();
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Chat, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "Chat owns its exact fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::Chat, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "Chat/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = chat_talk_ref;
+        *shifted.last_mut().expect("fragment tail") = 0x80;
+        let mut shifted_stream = shifted.to_vec();
+        shifted_stream.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Chat, VerifiedFamily::ServerStatusStatus,],
+                &shifted_stream,
+            ),
+            "a shifted Chat fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn coalesced_chat_strref_and_ai_sound_records_revalidate_exact_proofs() {
         let chat_talk_ref = [
             0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,

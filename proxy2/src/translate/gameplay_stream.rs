@@ -11,7 +11,7 @@
 
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
-use super::{VerifiedFamily, journal, loadbar, party};
+use super::{VerifiedFamily, chat, journal, loadbar, party};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameplayUnit<'a> {
@@ -169,6 +169,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
@@ -262,6 +263,35 @@ fn focused_journal_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
                 break;
             };
             if journal::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_chat_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_CHAT_FRAGMENT_BYTES: usize = 16;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_CHAT_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if chat::claim_payload_if_verified(payload).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
                 return FocusedUnitEnd::Exact(end);
@@ -491,6 +521,50 @@ mod tests {
     }
 
     #[test]
+    fn splits_chat_strref_with_focused_fragment_tail_owner() {
+        let mut bytes = chat_talk_ref_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x09);
+                assert_eq!(message.minor, 0x08);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Chat_TalkRef unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_chat_strref_tail_before_following_status() {
+        let mut bytes = chat_talk_ref_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Chat row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_loadbar_with_focused_fragment_tail_owner() {
         let mut bytes = loadbar::start_payload(2);
         let status_offset = bytes.len();
@@ -624,6 +698,13 @@ mod tests {
         }
         payload.push(0x60);
         payload
+    }
+
+    fn chat_talk_ref_payload() -> Vec<u8> {
+        vec![
+            0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
+            0x00, 0x60,
+        ]
     }
 }
 
