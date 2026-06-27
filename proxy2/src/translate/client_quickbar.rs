@@ -77,10 +77,6 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<ClientQuickbarClaimSu
     })
 }
 
-pub fn set_button_payload_shape_valid(payload: &[u8]) -> bool {
-    parse_set_button_payload(payload).is_some()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ParsedClientQuickbarSetButton {
     slot: u8,

@@ -1363,7 +1363,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientQuickbar => {
             high.major == 0x1E
                 && high.minor == 0x02
-                && client_quickbar::set_button_payload_shape_valid(payload)
+                && client_quickbar::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientServerAdmin => false,
         VerifiedFamily::ClientServerStatus => {
@@ -1675,9 +1675,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
             HighPayloadValidation::Exact(journal_shape_valid(payload))
         }
         (0x1E, 0x01) => HighPayloadValidation::Exact(quickbar_shape_valid(payload)),
-        (0x1E, 0x02) => {
-            HighPayloadValidation::Exact(client_quickbar::set_button_payload_shape_valid(payload))
-        }
+        (0x1E, 0x02) => HighPayloadValidation::Exact(
+            client_quickbar::claim_payload_if_verified(payload).is_some(),
+        ),
         (0x22, 0x01) => HighPayloadValidation::Exact(
             safe_projectile::claim_payload_if_verified(payload).is_some(),
         ),
@@ -3319,6 +3319,55 @@ mod tests {
     }
 
     #[test]
+    fn strict_client_quickbar_uses_focused_set_button_owner() {
+        let payload = build_client_quickbar_set_button(5, 43, &[0x52, 0x01, 0xF0, 0x03]);
+        assert!(
+            client_quickbar::claim_payload_if_verified(&payload).is_some(),
+            "focused ClientQuickbar owner should claim an exact int-param SetButton"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientQuickbar,
+            &payload
+        ));
+        assert!(
+            exact_high_payload_shape_valid(&payload),
+            "known-opcode validation must share the focused ClientQuickbar owner"
+        );
+
+        let mut trailing = payload.clone();
+        trailing.push(0);
+        assert!(
+            client_quickbar::claim_payload_if_verified(&trailing).is_none(),
+            "focused ClientQuickbar owner must reject bytes after the empty fragment cursor"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientQuickbar,
+            &trailing
+        ));
+        assert!(
+            !exact_high_payload_shape_valid(&trailing),
+            "known-opcode validation must reject the same trailing bytes"
+        );
+
+        let mut shifted_fragment = payload;
+        *shifted_fragment
+            .last_mut()
+            .expect("test payload should carry one fragment cursor byte") = 0x80;
+        assert!(
+            client_quickbar::claim_payload_if_verified(&shifted_fragment).is_none(),
+            "SetButton owns only an empty final fragment cursor"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientQuickbar,
+            &shifted_fragment
+        ));
+        assert!(
+            !exact_high_payload_shape_valid(&shifted_fragment),
+            "known-opcode validation must reject the same shifted cursor"
+        );
+    }
+
+    #[test]
     fn verified_client_character_sheet_accepts_exact_status_shape() {
         let payload = [
             0x70, 0x15, 0x01, 0x0C, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0x7C,
@@ -3358,6 +3407,24 @@ mod tests {
             VerifiedFamily::GuiTimingEvent,
             &stale_start,
         ));
+    }
+
+    fn build_client_quickbar_set_button(slot: u8, button_type: u8, body: &[u8]) -> Vec<u8> {
+        const HIGH_LEVEL_HEADER_BYTES: usize = 3;
+        const CNW_LENGTH_BYTES: usize = 4;
+        const SLOT_AND_TYPE_BYTES: usize = 2;
+        const EMPTY_CNW_FRAGMENT_CURSOR: u8 = 0x60;
+
+        let declared =
+            HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + SLOT_AND_TYPE_BYTES + body.len();
+        let mut payload = Vec::with_capacity(declared + 1);
+        payload.extend_from_slice(&[0x70, 0x1E, 0x02]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(slot);
+        payload.push(button_type);
+        payload.extend_from_slice(body);
+        payload.push(EMPTY_CNW_FRAGMENT_CURSOR);
+        payload
     }
 
     fn build_client_input_payload(minor: u8, body: &[u8]) -> Vec<u8> {
