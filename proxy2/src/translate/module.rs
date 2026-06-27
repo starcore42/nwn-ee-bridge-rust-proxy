@@ -54,6 +54,7 @@ const MAX_COMPACT_DECLARED_ZERO_RESOURCE_BYTES: usize = 2048;
 const MAX_COMPACT_DECLARED_ZERO_AREA_COUNT: u32 = 64;
 const COMPACT_DECLARED_ZERO_FRAGMENT_BYTES: usize = 1;
 const MODULE_MAJOR: u8 = 0x03;
+const MODULE_INFO_MINOR: u8 = 0x01;
 const MODULE_END_GAME_MINOR: u8 = 0x0E;
 const MODULE_END_GAME_MAX_TEXT_BYTES: usize = 4096;
 const MODULE_END_GAME_SHA1_HEX_BYTES: usize = 40;
@@ -96,6 +97,13 @@ struct ModuleEndGameMessage {
 pub struct ModuleEndGameClaimSummary {
     pub text_len: usize,
     pub sha1_hex_len: Option<usize>,
+    pub declared: usize,
+    pub fragment_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleInfoClaimSummary {
+    pub area_count: u32,
     pub declared: usize,
     pub fragment_bytes: usize,
 }
@@ -186,6 +194,77 @@ pub fn rewrite_module_info_payload(payload: &mut Vec<u8>) -> Option<RewriteSumma
 
 pub fn first_module_info_candidate_offset(payload: &[u8]) -> Option<usize> {
     module_info_candidate_offsets(payload).into_iter().next()
+}
+
+pub fn claim_module_info_payload_if_verified(payload: &[u8]) -> Option<ModuleInfoClaimSummary> {
+    const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
+
+    if payload.len() < READ_START
+        || !is_high_level_envelope(*payload.first()?)
+        || payload.get(1).copied()? != MODULE_MAJOR
+        || payload.get(2).copied()? != MODULE_INFO_MINOR
+    {
+        return None;
+    }
+
+    let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
+    if declared < READ_START || declared > payload.len() {
+        return None;
+    }
+    let fragment_tail = payload.get(declared..)?;
+    if !exact_ee_module_info_fragment_tail_valid(fragment_tail) {
+        return None;
+    }
+
+    let mut cursor = READ_START;
+    let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_MODULE_INFO_STRING)?;
+    cursor = next;
+    // EE's writer stores the observed locstring in the common raw-string branch
+    // for this packet. The branch selector itself lives in the CNW fragment tail.
+    let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_MODULE_INFO_STRING)?;
+    cursor = next;
+
+    skip_exact(payload, &mut cursor, 1, declared)?;
+
+    let module_resref = payload.get(cursor..cursor + RESREF_BYTES)?;
+    if !is_fixed_resref(module_resref, true) {
+        return None;
+    }
+    cursor += RESREF_BYTES;
+
+    if cursor.checked_add(CNW_LENGTH_BYTES)? > declared {
+        return None;
+    }
+    let area_count = read_le_u32(payload, cursor)?;
+    if area_count > MAX_MODULE_RESOURCE_COUNT {
+        return None;
+    }
+    cursor += CNW_LENGTH_BYTES;
+
+    for _ in 0..area_count {
+        if cursor.checked_add(CNW_LENGTH_BYTES)? > declared {
+            return None;
+        }
+        let area_id = read_le_u32(payload, cursor)?;
+        if !is_likely_area_resource_id(area_id) {
+            return None;
+        }
+        cursor += CNW_LENGTH_BYTES;
+        let (next, _) = read_c_exo_string_shape(payload, cursor, declared, MAX_AREA_NAME_LENGTH)?;
+        cursor = next;
+    }
+
+    let official_campaign = payload.get(cursor).copied()?;
+    if official_campaign > 1 {
+        return None;
+    }
+    cursor += 1;
+
+    (cursor == declared).then_some(ModuleInfoClaimSummary {
+        area_count,
+        declared,
+        fragment_bytes: payload.len() - declared,
+    })
 }
 
 pub fn module_end_game_shape_valid(payload: &[u8]) -> bool {
@@ -1881,6 +1960,10 @@ fn compact_fragment_tail_has_module_info_bits(fragment: &[u8]) -> bool {
     valid_bits >= CNW_FRAGMENT_HEADER_BITS + LEGACY_LOCSTRING_AND_EE_TAIL_BITS
 }
 
+fn exact_ee_module_info_fragment_tail_valid(fragment: &[u8]) -> bool {
+    fragment.len() == 1 && compact_fragment_tail_has_module_info_bits(fragment)
+}
+
 fn compact_area_name_runs(payload: &[u8], start: usize, declared: usize) -> Vec<PrintableRun> {
     compact_printable_runs(payload, start, declared, 4)
 }
@@ -2738,7 +2821,7 @@ mod tests {
         assert_eq!(summary.module_resref.as_deref(), Some("bw167demo"));
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.resource_name_count, 3);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     #[cfg(hgbridge_private_fixtures)]
@@ -2756,7 +2839,7 @@ mod tests {
         assert_eq!(summary.module_resref.as_deref(), Some("XP1-Chapt"));
         assert_eq!(summary.hak_count, 0);
         assert!(summary.resource_name_count >= 10);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     #[cfg(hgbridge_private_fixtures)]
@@ -2775,7 +2858,7 @@ mod tests {
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.module_resref.as_deref(), Some("To_H"));
         assert_eq!(summary.resource_name_count, 5);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     #[cfg(hgbridge_private_fixtures)]
@@ -2794,7 +2877,7 @@ mod tests {
         assert_eq!(summary.hak_count, 0);
         assert_eq!(summary.module_resref.as_deref(), Some("Dark_R"));
         assert_eq!(summary.resource_name_count, 3);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     #[cfg(hgbridge_private_fixtures)]
@@ -2826,7 +2909,7 @@ mod tests {
             Some("cep2_crp_s")
         );
         assert_eq!(summary.resource_name_count, 7);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     fn legacy_module_info_payload(

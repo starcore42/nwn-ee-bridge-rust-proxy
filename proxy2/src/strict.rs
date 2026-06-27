@@ -1792,118 +1792,11 @@ fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     }
 }
 
-fn single_cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize) -> bool {
-    const CNW_FRAGMENT_HEADER_BITS: usize = 3;
-
-    let [first] = fragment else {
-        return false;
-    };
-    let final_bits = usize::from((*first & 0xE0) >> 5);
-    let valid_bits = if final_bits == 0 { 8 } else { final_bits };
-    valid_bits >= CNW_FRAGMENT_HEADER_BITS.saturating_add(semantic_bool_count)
-}
-
 pub(crate) fn module_info_shape_valid(payload: &[u8]) -> bool {
-    const READ_START: usize = 3 + 4;
-    const MAX_MODULE_INFO_STRING: usize = 4096;
-    const MAX_AREA_NAME_STRING: usize = 512;
-    const MAX_AREA_COUNT: u32 = 4096;
-    const RESREF_BYTES: usize = 16;
-    const MAX_FRAGMENT_BYTES: usize = 64;
-
-    let Some(high) = HighLevel::parse(payload) else {
-        return false;
-    };
-    if high.major != 0x03 || high.minor != 0x01 {
-        return false;
-    }
-
-    let Some(declared) = read_le_u32(payload, 3).and_then(|value| usize::try_from(value).ok())
-    else {
-        return false;
-    };
-    if declared < READ_START
-        || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES
-    {
-        return false;
-    }
-
-    let mut cursor = READ_START;
-    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_INFO_STRING) {
-        Some(cursor) => cursor,
-        None => return false,
-    };
-    // EE's writer uses `WriteCExoLocStringServer(..., 0)` here, and the client
-    // reader consumes the common raw-string branch through the fragment-bit
-    // discriminator. There is no inline marker byte in the read buffer for this
-    // observed Module_Info shape, so cursor validation treats it as the bounded
-    // CExoString payload the decompiled writer places in the read window.
-    cursor = match cnw_string_end(payload, cursor, declared, MAX_MODULE_INFO_STRING) {
-        Some(cursor) => cursor,
-        None => return false,
-    };
-
-    if cursor >= declared {
-        return false;
-    }
-    cursor += 1;
-
-    let Some(module_resref) = payload.get(cursor..cursor + RESREF_BYTES) else {
-        return false;
-    };
-    if !fixed_resref16_shape_valid(module_resref, true) {
-        return false;
-    }
-    cursor += RESREF_BYTES;
-
-    let Some(area_count) = read_le_u32(payload, cursor) else {
-        return false;
-    };
-    if area_count > MAX_AREA_COUNT {
-        return false;
-    }
-    cursor += 4;
-
-    for _ in 0..area_count {
-        let Some(area_id) = read_le_u32(payload, cursor) else {
-            return false;
-        };
-        if (area_id & 0x8000_0000) == 0 || area_id == 0xffff_ffff {
-            return false;
-        }
-        cursor += 4;
-        cursor = match cnw_string_end(payload, cursor, declared, MAX_AREA_NAME_STRING) {
-            Some(cursor) => cursor,
-            None => return false,
-        };
-    }
-
-    let Some(official_campaign) = payload.get(cursor).copied() else {
-        return false;
-    };
-    if official_campaign > 1 {
-        return false;
-    }
-    cursor += 1;
-
-    cursor == declared && single_cnw_fragment_tail_can_hold_bools(&payload[declared..], 3)
-}
-
-fn fixed_resref16_shape_valid(bytes: &[u8], allow_empty: bool) -> bool {
-    if bytes.len() != 16 {
-        return false;
-    }
-
-    let mut cursor = 0;
-    while cursor < bytes.len() && bytes[cursor] != 0 {
-        if !matches!(bytes[cursor], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-') {
-            return false;
-        }
-        cursor += 1;
-    }
-
-    allow_empty || cursor != 0
+    // Strict validation must share the focused Module_Info owner. The packet
+    // carries the locstring branch selector plus EE tail bits in the CNW
+    // fragment cursor, so a second local parser can drift on tail ownership.
+    module::claim_module_info_payload_if_verified(payload).is_some()
 }
 
 fn area_client_area_shape_valid(payload: &[u8]) -> bool {
@@ -2030,22 +1923,6 @@ fn client_side_message_shape_valid(payload: &[u8]) -> bool {
     // therefore validates through the focused semantic owner instead of
     // carrying a second local copy of the feedback cursor rules in strict mode.
     client_side_message::claim_payload_if_verified(payload).is_some()
-}
-
-fn cnw_string_end(
-    payload: &[u8],
-    cursor: usize,
-    declared: usize,
-    max_string_bytes: usize,
-) -> Option<usize> {
-    let length = read_le_u32(payload, cursor).and_then(|value| usize::try_from(value).ok())?;
-    if length > max_string_bytes {
-        return None;
-    }
-    cursor
-        .checked_add(4)?
-        .checked_add(length)
-        .filter(|end| *end <= declared)
 }
 
 fn party_shape_valid(payload: &[u8]) -> bool {
@@ -2875,8 +2752,12 @@ mod tests {
     }
 
     #[test]
-    fn strict_module_info_requires_single_fragment_tail_with_owned_bits() {
+    fn strict_module_info_uses_focused_owner_for_fragment_tail_bits() {
         let full_byte_tail = build_module_info_with_fragment_tail(&[0x00]);
+        assert!(
+            module::claim_module_info_payload_if_verified(&full_byte_tail).is_some(),
+            "focused Module_Info owner should accept a full-byte final cursor"
+        );
         assert!(
             module_info_shape_valid(&full_byte_tail),
             "existing exact EE Module_Info tests use a full-byte final cursor"
@@ -2889,11 +2770,19 @@ mod tests {
 
         let compact_tail = build_module_info_with_fragment_tail(&[0xC0]);
         assert!(
+            module::claim_module_info_payload_if_verified(&compact_tail).is_some(),
+            "focused Module_Info owner should accept the compact six-bit final cursor"
+        );
+        assert!(
             module_info_shape_valid(&compact_tail),
             "compact Module_Info rewrites can preserve the six-bit final cursor"
         );
 
         let short_tail = build_module_info_with_fragment_tail(&[0xA0]);
+        assert!(
+            module::claim_module_info_payload_if_verified(&short_tail).is_none(),
+            "focused Module_Info owner must count the locstring selector plus two EE tail bits"
+        );
         assert!(
             !module_info_shape_valid(&short_tail),
             "Module_Info owns the locstring selector plus two EE tail bits"
@@ -2905,10 +2794,15 @@ mod tests {
         assert!(!exact_high_payload_shape_valid(&short_tail));
 
         let missing_tail = build_module_info_with_fragment_tail(&[]);
+        assert!(module::claim_module_info_payload_if_verified(&missing_tail).is_none());
         assert!(!module_info_shape_valid(&missing_tail));
         assert!(!exact_high_payload_shape_valid(&missing_tail));
 
         let tail_slack = build_module_info_with_fragment_tail(&[0xC0, 0x00]);
+        assert!(
+            module::claim_module_info_payload_if_verified(&tail_slack).is_none(),
+            "focused Module_Info owner has no multi-byte fragment-tail proof"
+        );
         assert!(
             !module_info_shape_valid(&tail_slack),
             "Module_Info has no multi-byte fragment-tail owner"

@@ -3368,7 +3368,7 @@ fn translate_module_info(
     scope: SemanticScope,
     module_resource_runtime: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if crate::strict::module_info_shape_valid(payload) {
+    if module::claim_module_info_payload_if_verified(payload).is_some() {
         if let (Some(runtime), Some(context)) = (
             module_resource_runtime,
             module::observed_context_from_ee_module_info_payload(payload),
@@ -3672,7 +3672,7 @@ mod module_info_dispatch_tests {
         let runtime = module_resources::ModuleResourceRuntime::default();
 
         assert!(
-            crate::strict::module_info_shape_valid(&payload),
+            module::claim_module_info_payload_if_verified(&payload).is_some(),
             "test payload should already match EE Module_Info"
         );
 
@@ -4451,7 +4451,7 @@ mod tests {
         );
         assert!(rewrite.any_rewrite());
         assert_eq!(rewrite.verified_family(), VerifiedFamily::ModuleInfo);
-        assert!(crate::strict::module_info_shape_valid(&payload));
+        assert!(module::claim_module_info_payload_if_verified(&payload).is_some());
     }
 
     #[test]
