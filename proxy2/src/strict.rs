@@ -461,13 +461,74 @@ fn server_zlib_stream_empty_progress_valid(direction: Direction, family: Verifie
 }
 
 fn verified_family_direction_valid(direction: Direction, family: VerifiedFamily) -> bool {
-    match family {
-        VerifiedFamily::Chat | VerifiedFamily::Login => matches!(
+    if server_verified_family(family) {
+        return matches!(
             direction,
             Direction::ServerToClient | Direction::ServerToClientSynthetic
-        ),
-        _ => true,
+        );
     }
+    if client_verified_family(family) {
+        return matches!(direction, Direction::ClientToServer);
+    }
+    true
+}
+
+fn server_verified_family(family: VerifiedFamily) -> bool {
+    matches!(
+        family,
+        VerifiedFamily::Ambient
+            | VerifiedFamily::AreaClientArea
+            | VerifiedFamily::AreaChangeDayNight
+            | VerifiedFamily::AreaVisualEffect
+            | VerifiedFamily::CharList
+            | VerifiedFamily::Chat
+            | VerifiedFamily::Camera
+            | VerifiedFamily::Cutscene
+            | VerifiedFamily::ClientSideMessage
+            | VerifiedFamily::Dialog
+            | VerifiedFamily::GameObjUpdateObjectControl
+            | VerifiedFamily::GameObjUpdateVisEffect
+            | VerifiedFamily::GameObjUpdateDestroyItem
+            | VerifiedFamily::GameObjUpdateLiveObject
+            | VerifiedFamily::GuiTimingEvent
+            | VerifiedFamily::GuiQuickbar
+            | VerifiedFamily::GuiQuickbarPlaceholder
+            | VerifiedFamily::Inventory
+            | VerifiedFamily::Journal
+            | VerifiedFamily::LoadBar
+            | VerifiedFamily::Login
+            | VerifiedFamily::ModuleEndGame
+            | VerifiedFamily::ModuleInfo
+            | VerifiedFamily::ModuleTime
+            | VerifiedFamily::Party
+            | VerifiedFamily::PlayModuleCharacterList
+            | VerifiedFamily::PlayerList
+            | VerifiedFamily::SetCustomToken
+            | VerifiedFamily::ServerStatusStatus
+            | VerifiedFamily::ServerStatusModuleResources
+            | VerifiedFamily::SafeProjectile
+            | VerifiedFamily::Sound
+    )
+}
+
+fn client_verified_family(family: VerifiedFamily) -> bool {
+    matches!(
+        family,
+        VerifiedFamily::ClientArea
+            | VerifiedFamily::ClientCharList
+            | VerifiedFamily::ClientCharacterSheet
+            | VerifiedFamily::ClientDialog
+            | VerifiedFamily::ClientGuiEvent
+            | VerifiedFamily::ClientGuiInventory
+            | VerifiedFamily::ClientInput
+            | VerifiedFamily::ClientJournal
+            | VerifiedFamily::ClientLogin
+            | VerifiedFamily::ClientModule
+            | VerifiedFamily::ClientParty
+            | VerifiedFamily::ClientPlayModuleCharacterList
+            | VerifiedFamily::ClientQuickbar
+            | VerifiedFamily::ClientServerStatus
+    )
 }
 
 pub fn decide_verified_proof_translated(
@@ -2630,7 +2691,8 @@ mod tests {
                 Verdict::Quarantine,
                 "{family:?} must not own a server zlib continuation: {decision:?}"
             );
-            assert_eq!(decision.reason, "verified-family-unclassified-M-payload");
+            assert_eq!(decision.family, "M/verified-direction");
+            assert_eq!(decision.reason, "verified-family-wrong-direction");
         }
 
         let feedback = decide_verified_translated(
@@ -2643,6 +2705,96 @@ mod tests {
         assert_eq!(
             feedback.reason,
             "verified-family-deflated-continuation-frame"
+        );
+    }
+
+    #[test]
+    fn strict_replay_exercised_server_proofs_are_server_owned() {
+        let custom_token = build_custom_token_set(0x1234, b"server-only");
+        assert_server_owned_verified_family(
+            VerifiedFamily::SetCustomToken,
+            &custom_token,
+            "SetCustomToken",
+            true,
+        );
+
+        let loadbar_start = loadbar::start_payload(2);
+        assert_server_owned_verified_family(
+            VerifiedFamily::LoadBar,
+            &loadbar_start,
+            "LoadBar",
+            true,
+        );
+
+        let status = server_status::status_payload();
+        assert_server_owned_verified_family(
+            VerifiedFamily::ServerStatusStatus,
+            &status,
+            "ServerStatus_Status",
+            false,
+        );
+    }
+
+    fn assert_server_owned_verified_family(
+        family: VerifiedFamily,
+        payload: &[u8],
+        expected_name: &'static str,
+        check_gameplay_stream: bool,
+    ) {
+        assert!(
+            verified_family_inflated_payload_valid(family, payload),
+            "{family:?} test payload should be owned by its focused parser"
+        );
+        assert!(
+            exact_high_payload_shape_valid(payload),
+            "directionless known-opcode validation still recognizes exact {family:?} payloads"
+        );
+        if check_gameplay_stream {
+            assert!(
+                verified_gameplay_stream_payload_valid(
+                    Direction::ServerToClient,
+                    &[family],
+                    payload
+                ),
+                "server gameplay stream proof should accept {family:?}"
+            );
+            assert!(
+                !verified_gameplay_stream_payload_valid(
+                    Direction::ClientToServer,
+                    &[family],
+                    payload
+                ),
+                "client gameplay stream proof must not accept server-owned {family:?}"
+            );
+        }
+
+        let frame = build_client_raw_m_frame(0x004E, 0x000B, payload, &[]);
+        for direction in [
+            Direction::ServerToClient,
+            Direction::ServerToClientSynthetic,
+        ] {
+            let decision = decide_verified_translated(direction, family, &frame);
+            assert!(
+                decision.allowed(),
+                "{direction:?} should allow {family:?}: {decision:?}"
+            );
+            assert_eq!(decision.name, expected_name);
+        }
+
+        let client_decision = decide_verified_translated(Direction::ClientToServer, family, &frame);
+        assert_eq!(client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(client_decision.family, "M/verified-direction");
+        assert_eq!(client_decision.reason, "verified-family-wrong-direction");
+
+        let coalesced_client_decision = decide_verified_coalesced_window_translated(
+            Direction::ClientToServer,
+            &[VerifiedProof::family(family)],
+            &frame,
+        );
+        assert_eq!(coalesced_client_decision.verdict, Verdict::Quarantine);
+        assert_eq!(
+            coalesced_client_decision.reason,
+            "coalesced-record-proof-invalid"
         );
     }
 
