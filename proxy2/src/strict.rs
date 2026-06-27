@@ -3473,6 +3473,45 @@ mod tests {
     }
 
     #[test]
+    fn strict_journal_splits_in_gameplay_stream() {
+        let mut stream = build_journal_delete_world(7);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            journal::claim_payload_if_verified(&build_journal_delete_world(7)).is_some(),
+            "focused Journal owner accepts the exact DeleteWorld row"
+        );
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Journal, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "Journal owns its exact fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::Journal, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "Journal/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_journal_delete_world(7);
+        *shifted.last_mut().expect("fragment tail") = 0x80;
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Journal, VerifiedFamily::ServerStatusStatus,],
+                &shifted,
+            ),
+            "a shifted Journal fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_sound_object_stop_uses_empty_fragment_owner() {
         let exact = [
             0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x76,
@@ -4050,6 +4089,16 @@ mod tests {
         payload.extend_from_slice(&[0x70, 0x0E, minor]);
         payload.extend_from_slice(&(PARTY_READ_START as u32).to_le_bytes());
         payload.push(EMPTY_FRAGMENT_BYTE);
+        payload
+    }
+
+    fn build_journal_delete_world(entry_id: u32) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x1C, 0x03]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&entry_id.to_le_bytes());
+        payload.push(0x60);
         payload
     }
 

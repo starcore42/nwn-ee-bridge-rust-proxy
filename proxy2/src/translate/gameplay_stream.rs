@@ -11,7 +11,7 @@
 
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
-use super::{VerifiedFamily, loadbar};
+use super::{VerifiedFamily, journal, loadbar};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameplayUnit<'a> {
@@ -169,6 +169,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
             let Some(declared) = declared_cnw_length(bytes, offset, high) else {
                 return FocusedUnitEnd::Invalid;
@@ -190,6 +191,45 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         }
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_journal_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_JOURNAL_FRAGMENT_BYTES: usize = 8;
+
+    if let Some(end) = offset.checked_add(3) {
+        if let Some(payload) = bytes.get(offset..end) {
+            if journal::claim_client_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_JOURNAL_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if journal::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
@@ -254,6 +294,11 @@ fn boundary_has_plausible_unit(bytes: &[u8], offset: usize) -> bool {
     let Some(high) = HighLevel::parse(&bytes[offset..]) else {
         return false;
     };
+    match focused_high_level_unit_end(bytes, offset, high) {
+        FocusedUnitEnd::Exact(_) => return true,
+        FocusedUnitEnd::Invalid => return false,
+        FocusedUnitEnd::NotFocused => {}
+    }
     if let Some(length) = fixed_high_level_length(high) {
         return offset
             .checked_add(length)
@@ -403,6 +448,86 @@ mod tests {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected shifted LoadBar_End to remain unclaimed"),
         }
+    }
+
+    #[test]
+    fn splits_journal_with_focused_fragment_tail_owner() {
+        let mut bytes = journal_delete_world_payload(7);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x1C);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Journal_DeleteWorld unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_journal_tail_before_following_status() {
+        let mut bytes = journal_delete_world_payload(7);
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Journal row to remain unclaimed"),
+        }
+    }
+
+    #[test]
+    fn splits_client_journal_no_body_controls() {
+        let bytes = [b'P', 0x1C, 0x0A, b'P', 0x1C, 0x0B];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x1C);
+                assert_eq!(message.minor, 0x0A);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected Journal quest-screen-open unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x1C);
+                assert_eq!(message.minor, 0x0B);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected Journal quest-screen-closed unit"),
+        }
+    }
+
+    fn journal_delete_world_payload(entry_id: u32) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![b'P', 0x1C, 0x03];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&entry_id.to_le_bytes());
+        payload.push(0x60);
+        payload
     }
 }
 
