@@ -156,7 +156,7 @@ fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<u
 
 fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
     match (high.major, high.minor) {
-        (0x01, 0x00)
+        (0x01, 0x00 | 0x01)
         | (0x02, 0x05 | 0x0C)
         | (0x03, 0x02)
         | (0x04, 0x03)
@@ -264,8 +264,40 @@ where
         .collect()
 }
 
-#[cfg(all(test, hgbridge_private_fixtures))]
+#[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_client_and_server_status_no_body_messages() {
+        let bytes = [b'P', 0x01, 0x00, b'P', 0x01, 0x01];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x00);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected client ServerStatus_0 unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected server ServerStatus_Status unit"),
+        }
+    }
+}
+
+#[cfg(all(test, hgbridge_private_fixtures))]
+mod private_fixture_tests {
     use super::*;
 
     #[test]

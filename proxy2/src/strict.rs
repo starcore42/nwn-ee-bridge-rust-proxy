@@ -2731,7 +2731,7 @@ mod tests {
             VerifiedFamily::ServerStatusStatus,
             &status,
             "ServerStatus_Status",
-            false,
+            true,
         );
     }
 
