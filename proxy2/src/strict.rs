@@ -2876,6 +2876,50 @@ mod tests {
     }
 
     #[test]
+    fn strict_sound_object_stop_uses_empty_fragment_owner() {
+        let exact = [
+            0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x76,
+        ];
+        assert!(
+            sound::claim_payload_if_verified(&exact).is_some(),
+            "focused Sound owner accepts the observed one-byte empty cursor"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Sound,
+            &exact
+        ));
+        assert!(exact_high_payload_shape_valid(&exact));
+
+        let shifted = [
+            0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x80,
+        ];
+        assert!(
+            sound::claim_payload_if_verified(&shifted).is_none(),
+            "Sound_Object_Stop owns no fragment BOOLs"
+        );
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Sound, &shifted),
+            "verified Sound proof must reject shifted fragment data bits"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&shifted),
+            "known-opcode strict validation must share the focused Sound owner"
+        );
+
+        let tail_slack = [
+            0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x60, 0x00,
+        ];
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Sound, &tail_slack),
+            "Sound_Object_Stop has no multi-byte fragment-tail owner"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&tail_slack),
+            "known-opcode strict validation must reject Sound tail slack"
+        );
+    }
+
+    #[test]
     fn strict_custom_token_uses_focused_owner() {
         let exact_set = build_custom_token_set(0x1234, b"hello");
         assert!(

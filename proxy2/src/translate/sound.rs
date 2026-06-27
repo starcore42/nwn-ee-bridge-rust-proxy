@@ -6,8 +6,9 @@
 //! `WriteOBJECTIDServer`, and sends high-level family `0x17`, minor `0x03`.
 //! The EE client sound dispatcher routes minor `3` to the matching stop reader,
 //! which reads exactly that object id and then checks read overflow/underflow.
-//! Diamond emits the same compact object-id read window, so this is an exact
-//! no-op claim after bounded cursor and fragment-tail validation.
+//! Diamond emits the same compact object-id read window and no CNW BOOL fields,
+//! so this is an exact no-op claim after bounded cursor and empty-fragment
+//! validation.
 
 use crate::{crc::read_le_u32, packet::m::HighLevel};
 
@@ -18,7 +19,8 @@ const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const OBJECT_ID_BYTES: usize = 4;
 const SOUND_OBJECT_ID_DECLARED: usize = READ_START + OBJECT_ID_BYTES;
-const MAX_FRAGMENT_BYTES: usize = 8;
+const EMPTY_FRAGMENT_BYTES: usize = 1;
+const EMPTY_FRAGMENT_FINAL_BITS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SoundClaimSummary {
@@ -37,8 +39,7 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<SoundClaimSummary> {
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared != SOUND_OBJECT_ID_DECLARED
         || declared > payload.len()
-        || payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES
-        || !cnw_fragment_tail_has_header(&payload[declared..])
+        || !cnw_fragment_tail_is_empty_cursor(&payload[declared..])
     {
         return None;
     }
@@ -56,23 +57,9 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<SoundClaimSummary> {
     })
 }
 
-fn cnw_fragment_tail_has_header(fragment: &[u8]) -> bool {
-    const CNW_FRAGMENT_HEADER_BITS: usize = 3;
-
-    let Some(first) = fragment.first().copied() else {
-        return false;
-    };
-    let final_bits = usize::from((first & 0xE0) >> 5);
-    let valid_bits = if final_bits == 0 {
-        fragment.len().saturating_mul(8)
-    } else {
-        fragment
-            .len()
-            .saturating_sub(1)
-            .saturating_mul(8)
-            .saturating_add(final_bits)
-    };
-    valid_bits >= CNW_FRAGMENT_HEADER_BITS
+fn cnw_fragment_tail_is_empty_cursor(fragment: &[u8]) -> bool {
+    fragment.len() == EMPTY_FRAGMENT_BYTES
+        && usize::from((fragment[0] & 0xE0) >> 5) == EMPTY_FRAGMENT_FINAL_BITS
 }
 
 #[cfg(test)]
@@ -97,6 +84,24 @@ mod tests {
     fn rejects_sound_object_stop_without_fragment_tail() {
         let payload = [
             0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn rejects_sound_object_stop_with_fragment_data_bits() {
+        let payload = [
+            0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x80,
+        ];
+
+        assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn rejects_sound_object_stop_with_fragment_tail_slack() {
+        let payload = [
+            0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x60, 0x00,
         ];
 
         assert!(claim_payload_if_verified(&payload).is_none());
