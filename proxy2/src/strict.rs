@@ -1804,22 +1804,14 @@ fn chat_shape_valid(payload: &[u8], high: HighLevel) -> bool {
     }
 }
 
-fn cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize) -> bool {
+fn single_cnw_fragment_tail_can_hold_bools(fragment: &[u8], semantic_bool_count: usize) -> bool {
     const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 
-    let Some(first) = fragment.first().copied() else {
+    let [first] = fragment else {
         return false;
     };
-    let final_bits = usize::from((first & 0xE0) >> 5);
-    let valid_bits = if final_bits == 0 {
-        fragment.len().saturating_mul(8)
-    } else {
-        fragment
-            .len()
-            .saturating_sub(1)
-            .saturating_mul(8)
-            .saturating_add(final_bits)
-    };
+    let final_bits = usize::from((*first & 0xE0) >> 5);
+    let valid_bits = if final_bits == 0 { 8 } else { final_bits };
     valid_bits >= CNW_FRAGMENT_HEADER_BITS.saturating_add(semantic_bool_count)
 }
 
@@ -1907,7 +1899,7 @@ pub(crate) fn module_info_shape_valid(payload: &[u8]) -> bool {
     }
     cursor += 1;
 
-    cursor == declared && cnw_fragment_tail_can_hold_bools(&payload[declared..], 2)
+    cursor == declared && single_cnw_fragment_tail_can_hold_bools(&payload[declared..], 3)
 }
 
 fn fixed_resref16_shape_valid(bytes: &[u8], allow_empty: bool) -> bool {
@@ -2787,6 +2779,52 @@ mod tests {
     }
 
     #[test]
+    fn strict_module_info_requires_single_fragment_tail_with_owned_bits() {
+        let full_byte_tail = build_module_info_with_fragment_tail(&[0x00]);
+        assert!(
+            module_info_shape_valid(&full_byte_tail),
+            "existing exact EE Module_Info tests use a full-byte final cursor"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ModuleInfo,
+            &full_byte_tail
+        ));
+        assert!(exact_high_payload_shape_valid(&full_byte_tail));
+
+        let compact_tail = build_module_info_with_fragment_tail(&[0xC0]);
+        assert!(
+            module_info_shape_valid(&compact_tail),
+            "compact Module_Info rewrites can preserve the six-bit final cursor"
+        );
+
+        let short_tail = build_module_info_with_fragment_tail(&[0xA0]);
+        assert!(
+            !module_info_shape_valid(&short_tail),
+            "Module_Info owns the locstring selector plus two EE tail bits"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ModuleInfo,
+            &short_tail
+        ));
+        assert!(!exact_high_payload_shape_valid(&short_tail));
+
+        let missing_tail = build_module_info_with_fragment_tail(&[]);
+        assert!(!module_info_shape_valid(&missing_tail));
+        assert!(!exact_high_payload_shape_valid(&missing_tail));
+
+        let tail_slack = build_module_info_with_fragment_tail(&[0xC0, 0x00]);
+        assert!(
+            !module_info_shape_valid(&tail_slack),
+            "Module_Info has no multi-byte fragment-tail owner"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ModuleInfo,
+            &tail_slack
+        ));
+        assert!(!exact_high_payload_shape_valid(&tail_slack));
+    }
+
+    #[test]
     fn strict_server_status_module_resources_uses_focused_owner() {
         let runtime = module_resources::ModuleResourceRuntime::default();
         assert!(runtime.observe_legacy_module_info_resources(
@@ -3138,6 +3176,34 @@ mod tests {
         payload.extend_from_slice(body);
         payload.extend_from_slice(tail);
         payload
+    }
+
+    fn build_module_info_with_fragment_tail(fragment_tail: &[u8]) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x03, 0x01, 0, 0, 0, 0];
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        write_test_string(&mut payload, "Path of Ascension CEP Legends");
+        payload.push(0x02);
+        write_test_resref16(&mut payload, "poa_mod");
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+        write_test_string(&mut payload, "Armor Shop");
+        payload.push(0);
+        let declared = u32::try_from(payload.len()).expect("test Module_Info length fits u32");
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn write_test_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    fn write_test_resref16(out: &mut Vec<u8>, value: &str) {
+        assert!(value.len() <= 16);
+        let mut bytes = [0u8; 16];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        out.extend_from_slice(&bytes);
     }
 
     fn build_client_login_server_subdirectory_character(resref: &[u8]) -> Vec<u8> {
