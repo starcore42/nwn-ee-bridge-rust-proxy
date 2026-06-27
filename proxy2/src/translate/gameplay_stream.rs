@@ -160,6 +160,7 @@ fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
         | (0x02, 0x05 | 0x0C)
         | (0x03, 0x02)
         | (0x04, 0x03)
+        | (0x0E, 0x02)
         | (0x11, 0x01)
         | (0x31, 0x01 | 0x02) => Some(3),
         _ => None,
@@ -292,6 +293,33 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected server ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn splits_client_party_get_list_no_body_signal() {
+        let bytes = [b'P', 0x0E, 0x02, b'P', 0x04, 0x03];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x0E);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected client Party_GetList unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected client Area_AreaLoaded unit"),
         }
     }
 }

@@ -3580,6 +3580,28 @@ mod tests {
     }
 
     #[test]
+    fn strict_client_party_get_list_splits_in_gameplay_stream() {
+        let payload = [0x70, 0x0E, 0x02, 0x70, 0x04, 0x03];
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::ClientParty, VerifiedFamily::ClientArea],
+                &payload,
+            ),
+            "ClientParty and ClientArea no-body signals should split as two exact stream units"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::ClientParty, VerifiedFamily::ClientArea],
+                &payload,
+            ),
+            "client-owned stream units must still reject the server direction"
+        );
+    }
+
+    #[test]
     fn strict_play_module_character_list_splits_client_controls_and_server_response() {
         for minor in [0x01, 0x02] {
             let payload = [0x50, 0x31, minor];
