@@ -1256,6 +1256,10 @@ fn inflate_verified_deflated_combined_payload(
 }
 
 fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]) -> bool {
+    if family == VerifiedFamily::ClientServerAdmin {
+        return client_server_admin::claim_payload_if_verified(payload).is_some();
+    }
+
     if let VerifiedFamily::ServerZlibStreamContinuation {
         owner,
         stream_epoch,
@@ -2466,6 +2470,69 @@ mod tests {
             VerifiedFamily::ClientSideMessage,
             &rewritten_feedback,
         ));
+    }
+
+    #[test]
+    fn strict_client_server_admin_uses_focused_raw_owner() {
+        let exact = b"sModule.Run";
+        assert!(client_server_admin::claim_payload_if_verified(exact).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientServerAdmin,
+            exact,
+        ));
+
+        let mut malformed = exact.to_vec();
+        malformed.push(0);
+        assert!(client_server_admin::claim_payload_if_verified(&malformed).is_none());
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientServerAdmin,
+            &malformed,
+        ));
+
+        let frame = build_client_raw_m_frame(0x004B, 0x0009, exact, &[]);
+        let decision = decide_verified_translated(
+            Direction::ClientToServer,
+            VerifiedFamily::ClientServerAdmin,
+            &frame,
+        );
+        assert_eq!(decision.verdict, Verdict::Allow);
+        assert_eq!(decision.family, "M/verified-client-admin");
+        assert_eq!(decision.reason, "verified-client-server-admin-exact-shape");
+
+        let wrong_direction = decide_verified_translated(
+            Direction::ServerToClient,
+            VerifiedFamily::ClientServerAdmin,
+            &frame,
+        );
+        assert_eq!(wrong_direction.verdict, Verdict::Quarantine);
+        assert_eq!(
+            wrong_direction.reason,
+            "client-server-admin-wrong-direction"
+        );
+
+        let trailing = build_client_raw_m_frame(0x004C, 0x000A, exact, &[0]);
+        let trailing_decision = decide_verified_translated(
+            Direction::ClientToServer,
+            VerifiedFamily::ClientServerAdmin,
+            &trailing,
+        );
+        assert_eq!(trailing_decision.verdict, Verdict::Quarantine);
+        assert_eq!(
+            trailing_decision.reason,
+            "client-server-admin-trailing-spans-unsupported"
+        );
+
+        let malformed_frame = build_client_raw_m_frame(0x004D, 0x000B, &malformed, &[]);
+        let malformed_decision = decide_verified_translated(
+            Direction::ClientToServer,
+            VerifiedFamily::ClientServerAdmin,
+            &malformed_frame,
+        );
+        assert_eq!(malformed_decision.verdict, Verdict::Quarantine);
+        assert_eq!(
+            malformed_decision.reason,
+            "client-server-admin-invalid-shape"
+        );
     }
 
     #[test]
@@ -3717,6 +3784,25 @@ mod tests {
         let mut packet = vec![b'M', 0, 0, 0, 0x3C, 0, 0x4D, 0x08, 0, 0, 0, 0];
         assert!(write_be_u16(&mut packet, 10, payload.len() as u16));
         packet.extend_from_slice(payload);
+        assert!(encode_legacy_m_crc(&mut packet));
+        packet
+    }
+
+    fn build_client_raw_m_frame(
+        sequence: u16,
+        ack_sequence: u16,
+        payload: &[u8],
+        trailing: &[u8],
+    ) -> Vec<u8> {
+        let mut packet = vec![0; LEGACY_GAMEPLAY_PAYLOAD_OFFSET];
+        packet[0] = b'M';
+        assert!(write_be_u16(&mut packet, 3, sequence));
+        assert!(write_be_u16(&mut packet, 5, ack_sequence));
+        packet[7] = 0x0A;
+        assert!(write_be_u16(&mut packet, 8, 1));
+        assert!(write_be_u16(&mut packet, 10, payload.len() as u16));
+        packet.extend_from_slice(payload);
+        packet.extend_from_slice(trailing);
         assert!(encode_legacy_m_crc(&mut packet));
         packet
     }
