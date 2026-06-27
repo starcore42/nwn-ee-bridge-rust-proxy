@@ -82,12 +82,12 @@ pub fn claim_or_rewrite_payload_if_verified(
         });
     }
     if client_translator_may_claim_parsed_high_level("PlayModuleCharacterList", high)
-        && let Some(summary) = play_module_character_list::claim_payload_if_verified(payload)
+        && let Some(summary) = play_module_character_list::claim_client_payload_if_verified(payload)
     {
         return Some(ClientHighClaimSummary {
             family_name: "PlayModuleCharacterList",
             packet_name: summary.packet_name,
-            verified_family: VerifiedFamily::PlayModuleCharacterList,
+            verified_family: VerifiedFamily::ClientPlayModuleCharacterList,
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientLogin", high)
@@ -272,7 +272,7 @@ fn client_translator_may_claim_parsed_high_level(family_name: &str, high: HighLe
         "ClientCharacterSheet" => high.major == 0x15 && high.minor == 0x01,
         "ClientJournal" => high.major == 0x1C && matches!(high.minor, 0x0A | 0x0B),
         "ClientQuickbar" => high.major == 0x1E && high.minor == 0x02,
-        "PlayModuleCharacterList" => high.major == 0x31 && matches!(high.minor, 0x01..=0x03),
+        "PlayModuleCharacterList" => high.major == 0x31 && matches!(high.minor, 0x01 | 0x02),
         "ClientGuiEvent" => high.major == 0x35 && high.minor == 0x01,
         _ => false,
     }
@@ -307,7 +307,7 @@ mod tests {
             ("ClientCharacterSheet", high(0x15, 0x01)),
             ("ClientJournal", high(0x1C, 0x0A)),
             ("ClientQuickbar", high(0x1E, 0x02)),
-            ("PlayModuleCharacterList", high(0x31, 0x03)),
+            ("PlayModuleCharacterList", high(0x31, 0x01)),
             ("ClientGuiEvent", high(0x35, 0x01)),
         ] {
             assert!(
@@ -334,7 +334,7 @@ mod tests {
             ("ClientCharacterSheet", high(0x15, 0x02)),
             ("ClientJournal", high(0x1C, 0x09)),
             ("ClientQuickbar", high(0x1E, 0x01)),
-            ("PlayModuleCharacterList", high(0x31, 0x04)),
+            ("PlayModuleCharacterList", high(0x31, 0x03)),
             ("ClientGuiEvent", high(0x35, 0x02)),
         ] {
             assert!(
@@ -378,5 +378,29 @@ mod tests {
         assert_eq!(claim.family_name, "ClientDialog");
         assert_eq!(claim.packet_name, "Dialog_Reply");
         assert_eq!(claim.verified_family, VerifiedFamily::ClientDialog);
+    }
+
+    #[test]
+    fn client_play_module_character_list_emits_client_family_only_for_controls() {
+        let mut state = SemanticSessionState::default();
+        for minor in [0x01, 0x02] {
+            let mut payload = vec![0x70, 0x31, minor];
+            let claim = claim_or_rewrite_payload_if_verified(&mut payload, &mut state)
+                .expect("client PlayModuleCharacterList control should be claimed");
+
+            assert_eq!(claim.family_name, "PlayModuleCharacterList");
+            assert_eq!(
+                claim.verified_family,
+                VerifiedFamily::ClientPlayModuleCharacterList
+            );
+        }
+
+        let mut response = vec![
+            0x70, 0x31, 0x03, 0x0B, 0x00, 0x00, 0x00, 0xF9, 0xFF, 0xFF, 0x7F, 0x80,
+        ];
+        assert!(
+            claim_or_rewrite_payload_if_verified(&mut response, &mut state).is_none(),
+            "PlayModuleCharacterList_Response is server-originated and must not claim as client"
+        );
     }
 }

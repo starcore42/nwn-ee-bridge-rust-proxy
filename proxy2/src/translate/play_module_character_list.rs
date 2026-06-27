@@ -95,6 +95,24 @@ pub fn claim_payload_if_verified(payload: &[u8]) -> Option<PlayModuleCharacterLi
     }
 }
 
+pub fn claim_client_payload_if_verified(
+    payload: &[u8],
+) -> Option<PlayModuleCharacterListClaimSummary> {
+    let claim = claim_payload_if_verified(payload)?;
+    matches!(
+        claim.kind,
+        PlayModuleCharacterListKind::Start | PlayModuleCharacterListKind::Stop
+    )
+    .then_some(claim)
+}
+
+pub fn claim_server_payload_if_verified(
+    payload: &[u8],
+) -> Option<PlayModuleCharacterListClaimSummary> {
+    let claim = claim_payload_if_verified(payload)?;
+    (claim.kind == PlayModuleCharacterListKind::Response).then_some(claim)
+}
+
 fn claim_response(payload: &[u8]) -> Option<PlayModuleCharacterListClaimSummary> {
     if payload.len() < READ_CURSOR_START + OBJECT_ID_BYTES + 1 {
         return None;

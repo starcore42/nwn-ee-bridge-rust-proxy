@@ -635,7 +635,7 @@ fn translator_may_claim_parsed_high_level(family_name: &str, high: HighLevel) ->
         "Area_ChangeDayNight" => high.major == 0x04 && high.minor == 0x06,
         "SafeProjectile" => high.major == 0x22 && high.minor == 0x01,
         "Party" => high.major == 0x0E && matches!(high.minor, 0x01..=0x0E),
-        "PlayModuleCharacterList" => high.major == 0x31 && matches!(high.minor, 0x01..=0x03),
+        "PlayModuleCharacterList" => high.major == 0x31 && high.minor == 0x03,
         "GuiQuickbar" => high.major == 0x1E && high.minor == 0x01,
         "CNWPrefixedFragmentsTransportOnly" => true,
         "CharList" => high.major == 0x11 && matches!(high.minor, 0x02 | 0x04),
@@ -2580,7 +2580,7 @@ fn translate_play_module_character_list(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if play_module_character_list::claim_payload_if_verified(payload).is_some() {
+    if play_module_character_list::claim_server_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
@@ -3866,6 +3866,14 @@ mod module_info_dispatch_tests {
                     envelope: b'P',
                     major: 0x17,
                     minor: 0x02,
+                },
+            ),
+            (
+                "PlayModuleCharacterList",
+                HighLevel {
+                    envelope: b'P',
+                    major: 0x31,
+                    minor: 0x01,
                 },
             ),
         ] {

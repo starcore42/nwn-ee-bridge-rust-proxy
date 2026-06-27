@@ -1355,6 +1355,11 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientParty => {
             high.major == 0x0E && high.minor == 0x02 && client_party_shape_valid(payload)
         }
+        VerifiedFamily::ClientPlayModuleCharacterList => {
+            high.major == 0x31
+                && matches!(high.minor, 0x01 | 0x02)
+                && play_module_character_list::claim_client_payload_if_verified(payload).is_some()
+        }
         VerifiedFamily::ClientQuickbar => {
             high.major == 0x1E
                 && high.minor == 0x02
@@ -1415,7 +1420,8 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::Party => high.major == 0x0E && server_party_shape_valid(payload),
         VerifiedFamily::PlayModuleCharacterList => {
             high.major == 0x31
-                && play_module_character_list::claim_payload_if_verified(payload).is_some()
+                && high.minor == 0x03
+                && play_module_character_list::claim_server_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::PlayerList => {
             high.major == 0x0A
@@ -3190,36 +3196,63 @@ mod tests {
     }
 
     #[test]
-    fn strict_play_module_character_list_uses_focused_owner_for_empty_controls() {
+    fn strict_play_module_character_list_splits_client_controls_and_server_response() {
         for minor in [0x01, 0x02] {
             let payload = [0x50, 0x31, minor];
             assert!(
-                play_module_character_list::claim_payload_if_verified(&payload).is_some(),
-                "focused PlayModuleCharacterList owner should claim minor {minor:#04x}"
+                play_module_character_list::claim_client_payload_if_verified(&payload).is_some(),
+                "focused client PlayModuleCharacterList owner should claim minor {minor:#04x}"
             );
             assert!(
                 verified_family_inflated_payload_valid(
+                    VerifiedFamily::ClientPlayModuleCharacterList,
+                    &payload,
+                ),
+                "client verified-family proof must share the focused PlayModuleCharacterList owner"
+            );
+            assert!(
+                !verified_family_inflated_payload_valid(
                     VerifiedFamily::PlayModuleCharacterList,
                     &payload,
                 ),
-                "verified-family proof must share the focused PlayModuleCharacterList owner"
+                "server verified-family proof must not claim client PlayModuleCharacterList controls"
             );
             assert!(
                 exact_high_payload_shape_valid(&payload),
-                "known-opcode strict validation must share the focused PlayModuleCharacterList owner"
+                "known-opcode strict validation remains directionless for exact shapes"
             );
 
             let mut trailing = payload.to_vec();
             trailing.push(0);
             assert!(
-                play_module_character_list::claim_payload_if_verified(&trailing).is_none(),
-                "focused owner must reject trailing bytes for minor {minor:#04x}"
+                play_module_character_list::claim_client_payload_if_verified(&trailing).is_none(),
+                "focused client owner must reject trailing bytes for minor {minor:#04x}"
             );
             assert!(
                 !exact_high_payload_shape_valid(&trailing),
                 "known-opcode strict validation must reject the same trailing bytes"
             );
         }
+
+        let response = [
+            0x50, 0x31, 0x03, 0x0B, 0x00, 0x00, 0x00, 0xF9, 0xFF, 0xFF, 0x7F, 0x80,
+        ];
+        assert!(
+            play_module_character_list::claim_server_payload_if_verified(&response).is_some(),
+            "focused server owner should claim response payload"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::PlayModuleCharacterList,
+            &response,
+        ));
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::ClientPlayModuleCharacterList,
+                &response,
+            ),
+            "client proof must not claim PlayModuleCharacterList responses"
+        );
+        assert!(exact_high_payload_shape_valid(&response));
     }
 
     #[test]
