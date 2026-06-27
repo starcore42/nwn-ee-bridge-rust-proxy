@@ -22,7 +22,7 @@ use crate::{
         client_side_message, custom_token, cutscene, dialog, game_obj_update, gameplay_stream,
         gui_timing_event, inventory, journal, live_object_update, loadbar, login, module,
         module_resources, module_time, party, play_module_character_list, player_list, quickbar,
-        safe_projectile, sound,
+        safe_projectile, server_status, sound,
     },
 };
 use flate2::read::ZlibDecoder;
@@ -1432,7 +1432,9 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
             high.major == 0x32 && custom_token::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ServerStatusStatus => {
-            high.major == 0x01 && high.minor == 0x01 && empty_high_level_shape_valid(payload)
+            high.major == 0x01
+                && high.minor == 0x01
+                && server_status::claim_status_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ServerStatusModuleResources => {
             high.major == 0x01
@@ -1609,7 +1611,9 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x01, 0x00) => HighPayloadValidation::Exact(
             client_server_status::claim_payload_if_verified(payload).is_some(),
         ),
-        (0x01, 0x01) => HighPayloadValidation::Exact(empty_high_level_shape_valid(payload)),
+        (0x01, 0x01) => HighPayloadValidation::Exact(
+            server_status::claim_status_payload_if_verified(payload).is_some(),
+        ),
         (0x01, 0x03) => HighPayloadValidation::Exact(
             module_resources::claim_payload_if_verified(payload).is_some(),
         ),
@@ -1700,10 +1704,6 @@ fn high_payload_validation(payload: &[u8], high: HighLevel) -> HighPayloadValida
         (0x2C, 0x01..=0x03) => HighPayloadValidation::Exact(loadbar_shape_valid(payload)),
         _ => HighPayloadValidation::Missing,
     }
-}
-
-fn empty_high_level_shape_valid(payload: &[u8]) -> bool {
-    payload.len() == 3
 }
 
 fn coalesced_window_shape_valid(bytes: &[u8], view: &crate::packet::m::MFrameView) -> bool {
@@ -2822,6 +2822,45 @@ mod tests {
             &tail_slack
         ));
         assert!(!exact_high_payload_shape_valid(&tail_slack));
+    }
+
+    #[test]
+    fn strict_server_status_status_uses_focused_owner() {
+        let exact = server_status::status_payload();
+        assert!(
+            server_status::claim_status_payload_if_verified(&exact).is_some(),
+            "focused ServerStatus_Status owner claims only the EE mode/status envelope"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::ServerStatusStatus,
+            &exact
+        ));
+        assert!(exact_high_payload_shape_valid(&exact));
+
+        let wrong_empty_status = [b'P', 0x01, 0x00];
+        assert!(
+            server_status::claim_status_payload_if_verified(&wrong_empty_status).is_none(),
+            "client ServerStatus_0 is not the server mode/status transition"
+        );
+        assert!(
+            !verified_family_inflated_payload_valid(
+                VerifiedFamily::ServerStatusStatus,
+                &wrong_empty_status
+            ),
+            "verified ServerStatus_Status proof must not accept any three-byte P/01 sibling"
+        );
+
+        let mut tail_slack = exact.to_vec();
+        tail_slack.push(0);
+        assert!(server_status::claim_status_payload_if_verified(&tail_slack).is_none());
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ServerStatusStatus,
+            &tail_slack
+        ));
+        assert!(
+            !exact_high_payload_shape_valid(&tail_slack),
+            "known-opcode strict validation must reject unowned ServerStatus_Status tail slack"
+        );
     }
 
     #[test]

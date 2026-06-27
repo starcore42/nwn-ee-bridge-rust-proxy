@@ -61,6 +61,7 @@ pub(crate) mod quickbar;
 pub(crate) mod resource_config;
 pub(crate) mod safe_projectile;
 pub(crate) mod semantic;
+pub(crate) mod server_status;
 pub(crate) mod sound;
 
 use crate::{

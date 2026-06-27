@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use crate::{
     crc::{encode_legacy_m_crc, write_be_u16},
     packet::m::{HighLevel, LEGACY_GAMEPLAY_PAYLOAD_OFFSET, MFrameView},
-    translate::{VerifiedFamily, VerifiedProof, area, loadbar},
+    translate::{VerifiedFamily, VerifiedProof, area, loadbar, server_status},
 };
 
 use super::sequence::{
@@ -585,7 +585,7 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
         // `SendServerToPlayerServerStatus_Status` maps mode 1 to high-level
         // `0x01/0x01` with no CNW read buffer. This is a typed protocol-status
         // transition, not the later mode-2 `0x01/0x03` module-resource packet.
-        let status_payload = server_status_status_payload();
+        let status_payload = server_status::status_payload();
         let start_packet =
             build_synthetic_gameplay_frame(start_sequence, ack_sequence, &start_payload)?;
         let end_packet = build_synthetic_gameplay_frame(end_sequence, ack_sequence, &end_payload)?;
@@ -697,10 +697,6 @@ pub(super) fn queue_loadbar_and_area_loaded_fallback(
     );
 
     Ok(())
-}
-
-fn server_status_status_payload() -> [u8; 3] {
-    [b'P', 0x01, 0x01]
 }
 
 pub(super) fn maybe_build_area_loaded_client_packet(
