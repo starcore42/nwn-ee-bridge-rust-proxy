@@ -3438,6 +3438,41 @@ mod tests {
     }
 
     #[test]
+    fn strict_loadbar_splits_in_gameplay_stream() {
+        let mut stream = loadbar::start_payload(2);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::LoadBar, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "LoadBar owns its compact fragment tail before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::LoadBar, VerifiedFamily::ServerStatusStatus,],
+                &stream,
+            ),
+            "LoadBar/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = loadbar::end_success_payload(2);
+        *shifted.last_mut().expect("fragment tail") = 0x60;
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::LoadBar, VerifiedFamily::ServerStatusStatus,],
+                &shifted,
+            ),
+            "a shifted LoadBar_End tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_sound_object_stop_uses_empty_fragment_owner() {
         let exact = [
             0x50, 0x17, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x47, 0x02, 0x00, 0x80, 0x76,

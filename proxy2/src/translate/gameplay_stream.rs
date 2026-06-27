@@ -11,7 +11,7 @@
 
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
-use super::VerifiedFamily;
+use super::{VerifiedFamily, loadbar};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameplayUnit<'a> {
@@ -101,6 +101,12 @@ pub fn split_inflated_gameplay(bytes: &[u8]) -> SplitResult<Vec<GameplayUnit<'_>
 }
 
 fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<usize> {
+    match focused_high_level_unit_end(bytes, offset, high) {
+        FocusedUnitEnd::Exact(end) => return Some(end),
+        FocusedUnitEnd::Invalid => return None,
+        FocusedUnitEnd::NotFocused => {}
+    }
+
     if let Some(length) = fixed_high_level_length(high) {
         return offset.checked_add(length).filter(|end| *end <= bytes.len());
     }
@@ -152,6 +158,38 @@ fn high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> Option<u
         .unwrap_or(offset)
         .saturating_add(1);
     find_next_plausible_high_level_boundary(bytes, scan_start).or(Some(bytes.len()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedUnitEnd {
+    Exact(usize),
+    Invalid,
+    NotFocused,
+}
+
+fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
+    match (high.major, high.minor) {
+        (0x2C, 0x01..=0x03) => {
+            let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+                return FocusedUnitEnd::Invalid;
+            };
+            let Some(end) = offset
+                .checked_add(declared)
+                .and_then(|end| end.checked_add(1))
+            else {
+                return FocusedUnitEnd::Invalid;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                return FocusedUnitEnd::Invalid;
+            };
+            if loadbar::claim_payload_if_verified(payload).is_some() {
+                FocusedUnitEnd::Exact(end)
+            } else {
+                FocusedUnitEnd::Invalid
+            }
+        }
+        _ => FocusedUnitEnd::NotFocused,
+    }
 }
 
 fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
@@ -320,6 +358,50 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn splits_loadbar_with_focused_fragment_tail_owner() {
+        let mut bytes = loadbar::start_payload(2);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x2C);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected LoadBar_Start unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_loadbar_end_before_following_status() {
+        let mut bytes = loadbar::end_success_payload(2);
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted LoadBar_End to remain unclaimed"),
         }
     }
 }
