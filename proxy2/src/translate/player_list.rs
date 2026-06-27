@@ -85,6 +85,11 @@ pub struct PlayerListRewriteSummary {
     pub normalized_exact_tail_short_declared: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlayerListClaimSummary {
+    pub object_ids: Vec<PlayerListObjectIds>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     declared: u32,
@@ -335,42 +340,18 @@ pub fn rewrite_player_list_payload_if_possible(
     })
 }
 
-pub fn ee_player_list_payload_shape_valid(payload: &[u8]) -> bool {
-    if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
-        || payload[0] != HIGH_LEVEL_ENVELOPE
-        || payload[1] != PLAYER_LIST_MAJOR
-        || !matches!(
-            payload[2],
-            PLAYER_LIST_ALL_MINOR | PLAYER_LIST_ADD_MINOR | PLAYER_LIST_DELETE_MINOR
-        )
-        || payload.len() > MAX_REASONABLE_PAYLOAD
-    {
-        return false;
-    }
-
-    let Some(layout) = probe_current_layout_for(
-        payload,
-        false,
-        false,
-        false,
-        &[PlatformIdentityShape::EeRequired],
-    ) else {
-        return false;
-    };
-
-    let cnw = &payload[HIGH_LEVEL_HEADER_BYTES..];
-    let fragments = &cnw[layout.read_size..layout.read_size + layout.fragment_size];
-    parse_player_list_cnw(
-        cnw,
-        payload[2],
-        layout.read_size,
-        fragments,
-        PlatformIdentityShape::EeRequired,
-    )
-    .is_some()
+pub fn claim_payload_if_verified(payload: &[u8]) -> Option<PlayerListClaimSummary> {
+    let (_, parsed) = parse_verified_ee_player_list(payload)?;
+    Some(PlayerListClaimSummary {
+        object_ids: parsed.object_ids,
+    })
 }
 
 pub fn object_ids_from_verified_payload(payload: &[u8]) -> Option<Vec<PlayerListObjectIds>> {
+    claim_payload_if_verified(payload).map(|claim| claim.object_ids)
+}
+
+fn parse_verified_ee_player_list(payload: &[u8]) -> Option<(Layout, ParsedPlayerList)> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
         || payload[1] != PLAYER_LIST_MAJOR
@@ -390,6 +371,7 @@ pub fn object_ids_from_verified_payload(payload: &[u8]) -> Option<Vec<PlayerList
         false,
         &[PlatformIdentityShape::EeRequired],
     )?;
+
     let cnw = &payload[HIGH_LEVEL_HEADER_BYTES..];
     let fragments = &cnw[layout.read_size..layout.read_size + layout.fragment_size];
     let parsed = parse_player_list_cnw(
@@ -399,7 +381,13 @@ pub fn object_ids_from_verified_payload(payload: &[u8]) -> Option<Vec<PlayerList
         fragments,
         PlatformIdentityShape::EeRequired,
     )?;
-    Some(parsed.object_ids)
+    if parsed.consumed_fragment_bytes != layout.fragment_size
+        || parsed.consumed_fragment_bits < CNW_FRAGMENT_HEADER_BITS
+        || parsed.final_fragment_bits != (parsed.consumed_fragment_bits % 8) as u8
+    {
+        return None;
+    }
+    Some((layout, parsed))
 }
 
 fn normalize_player_list_layout(payload: &mut Vec<u8>) -> Option<Layout> {
@@ -1310,6 +1298,51 @@ fn apply_player_list_read_mutations(
     Some(())
 }
 
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+
+    #[test]
+    fn claims_exact_ee_delete_and_rejects_fragment_tail_slack() {
+        let payload = build_ee_player_list_delete_payload(0x8000_0001, 0x80);
+        let claim = claim_payload_if_verified(&payload)
+            .expect("exact EE PlayerList_Delete payload should be claimed");
+        let (layout, parsed) = parse_verified_ee_player_list(&payload)
+            .expect("exact EE PlayerList_Delete cursor should parse");
+
+        assert_eq!(payload[2], PLAYER_LIST_DELETE_MINOR);
+        assert_eq!(layout.declared, 11);
+        assert_eq!(parsed.entry_count, 1);
+        assert_eq!(layout.fragment_size, 1);
+        assert_eq!(parsed.consumed_fragment_bits, 4);
+        assert!(claim.object_ids.is_empty());
+        assert_eq!(object_ids_from_verified_payload(&payload), Some(Vec::new()));
+
+        let shifted_cursor = build_ee_player_list_delete_payload(0x8000_0001, 0xA0);
+        assert!(
+            claim_payload_if_verified(&shifted_cursor).is_none(),
+            "the final-bit header must match the consumed PlayerList_Delete cursor"
+        );
+
+        let mut trailing = payload;
+        trailing.push(0);
+        assert!(claim_payload_if_verified(&trailing).is_none());
+    }
+
+    fn build_ee_player_list_delete_payload(player_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + 4;
+        let mut payload = vec![
+            HIGH_LEVEL_ENVELOPE,
+            PLAYER_LIST_MAJOR,
+            PLAYER_LIST_DELETE_MINOR,
+        ];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&player_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+}
+
 #[cfg(all(test, hgbridge_private_fixtures))]
 mod tests {
     use super::*;
@@ -1325,7 +1358,7 @@ mod tests {
         assert_eq!(summary.entries, 2);
         assert_eq!(summary.insertions, 2);
         assert_eq!(summary.bytes_inserted, 10);
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1356,7 +1389,7 @@ mod tests {
                 .count(),
             0
         );
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1377,7 +1410,7 @@ mod tests {
                 "rewritten PlayerList payload should contain {object_id:#010x}"
             );
         }
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1394,7 +1427,7 @@ mod tests {
         assert_eq!(summary.entries, 6);
         assert_eq!(summary.insertions, 6);
         assert_eq!(summary.locstring_length_repairs, 1);
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1411,7 +1444,7 @@ mod tests {
         assert_eq!(summary.entries, 5);
         assert_eq!(summary.insertions, u32::from(summary.entries));
         assert!(summary.normalized_exact_tail_short_declared);
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1428,7 +1461,7 @@ mod tests {
         assert_eq!(summary.entries, 11);
         assert_eq!(summary.insertions, u32::from(summary.entries));
         assert_eq!(summary.locstring_length_repairs, 3);
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]
@@ -1448,7 +1481,7 @@ mod tests {
         assert_eq!(summary.bytes_inserted, 0);
         assert!(!summary.fragments_rewritten);
         assert_eq!(payload, original);
-        assert!(ee_player_list_payload_shape_valid(&payload));
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     fn build_legacy_player_list_all_fixture() -> Vec<u8> {

@@ -1936,9 +1936,10 @@ fn player_list_shape_valid(payload: &[u8]) -> bool {
     // EE `SendServerToPlayerPlayerList_Add/All` writes a platform identity
     // byte plus `CExoString` immediately after each `has_creature` bit, and
     // the EE client handler reads that field before optional creature details.
-    // Strict validation therefore delegates to the focused PlayerList owner
-    // instead of accepting any generic `P 0A xx` CNW wrapper.
-    player_list::ee_player_list_payload_shape_valid(payload)
+    // Strict validation therefore delegates to the focused PlayerList claim
+    // instead of accepting any generic `P 0A xx` CNW wrapper or maintaining a
+    // second object-id/fragment cursor parser here.
+    player_list::claim_payload_if_verified(payload).is_some()
 }
 
 fn char_list_shape_valid(payload: &[u8]) -> bool {
@@ -2697,6 +2698,40 @@ mod tests {
     }
 
     #[test]
+    fn strict_player_list_uses_focused_owner() {
+        let exact_delete = build_player_list_delete_payload(0x8000_0001, 0x80);
+        let claim = player_list::claim_payload_if_verified(&exact_delete)
+            .expect("focused PlayerList owner should claim exact delete payload");
+
+        assert!(claim.object_ids.is_empty());
+        assert!(player_list_shape_valid(&exact_delete));
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::PlayerList,
+            &exact_delete
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_delete));
+
+        let shifted_fragment_cursor = build_player_list_delete_payload(0x8000_0001, 0xA0);
+        assert!(
+            player_list::claim_payload_if_verified(&shifted_fragment_cursor).is_none(),
+            "PlayerList_Delete owns exactly the fragment header plus module-PVP BOOL"
+        );
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::PlayerList,
+            &shifted_fragment_cursor
+        ));
+        assert!(!exact_high_payload_shape_valid(&shifted_fragment_cursor));
+
+        let mut trailing = exact_delete;
+        trailing.push(0);
+        assert!(player_list::claim_payload_if_verified(&trailing).is_none());
+        assert!(
+            !exact_high_payload_shape_valid(&trailing),
+            "known-high validation must reject unowned PlayerList tail slack"
+        );
+    }
+
+    #[test]
     fn verified_projectile_and_vis_effect_accept_only_claimed_shapes() {
         let vis_effect = [
             0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00, 0xD8,
@@ -3404,6 +3439,17 @@ mod tests {
         payload.push(0x01);
         payload.extend_from_slice(b"starcore-druid60");
         payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn build_player_list_delete_payload(player_id: u32, fragment_tail: u8) -> Vec<u8> {
+        const DECLARED_BYTES: usize = 3 + 4 + 4;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x0A, 0x03]);
+        payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
+        payload.extend_from_slice(&player_id.to_le_bytes());
+        payload.push(fragment_tail);
         payload
     }
 
