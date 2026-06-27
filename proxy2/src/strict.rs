@@ -1342,6 +1342,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ClientInput => {
             high.major == 0x06 && client_input::claim_payload_if_verified(payload).is_some()
         }
+        VerifiedFamily::ClientJournal => high.major == 0x1C && client_journal_shape_valid(payload),
         VerifiedFamily::ClientLogin => {
             high.major == 0x02 && client_login::claim_payload_if_verified(payload).is_some()
         }
@@ -1390,7 +1391,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         }
         VerifiedFamily::GuiQuickbarPlaceholder => quickbar_placeholder_shape_valid(payload),
         VerifiedFamily::Inventory => inventory::claim_payload_if_verified(payload).is_some(),
-        VerifiedFamily::Journal => high.major == 0x1C && journal_shape_valid(payload),
+        VerifiedFamily::Journal => high.major == 0x1C && server_journal_shape_valid(payload),
         VerifiedFamily::LoadBar => {
             high.major == 0x2C
                 && (0x01..=0x03).contains(&high.minor)
@@ -1852,6 +1853,10 @@ fn client_char_list_shape_valid(payload: &[u8]) -> bool {
 }
 
 fn journal_shape_valid(payload: &[u8]) -> bool {
+    server_journal_shape_valid(payload) || client_journal_shape_valid(payload)
+}
+
+fn server_journal_shape_valid(payload: &[u8]) -> bool {
     // Decompile-backed no-op translator proof:
     // EE's packet-name table maps 0x1C/0x0C to `Journal_Updated`, and the
     // exported sender takes a `CExoLocString`. HG's observed login updates use
@@ -1859,7 +1864,13 @@ fn journal_shape_valid(payload: &[u8]) -> bool {
     // `translate::journal`, so strict delegates exact cursor validation to
     // that semantic owner instead of allowing the opcode generically.
     journal::claim_payload_if_verified(payload).is_some()
-        || journal::claim_client_payload_if_verified(payload).is_some()
+}
+
+fn client_journal_shape_valid(payload: &[u8]) -> bool {
+    // Client quest-screen open/closed rows are exact no-body high-level
+    // packets. Keep them separate from server Journal proofs so a
+    // server-dispatch claim cannot also validate client-originated traffic.
+    journal::claim_client_payload_if_verified(payload).is_some()
 }
 
 fn quickbar_shape_valid(payload: &[u8]) -> bool {
@@ -2721,18 +2732,39 @@ mod tests {
     }
 
     #[test]
-    fn verified_journal_accepts_exact_client_quest_screen_status_minors() {
+    fn strict_journal_splits_server_and_client_verified_owners() {
+        let server_delete_world = vec![
+            0x70, 0x1C, 0x03, 0x0B, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x60,
+        ];
+        assert!(journal::claim_payload_if_verified(&server_delete_world).is_some());
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Journal,
+            &server_delete_world
+        ));
+        assert!(!verified_family_inflated_payload_valid(
+            VerifiedFamily::ClientJournal,
+            &server_delete_world
+        ));
+
         for minor in [0x0A, 0x0B] {
             let payload = vec![0x70, 0x1C, minor];
             assert!(
-                verified_family_inflated_payload_valid(VerifiedFamily::Journal, &payload),
-                "journal quest-screen minor {minor:#04x} should be accepted through exact parser ownership"
+                journal::claim_client_payload_if_verified(&payload).is_some(),
+                "focused client Journal owner should claim quest-screen minor {minor:#04x}"
+            );
+            assert!(
+                verified_family_inflated_payload_valid(VerifiedFamily::ClientJournal, &payload),
+                "client Journal quest-screen minor {minor:#04x} should be accepted through its exact parser ownership"
+            );
+            assert!(
+                !verified_family_inflated_payload_valid(VerifiedFamily::Journal, &payload),
+                "server Journal proofs must not also admit client quest-screen minor {minor:#04x}"
             );
 
             let mut trailing = payload;
             trailing.push(0);
             assert!(
-                !verified_family_inflated_payload_valid(VerifiedFamily::Journal, &trailing),
+                !verified_family_inflated_payload_valid(VerifiedFamily::ClientJournal, &trailing),
                 "journal quest-screen minor {minor:#04x} should reject trailing bytes"
             );
         }

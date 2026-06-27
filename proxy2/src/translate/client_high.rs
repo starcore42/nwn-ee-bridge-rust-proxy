@@ -191,7 +191,7 @@ pub fn claim_or_rewrite_payload_if_verified(
         return Some(ClientHighClaimSummary {
             family_name: "ClientJournal",
             packet_name: high.name(),
-            verified_family: VerifiedFamily::Journal,
+            verified_family: VerifiedFamily::ClientJournal,
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientQuickbar", high)
