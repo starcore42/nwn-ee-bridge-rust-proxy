@@ -31,8 +31,8 @@ const CNW_LENGTH_BYTES: usize = 4;
 const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 const PARTY_LIST_COUNT_BYTES: usize = 4;
 const OBJECT_ID_BYTES: usize = 4;
-const MAX_FRAGMENT_BYTES: usize = 32;
 const MAX_REASONABLE_PARTY_READ_BYTES: usize = 1024;
+const CNW_FRAGMENT_HEADER_BITS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PartyClaimSummary {
@@ -96,7 +96,8 @@ fn claim_party_cnw_wrapper(payload: &[u8], minor: u8) -> Option<PartyClaimSummar
     if declared < READ_START
         || declared > payload.len()
         || declared - READ_START > MAX_REASONABLE_PARTY_READ_BYTES
-        || payload.len().saturating_sub(declared) > MAX_FRAGMENT_BYTES
+        || payload.len() != declared.checked_add(1)?
+        || fragment_final_bit_count(payload.get(declared).copied()?) != CNW_FRAGMENT_HEADER_BITS
     {
         return None;
     }
@@ -107,6 +108,10 @@ fn claim_party_cnw_wrapper(payload: &[u8], minor: u8) -> Option<PartyClaimSummar
         read_bytes: declared - READ_START,
         fragment_bytes: payload.len() - declared,
     })
+}
+
+fn fragment_final_bit_count(tail: u8) -> usize {
+    usize::from((tail & 0xE0) >> 5)
 }
 
 #[cfg(test)]
@@ -136,6 +141,25 @@ mod tests {
         payload[READ_START..READ_START + 4].copy_from_slice(&2u32.to_le_bytes());
 
         assert!(claim_payload_if_verified(&payload).is_none());
+    }
+
+    #[test]
+    fn rejects_party_list_without_exact_empty_fragment_tail() {
+        let mut shifted = party_list_payload(&[0x8000_0001]);
+        *shifted.last_mut().expect("fragment tail") = 0x80;
+        assert!(claim_payload_if_verified(&shifted).is_none());
+
+        let mut slack = party_list_payload(&[0x8000_0001]);
+        slack.push(0);
+        assert!(claim_payload_if_verified(&slack).is_none());
+    }
+
+    #[test]
+    fn accepts_party_list_with_nonzero_unused_fragment_padding_bits() {
+        let mut payload = party_list_payload(&[]);
+        *payload.last_mut().expect("fragment tail") = 0x7E;
+
+        assert!(claim_payload_if_verified(&payload).is_some());
     }
 
     #[test]

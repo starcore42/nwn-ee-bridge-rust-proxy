@@ -3676,6 +3676,41 @@ mod tests {
     }
 
     #[test]
+    fn strict_party_list_splits_in_gameplay_stream() {
+        let mut stream = build_party_list(&[0x8000_0001, 0x8000_0002]);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Party, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "Party_List owns its exact empty fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::Party, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "Party_List/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_party_list(&[0x8000_0001]);
+        *shifted.last_mut().expect("fragment tail") = 0x80;
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Party, VerifiedFamily::ServerStatusStatus],
+                &shifted,
+            ),
+            "a shifted Party_List fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_play_module_character_list_splits_client_controls_and_server_response() {
         for minor in [0x01, 0x02] {
             let payload = [0x50, 0x31, minor];

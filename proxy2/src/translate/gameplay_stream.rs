@@ -11,7 +11,7 @@
 
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
-use super::{VerifiedFamily, journal, loadbar};
+use super::{VerifiedFamily, journal, loadbar, party};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameplayUnit<'a> {
@@ -169,6 +169,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
             let Some(declared) = declared_cnw_length(bytes, offset, high) else {
@@ -191,6 +192,45 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         }
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_party_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_PARTY_FRAGMENT_BYTES: usize = 32;
+
+    if let Some(end) = offset.checked_add(3) {
+        if let Some(payload) = bytes.get(offset..end) {
+            if party::claim_client_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_PARTY_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if party::claim_server_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_journal_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -407,6 +447,50 @@ mod tests {
     }
 
     #[test]
+    fn splits_party_list_with_focused_fragment_tail_owner() {
+        let mut bytes = party_list_payload(&[0x8000_0001, 0x8000_0002]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x0E);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Party_List unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_party_list_before_following_status() {
+        let mut bytes = party_list_payload(&[0x8000_0001]);
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Party_List row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_loadbar_with_focused_fragment_tail_owner() {
         let mut bytes = loadbar::start_payload(2);
         let status_offset = bytes.len();
@@ -526,6 +610,18 @@ mod tests {
         let mut payload = vec![b'P', 0x1C, 0x03];
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&entry_id.to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn party_list_payload(member_ids: &[u32]) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + member_ids.len() * 4;
+        let mut payload = vec![b'P', 0x0E, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&(member_ids.len() as u32).to_le_bytes());
+        for member_id in member_ids {
+            payload.extend_from_slice(&member_id.to_le_bytes());
+        }
         payload.push(0x60);
         payload
     }
