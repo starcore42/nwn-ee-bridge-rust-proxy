@@ -220,7 +220,7 @@ pub fn claim_or_rewrite_payload_if_verified(
         });
     }
     if client_translator_may_claim_parsed_high_level("ClientParty", high)
-        && let Some(_summary) = party::claim_payload_if_verified(payload)
+        && let Some(_summary) = party::claim_client_payload_if_verified(payload)
     {
         return Some(ClientHighClaimSummary {
             family_name: "ClientParty",

@@ -1353,7 +1353,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
                 && client_module::claim_payload_if_verified(payload).is_some()
         }
         VerifiedFamily::ClientParty => {
-            high.major == 0x0E && high.minor == 0x02 && party_shape_valid(payload)
+            high.major == 0x0E && high.minor == 0x02 && client_party_shape_valid(payload)
         }
         VerifiedFamily::ClientQuickbar => {
             high.major == 0x1E
@@ -1412,7 +1412,7 @@ fn verified_family_inflated_payload_valid(family: VerifiedFamily, payload: &[u8]
         VerifiedFamily::ModuleTime => {
             high.major == 0x03 && high.minor == 0x03 && module_time_shape_valid(payload)
         }
-        VerifiedFamily::Party => high.major == 0x0E && party_shape_valid(payload),
+        VerifiedFamily::Party => high.major == 0x0E && server_party_shape_valid(payload),
         VerifiedFamily::PlayModuleCharacterList => {
             high.major == 0x31
                 && play_module_character_list::claim_payload_if_verified(payload).is_some()
@@ -1955,6 +1955,18 @@ fn party_shape_valid(payload: &[u8]) -> bool {
     // OBJECTIDServer per row; strict mode must not admit a wrapper whose count
     // and body length disagree.
     party::claim_payload_if_verified(payload).is_some()
+}
+
+fn server_party_shape_valid(payload: &[u8]) -> bool {
+    // `VerifiedFamily::Party` is emitted by server dispatch. Keep it scoped to
+    // server-owned party rows so it cannot prove the client no-body get-list
+    // signal just because directionless known-opcode validation can parse it.
+    party::claim_server_payload_if_verified(payload).is_some()
+}
+
+fn client_party_shape_valid(payload: &[u8]) -> bool {
+    // Client high-level routing emits this proof only for `Party_GetList`.
+    party::claim_client_payload_if_verified(payload).is_some()
 }
 
 fn decide_bn(direction: Direction, packet: &BnPacket<'_>) -> StrictDecision {
@@ -3126,6 +3138,10 @@ mod tests {
             VerifiedFamily::Party,
             &empty_party
         ));
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::ClientParty, &empty_party),
+            "client Party proof must not validate server Party_List rows"
+        );
         assert!(exact_high_payload_shape_valid(&empty_party));
 
         let missing_member = build_party_list_with_count(2, &[]);
@@ -3146,6 +3162,10 @@ mod tests {
             VerifiedFamily::ClientParty,
             &get_list
         ));
+        assert!(
+            !verified_family_inflated_payload_valid(VerifiedFamily::Party, &get_list),
+            "server Party proof must not validate client Party_GetList requests"
+        );
         assert!(exact_high_payload_shape_valid(&get_list));
 
         let get_list_cnw = build_party_control_wrapper(0x02);

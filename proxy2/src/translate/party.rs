@@ -43,9 +43,20 @@ pub struct PartyClaimSummary {
 }
 
 pub fn claim_payload_if_verified(payload: &[u8]) -> Option<PartyClaimSummary> {
+    claim_server_payload_if_verified(payload).or_else(|| claim_client_payload_if_verified(payload))
+}
+
+pub fn claim_server_payload_if_verified(payload: &[u8]) -> Option<PartyClaimSummary> {
     let high = HighLevel::parse(payload)?;
     match (high.major, high.minor) {
         (PARTY_MAJOR, PARTY_LIST_MINOR) => claim_party_list(payload, high.minor),
+        _ => None,
+    }
+}
+
+pub fn claim_client_payload_if_verified(payload: &[u8]) -> Option<PartyClaimSummary> {
+    let high = HighLevel::parse(payload)?;
+    match (high.major, high.minor) {
         (PARTY_MAJOR, PARTY_GET_LIST_MINOR) => claim_party_get_list(payload, high.minor),
         _ => None,
     }
@@ -148,6 +159,17 @@ mod tests {
             0x60,
         ];
         assert!(claim_payload_if_verified(&cnw_empty).is_none());
+    }
+
+    #[test]
+    fn splits_server_list_and_client_get_list_owners() {
+        let server_list = party_list_payload(&[0x8000_0001]);
+        let client_get_list = [0x70, PARTY_MAJOR, PARTY_GET_LIST_MINOR];
+
+        assert!(claim_server_payload_if_verified(&server_list).is_some());
+        assert!(claim_client_payload_if_verified(&server_list).is_none());
+        assert!(claim_client_payload_if_verified(&client_get_list).is_some());
+        assert!(claim_server_payload_if_verified(&client_get_list).is_none());
     }
 
     #[test]

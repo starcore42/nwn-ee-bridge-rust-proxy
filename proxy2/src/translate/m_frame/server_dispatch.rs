@@ -2567,7 +2567,7 @@ fn translate_party(
     _: SemanticScope,
     _: Option<&module_resources::ModuleResourceRuntime>,
 ) -> ServerTranslatorOutcome {
-    if party::claim_payload_if_verified(payload).is_some() {
+    if party::claim_server_payload_if_verified(payload).is_some() {
         claimed()
     } else {
         ServerTranslatorOutcome::None
