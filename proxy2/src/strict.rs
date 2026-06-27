@@ -2614,6 +2614,56 @@ mod tests {
     }
 
     #[test]
+    fn strict_client_side_message_splits_in_gameplay_stream() {
+        let exact_feedback = build_client_side_feedback(b"abcdefghijklmnop");
+        assert!(
+            client_side_message::claim_payload_if_verified(&exact_feedback).is_some(),
+            "focused ClientSideMessage owner accepts the exact feedback row"
+        );
+
+        let mut stream = exact_feedback.clone();
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ClientSideMessage,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "ClientSideMessage owns its semantic tail before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::ClientSideMessage,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "ClientSideMessage/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut oversized_tail = exact_feedback;
+        oversized_tail.extend_from_slice(&[0; 65]);
+        oversized_tail.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ClientSideMessage,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &oversized_tail,
+            ),
+            "an oversized ClientSideMessage fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_client_server_admin_uses_focused_raw_owner() {
         let exact = b"sModule.Run";
         assert!(client_server_admin::claim_payload_if_verified(exact).is_some());
@@ -4126,6 +4176,18 @@ mod tests {
         payload.push(0x01);
         payload.extend_from_slice(b"starcore-druid60");
         payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn build_client_side_feedback(text: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 2 + 4 + text.len();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x12, 0x0B]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x00CCu16.to_le_bytes());
+        payload.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        payload.extend_from_slice(text);
+        payload.push(0x60);
         payload
     }
 
