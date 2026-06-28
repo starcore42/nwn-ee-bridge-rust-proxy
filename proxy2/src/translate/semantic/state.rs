@@ -635,12 +635,25 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
-        self.materialized_item_object_ids.contains(&object_id)
-            || self
-                .known
-                .get(&object_id)
-                .map(|object| object.active)
-                .unwrap_or(false)
+        if self.materialized_item_object_ids.contains(&object_id) {
+            return true;
+        }
+        if self
+            .known
+            .get(&object_id)
+            .map(|object| object.active)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        // Untyped live-object owner records, especially inventory `I` rows,
+        // carry only an OBJECTID. If that owner is a placeable, it must share
+        // the same compact/external alias rule as typed U/D/09 lifecycle
+        // checks before missing-object cleanup is allowed to drop the row.
+        self.placeable_object_for_record_matching(PLACEABLE_OBJECT_TYPE, object_id, |object| {
+            object.active
+        })
+        .is_some()
     }
 
     pub(crate) fn has_active_typed_object(&self, object_type: u8, object_id: u32) -> bool {
@@ -3162,6 +3175,52 @@ mod tests {
             "compact delete should clear the external owner entry"
         );
         assert!(!registry.has_active_typed_object(0x09, compact_object_id));
+    }
+
+    #[test]
+    fn untyped_lifecycle_lookup_uses_placeable_compact_external_aliases() {
+        let mut registry = ObjectRegistry::default();
+        let compact_placeable_id = 0x0000_0003;
+        let external_placeable_id = 0x8000_0003;
+        let compact_creature_id = 0x0000_0004;
+        let external_creature_id = 0x8000_0004;
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_placeable_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x05,
+            object_id: external_creature_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert!(
+            registry.has_active_object_id(compact_placeable_id),
+            "untyped owner rows should see an active external placeable through its compact alias"
+        );
+        assert!(
+            registry.has_active_live_object_for_record(0, compact_placeable_id),
+            "inventory owner lifecycle proof must use the same placeable alias rule"
+        );
+        assert!(
+            !registry.has_active_object_id(compact_creature_id),
+            "untyped placeable alias lookup must not claim compact creature ids"
+        );
+        assert!(registry.has_active_object_id(external_creature_id));
     }
 
     #[test]
