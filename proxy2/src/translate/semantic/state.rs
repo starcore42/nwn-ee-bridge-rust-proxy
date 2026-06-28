@@ -278,18 +278,7 @@ impl ObjectRegistry {
                         );
                     }
                     entry.active = false;
-                    entry.placeable_appearance = None;
-                    entry.placeable_state = None;
-                    entry.latest_area_static_appearance_conflict = None;
-                    entry.unresolved_area_static_appearance_conflict = None;
-                    entry.latest_area_static_identity_conflict = None;
-                    entry.unresolved_area_static_identity_conflict = None;
-                    entry.latest_area_static_state_conflict = None;
-                    entry.unresolved_area_static_state_conflict = None;
-                    entry.latest_area_static_orientation_conflict = None;
-                    entry.unresolved_area_static_orientation_conflict = None;
-                    entry.latest_area_static_position_conflict = None;
-                    entry.unresolved_area_static_position_conflict = None;
+                    entry.clear_lifecycle_facts();
                     entry.delete_mentions = entry.delete_mentions.saturating_add(1);
                 }
                 b'U' | b'P' | b'I' | b'G' | b'W' => {
@@ -1560,6 +1549,25 @@ fn is_custom_placeable_appearance(appearance: u16) -> bool {
 }
 
 impl KnownObjectState {
+    fn clear_lifecycle_facts(&mut self) {
+        self.latest_name = None;
+        self.position = None;
+        self.orientation = None;
+        self.bounds = None;
+        self.placeable_appearance = None;
+        self.placeable_state = None;
+        self.latest_area_static_appearance_conflict = None;
+        self.unresolved_area_static_appearance_conflict = None;
+        self.latest_area_static_identity_conflict = None;
+        self.unresolved_area_static_identity_conflict = None;
+        self.latest_area_static_state_conflict = None;
+        self.unresolved_area_static_state_conflict = None;
+        self.latest_area_static_orientation_conflict = None;
+        self.unresolved_area_static_orientation_conflict = None;
+        self.latest_area_static_position_conflict = None;
+        self.unresolved_area_static_position_conflict = None;
+    }
+
     fn merge_placeable_state(&mut self, observed: LiveObjectPlaceableState) {
         let state = self.placeable_state.get_or_insert_with(Default::default);
         if observed.useable.is_some() {
@@ -1604,7 +1612,7 @@ mod tests {
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
         LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
     };
 
@@ -1735,6 +1743,82 @@ mod tests {
             None,
             "delete rows clear stale placeable appearance before id reuse"
         );
+    }
+
+    #[test]
+    fn delete_clears_lifecycle_fields_before_object_id_reuse() {
+        let mut registry = ObjectRegistry::default();
+        let object_id = 0x8000_34D8;
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id,
+            name: Some("first lifecycle".to_string()),
+            position: Some(LiveObjectPosition {
+                x: 1.25,
+                y: 2.5,
+                z: 3.75,
+            }),
+            orientation: Some(LiveObjectOrientation {
+                source: LiveObjectOrientationSource::Scalar,
+                scalar_tenths_degrees: 450,
+                vector: None,
+            }),
+            bounds: Some(LiveObjectBounds {
+                min_x: -1.0,
+                min_y: -2.0,
+                min_z: -3.0,
+                max_x: 1.0,
+                max_y: 2.0,
+                max_z: 3.0,
+            }),
+            placeable_appearance: Some(LiveObjectPlaceableAppearance {
+                appearance: 0x0011,
+                resref: None,
+            }),
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(true),
+                locked: Some(false),
+            }),
+        }]);
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        let object = registry
+            .known
+            .get(&object_id)
+            .expect("reused object id should stay registered");
+        assert!(object.active);
+        assert_eq!(object.latest_name, None);
+        assert_eq!(object.position, None);
+        assert_eq!(object.orientation, None);
+        assert_eq!(object.bounds, None);
+        assert_eq!(object.placeable_appearance, None);
+        assert_eq!(object.placeable_state, None);
     }
 
     #[test]
