@@ -3178,6 +3178,49 @@ mod tests {
     }
 
     #[test]
+    fn strict_player_list_splits_in_gameplay_stream() {
+        let mut stream = build_player_list_delete_payload(0x8000_0001, 0x80);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::PlayerList,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &stream,
+            ),
+            "PlayerList owns its exact fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::PlayerList,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &stream,
+            ),
+            "PlayerList/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_player_list_delete_payload(0x8000_0001, 0xA0);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::PlayerList,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &shifted,
+            ),
+            "a shifted PlayerList fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn verified_projectile_and_vis_effect_accept_only_claimed_shapes() {
         let vis_effect = [
             0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00, 0xD8,
