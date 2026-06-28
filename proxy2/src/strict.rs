@@ -3997,6 +3997,39 @@ mod tests {
     }
 
     #[test]
+    fn strict_sound_splits_in_gameplay_stream() {
+        let mut stream = build_sound_object_stop(0x8000_0247, 0x76);
+        stream.extend_from_slice(&server_status::status_payload());
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Sound, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "Sound_Object_Stop owns its exact empty cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::Sound, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "Sound/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_sound_object_stop(0x8000_0247, 0x80);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Sound, VerifiedFamily::ServerStatusStatus],
+                &shifted,
+            ),
+            "a shifted Sound fragment tail must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_custom_token_uses_focused_owner() {
         let exact_set = build_custom_token_set(0x1234, b"hello");
         assert!(
@@ -4813,6 +4846,17 @@ mod tests {
         payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
         payload.extend_from_slice(&object_id.to_le_bytes());
         payload.extend_from_slice(&equip_slot.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn build_sound_object_stop(object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        const DECLARED_BYTES: usize = 3 + 4 + 4;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x17, 0x03]);
+        payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
         payload.push(fragment_tail);
         payload
     }

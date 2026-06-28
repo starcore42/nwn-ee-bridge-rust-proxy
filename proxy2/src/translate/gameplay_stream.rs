@@ -14,7 +14,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 use super::{
     VerifiedFamily, area, char_list, chat, client_char_list, client_side_message, custom_token,
     game_obj_update, inventory, journal, loadbar, module, module_time, party, player_list,
-    quickbar,
+    quickbar, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +184,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
         (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
+        (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
@@ -338,6 +339,35 @@ fn focused_game_obj_update_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitE
                 break;
             };
             if game_obj_update::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_sound_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_SOUND_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_SOUND_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if sound::claim_payload_if_verified(payload).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
                 return FocusedUnitEnd::Exact(end);
@@ -1416,6 +1446,49 @@ mod tests {
     }
 
     #[test]
+    fn splits_sound_object_stop_with_focused_empty_cursor_owner() {
+        let mut bytes = sound_object_stop_payload(0x8000_0247, 0x76);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x17);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Sound_Object_Stop unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_sound_object_stop_tail_before_following_status() {
+        let mut bytes = sound_object_stop_payload(0x8000_0247, 0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Sound_Object_Stop row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_quickbar_with_focused_fragment_tail_owner() {
         let mut bytes =
             quickbar::build_blank_set_all_buttons_payload(b'P').expect("blank quickbar payload");
@@ -1918,6 +1991,15 @@ mod tests {
     fn game_obj_update_destroy_item_payload(object_id: u32, fragment_tail: u8) -> Vec<u8> {
         let declared = 3 + 4 + 4;
         let mut payload = vec![b'P', 0x05, 0x07];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn sound_object_stop_payload(object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![b'P', 0x17, 0x03];
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&object_id.to_le_bytes());
         payload.push(fragment_tail);
