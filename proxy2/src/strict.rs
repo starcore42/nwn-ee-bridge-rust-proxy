@@ -3144,6 +3144,70 @@ mod tests {
     }
 
     #[test]
+    fn strict_game_obj_update_siblings_split_in_gameplay_stream() {
+        let cases = [
+            (
+                VerifiedFamily::GameObjUpdateObjectControl,
+                vec![
+                    0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF,
+                    0xFF, 0xFF, 0x73,
+                ],
+            ),
+            (
+                VerifiedFamily::GameObjUpdateVisEffect,
+                vec![
+                    0x50, 0x05, 0x03, 0x19, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x25, 0x00,
+                    0xD8, 0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x61,
+                ],
+            ),
+            (
+                VerifiedFamily::GameObjUpdateDestroyItem,
+                vec![
+                    0x50, 0x05, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x67, 0x2C, 0x00, 0x80, 0x7C,
+                ],
+            ),
+        ];
+
+        for (family, payload) in cases {
+            let mut stream = payload;
+            stream.extend_from_slice(&server_status::status_payload());
+            assert!(
+                verified_gameplay_stream_payload_valid(
+                    Direction::ServerToClient,
+                    &[family, VerifiedFamily::ServerStatusStatus],
+                    &stream,
+                ),
+                "{family:?} owns its exact fragment cursor before the following status signal"
+            );
+            assert!(
+                !verified_gameplay_stream_payload_valid(
+                    Direction::ClientToServer,
+                    &[family, VerifiedFamily::ServerStatusStatus],
+                    &stream,
+                ),
+                "{family:?}/ServerStatus gameplay streams are server-owned"
+            );
+        }
+
+        let mut shifted_obj_control = vec![
+            0x50, 0x05, 0x02, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF,
+            0xFF, 0x53,
+        ];
+        shifted_obj_control.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::GameObjUpdateObjectControl,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &shifted_obj_control,
+            ),
+            "a shifted GameObjUpdate fragment tail must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_player_list_uses_focused_owner() {
         let exact_delete = build_player_list_delete_payload(0x8000_0001, 0x80);
         let claim = player_list::claim_payload_if_verified(&exact_delete)

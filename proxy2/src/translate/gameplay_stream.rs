@@ -13,7 +13,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, char_list, chat, client_char_list, client_side_message, custom_token,
-    inventory, journal, loadbar, party, player_list, quickbar,
+    game_obj_update, inventory, journal, loadbar, party, player_list, quickbar,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +175,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
+        (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
         (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
@@ -203,6 +204,35 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_game_obj_update_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_GAME_OBJ_UPDATE_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_GAME_OBJ_UPDATE_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if game_obj_update::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_custom_token_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -1079,6 +1109,70 @@ mod tests {
     }
 
     #[test]
+    fn splits_game_obj_update_sibling_minors_with_focused_fragment_tail_owner() {
+        let cases = [
+            (
+                game_obj_update_obj_control_payload(0x0000_0000, 0xFFFF_FFFE, 0x73),
+                0x02,
+            ),
+            (
+                game_obj_update_vis_effect_payload(
+                    0x8000_1234,
+                    0x0025,
+                    [15.955528f32, 24.014782f32, 0.0f32],
+                    0x61,
+                ),
+                0x03,
+            ),
+            (
+                game_obj_update_destroy_item_payload(0x8000_2C67, 0x7C),
+                0x07,
+            ),
+        ];
+
+        for (mut bytes, minor) in cases {
+            let status_offset = bytes.len();
+            bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+            let split = split_inflated_gameplay(&bytes);
+
+            assert!(split.complete, "minor {minor:#04x} should split cleanly");
+            assert_eq!(split.units.len(), 2);
+            match split.units[0] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, 0);
+                    assert_eq!(message.major, 0x05);
+                    assert_eq!(message.minor, minor);
+                    assert_eq!(message.payload.len(), status_offset);
+                }
+                _ => panic!("expected focused GameObjUpdate sibling unit"),
+            }
+            match split.units[1] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, status_offset);
+                    assert_eq!(message.major, 0x01);
+                    assert_eq!(message.minor, 0x01);
+                    assert_eq!(message.payload.len(), 3);
+                }
+                _ => panic!("expected ServerStatus_Status unit"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_game_obj_update_tail_before_following_status() {
+        let mut bytes = game_obj_update_obj_control_payload(0, 0xFFFF_FFFE, 0x53);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted GameObjUpdate row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_quickbar_with_focused_fragment_tail_owner() {
         let mut bytes =
             quickbar::build_blank_set_all_buttons_payload(b'P').expect("blank quickbar payload");
@@ -1419,6 +1513,47 @@ mod tests {
         payload.extend_from_slice(&legacy_prefix.to_le_bytes());
         payload.extend_from_slice(&object_id.to_le_bytes());
         payload.extend_from_slice(&equip_slot.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn game_obj_update_obj_control_payload(
+        player_id: u32,
+        object_id: u32,
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4;
+        let mut payload = vec![b'P', 0x05, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&player_id.to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn game_obj_update_vis_effect_payload(
+        object_id: u32,
+        effect_id: u16,
+        position: [f32; 3],
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 2 + 3 * 4;
+        let mut payload = vec![b'P', 0x05, 0x03];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.extend_from_slice(&effect_id.to_le_bytes());
+        for value in position {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn game_obj_update_destroy_item_payload(object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![b'P', 0x05, 0x07];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
         payload.push(fragment_tail);
         payload
     }
