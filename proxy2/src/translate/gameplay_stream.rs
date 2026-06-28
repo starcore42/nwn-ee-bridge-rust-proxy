@@ -13,7 +13,8 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, ambient, area, area_change_day_night, area_visual_effect, camera, char_list,
-    chat, client_area, client_char_list, client_login, client_module, client_quickbar,
+    chat, client_area, client_char_list, client_character_sheet, client_gui_event,
+    client_gui_inventory, client_input, client_login, client_module, client_quickbar,
     client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
     gui_timing_event, inventory, journal, loadbar, login, module, module_resources, module_time,
     party, play_module_character_list, player_list, quickbar, safe_projectile, server_status,
@@ -193,12 +194,19 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x04, 0x03) => focused_client_area_unit_end(bytes, offset),
         (0x04, 0x06) => focused_area_change_day_night_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
+        (
+            0x06,
+            0x01 | 0x02 | 0x03 | 0x05 | 0x06 | 0x07 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E
+            | 0x10 | 0x11,
+        ) => focused_client_input_unit_end(bytes, offset),
+        (0x0D, 0x01 | 0x02) => focused_client_gui_inventory_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x10, _) => focused_camera_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
         (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
         (0x14, 0x01..=0x05) => focused_dialog_unit_end(bytes, offset),
+        (0x15, 0x01) => focused_client_character_sheet_unit_end(bytes, offset),
         (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
         (0x22, 0x01) => focused_safe_projectile_unit_end(bytes, offset),
         (0x28, 0x01..=0x08) => focused_ambient_unit_end(bytes, offset),
@@ -228,6 +236,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x31, 0x01 | 0x02 | 0x03) => focused_play_module_character_list_unit_end(bytes, offset),
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         (0x33, _) => focused_cutscene_unit_end(bytes, offset),
+        (0x35, 0x01) => focused_client_gui_event_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
 }
@@ -416,6 +425,32 @@ fn focused_module_end_game_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitE
 fn focused_area_change_day_night_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         area_change_day_night::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_client_input_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        let mut probe = payload.to_vec();
+        client_input::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+    })
+}
+
+fn focused_client_gui_inventory_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        let mut probe = payload.to_vec();
+        client_gui_inventory::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+    })
+}
+
+fn focused_client_character_sheet_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        client_character_sheet::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_client_gui_event_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        client_gui_event::claim_payload_if_verified(payload).is_some()
     })
 }
 
@@ -2413,6 +2448,86 @@ mod tests {
     }
 
     #[test]
+    fn splits_client_input_with_focused_fragment_owner() {
+        let mut bytes = client_input_attack_payload(0x8000_34D1, 0x60);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x06, 0x02, status_offset);
+    }
+
+    #[test]
+    fn splits_client_input_rest_no_body_with_focused_owner() {
+        let mut bytes = vec![0x70, 0x06, 0x0D];
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x06, 0x0D, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_client_input_tail_before_following_status() {
+        let mut bytes = client_input_attack_payload(0x8000_34D1, 0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted client Input_Attack row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_client_gui_inventory_with_focused_fragment_owner() {
+        let mut bytes = client_gui_inventory_status_payload(0xFFFF_FFFD, 0x90);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x0D, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_client_gui_inventory_tail_before_following_status() {
+        let mut bytes = client_gui_inventory_status_payload(0xFFFF_FFFD, 0xA0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted client GuiInventory row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_client_character_sheet_with_focused_fragment_owner() {
+        let mut bytes = client_character_sheet_status_payload(0x00, 0xFFFF_FFFE, 0x7C);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x15, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_client_character_sheet_tail_before_following_status() {
+        let mut bytes = client_character_sheet_status_payload(0x00, 0xFFFF_FFFE, 0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted client GuiCharacterSheet row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_client_gui_event_with_focused_consumed_owner() {
+        let mut bytes = client_gui_event_notify_vector_payload(0x70);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x35, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_client_gui_event_tail_before_following_status() {
+        let mut bytes = client_gui_event_notify_vector_payload(0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted client GuiEvent row to remain unclaimed",
+        );
+    }
+
+    #[test]
     fn splits_custom_token_with_focused_fragment_tail_owner() {
         let mut bytes = custom_token_set_payload(0x1234, b"hello");
         let status_offset = bytes.len();
@@ -2881,6 +2996,52 @@ mod tests {
         payload.push(button_type);
         payload.extend_from_slice(body);
         payload.push(0x60);
+        payload
+    }
+
+    fn client_input_attack_payload(object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![0x70, 0x06, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_gui_inventory_status_payload(object_id: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4;
+        let mut payload = vec![0x70, 0x0D, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_character_sheet_status_payload(
+        status: u8,
+        object_id: u32,
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        let declared = 3 + 4 + 1 + 4;
+        let mut payload = vec![0x70, 0x15, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(status);
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_gui_event_notify_vector_payload(fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 2 + 2 + 4 + 3 * 4;
+        let mut payload = vec![0x70, 0x35, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x0011u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&0x7F00_0000u32.to_le_bytes());
+        for value in [0.0f32, 0.0, 0.0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.push(fragment_tail);
         payload
     }
 
