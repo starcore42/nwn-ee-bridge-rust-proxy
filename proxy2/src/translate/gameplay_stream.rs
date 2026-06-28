@@ -12,10 +12,11 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, area, char_list, chat, client_area, client_char_list, client_login,
-    client_module, client_quickbar, client_server_status, client_side_message, custom_token,
-    game_obj_update, inventory, journal, loadbar, login, module, module_resources, module_time,
-    party, play_module_character_list, player_list, quickbar, server_status, sound,
+    VerifiedFamily, ambient, area, area_change_day_night, camera, char_list, chat, client_area,
+    client_char_list, client_login, client_module, client_quickbar, client_server_status,
+    client_side_message, custom_token, cutscene, game_obj_update, gui_timing_event, inventory,
+    journal, loadbar, login, module, module_resources, module_time, party,
+    play_module_character_list, player_list, quickbar, safe_projectile, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -179,6 +180,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x01, 0x03) => focused_module_resources_unit_end(bytes, offset),
         (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => focused_login_unit_end(bytes, offset),
         (0x02, 0x0D | 0x11) => focused_client_login_unit_end(bytes, offset),
+        (0x03, 0x0E) => focused_module_end_game_unit_end(bytes, offset),
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
@@ -187,12 +189,16 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
         (0x04, 0x01) => focused_area_client_area_unit_end(bytes, offset),
         (0x04, 0x03) => focused_client_area_unit_end(bytes, offset),
+        (0x04, 0x06) => focused_area_change_day_night_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
+        (0x10, _) => focused_camera_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
         (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
         (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
+        (0x22, 0x01) => focused_safe_projectile_unit_end(bytes, offset),
+        (0x28, 0x01..=0x08) => focused_ambient_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset),
         (0x1E, 0x02) => focused_client_quickbar_unit_end(bytes, offset),
@@ -215,8 +221,10 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
                 FocusedUnitEnd::Invalid
             }
         }
+        (0x30, 0x01) => focused_gui_timing_event_unit_end(bytes, offset),
         (0x31, 0x01 | 0x02 | 0x03) => focused_play_module_character_list_unit_end(bytes, offset),
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
+        (0x33, _) => focused_cutscene_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
 }
@@ -388,6 +396,89 @@ fn focused_module_time_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
             if module_time::claim_payload_if_verified(payload).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_module_end_game_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        module::claim_module_end_game_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_area_change_day_night_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        area_change_day_night::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_camera_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        camera::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_safe_projectile_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        safe_projectile::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_ambient_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        ambient::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_gui_timing_event_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        gui_timing_event::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_cutscene_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        cutscene::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_claimed_unit_end<F>(
+    bytes: &[u8],
+    offset: usize,
+    max_fragment_bytes: usize,
+    claim: F,
+) -> FocusedUnitEnd
+where
+    F: Fn(&[u8]) -> bool,
+{
+    if let Some(end) = offset.checked_add(3) {
+        if let Some(payload) = bytes.get(offset..end) {
+            if claim(payload) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end)) {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=max_fragment_bytes {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if claim(payload) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end)) {
                 return FocusedUnitEnd::Exact(end);
             }
         }
@@ -1439,6 +1530,172 @@ mod tests {
     }
 
     #[test]
+    fn splits_module_end_game_with_focused_fragment_owner() {
+        let mut bytes = module_end_game_payload(&["The End"]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x03, 0x0E, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_module_end_game_tail_before_following_status() {
+        let mut bytes = module_end_game_payload(&["The End"]);
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted Module_EndGame row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_camera_and_cutscene_no_body_signals_with_focused_owners() {
+        let bytes = [b'P', 0x10, 0x03, b'P', 0x33, 0x06, b'P', 0x01, 0x01];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 3);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x10);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected Camera_Store unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x33);
+                assert_eq!(message.minor, 0x06);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected Cutscene_BlackScreen unit"),
+        }
+        match split.units[2] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 6);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_camera_no_body_slack_before_following_cutscene() {
+        let bytes = [b'P', 0x10, 0x03, 0x60, b'P', 0x33, 0x06];
+        assert_pending(&bytes, "expected Camera_Store slack to remain pending");
+    }
+
+    #[test]
+    fn splits_camera_height_with_focused_fragment_owner() {
+        let mut bytes = camera_set_height_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x10, 0x05, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_camera_tail_before_following_status() {
+        let mut bytes = camera_set_height_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(&bytes, "expected shifted Camera row to remain unclaimed");
+    }
+
+    #[test]
+    fn splits_cutscene_hide_gui_with_focused_bool_owner() {
+        let mut bytes = cutscene_hide_gui_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x33, 0x07, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_cutscene_tail_before_following_status() {
+        let mut bytes = cutscene_hide_gui_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(&bytes, "expected shifted Cutscene row to remain unclaimed");
+    }
+
+    #[test]
+    fn splits_gui_timing_event_with_focused_bool_owner() {
+        let mut bytes = gui_timing_stop_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x30, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_gui_timing_event_tail_before_following_status() {
+        let mut bytes = gui_timing_stop_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted GuiTimingEvent row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_ambient_bool_with_focused_owner() {
+        let mut bytes = ambient_music_play_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x28, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_ambient_tail_before_following_status() {
+        let mut bytes = ambient_music_play_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(&bytes, "expected shifted Ambient row to remain unclaimed");
+    }
+
+    #[test]
+    fn splits_area_change_day_night_with_focused_bool_owner() {
+        let mut bytes = area_change_day_night_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x04, 0x06, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_area_change_day_night_tail_before_following_status() {
+        let mut bytes = area_change_day_night_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted Area_ChangeDayNight row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_safe_projectile_type6_with_focused_owner() {
+        let mut bytes = safe_projectile_type6_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x22, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_safe_projectile_tail_before_following_status() {
+        let mut bytes = safe_projectile_type6_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x40;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted SafeProjectile row to remain unclaimed",
+        );
+    }
+
+    #[test]
     fn splits_legacy_area_client_area_with_focused_rewrite_owner() {
         let mut bytes = area_client_area_legacy_payload();
         let status_offset = bytes.len();
@@ -2330,6 +2587,50 @@ mod tests {
         payload
     }
 
+    fn module_end_game_payload(strings: &[&str]) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x03, 0x0E, 0, 0, 0, 0];
+        for value in strings {
+            push_string(&mut payload, value);
+        }
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.push(0x60);
+        payload
+    }
+
+    fn camera_set_height_payload() -> Vec<u8> {
+        vec![
+            b'P', 0x10, 0x05, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0xE0, 0x3F, 0x78,
+        ]
+    }
+
+    fn cutscene_hide_gui_payload() -> Vec<u8> {
+        vec![b'P', 0x33, 0x07, 0x07, 0x00, 0x00, 0x00, 0x98]
+    }
+
+    fn gui_timing_stop_payload() -> Vec<u8> {
+        vec![b'P', 0x30, 0x01, 0x07, 0x00, 0x00, 0x00, 0x80]
+    }
+
+    fn ambient_music_play_payload() -> Vec<u8> {
+        vec![b'P', 0x28, 0x01, 0x07, 0x00, 0x00, 0x00, 0x9E]
+    }
+
+    fn area_change_day_night_payload() -> Vec<u8> {
+        vec![
+            b'P', 0x04, 0x06, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9E,
+        ]
+    }
+
+    fn safe_projectile_type6_payload() -> Vec<u8> {
+        vec![
+            b'P', 0x22, 0x01, 0x30, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x34, 0x12, 0x00,
+            0x80, 0xD8, 0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0xD8,
+            0x49, 0x6F, 0x41, 0x46, 0x1E, 0xC0, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x06, 0x39, 0x00, 0x00, 0x00, 0x61,
+        ]
+    }
+
     fn area_client_area_ee_payload() -> Vec<u8> {
         let mut payload = area_client_area_legacy_payload();
         area::rewrite_area_client_area_payload(&mut payload)
@@ -2425,6 +2726,47 @@ mod tests {
 
     fn set_cnw_msb_bit(fragment: &mut [u8], bit_index: usize) {
         fragment[bit_index / 8] |= 0x80 >> (bit_index % 8);
+    }
+
+    fn assert_first_unit_then_status(
+        bytes: &[u8],
+        expected_major: u8,
+        expected_minor: u8,
+        status_offset: usize,
+    ) {
+        let split = split_inflated_gameplay(bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, expected_major);
+                assert_eq!(message.minor, expected_minor);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected focused first high-level unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    fn assert_pending(bytes: &[u8], reason: &str) {
+        let split = split_inflated_gameplay(bytes);
+
+        assert!(!split.complete, "{reason}");
+        assert_eq!(split.units.len(), 1, "{reason}");
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes, "{reason}"),
+            _ => panic!("{reason}"),
+        }
     }
 
     fn client_char_list_request_update_payload(fragment_tail: &[u8]) -> Vec<u8> {
@@ -2680,7 +3022,7 @@ mod private_fixture_tests {
 
     #[test]
     fn splits_declared_message_before_next_high_level() {
-        let mut bytes = vec![b'P', 0x28, 0x04];
+        let mut bytes = vec![b'P', 0x29, 0x04];
         bytes.extend_from_slice(&7u32.to_le_bytes());
         bytes.extend_from_slice(&[b'P', 0x04, 0x03]);
         let split = split_inflated_gameplay(&bytes);
