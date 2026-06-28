@@ -13,8 +13,8 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, area, char_list, chat, client_char_list, client_side_message, custom_token,
-    game_obj_update, inventory, journal, loadbar, module, module_time, party, player_list,
-    quickbar, sound,
+    game_obj_update, inventory, journal, loadbar, module, module_resources, module_time, party,
+    player_list, quickbar, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +173,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x01, 0x03) => focused_module_resources_unit_end(bytes, offset),
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
@@ -209,6 +210,35 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_module_resources_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_MODULE_RESOURCES_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_MODULE_RESOURCES_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if module_resources::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_module_time_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -924,6 +954,50 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn splits_module_resources_with_focused_fragment_owner() {
+        let mut bytes = module_resources_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected ServerStatus_ModuleResources unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_module_resources_tail_before_following_status() {
+        let mut bytes = module_resources_payload();
+        *bytes.last_mut().expect("fragment tail") = 0x60;
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted ServerStatus_ModuleResources row to remain unclaimed"),
         }
     }
 
@@ -1748,6 +1822,21 @@ mod tests {
         let declared = payload.len() as u32;
         payload[3..7].copy_from_slice(&declared.to_le_bytes());
         payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn module_resources_payload() -> Vec<u8> {
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+        let (payload, _) = module_resources::build_server_status_module_resources_payload(
+            &runtime,
+            "Path of Ascension",
+        )
+        .expect("module-resource payload");
+        assert!(module_resources::claim_payload_if_verified(&payload).is_some());
         payload
     }
 

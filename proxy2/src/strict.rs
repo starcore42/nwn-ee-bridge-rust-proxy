@@ -3785,6 +3785,63 @@ mod tests {
     }
 
     #[test]
+    fn strict_server_status_module_resources_splits_in_gameplay_stream() {
+        let runtime = module_resources::ModuleResourceRuntime::default();
+        assert!(runtime.observe_legacy_module_info_resources(
+            &["cep2_custom".to_string(), "cep2_top_v23".to_string()],
+            Some("cep23_v1"),
+        ));
+        let (mut stream, _) = module_resources::build_server_status_module_resources_payload(
+            &runtime,
+            "Path of Ascension",
+        )
+        .expect("module-resource payload");
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ServerStatusModuleResources,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "ServerStatus_ModuleResources owns its exact fragment cursor before status"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::ServerStatusModuleResources,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "ServerStatus_ModuleResources streams are server-owned"
+        );
+
+        let (mut shifted, _) = module_resources::build_server_status_module_resources_payload(
+            &runtime,
+            "Path of Ascension",
+        )
+        .expect("module-resource payload");
+        *shifted.last_mut().expect("fragment tail") = 0x60;
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ServerStatusModuleResources,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &shifted,
+            ),
+            "a shifted module-resource fragment tail must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_loadbar_uses_focused_fragment_owner() {
         let start = loadbar::start_payload(2);
         let end = loadbar::end_success_payload(2);
