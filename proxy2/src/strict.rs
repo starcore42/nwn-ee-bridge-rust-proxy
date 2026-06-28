@@ -2522,6 +2522,16 @@ mod tests {
             exact_high_payload_shape_valid(&login_confirm),
             "directionless known-opcode validation still recognizes exact Login payloads"
         );
+        let mut login_with_unowned_tail = login_confirm.to_vec();
+        login_with_unowned_tail.push(0x60);
+        assert!(
+            login::claim_payload_if_verified(&login_with_unowned_tail).is_none(),
+            "focused Login owner must reject bytes after no-body signals"
+        );
+        assert!(
+            !exact_high_payload_shape_valid(&login_with_unowned_tail),
+            "known-opcode strict validation must reject unowned Login signal tails"
+        );
         assert!(verified_gameplay_stream_payload_valid(
             Direction::ServerToClient,
             &[VerifiedFamily::Login],
@@ -2532,6 +2542,28 @@ mod tests {
             &[VerifiedFamily::Login],
             &login_confirm,
         ));
+        let status = server_status::status_payload();
+        let mut login_then_status = login_confirm.to_vec();
+        login_then_status.extend_from_slice(&status);
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Login, VerifiedFamily::ServerStatusStatus],
+                &login_then_status,
+            ),
+            "Login signal and ServerStatus should split through focused stream owners"
+        );
+
+        let mut shifted_login_then_status = login_with_unowned_tail;
+        shifted_login_then_status.extend_from_slice(&status);
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::Login, VerifiedFamily::ServerStatusStatus],
+                &shifted_login_then_status,
+            ),
+            "unowned Login tail slack must not split before following ServerStatus"
+        );
 
         let frame = build_client_raw_m_frame(0x004E, 0x000B, &login_confirm, &[]);
         for direction in [

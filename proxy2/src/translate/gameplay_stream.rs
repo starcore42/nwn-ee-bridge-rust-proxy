@@ -12,9 +12,9 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, area, char_list, chat, client_char_list, client_side_message, custom_token,
-    game_obj_update, inventory, journal, loadbar, module, module_resources, module_time, party,
-    player_list, quickbar, server_status, sound,
+    VerifiedFamily, area, char_list, chat, client_char_list, client_login, client_side_message,
+    custom_token, game_obj_update, inventory, journal, loadbar, login, module, module_resources,
+    module_time, party, player_list, quickbar, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +175,8 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
     match (high.major, high.minor) {
         (0x01, 0x01) => focused_server_status_status_unit_end(bytes, offset),
         (0x01, 0x03) => focused_module_resources_unit_end(bytes, offset),
+        (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => focused_login_unit_end(bytes, offset),
+        (0x02, 0x0D | 0x11) => focused_client_login_unit_end(bytes, offset),
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
@@ -211,6 +213,70 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_login_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    if let Some(end) = offset.checked_add(3) {
+        if let Some(payload) = bytes.get(offset..end) {
+            if login::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=1 {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if login::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_client_login_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=1 {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if client_login::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_module_resources_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -958,6 +1024,91 @@ mod tests {
         match split.units[0] {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected status with unowned slack to remain pending"),
+        }
+    }
+
+    #[test]
+    fn splits_login_signal_with_focused_owner() {
+        for minor in [0x05, 0x0C, 0x10] {
+            let bytes = [b'P', 0x02, minor, b'P', 0x01, 0x01];
+            let split = split_inflated_gameplay(&bytes);
+
+            assert!(split.complete, "minor {minor:#04x} should split exactly");
+            assert_eq!(split.units.len(), 2);
+            match split.units[0] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, 0);
+                    assert_eq!(message.major, 0x02);
+                    assert_eq!(message.minor, minor);
+                    assert_eq!(message.payload.len(), 3);
+                }
+                _ => panic!("expected focused Login signal unit"),
+            }
+            match split.units[1] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, 3);
+                    assert_eq!(message.major, 0x01);
+                    assert_eq!(message.minor, 0x01);
+                    assert_eq!(message.payload.len(), 3);
+                }
+                _ => panic!("expected ServerStatus_Status unit"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_login_signal_tail_slack_before_following_status() {
+        let bytes = [b'P', 0x02, 0x05, 0x60, b'P', 0x01, 0x01];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected Login signal with unowned slack to remain pending"),
+        }
+    }
+
+    #[test]
+    fn splits_client_login_with_focused_fragment_owner() {
+        let mut bytes = client_login_server_subdirectory_payload(0x60);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x02);
+                assert_eq!(message.minor, 0x11);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected focused ClientLogin unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_client_login_tail_before_following_status() {
+        let mut bytes = client_login_server_subdirectory_payload(0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted ClientLogin row to remain unclaimed"),
         }
     }
 
@@ -1986,6 +2137,18 @@ mod tests {
         payload.push(0x05);
         payload.extend_from_slice(b"starcore-druid60");
         payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn client_login_server_subdirectory_payload(fragment_tail: u8) -> Vec<u8> {
+        const DECLARED: usize = 3 + 4 + 16;
+
+        let mut payload = vec![b'P', 0x02, 0x11];
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        let mut resref = [0u8; 16];
+        resref[..15].copy_from_slice(b"febrieltestxilo");
+        payload.extend_from_slice(&resref);
+        payload.push(fragment_tail);
         payload
     }
 
