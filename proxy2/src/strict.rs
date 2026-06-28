@@ -3630,6 +3630,61 @@ mod tests {
     }
 
     #[test]
+    fn strict_quickbar_splits_in_gameplay_stream() {
+        let quickbar_payload =
+            quickbar::build_blank_set_all_buttons_payload(0x50).expect("blank quickbar payload");
+        assert!(
+            quickbar::ee_set_all_buttons_payload_shape_valid(&quickbar_payload),
+            "focused GuiQuickbar owner accepts the exact SetAllButtons row"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::GuiQuickbar,
+            &quickbar_payload,
+        ));
+        assert!(exact_high_payload_shape_valid(&quickbar_payload));
+
+        let mut stream = quickbar_payload.clone();
+        stream.extend_from_slice(&server_status::status_payload());
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::GuiQuickbar,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "GuiQuickbar owns its exact fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::GuiQuickbar,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "GuiQuickbar/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = quickbar_payload;
+        *shifted.last_mut().expect("quickbar fragment tail") |= 0x01;
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::GuiQuickbar,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &shifted,
+            ),
+            "a shifted GuiQuickbar tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_loadbar_splits_in_gameplay_stream() {
         let mut stream = loadbar::start_payload(2);
         stream.extend_from_slice(&server_status::status_payload());

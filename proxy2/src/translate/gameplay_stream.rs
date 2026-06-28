@@ -13,7 +13,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, chat, client_side_message, custom_token, inventory, journal, loadbar, party,
-    player_list,
+    player_list, quickbar,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -178,6 +178,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
+        (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
             let Some(declared) = declared_cnw_length(bytes, offset, high) else {
                 return FocusedUnitEnd::Invalid;
@@ -330,6 +331,84 @@ fn focused_party_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     }
 
     FocusedUnitEnd::Invalid
+}
+
+fn focused_quickbar_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_QUICKBAR_FRAGMENT_BYTES: usize = 512;
+    const QUICKBAR_LEGACY_PREFIX_BYTES: usize = 3 + 4;
+    const QUICKBAR_SLOT_BYTES: usize = 36;
+    const QUICKBAR_MIN_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    let mut candidate_ends = Vec::new();
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in QUICKBAR_MIN_FRAGMENT_BYTES..=MAX_QUICKBAR_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            if end > bytes.len() {
+                break;
+            }
+            candidate_ends.push(end);
+        }
+    }
+
+    let min_legacy_end = offset
+        .checked_add(QUICKBAR_LEGACY_PREFIX_BYTES)
+        .and_then(|end| end.checked_add(QUICKBAR_SLOT_BYTES))
+        .and_then(|end| end.checked_add(QUICKBAR_MIN_FRAGMENT_BYTES));
+    if let Some(min_legacy_end) = min_legacy_end {
+        let max_legacy_end = min_legacy_end
+            .checked_add(MAX_QUICKBAR_FRAGMENT_BYTES)
+            .map(|end| end.min(bytes.len()))
+            .unwrap_or(bytes.len());
+        for end in min_legacy_end..=max_legacy_end {
+            candidate_ends.push(end);
+        }
+    }
+
+    candidate_ends.sort_unstable();
+    candidate_ends.dedup();
+    for end in candidate_ends {
+        let Some(payload) = bytes.get(offset..end) else {
+            continue;
+        };
+        if quickbar_payload_claims_complete_unit(payload)
+            && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+        {
+            return FocusedUnitEnd::Exact(end);
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn quickbar_payload_claims_complete_unit(payload: &[u8]) -> bool {
+    if quickbar::ee_set_all_buttons_payload_shape_valid(payload) {
+        return true;
+    }
+
+    let mut probe = payload.to_vec();
+    if let Some((_, summary)) =
+        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe)
+    {
+        return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
+            && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
+    }
+
+    let mut probe = payload.to_vec();
+    if let Some(summary) = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut probe) {
+        return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
+            && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
+    }
+
+    false
 }
 
 fn focused_journal_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -839,6 +918,53 @@ mod tests {
         match split.units[0] {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected shifted Inventory_Equip row to remain unclaimed"),
+        }
+    }
+
+    #[test]
+    fn splits_quickbar_with_focused_fragment_tail_owner() {
+        let mut bytes =
+            quickbar::build_blank_set_all_buttons_payload(b'P').expect("blank quickbar payload");
+        assert!(quickbar::ee_set_all_buttons_payload_shape_valid(&bytes));
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x1E);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected GuiQuickbar_SetAllButtons unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_unowned_quickbar_slack_before_following_status() {
+        let mut bytes =
+            quickbar::build_blank_set_all_buttons_payload(b'P').expect("blank quickbar payload");
+        bytes.push(0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected slack-bearing GuiQuickbar row to remain unclaimed"),
         }
     }
 
