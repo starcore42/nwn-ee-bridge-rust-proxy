@@ -14,7 +14,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 use super::{
     VerifiedFamily, area, char_list, chat, client_char_list, client_side_message, custom_token,
     game_obj_update, inventory, journal, loadbar, module, module_resources, module_time, party,
-    player_list, quickbar, sound,
+    player_list, quickbar, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +173,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x01, 0x01) => focused_server_status_status_unit_end(bytes, offset),
         (0x01, 0x03) => focused_module_resources_unit_end(bytes, offset),
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
@@ -239,6 +240,23 @@ fn focused_module_resources_unit_end(bytes: &[u8], offset: usize) -> FocusedUnit
     }
 
     FocusedUnitEnd::Invalid
+}
+
+fn focused_server_status_status_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    let Some(end) = offset.checked_add(3) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(payload) = bytes.get(offset..end) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    if server_status::claim_status_payload_if_verified(payload).is_some()
+        && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+    {
+        FocusedUnitEnd::Exact(end)
+    } else {
+        FocusedUnitEnd::Invalid
+    }
 }
 
 fn focused_module_time_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -785,7 +803,7 @@ fn focused_chat_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
 
 fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
     match (high.major, high.minor) {
-        (0x01, 0x00 | 0x01)
+        (0x01, 0x00)
         | (0x02, 0x05 | 0x0C)
         | (0x03, 0x02)
         | (0x04, 0x03)
@@ -927,6 +945,19 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected server ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_server_status_status_tail_slack_before_following_status() {
+        let bytes = [b'P', 0x01, 0x01, 0x00, b'P', 0x01, 0x01];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected status with unowned slack to remain pending"),
         }
     }
 
