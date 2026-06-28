@@ -4110,6 +4110,84 @@ mod tests {
     }
 
     #[test]
+    fn strict_char_list_splits_in_gameplay_stream() {
+        let char_list_payload = build_server_char_list_response(&[0xA0]);
+        let mut claim_probe = char_list_payload.clone();
+        assert!(
+            char_list::claim_payload_if_verified(&mut claim_probe).is_some(),
+            "focused CharList owner accepts the exact list response"
+        );
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::CharList,
+            &char_list_payload,
+        ));
+        assert!(exact_high_payload_shape_valid(&char_list_payload));
+
+        let mut stream = char_list_payload;
+        stream.extend_from_slice(&server_status::status_payload());
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::CharList, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "CharList owns its exact locstring fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::CharList, VerifiedFamily::ServerStatusStatus],
+                &stream,
+            ),
+            "CharList/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_server_char_list_response(&[0xA8]);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::CharList, VerifiedFamily::ServerStatusStatus],
+                &shifted,
+            ),
+            "a shifted CharList locstring fragment tail must not split before status"
+        );
+    }
+
+    #[test]
+    fn strict_client_char_list_splits_in_gameplay_stream() {
+        let mut stream = build_client_char_list_request_update(&[0x60]);
+        stream.extend_from_slice(&[0x70, 0x04, 0x03]);
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::ClientCharList, VerifiedFamily::ClientArea],
+                &stream,
+            ),
+            "ClientCharList owns its empty fragment cursor before the following client area signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[VerifiedFamily::ClientCharList, VerifiedFamily::ClientArea],
+                &stream,
+            ),
+            "client CharList gameplay streams are client-owned"
+        );
+
+        let mut shifted = build_client_char_list_request_update(&[0x80]);
+        shifted.extend_from_slice(&[0x70, 0x04, 0x03]);
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[VerifiedFamily::ClientCharList, VerifiedFamily::ClientArea],
+                &shifted,
+            ),
+            "a shifted ClientCharList cursor must not split before area-loaded"
+        );
+    }
+
+    #[test]
     fn strict_client_quickbar_uses_focused_set_button_owner() {
         let payload = build_client_quickbar_set_button(5, 43, &[0x52, 0x01, 0xF0, 0x03]);
         assert!(
@@ -4385,6 +4463,28 @@ mod tests {
         payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
         payload.push(0x01);
         payload.extend_from_slice(b"starcore-druid60");
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn build_server_char_list_response(fragment_tail: &[u8]) -> Vec<u8> {
+        let mut read = Vec::new();
+        read.extend_from_slice(&1u16.to_le_bytes());
+        write_test_string(&mut read, "Character 0");
+        write_test_string(&mut read, "");
+        write_test_resref16(&mut read, "po_heurodis_");
+        read.push(0);
+        read.extend_from_slice(&4u16.to_le_bytes());
+        write_test_resref16(&mut read, "char00");
+        read.push(1);
+        read.extend_from_slice(&37u32.to_le_bytes());
+        read.push(40);
+
+        let declared = 3 + 4 + read.len();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x11, 0x02]);
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&read);
         payload.extend_from_slice(fragment_tail);
         payload
     }

@@ -12,8 +12,8 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, chat, client_side_message, custom_token, inventory, journal, loadbar, party,
-    player_list, quickbar,
+    VerifiedFamily, char_list, chat, client_char_list, client_side_message, custom_token,
+    inventory, journal, loadbar, party, player_list, quickbar,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -176,6 +176,8 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
+        (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
+        (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset),
@@ -323,6 +325,75 @@ fn focused_party_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
                 break;
             };
             if party::claim_server_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_client_char_list_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_CLIENT_CHAR_LIST_FRAGMENT_BYTES: usize = 1;
+
+    if let Some(end) = offset.checked_add(3) {
+        if let Some(payload) = bytes.get(offset..end) {
+            if client_char_list::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_CLIENT_CHAR_LIST_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if client_char_list::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_char_list_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_CHAR_LIST_FRAGMENT_BYTES: usize = 64;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_CHAR_LIST_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            let mut probe = payload.to_vec();
+            if char_list::claim_payload_if_verified(&mut probe).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
                 return FocusedUnitEnd::Exact(end);
@@ -724,6 +795,92 @@ mod tests {
         match split.units[0] {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected shifted Party_List row to remain unclaimed"),
+        }
+    }
+
+    #[test]
+    fn splits_client_char_list_request_update_with_focused_empty_cursor_owner() {
+        let mut bytes = client_char_list_request_update_payload(&[0x60]);
+        let area_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x04, 0x03]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x11);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), area_offset);
+            }
+            _ => panic!("expected ClientCharList_RequestUpdateChar unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, area_offset);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_client_char_list_request_update_before_following_area() {
+        let mut bytes = client_char_list_request_update_payload(&[0x80]);
+        bytes.extend_from_slice(&[b'P', 0x04, 0x03]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted ClientCharList row to remain unclaimed"),
+        }
+    }
+
+    #[test]
+    fn splits_char_list_response_with_focused_fragment_tail_owner() {
+        let mut bytes = char_list_response_payload(&[0xA0]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x11);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected CharList_ListResponse unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_char_list_response_before_following_status() {
+        let mut bytes = char_list_response_payload(&[0xA8]);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted CharList_ListResponse row to remain unclaimed"),
         }
     }
 
@@ -1166,6 +1323,51 @@ mod tests {
         }
         payload.push(0x60);
         payload
+    }
+
+    fn client_char_list_request_update_payload(fragment_tail: &[u8]) -> Vec<u8> {
+        const DECLARED: usize = 3 + 4 + 1 + 16;
+
+        let mut payload = vec![b'P', 0x11, 0x03];
+        payload.extend_from_slice(&(DECLARED as u32).to_le_bytes());
+        payload.push(0x05);
+        payload.extend_from_slice(b"starcore-druid60");
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn char_list_response_payload(fragment_tail: &[u8]) -> Vec<u8> {
+        let mut read = Vec::new();
+        read.extend_from_slice(&1u16.to_le_bytes());
+        push_string(&mut read, "Character 0");
+        push_string(&mut read, "");
+        push_resref(&mut read, "po_heurodis_");
+        read.push(0);
+        read.extend_from_slice(&4u16.to_le_bytes());
+        push_resref(&mut read, "char00");
+        read.push(1);
+        read.extend_from_slice(&37u32.to_le_bytes());
+        read.push(40);
+
+        let declared = 3 + 4 + read.len();
+        let mut payload = vec![b'P', 0x11, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&read);
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
+    fn push_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_resref(out: &mut Vec<u8>, value: &str) {
+        let mut resref = [0u8; 16];
+        let bytes = value.as_bytes();
+        let copy_len = bytes.len().min(resref.len());
+        resref[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        out.extend_from_slice(&resref);
     }
 
     fn chat_talk_ref_payload() -> Vec<u8> {
