@@ -839,7 +839,10 @@ impl ObjectRegistry {
     where
         F: FnMut(&KnownObjectState) -> bool,
     {
-        if object_type != PLACEABLE_OBJECT_TYPE {
+        // Inventory owner records carry an OBJECTID without an independent
+        // live-object type. Let those untyped owners reuse the same placeable
+        // compact/external alias rule while keeping typed non-placeable rows out.
+        if object_type != 0 && object_type != PLACEABLE_OBJECT_TYPE {
             return None;
         }
 
@@ -2853,6 +2856,100 @@ mod tests {
                 state_lockable: 1,
                 state_locked: 1,
             }
+        );
+    }
+
+    #[test]
+    fn untyped_placeable_owner_conflict_lookup_uses_compact_external_aliases() {
+        let mut registry = ObjectRegistry::default();
+        let compact_placeable_id = 0x0000_0003;
+        let external_placeable_id = 0x8000_0003;
+        let compact_creature_id = 0x0000_0004;
+        let external_creature_id = 0x8000_0004;
+        let area_context = AreaPlaceableContext {
+            area_resref: "testarea".to_string(),
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id: compact_placeable_id,
+                appearance: 0x1234,
+                object_id_confidence: AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    useable: true,
+                    trap_disarmable: false,
+                    lockable: true,
+                    locked: false,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+        let conflicting_placeable = LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_placeable_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: Some(LiveObjectPlaceableState {
+                useable: Some(true),
+                trap_disarmable: Some(false),
+                lockable: Some(false),
+                locked: Some(true),
+            }),
+        };
+        registry.observe_mentions(std::slice::from_ref(&conflicting_placeable));
+        registry.observe_placeable_area_context(
+            &area_context,
+            std::slice::from_ref(&conflicting_placeable),
+        );
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x05,
+            object_id: external_creature_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        let expected_conflict = AreaPlaceableContextStateConflict {
+            lockable: true,
+            locked: true,
+            ..AreaPlaceableContextStateConflict::default()
+        };
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0, compact_placeable_id),
+            Some(expected_conflict),
+            "untyped owner rows should see an external placeable conflict through its compact alias"
+        );
+        let snapshot = registry
+            .unresolved_area_static_placeable_conflict_snapshot_for_record(0, compact_placeable_id)
+            .expect("untyped compact owner should resolve to the external placeable conflict");
+        assert_eq!(snapshot.object.object_id, external_placeable_id);
+        assert_eq!(snapshot.state, Some(expected_conflict));
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_summary_for_records([
+                (0, compact_placeable_id),
+                (0, external_placeable_id),
+                (0, compact_creature_id),
+                (0x05, compact_placeable_id),
+            ]),
+            AreaStaticPlaceableConflictRecordSummary {
+                owners: 1,
+                state: 1,
+                state_lockable: 1,
+                state_locked: 1,
+                ..AreaStaticPlaceableConflictRecordSummary::default()
+            }
+        );
+        assert_eq!(
+            registry.unresolved_area_static_placeable_conflict_for_record(0, compact_creature_id),
+            None,
+            "untyped placeable conflict lookup must not claim compact creature ids"
         );
     }
 
