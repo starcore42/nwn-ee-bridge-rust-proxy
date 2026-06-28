@@ -644,11 +644,23 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn has_active_typed_object(&self, object_type: u8, object_id: u32) -> bool {
-        self.materialized_item_object_ids.contains(&object_id)
-            || self
-                .get(object_type, object_id)
-                .map(|object| object.active)
-                .unwrap_or(false)
+        if self.materialized_item_object_ids.contains(&object_id) {
+            return true;
+        }
+        if object_type == PLACEABLE_OBJECT_TYPE {
+            // Live-object placeable records can mention the same runtime
+            // object through either the legacy compact id or the external EE
+            // id. Observation already merges those aliases; lifecycle checks
+            // must use the same owner rule before removing missing-object rows.
+            return self
+                .placeable_object_for_record_matching(object_type, object_id, |object| {
+                    object.active
+                })
+                .is_some();
+        }
+        self.get(object_type, object_id)
+            .map(|object| object.active)
+            .unwrap_or(false)
     }
 
     pub(crate) fn has_active_live_object_for_record(
@@ -3099,6 +3111,57 @@ mod tests {
             registry.unresolved_area_static_placeable_conflict_for_record(0x09, compact_object_id),
             None
         );
+    }
+
+    #[test]
+    fn active_placeable_lifecycle_lookup_uses_compact_external_aliases() {
+        let mut registry = ObjectRegistry::default();
+        let compact_object_id = 0x0000_0003;
+        let external_object_id = 0x8000_0003;
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'A',
+            object_type: 0x09,
+            object_id: external_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert!(registry.has_active_typed_object(0x09, external_object_id));
+        assert!(
+            registry.has_active_typed_object(0x09, compact_object_id),
+            "compact U/D/09 rows should see the active external A/09 owner"
+        );
+        assert!(
+            registry.has_active_live_object_for_record(0x09, compact_object_id),
+            "lifecycle cleanup must share placeable compact/external alias ownership"
+        );
+        assert!(
+            !registry.has_active_typed_object(0x05, compact_object_id),
+            "placeable alias ownership must not leak to creature rows"
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: 0x09,
+            object_id: compact_object_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert!(
+            !registry.has_active_typed_object(0x09, external_object_id),
+            "compact delete should clear the external owner entry"
+        );
+        assert!(!registry.has_active_typed_object(0x09, compact_object_id));
     }
 
     #[test]
