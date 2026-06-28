@@ -11,7 +11,9 @@
 
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
-use super::{VerifiedFamily, chat, client_side_message, journal, loadbar, party, player_list};
+use super::{
+    VerifiedFamily, chat, client_side_message, custom_token, journal, loadbar, party, player_list,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameplayUnit<'a> {
@@ -193,8 +195,40 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
                 FocusedUnitEnd::Invalid
             }
         }
+        (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_custom_token_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_CUSTOM_TOKEN_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    let Some(read_end) = offset.checked_add(declared) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    for fragment_bytes in 0..=MAX_CUSTOM_TOKEN_FRAGMENT_BYTES {
+        let Some(end) = read_end.checked_add(fragment_bytes) else {
+            break;
+        };
+        let Some(payload) = bytes.get(offset..end) else {
+            break;
+        };
+        let mut probe = payload.to_vec();
+        if custom_token::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+            && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+        {
+            return FocusedUnitEnd::Exact(end);
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_player_list_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -714,6 +748,70 @@ mod tests {
     }
 
     #[test]
+    fn splits_custom_token_with_focused_fragment_tail_owner() {
+        let mut bytes = custom_token_set_payload(0x1234, b"hello");
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x32);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected SetCustomToken unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn splits_rewrite_owned_custom_token_list_before_following_status() {
+        let mut bytes = custom_token_list_payload_with_count(2, &[(0x1234, &b"a"[..])]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x32);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected rewrite-owned SetCustomTokenList unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_custom_token_tail_before_following_status() {
+        let mut bytes = custom_token_set_payload(0x1234, b"hello");
+        bytes.push(0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected oversized SetCustomToken tail to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_loadbar_with_focused_fragment_tail_owner() {
         let mut bytes = loadbar::start_payload(2);
         let status_offset = bytes.len();
@@ -873,6 +971,35 @@ mod tests {
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&player_id.to_le_bytes());
         payload.push(fragment_tail);
+        payload
+    }
+
+    fn custom_token_set_payload(token_id: u32, value: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4 + value.len();
+        let mut payload = vec![b'P', 0x32, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&token_id.to_le_bytes());
+        payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        payload.extend_from_slice(value);
+        payload.push(0x60);
+        payload
+    }
+
+    fn custom_token_list_payload_with_count(count: u32, entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let body_len = 4 + entries
+            .iter()
+            .map(|(_, value)| 4 + 4 + value.len())
+            .sum::<usize>();
+        let declared = 3 + 4 + body_len;
+        let mut payload = vec![b'P', 0x32, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&count.to_le_bytes());
+        for (token_id, value) in entries {
+            payload.extend_from_slice(&token_id.to_le_bytes());
+            payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            payload.extend_from_slice(value);
+        }
+        payload.push(0x60);
         payload
     }
 }

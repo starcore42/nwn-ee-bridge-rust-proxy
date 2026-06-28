@@ -3734,6 +3734,64 @@ mod tests {
     }
 
     #[test]
+    fn strict_custom_token_splits_in_gameplay_stream() {
+        let mut stream = build_custom_token_set(0x1234, b"hello");
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::SetCustomToken,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "SetCustomToken owns its exact fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::SetCustomToken,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "SetCustomToken/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut malformed = build_custom_token_list_with_count(2, &[(0x1234, &b"a"[..])]);
+        malformed.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::SetCustomToken,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &malformed,
+            ),
+            "strict verified CustomToken proofs require the rewritten or exact EE shape"
+        );
+
+        let mut oversized = build_custom_token_set(0x1234, b"hello");
+        oversized.push(0);
+        oversized.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::SetCustomToken,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &oversized,
+            ),
+            "an oversized CustomToken tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_party_list_counts_declared_member_rows() {
         let empty_party = build_party_list(&[]);
         assert!(verified_family_inflated_payload_valid(
