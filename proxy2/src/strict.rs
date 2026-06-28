@@ -3566,6 +3566,49 @@ mod tests {
     }
 
     #[test]
+    fn strict_module_info_splits_in_gameplay_stream() {
+        let mut stream = build_module_info_with_fragment_tail(&[0xC0]);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ModuleInfo,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Module_Info owns its exact EE fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::ModuleInfo,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Module_Info/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_module_info_with_fragment_tail(&[0xA0]);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ModuleInfo,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &shifted,
+            ),
+            "a shifted Module_Info fragment tail must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_server_status_status_uses_focused_owner() {
         let exact = server_status::status_payload();
         assert!(

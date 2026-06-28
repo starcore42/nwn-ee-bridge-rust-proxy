@@ -197,6 +197,24 @@ pub fn first_module_info_candidate_offset(payload: &[u8]) -> Option<usize> {
 }
 
 pub fn claim_module_info_payload_if_verified(payload: &[u8]) -> Option<ModuleInfoClaimSummary> {
+    let (area_count, declared) = module_info_read_window_shape(payload)?;
+    let fragment_tail = payload.get(declared..)?;
+    if !exact_ee_module_info_fragment_tail_valid(fragment_tail) {
+        return None;
+    }
+
+    Some(ModuleInfoClaimSummary {
+        area_count,
+        declared,
+        fragment_bytes: payload.len() - declared,
+    })
+}
+
+pub(crate) fn module_info_read_window_shape_valid(payload: &[u8]) -> bool {
+    module_info_read_window_shape(payload).is_some()
+}
+
+fn module_info_read_window_shape(payload: &[u8]) -> Option<(u32, usize)> {
     const READ_START: usize = HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES;
 
     if payload.len() < READ_START
@@ -209,10 +227,6 @@ pub fn claim_module_info_payload_if_verified(payload: &[u8]) -> Option<ModuleInf
 
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared < READ_START || declared > payload.len() {
-        return None;
-    }
-    let fragment_tail = payload.get(declared..)?;
-    if !exact_ee_module_info_fragment_tail_valid(fragment_tail) {
         return None;
     }
 
@@ -260,11 +274,7 @@ pub fn claim_module_info_payload_if_verified(payload: &[u8]) -> Option<ModuleInf
     }
     cursor += 1;
 
-    (cursor == declared).then_some(ModuleInfoClaimSummary {
-        area_count,
-        declared,
-        fragment_bytes: payload.len() - declared,
-    })
+    (cursor == declared).then_some((area_count, declared))
 }
 
 pub fn module_end_game_shape_valid(payload: &[u8]) -> bool {

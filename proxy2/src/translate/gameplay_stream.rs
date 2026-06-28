@@ -13,7 +13,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, char_list, chat, client_char_list, client_side_message, custom_token,
-    game_obj_update, inventory, journal, loadbar, party, player_list, quickbar,
+    game_obj_update, inventory, journal, loadbar, module, party, player_list, quickbar,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +175,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
+        (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
@@ -203,6 +204,44 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         }
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
+    }
+}
+
+fn focused_module_info_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_MODULE_INFO_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    let mut read_window_verified = false;
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        if let Some(read_window) = bytes.get(offset..read_end) {
+            read_window_verified |= module::module_info_read_window_shape_valid(read_window);
+        }
+
+        for fragment_bytes in 0..=MAX_MODULE_INFO_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if module::claim_module_info_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    if read_window_verified {
+        FocusedUnitEnd::Invalid
+    } else {
+        FocusedUnitEnd::NotFocused
     }
 }
 
@@ -781,6 +820,49 @@ mod tests {
                 assert_eq!(message.payload.len(), 3);
             }
             _ => panic!("expected client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn splits_module_info_with_focused_fragment_tail_owner() {
+        let mut bytes = module_info_payload(&[0xC0]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x03);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Module_Info unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_module_info_tail_before_following_status() {
+        let mut bytes = module_info_payload(&[0xA0]);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Module_Info row to remain unclaimed"),
         }
     }
 
@@ -1416,6 +1498,22 @@ mod tests {
             payload.extend_from_slice(&member_id.to_le_bytes());
         }
         payload.push(0x60);
+        payload
+    }
+
+    fn module_info_payload(fragment_tail: &[u8]) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x03, 0x01, 0, 0, 0, 0];
+        push_string(&mut payload, "Path of Ascension CEP Legends");
+        push_string(&mut payload, "Path of Ascension CEP Legends");
+        payload.push(0x02);
+        push_resref(&mut payload, "poa_mod");
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+        push_string(&mut payload, "Armor Shop");
+        payload.push(0);
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(fragment_tail);
         payload
     }
 
