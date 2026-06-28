@@ -3178,6 +3178,60 @@ mod tests {
     }
 
     #[test]
+    fn strict_inventory_splits_in_gameplay_stream() {
+        let exact_equip = build_inventory_equip_payload(0x8000_1234, 4, 0x90);
+        let claim = inventory::claim_payload_if_verified(&exact_equip)
+            .expect("focused Inventory owner should claim exact equip payload");
+
+        assert_eq!(claim.object_id, 0x8000_1234);
+        assert_eq!(claim.equip_slot, 4);
+        assert!(verified_family_inflated_payload_valid(
+            VerifiedFamily::Inventory,
+            &exact_equip
+        ));
+        assert!(exact_high_payload_shape_valid(&exact_equip));
+
+        let mut stream = exact_equip;
+        stream.extend_from_slice(&server_status::status_payload());
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::Inventory,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &stream,
+            ),
+            "Inventory owns its exact bool fragment cursor before the following status signal"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::Inventory,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &stream,
+            ),
+            "Inventory/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_inventory_equip_payload(0x8000_1234, 4, 0xA0);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::Inventory,
+                    VerifiedFamily::ServerStatusStatus
+                ],
+                &shifted,
+            ),
+            "a shifted Inventory fragment tail must not be split before the status signal"
+        );
+    }
+
+    #[test]
     fn strict_player_list_splits_in_gameplay_stream() {
         let mut stream = build_player_list_delete_payload(0x8000_0001, 0x80);
         stream.extend_from_slice(&server_status::status_payload());
@@ -4299,6 +4353,22 @@ mod tests {
         payload.extend_from_slice(&[0x50, 0x0A, 0x03]);
         payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
         payload.extend_from_slice(&player_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn build_inventory_equip_payload(
+        object_id: u32,
+        equip_slot: u32,
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        const DECLARED_BYTES: usize = 3 + 4 + 4 + 4;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0x50, 0x0C, 0x01]);
+        payload.extend_from_slice(&(DECLARED_BYTES as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.extend_from_slice(&equip_slot.to_le_bytes());
         payload.push(fragment_tail);
         payload
     }

@@ -12,7 +12,8 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, chat, client_side_message, custom_token, journal, loadbar, party, player_list,
+    VerifiedFamily, chat, client_side_message, custom_token, inventory, journal, loadbar, party,
+    player_list,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +174,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
     match (high.major, high.minor) {
         (0x09, _) => focused_chat_unit_end(bytes, offset),
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
+        (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
@@ -251,6 +253,36 @@ fn focused_player_list_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
             };
             let mut probe = payload.to_vec();
             if player_list::rewrite_player_list_payload_if_possible(&mut probe).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_inventory_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_INVENTORY_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_INVENTORY_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            let mut probe = payload.to_vec();
+            if inventory::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
                 && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
             {
                 return FocusedUnitEnd::Exact(end);
@@ -748,6 +780,69 @@ mod tests {
     }
 
     #[test]
+    fn splits_inventory_equip_with_focused_fragment_tail_owner() {
+        let mut bytes = inventory_equip_payload(0x8000_1234, 4, 0x90);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x0C);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Inventory_Equip unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn splits_legacy_inventory_equip_rewrite_shape_before_following_status() {
+        let mut bytes = legacy_inventory_equip_payload(1, 0x8000_1234, 4, 0x90);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x0C);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected rewrite-owned Inventory_Equip unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_inventory_equip_tail_before_following_status() {
+        let mut bytes = inventory_equip_payload(0x8000_1234, 4, 0xA0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Inventory_Equip row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_custom_token_with_focused_fragment_tail_owner() {
         let mut bytes = custom_token_set_payload(0x1234, b"hello");
         let status_offset = bytes.len();
@@ -970,6 +1065,32 @@ mod tests {
         let mut payload = vec![b'P', 0x0A, 0x03];
         payload.extend_from_slice(&(declared as u32).to_le_bytes());
         payload.extend_from_slice(&player_id.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn inventory_equip_payload(object_id: u32, equip_slot: u32, fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4;
+        let mut payload = vec![b'P', 0x0C, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.extend_from_slice(&equip_slot.to_le_bytes());
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn legacy_inventory_equip_payload(
+        legacy_prefix: u32,
+        object_id: u32,
+        equip_slot: u32,
+        fragment_tail: u8,
+    ) -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4 + 4;
+        let mut payload = vec![b'P', 0x0C, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&legacy_prefix.to_le_bytes());
+        payload.extend_from_slice(&object_id.to_le_bytes());
+        payload.extend_from_slice(&equip_slot.to_le_bytes());
         payload.push(fragment_tail);
         payload
     }
