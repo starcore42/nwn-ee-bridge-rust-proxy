@@ -12,9 +12,10 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, area, char_list, chat, client_char_list, client_login, client_side_message,
-    custom_token, game_obj_update, inventory, journal, loadbar, login, module, module_resources,
-    module_time, party, play_module_character_list, player_list, quickbar, server_status, sound,
+    VerifiedFamily, area, char_list, chat, client_area, client_char_list, client_login,
+    client_module, client_quickbar, client_server_status, client_side_message, custom_token,
+    game_obj_update, inventory, journal, loadbar, login, module, module_resources, module_time,
+    party, play_module_character_list, player_list, quickbar, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +174,7 @@ enum FocusedUnitEnd {
 
 fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> FocusedUnitEnd {
     match (high.major, high.minor) {
+        (0x01, 0x00) => focused_client_server_status_unit_end(bytes, offset),
         (0x01, 0x01) => focused_server_status_status_unit_end(bytes, offset),
         (0x01, 0x03) => focused_module_resources_unit_end(bytes, offset),
         (0x02, 0x05 | 0x0A | 0x0C | 0x10 | 0x12) => focused_login_unit_end(bytes, offset),
@@ -181,8 +183,10 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
         (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
+        (0x03, 0x02) => focused_client_module_unit_end(bytes, offset),
         (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
         (0x04, 0x01) => focused_area_client_area_unit_end(bytes, offset),
+        (0x04, 0x03) => focused_client_area_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
@@ -191,6 +195,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
         (0x1C, _) => focused_journal_unit_end(bytes, offset),
         (0x1E, 0x01) => focused_quickbar_unit_end(bytes, offset),
+        (0x1E, 0x02) => focused_client_quickbar_unit_end(bytes, offset),
         (0x2C, 0x01..=0x03) => {
             let Some(declared) = declared_cnw_length(bytes, offset, high) else {
                 return FocusedUnitEnd::Invalid;
@@ -213,6 +218,42 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x31, 0x01 | 0x02 | 0x03) => focused_play_module_character_list_unit_end(bytes, offset),
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
+    }
+}
+
+fn focused_client_server_status_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_no_body_unit_end(bytes, offset, |payload| {
+        client_server_status::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_client_module_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_no_body_unit_end(bytes, offset, |payload| {
+        client_module::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_client_area_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_no_body_unit_end(bytes, offset, |payload| {
+        client_area::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_no_body_unit_end<F>(bytes: &[u8], offset: usize, claim: F) -> FocusedUnitEnd
+where
+    F: Fn(&[u8]) -> bool,
+{
+    let Some(end) = offset.checked_add(3) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(payload) = bytes.get(offset..end) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    if claim(payload) && (end == bytes.len() || boundary_has_plausible_unit(bytes, end)) {
+        FocusedUnitEnd::Exact(end)
+    } else {
+        FocusedUnitEnd::Invalid
     }
 }
 
@@ -770,6 +811,35 @@ fn quickbar_payload_claims_complete_unit(payload: &[u8]) -> bool {
     false
 }
 
+fn focused_client_quickbar_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_CLIENT_QUICKBAR_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_CLIENT_QUICKBAR_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if client_quickbar::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
 fn focused_journal_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     const MAX_JOURNAL_FRAGMENT_BYTES: usize = 8;
 
@@ -1070,6 +1140,59 @@ mod tests {
         match split.units[0] {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected status with unowned slack to remain pending"),
+        }
+    }
+
+    #[test]
+    fn rejects_client_server_status_tail_slack_before_following_area_loaded() {
+        let bytes = [0x70, 0x01, 0x00, 0x60, 0x70, 0x04, 0x03];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected client ServerStatus_0 slack to remain pending"),
+        }
+    }
+
+    #[test]
+    fn splits_client_module_and_area_no_body_with_focused_owners() {
+        let bytes = [0x70, 0x03, 0x02, 0x70, 0x04, 0x03];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x03);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected focused client Module_Loaded unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 3);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected focused client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_client_module_tail_slack_before_following_area_loaded() {
+        let bytes = [0x70, 0x03, 0x02, 0x60, 0x70, 0x04, 0x03];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected client Module_Loaded slack to remain pending"),
         }
     }
 
@@ -1923,6 +2046,50 @@ mod tests {
     }
 
     #[test]
+    fn splits_client_quickbar_set_button_with_focused_fragment_owner() {
+        let mut bytes = client_quickbar_set_button_payload(5, 43, &[0x52, 0x01, 0xF0, 0x03]);
+        let area_offset = bytes.len();
+        bytes.extend_from_slice(&[0x70, 0x04, 0x03]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x1E);
+                assert_eq!(message.minor, 0x02);
+                assert_eq!(message.payload.len(), area_offset);
+            }
+            _ => panic!("expected focused client GuiQuickbar_SetButton unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, area_offset);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected focused client Area_AreaLoaded unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_client_quickbar_set_button_before_following_area_loaded() {
+        let mut bytes = client_quickbar_set_button_payload(5, 43, &[0x52, 0x01, 0xF0, 0x03]);
+        *bytes.last_mut().expect("fragment tail") = 0x80;
+        bytes.extend_from_slice(&[0x70, 0x04, 0x03]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted client quickbar row to remain pending"),
+        }
+    }
+
+    #[test]
     fn splits_custom_token_with_focused_fragment_tail_owner() {
         let mut bytes = custom_token_set_payload(0x1234, b"hello");
         let status_offset = bytes.len();
@@ -2280,6 +2447,20 @@ mod tests {
         resref[..15].copy_from_slice(b"febrieltestxilo");
         payload.extend_from_slice(&resref);
         payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_quickbar_set_button_payload(slot: u8, button_type: u8, body: &[u8]) -> Vec<u8> {
+        const READ_START: usize = 3 + 4;
+        const SET_BUTTON_BODY_OFFSET: usize = READ_START + 2;
+
+        let declared = SET_BUTTON_BODY_OFFSET + body.len();
+        let mut payload = vec![0x70, 0x1E, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(slot);
+        payload.push(button_type);
+        payload.extend_from_slice(body);
+        payload.push(0x60);
         payload
     }
 
