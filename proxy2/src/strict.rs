@@ -3503,6 +3503,49 @@ mod tests {
     }
 
     #[test]
+    fn strict_module_time_splits_in_gameplay_stream() {
+        let mut stream = build_module_time(0x02, &[0x12], &[0x60]);
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ModuleTime,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Module_Time owns only its exact read body plus empty fragment cursor before status"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::ModuleTime,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Module_Time/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_module_time(0x02, &[0x12], &[0x80]);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::ModuleTime,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &shifted,
+            ),
+            "Module_Time consumes no fragment BOOLs, so data-bit tails must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_module_info_uses_focused_owner_for_fragment_tail_bits() {
         let full_byte_tail = build_module_info_with_fragment_tail(&[0x00]);
         assert!(

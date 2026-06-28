@@ -13,7 +13,8 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
     VerifiedFamily, char_list, chat, client_char_list, client_side_message, custom_token,
-    game_obj_update, inventory, journal, loadbar, module, party, player_list, quickbar,
+    game_obj_update, inventory, journal, loadbar, module, module_time, party, player_list,
+    quickbar,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -176,6 +177,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x0A, 0x01..=0x03) => focused_player_list_unit_end(bytes, offset),
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
         (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
+        (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
@@ -205,6 +207,35 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
+}
+
+fn focused_module_time_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_MODULE_TIME_FRAGMENT_BYTES: usize = 1;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_MODULE_TIME_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if module_time::claim_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
 }
 
 fn focused_module_info_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
@@ -867,6 +898,49 @@ mod tests {
     }
 
     #[test]
+    fn splits_module_time_with_focused_empty_fragment_owner() {
+        let mut bytes = module_time_payload(0x02, &[0x12], &[0x60]);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x03);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected Module_Time unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_module_time_tail_before_following_status() {
+        let mut bytes = module_time_payload(0x02, &[0x12], &[0x80]);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted Module_Time row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_party_list_with_focused_fragment_tail_owner() {
         let mut bytes = party_list_payload(&[0x8000_0001, 0x8000_0002]);
         let status_offset = bytes.len();
@@ -1517,6 +1591,16 @@ mod tests {
         payload
     }
 
+    fn module_time_payload(mask: u8, body: &[u8], fragment_tail: &[u8]) -> Vec<u8> {
+        let declared = 3 + 4 + 1 + body.len();
+        let mut payload = vec![b'P', 0x03, 0x03];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.push(mask);
+        payload.extend_from_slice(body);
+        payload.extend_from_slice(fragment_tail);
+        payload
+    }
+
     fn client_char_list_request_update_payload(fragment_tail: &[u8]) -> Vec<u8> {
         const DECLARED: usize = 3 + 4 + 1 + 16;
 
@@ -1718,7 +1802,7 @@ mod private_fixture_tests {
 
     #[test]
     fn splits_declared_message_before_next_high_level() {
-        let mut bytes = vec![b'P', 0x03, 0x03];
+        let mut bytes = vec![b'P', 0x28, 0x04];
         bytes.extend_from_slice(&7u32.to_le_bytes());
         bytes.extend_from_slice(&[b'P', 0x04, 0x03]);
         let split = split_inflated_gameplay(&bytes);
