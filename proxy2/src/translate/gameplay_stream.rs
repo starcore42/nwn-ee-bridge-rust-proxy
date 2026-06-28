@@ -14,7 +14,7 @@ use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 use super::{
     VerifiedFamily, area, char_list, chat, client_char_list, client_login, client_side_message,
     custom_token, game_obj_update, inventory, journal, loadbar, login, module, module_resources,
-    module_time, party, player_list, quickbar, server_status, sound,
+    module_time, party, play_module_character_list, player_list, quickbar, server_status, sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -210,6 +210,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
                 FocusedUnitEnd::Invalid
             }
         }
+        (0x31, 0x01 | 0x02 | 0x03) => focused_play_module_character_list_unit_end(bytes, offset),
         (0x32, 0x01 | 0x02) => focused_custom_token_unit_end(bytes, offset),
         _ => FocusedUnitEnd::NotFocused,
     }
@@ -867,6 +868,51 @@ fn focused_chat_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     FocusedUnitEnd::Invalid
 }
 
+fn focused_play_module_character_list_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    const MAX_PLAY_MODULE_CHARACTER_LIST_FRAGMENT_BYTES: usize = 8;
+
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    if matches!(high.minor, 0x01 | 0x02) {
+        let Some(end) = offset.checked_add(3) else {
+            return FocusedUnitEnd::Invalid;
+        };
+        let Some(payload) = bytes.get(offset..end) else {
+            return FocusedUnitEnd::Invalid;
+        };
+        if play_module_character_list::claim_client_payload_if_verified(payload).is_some()
+            && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+        {
+            return FocusedUnitEnd::Exact(end);
+        }
+        return FocusedUnitEnd::Invalid;
+    }
+
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        for fragment_bytes in 0..=MAX_PLAY_MODULE_CHARACTER_LIST_FRAGMENT_BYTES {
+            let Some(end) = read_end.checked_add(fragment_bytes) else {
+                break;
+            };
+            let Some(payload) = bytes.get(offset..end) else {
+                break;
+            };
+            if play_module_character_list::claim_server_payload_if_verified(payload).is_some()
+                && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+            {
+                return FocusedUnitEnd::Exact(end);
+            }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
 fn fixed_high_level_length(high: HighLevel) -> Option<usize> {
     match (high.major, high.minor) {
         (0x01, 0x00)
@@ -1397,6 +1443,91 @@ mod tests {
         match split.units[0] {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected shifted ClientCharList row to remain unclaimed"),
+        }
+    }
+
+    #[test]
+    fn splits_play_module_character_list_client_controls_with_focused_owner() {
+        for minor in [0x01, 0x02] {
+            let bytes = [b'P', 0x31, minor, b'P', 0x01, 0x01];
+            let split = split_inflated_gameplay(&bytes);
+
+            assert!(split.complete, "minor {minor:#04x} should split exactly");
+            assert_eq!(split.units.len(), 2);
+            match split.units[0] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, 0);
+                    assert_eq!(message.major, 0x31);
+                    assert_eq!(message.minor, minor);
+                    assert_eq!(message.payload.len(), 3);
+                }
+                _ => panic!("expected PlayModuleCharacterList control unit"),
+            }
+            match split.units[1] {
+                GameplayUnit::HighLevel(message) => {
+                    assert_eq!(message.offset, 3);
+                    assert_eq!(message.major, 0x01);
+                    assert_eq!(message.minor, 0x01);
+                    assert_eq!(message.payload.len(), 3);
+                }
+                _ => panic!("expected ServerStatus_Status unit"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_play_module_character_list_client_control_tail_slack_before_status() {
+        let bytes = [b'P', 0x31, 0x01, 0x00, b'P', 0x01, 0x01];
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected slack-bearing PlayModuleCharacterList row to remain pending"),
+        }
+    }
+
+    #[test]
+    fn splits_play_module_character_list_response_with_focused_fragment_owner() {
+        let mut bytes = play_module_character_list_failed_response_payload(0x80);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x31);
+                assert_eq!(message.minor, 0x03);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected PlayModuleCharacterList_Response unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_shifted_play_module_character_list_response_before_status() {
+        let mut bytes = play_module_character_list_failed_response_payload(0x88);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected shifted PlayModuleCharacterList response to remain pending"),
         }
     }
 
@@ -2190,6 +2321,23 @@ mod tests {
         vec![
             0x50, 0x09, 0x08, 0x0F, 0x00, 0x00, 0x00, 0x31, 0x12, 0x00, 0x80, 0xEC, 0x47, 0x01,
             0x00, 0x60,
+        ]
+    }
+
+    fn play_module_character_list_failed_response_payload(fragment_tail: u8) -> Vec<u8> {
+        vec![
+            b'P',
+            0x31,
+            0x03,
+            0x0B,
+            0x00,
+            0x00,
+            0x00,
+            0xF9,
+            0xFF,
+            0xFF,
+            0x7F,
+            fragment_tail,
         ]
     }
 
