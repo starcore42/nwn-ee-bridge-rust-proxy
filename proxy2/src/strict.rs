@@ -3475,6 +3475,50 @@ mod tests {
     }
 
     #[test]
+    fn strict_area_client_area_splits_in_gameplay_stream() {
+        let mut stream = build_area_client_area_exact_payload();
+        stream.extend_from_slice(&server_status::status_payload());
+
+        assert!(
+            verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::AreaClientArea,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Area_ClientArea owns its exact EE LoadArea cursor before status"
+        );
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ClientToServer,
+                &[
+                    VerifiedFamily::AreaClientArea,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &stream,
+            ),
+            "Area_ClientArea/ServerStatus gameplay streams are server-owned"
+        );
+
+        let mut shifted = build_area_client_area_exact_payload();
+        shifted.push(0);
+        shifted.extend_from_slice(&server_status::status_payload());
+        assert!(
+            !verified_gameplay_stream_payload_valid(
+                Direction::ServerToClient,
+                &[
+                    VerifiedFamily::AreaClientArea,
+                    VerifiedFamily::ServerStatusStatus,
+                ],
+                &shifted,
+            ),
+            "unowned Area_ClientArea fragment slack must not split before status"
+        );
+    }
+
+    #[test]
     fn strict_module_time_uses_focused_fragment_owner() {
         let zero_mask = build_module_time(0, &[], &[0x60]);
         assert!(
@@ -4476,6 +4520,101 @@ mod tests {
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.push(0x60);
         payload
+    }
+
+    fn build_area_client_area_exact_payload() -> Vec<u8> {
+        let mut payload = build_area_client_area_legacy_payload();
+        area::rewrite_area_client_area_payload(&mut payload)
+            .expect("synthetic legacy Area_ClientArea should rewrite to EE shape");
+        assert!(area::ee_area_client_area_payload_shape_valid(&payload));
+        payload
+    }
+
+    fn build_area_client_area_legacy_payload() -> Vec<u8> {
+        const AREA_NAME_READ_OFFSET: usize = 44;
+        const LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET: usize = 27;
+        const DIAMOND_LEGACY_AREA_NAME_BYTES: usize = 20;
+        const LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
+        const LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
+        const LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
+        const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+        const LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS: usize = 14;
+
+        let mut payload = vec![b'P', 0x04, 0x01, 0, 0, 0, 0];
+        payload.resize(LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET, 0);
+        payload.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+        write_test_resref16(&mut payload, "testarea");
+
+        pad_to_area_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        let mut name = [0u8; DIAMOND_LEGACY_AREA_NAME_BYTES];
+        name[..8].copy_from_slice(b"TestArea");
+        payload.extend_from_slice(&name);
+        let name_end = AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES;
+
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        write_test_resref16(&mut payload, "ttr01");
+
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0x000Cu16.to_le_bytes());
+        payload.extend_from_slice(&[0, 0]);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&encode_test_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS
+        ]));
+        payload
+    }
+
+    fn pad_to_area_read_offset(bytes: &mut Vec<u8>, read_offset: usize) {
+        bytes.resize(3 + read_offset, 0);
+    }
+
+    fn encode_test_cnw_msb_payload_bits(payload_bits: &[bool]) -> Vec<u8> {
+        const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+
+        let valid_bits = CNW_FRAGMENT_HEADER_BITS + payload_bits.len();
+        let byte_count = valid_bits.div_ceil(8);
+        let final_fragment_bits = valid_bits % 8;
+        let mut fragment = vec![0u8; byte_count];
+
+        for header_bit in 0..CNW_FRAGMENT_HEADER_BITS {
+            if ((final_fragment_bits >> (CNW_FRAGMENT_HEADER_BITS - 1 - header_bit)) & 1) != 0 {
+                set_test_cnw_msb_bit(&mut fragment, header_bit);
+            }
+        }
+        for (payload_bit_index, value) in payload_bits.iter().enumerate() {
+            if *value {
+                set_test_cnw_msb_bit(&mut fragment, CNW_FRAGMENT_HEADER_BITS + payload_bit_index);
+            }
+        }
+
+        fragment
+    }
+
+    fn set_test_cnw_msb_bit(fragment: &mut [u8], bit_index: usize) {
+        fragment[bit_index / 8] |= 0x80 >> (bit_index % 8);
     }
 
     fn build_module_time(mask: u8, body: &[u8], tail: &[u8]) -> Vec<u8> {

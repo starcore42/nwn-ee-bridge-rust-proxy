@@ -12,7 +12,7 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, char_list, chat, client_char_list, client_side_message, custom_token,
+    VerifiedFamily, area, char_list, chat, client_char_list, client_side_message, custom_token,
     game_obj_update, inventory, journal, loadbar, module, module_time, party, player_list,
     quickbar,
 };
@@ -178,6 +178,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x0C, 0x01 | 0x02) => focused_inventory_unit_end(bytes, offset),
         (0x03, 0x01) => focused_module_info_unit_end(bytes, offset),
         (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
+        (0x04, 0x01) => focused_area_client_area_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
         (0x0E, _) => focused_party_unit_end(bytes, offset),
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
@@ -232,6 +233,48 @@ fn focused_module_time_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
             {
                 return FocusedUnitEnd::Exact(end);
             }
+        }
+    }
+
+    FocusedUnitEnd::Invalid
+}
+
+fn focused_area_client_area_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    let Some(high) = HighLevel::parse(&bytes[offset..]) else {
+        return FocusedUnitEnd::Invalid;
+    };
+    let Some(declared) = declared_cnw_length(bytes, offset, high) else {
+        return FocusedUnitEnd::Invalid;
+    };
+
+    let mut candidate_ends = Vec::new();
+    for read_end in declared_read_end_candidates(bytes, offset, declared) {
+        if read_end <= offset || read_end > bytes.len() {
+            continue;
+        }
+
+        let mut cursor = read_end.saturating_add(1);
+        while cursor < bytes.len() {
+            if HighLevel::parse(&bytes[cursor..]).is_some()
+                && boundary_has_plausible_unit(bytes, cursor)
+            {
+                candidate_ends.push(cursor);
+            }
+            cursor = cursor.saturating_add(1);
+        }
+    }
+    candidate_ends.push(bytes.len());
+    candidate_ends.sort_unstable();
+    candidate_ends.dedup();
+
+    for end in candidate_ends {
+        let Some(payload) = bytes.get(offset..end) else {
+            continue;
+        };
+        if area::claim_or_rewrite_payload_if_verified(payload)
+            && (end == bytes.len() || boundary_has_plausible_unit(bytes, end))
+        {
+            return FocusedUnitEnd::Exact(end);
         }
     }
 
@@ -941,6 +984,50 @@ mod tests {
     }
 
     #[test]
+    fn splits_legacy_area_client_area_with_focused_rewrite_owner() {
+        let mut bytes = area_client_area_legacy_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(split.complete);
+        assert_eq!(split.units.len(), 2);
+        match split.units[0] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, 0);
+                assert_eq!(message.major, 0x04);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), status_offset);
+            }
+            _ => panic!("expected rewrite-owned Area_ClientArea unit"),
+        }
+        match split.units[1] {
+            GameplayUnit::HighLevel(message) => {
+                assert_eq!(message.offset, status_offset);
+                assert_eq!(message.major, 0x01);
+                assert_eq!(message.minor, 0x01);
+                assert_eq!(message.payload.len(), 3);
+            }
+            _ => panic!("expected ServerStatus_Status unit"),
+        }
+    }
+
+    #[test]
+    fn rejects_area_client_area_slack_before_following_status() {
+        let mut bytes = area_client_area_ee_payload();
+        bytes.push(0);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        let split = split_inflated_gameplay(&bytes);
+
+        assert!(!split.complete);
+        assert_eq!(split.units.len(), 1);
+        match split.units[0] {
+            GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
+            _ => panic!("expected slack-bearing Area_ClientArea row to remain unclaimed"),
+        }
+    }
+
+    #[test]
     fn splits_party_list_with_focused_fragment_tail_owner() {
         let mut bytes = party_list_payload(&[0x8000_0001, 0x8000_0002]);
         let status_offset = bytes.len();
@@ -1599,6 +1686,103 @@ mod tests {
         payload.extend_from_slice(body);
         payload.extend_from_slice(fragment_tail);
         payload
+    }
+
+    fn area_client_area_ee_payload() -> Vec<u8> {
+        let mut payload = area_client_area_legacy_payload();
+        area::rewrite_area_client_area_payload(&mut payload)
+            .expect("synthetic legacy Area_ClientArea should rewrite to EE shape");
+        assert!(area::ee_area_client_area_payload_shape_valid(&payload));
+        payload
+    }
+
+    fn area_client_area_legacy_payload() -> Vec<u8> {
+        const AREA_NAME_READ_OFFSET: usize = 44;
+        const LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET: usize = 27;
+        const DIAMOND_LEGACY_AREA_NAME_BYTES: usize = 20;
+        const LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END: usize = 96;
+        const LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END: usize = 100;
+        const LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END: usize = 104;
+        const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+        const LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS: usize = 14;
+
+        let mut payload = vec![b'P', 0x04, 0x01, 0, 0, 0, 0];
+        payload.resize(LEGACY_AREA_OBJECT_ID_PAYLOAD_OFFSET, 0);
+        payload.extend_from_slice(&0x8000_0042u32.to_le_bytes());
+        push_resref(&mut payload, "testarea");
+
+        pad_to_area_read_offset(&mut payload, AREA_NAME_READ_OFFSET);
+        let mut name = [0u8; DIAMOND_LEGACY_AREA_NAME_BYTES];
+        name[..8].copy_from_slice(b"TestArea");
+        payload.extend_from_slice(&name);
+        let name_end = AREA_NAME_READ_OFFSET + DIAMOND_LEGACY_AREA_NAME_BYTES;
+
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_WIDTH_BYTES_AFTER_NAME_END,
+        );
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_HEIGHT_BYTES_AFTER_NAME_END,
+        );
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        pad_to_area_read_offset(
+            &mut payload,
+            name_end + LEGACY_AREA_TILESET_BYTES_AFTER_NAME_END,
+        );
+        push_resref(&mut payload, "ttr01");
+
+        payload.extend_from_slice(&1u32.to_le_bytes()); // tile id
+        payload.extend_from_slice(&0u32.to_le_bytes()); // orientation
+        payload.extend_from_slice(&0u32.to_le_bytes()); // height
+        payload.extend_from_slice(&0x000Cu16.to_le_bytes());
+        payload.extend_from_slice(&[0, 0]); // source light bytes
+        payload.extend_from_slice(&0u32.to_le_bytes()); // transition rows
+        payload.extend_from_slice(&0u32.to_le_bytes()); // map-pin rows
+        payload.extend_from_slice(&0u16.to_le_bytes()); // sound rows
+        payload.extend_from_slice(&0u16.to_le_bytes()); // light-placeable rows
+        payload.extend_from_slice(&0u16.to_le_bytes()); // static-placeable rows
+
+        let declared = payload.len() as u32;
+        payload[3..7].copy_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&encode_cnw_msb_payload_bits(&vec![
+            false;
+            LEGACY_AREA_LOAD_PRE_TILE_FRAGMENT_BITS - CNW_FRAGMENT_HEADER_BITS
+        ]));
+
+        assert!(area::claim_or_rewrite_payload_if_verified(&payload));
+        payload
+    }
+
+    fn pad_to_area_read_offset(bytes: &mut Vec<u8>, read_offset: usize) {
+        bytes.resize(3 + read_offset, 0);
+    }
+
+    fn encode_cnw_msb_payload_bits(payload_bits: &[bool]) -> Vec<u8> {
+        const CNW_FRAGMENT_HEADER_BITS: usize = 3;
+
+        let valid_bits = CNW_FRAGMENT_HEADER_BITS + payload_bits.len();
+        let byte_count = valid_bits.div_ceil(8);
+        let final_fragment_bits = valid_bits % 8;
+        let mut fragment = vec![0u8; byte_count];
+
+        for header_bit in 0..CNW_FRAGMENT_HEADER_BITS {
+            if ((final_fragment_bits >> (CNW_FRAGMENT_HEADER_BITS - 1 - header_bit)) & 1) != 0 {
+                set_cnw_msb_bit(&mut fragment, header_bit);
+            }
+        }
+        for (payload_bit_index, value) in payload_bits.iter().enumerate() {
+            if *value {
+                set_cnw_msb_bit(&mut fragment, CNW_FRAGMENT_HEADER_BITS + payload_bit_index);
+            }
+        }
+
+        fragment
+    }
+
+    fn set_cnw_msb_bit(fragment: &mut [u8], bit_index: usize) {
+        fragment[bit_index / 8] |= 0x80 >> (bit_index % 8);
     }
 
     fn client_char_list_request_update_payload(fragment_tail: &[u8]) -> Vec<u8> {

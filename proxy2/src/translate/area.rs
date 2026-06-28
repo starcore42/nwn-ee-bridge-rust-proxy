@@ -950,7 +950,12 @@ struct LegacyAreaSourceTailProof {
 }
 
 pub fn rewrite_area_client_area_payload(payload: &mut Vec<u8>) -> Option<AreaRewriteSummary> {
-    rewrite_area_client_area_payload_with_module_context_fallback(payload, None, true)
+    rewrite_area_client_area_payload_with_context_and_mode(
+        payload,
+        None,
+        true,
+        AreaRewriteDiagnosticMode::Normal,
+    )
 }
 
 #[cfg(test)]
@@ -958,13 +963,48 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
 ) -> Option<AreaRewriteSummary> {
-    rewrite_area_client_area_payload_with_module_context_fallback(payload, module_context, true)
+    rewrite_area_client_area_payload_with_context_and_mode(
+        payload,
+        module_context,
+        true,
+        AreaRewriteDiagnosticMode::Normal,
+    )
 }
 
 pub(crate) fn rewrite_area_client_area_payload_with_module_context_fallback(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
     allow_shared_module_context_fallback: bool,
+) -> Option<AreaRewriteSummary> {
+    rewrite_area_client_area_payload_with_context_and_mode(
+        payload,
+        module_context,
+        allow_shared_module_context_fallback,
+        AreaRewriteDiagnosticMode::Normal,
+    )
+}
+
+pub(crate) fn claim_or_rewrite_payload_if_verified(payload: &[u8]) -> bool {
+    if ee_area_client_area_payload_shape_valid(payload) {
+        return true;
+    }
+
+    let mut probe = payload.to_vec();
+    rewrite_area_client_area_payload_with_context_and_mode(
+        &mut probe,
+        None,
+        true,
+        AreaRewriteDiagnosticMode::QuietProbe,
+    )
+    .is_some()
+        && ee_area_client_area_payload_shape_valid(&probe)
+}
+
+fn rewrite_area_client_area_payload_with_context_and_mode(
+    payload: &mut Vec<u8>,
+    module_context: Option<&crate::translate::module::ObservedModuleContext>,
+    allow_shared_module_context_fallback: bool,
+    diagnostic_mode: AreaRewriteDiagnosticMode,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES
         || payload[0] != HIGH_LEVEL_ENVELOPE
@@ -980,15 +1020,17 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context_fallback(
             payload,
             module_context,
             allow_shared_module_context_fallback,
+            diagnostic_mode,
         ) {
             return Some(summary);
         }
     }
 
-    rewrite_declared_area_client_area_payload(
+    rewrite_declared_area_client_area_payload_with_mode(
         payload,
         module_context,
         allow_shared_module_context_fallback,
+        diagnostic_mode,
     )
 }
 
@@ -996,19 +1038,13 @@ pub(crate) fn rewrite_area_client_area_payload_with_module_context_fallback(
 enum AreaRewriteDiagnosticMode {
     Normal,
     DeclaredZeroProbe,
+    QuietProbe,
 }
 
-fn rewrite_declared_area_client_area_payload(
-    payload: &mut Vec<u8>,
-    module_context: Option<&crate::translate::module::ObservedModuleContext>,
-    allow_shared_module_context_fallback: bool,
-) -> Option<AreaRewriteSummary> {
-    rewrite_declared_area_client_area_payload_with_mode(
-        payload,
-        module_context,
-        allow_shared_module_context_fallback,
-        AreaRewriteDiagnosticMode::Normal,
-    )
+impl AreaRewriteDiagnosticMode {
+    fn emit_success_logs(self) -> bool {
+        self == Self::Normal
+    }
 }
 
 fn rewrite_declared_area_client_area_payload_with_mode(
@@ -1404,47 +1440,50 @@ fn rewrite_declared_area_client_area_payload_with_mode(
                     "Area_ClientArea declared-zero read-window candidate rejected by exact EE LoadArea cursor proof"
                 );
             }
+            AreaRewriteDiagnosticMode::QuietProbe => {}
         }
         return None;
     };
     *payload = rewritten_payload;
-    for kind in &rewrite_kinds {
-        tracing::info!(
-            rewrite_kind = ?kind,
-            area_resref = %area_resref,
-            tileset_resref = %tileset_resref,
-            old_declared = declared,
-            new_declared,
-            old_fragment_offset = fragment_offset,
-            new_fragment_offset,
-            width = tile_scan.width,
-            packet_height = tile_scan.packet_height,
-            inferred_height = tile_scan.inferred_height,
-            tile_count = tile_scan.tile_count,
-            tile_scan_valid = tile_scan.valid,
-            height_repaired,
-            width_repaired,
-            sound_count_zero_one_repairs,
-            static_placeable_count_zero_repairs,
-            static_placeable_direction_normalizations,
-            module_resource_static_placeable_repairs,
-            static_placeable_trailing_rows_dropped,
-            first_tile_read_offset = rewritten_layout.first_tile_read_offset,
-            old_fragment_byte,
-            new_fragment_byte,
-            post_tile_end = exact_proof.read_end,
-            read_limit = exact_proof.read_size,
-            fragment_bits_consumed = exact_proof.fragment_bits_consumed,
-            fragment_bits_available = exact_proof.fragment_bits_available,
-            transition_count = exact_proof.transition_count,
-            map_pin_count = exact_proof.map_pin_count,
-            sound_count = exact_proof.sound_count,
-            light_count = exact_proof.light_count,
-            static_count = exact_proof.static_count,
-            first_post_static_count = exact_proof.first_post_static_count,
-            second_post_static_count = exact_proof.second_post_static_count,
-            "Area_ClientArea named compatibility rewrite applied"
-        );
+    if diagnostic_mode.emit_success_logs() {
+        for kind in &rewrite_kinds {
+            tracing::info!(
+                rewrite_kind = ?kind,
+                area_resref = %area_resref,
+                tileset_resref = %tileset_resref,
+                old_declared = declared,
+                new_declared,
+                old_fragment_offset = fragment_offset,
+                new_fragment_offset,
+                width = tile_scan.width,
+                packet_height = tile_scan.packet_height,
+                inferred_height = tile_scan.inferred_height,
+                tile_count = tile_scan.tile_count,
+                tile_scan_valid = tile_scan.valid,
+                height_repaired,
+                width_repaired,
+                sound_count_zero_one_repairs,
+                static_placeable_count_zero_repairs,
+                static_placeable_direction_normalizations,
+                module_resource_static_placeable_repairs,
+                static_placeable_trailing_rows_dropped,
+                first_tile_read_offset = rewritten_layout.first_tile_read_offset,
+                old_fragment_byte,
+                new_fragment_byte,
+                post_tile_end = exact_proof.read_end,
+                read_limit = exact_proof.read_size,
+                fragment_bits_consumed = exact_proof.fragment_bits_consumed,
+                fragment_bits_available = exact_proof.fragment_bits_available,
+                transition_count = exact_proof.transition_count,
+                map_pin_count = exact_proof.map_pin_count,
+                sound_count = exact_proof.sound_count,
+                light_count = exact_proof.light_count,
+                static_count = exact_proof.static_count,
+                first_post_static_count = exact_proof.first_post_static_count,
+                second_post_static_count = exact_proof.second_post_static_count,
+                "Area_ClientArea named compatibility rewrite applied"
+            );
+        }
     }
 
     Some(AreaRewriteSummary {
@@ -1490,6 +1529,7 @@ fn rewrite_declared_zero_area_client_area_payload(
     payload: &mut Vec<u8>,
     module_context: Option<&crate::translate::module::ObservedModuleContext>,
     allow_shared_module_context_fallback: bool,
+    diagnostic_mode: AreaRewriteDiagnosticMode,
 ) -> Option<AreaRewriteSummary> {
     if payload.len() <= HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES {
         return None;
@@ -1518,11 +1558,16 @@ fn rewrite_declared_zero_area_client_area_payload(
 
         let mut staged = payload.clone();
         write_u32_le(&mut staged, HIGH_LEVEL_HEADER_BYTES, fragment_offset as u32)?;
+        let candidate_mode = if diagnostic_mode == AreaRewriteDiagnosticMode::QuietProbe {
+            AreaRewriteDiagnosticMode::QuietProbe
+        } else {
+            AreaRewriteDiagnosticMode::DeclaredZeroProbe
+        };
         let Some(mut summary) = rewrite_declared_area_client_area_payload_with_mode(
             &mut staged,
             module_context,
             allow_shared_module_context_fallback,
-            AreaRewriteDiagnosticMode::DeclaredZeroProbe,
+            candidate_mode,
         ) else {
             continue;
         };
@@ -1543,20 +1588,22 @@ fn rewrite_declared_zero_area_client_area_payload(
     }
 
     let (inferred_declared, staged, summary) = candidates.remove(0);
-    tracing::info!(
-        rewrite_kind = ?AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow,
-        inferred_declared,
-        new_declared = summary.new_declared,
-        old_fragment_offset = summary.old_fragment_offset,
-        new_fragment_offset = summary.new_fragment_offset,
-        area_resref = summary.area_resref.as_str(),
-        tileset_resref = summary.tileset_resref.as_str(),
-        width = summary.width,
-        packet_height = summary.packet_height,
-        inferred_height = summary.inferred_height,
-        tile_count = summary.tile_count,
-        "Area_ClientArea declared-zero read window repaired from exact validated legacy fragment tail"
-    );
+    if diagnostic_mode.emit_success_logs() {
+        tracing::info!(
+            rewrite_kind = ?AreaRewriteKind::LegacyDiamondDeclaredZeroReadWindow,
+            inferred_declared,
+            new_declared = summary.new_declared,
+            old_fragment_offset = summary.old_fragment_offset,
+            new_fragment_offset = summary.new_fragment_offset,
+            area_resref = summary.area_resref.as_str(),
+            tileset_resref = summary.tileset_resref.as_str(),
+            width = summary.width,
+            packet_height = summary.packet_height,
+            inferred_height = summary.inferred_height,
+            tile_count = summary.tile_count,
+            "Area_ClientArea declared-zero read window repaired from exact validated legacy fragment tail"
+        );
+    }
     *payload = staged;
     Some(summary)
 }
