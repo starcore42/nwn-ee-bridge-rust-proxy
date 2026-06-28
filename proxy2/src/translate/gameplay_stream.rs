@@ -12,11 +12,12 @@
 use crate::packet::m::{HighLevel, MAX_REASONABLE_GAMEPLAY_PAYLOAD};
 
 use super::{
-    VerifiedFamily, ambient, area, area_change_day_night, camera, char_list, chat, client_area,
-    client_char_list, client_login, client_module, client_quickbar, client_server_status,
-    client_side_message, custom_token, cutscene, game_obj_update, gui_timing_event, inventory,
-    journal, loadbar, login, module, module_resources, module_time, party,
-    play_module_character_list, player_list, quickbar, safe_projectile, server_status, sound,
+    VerifiedFamily, ambient, area, area_change_day_night, area_visual_effect, camera, char_list,
+    chat, client_area, client_char_list, client_login, client_module, client_quickbar,
+    client_server_status, client_side_message, custom_token, cutscene, dialog, game_obj_update,
+    gui_timing_event, inventory, journal, loadbar, login, module, module_resources, module_time,
+    party, play_module_character_list, player_list, quickbar, safe_projectile, server_status,
+    sound,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +189,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x03, 0x02) => focused_client_module_unit_end(bytes, offset),
         (0x03, 0x03) => focused_module_time_unit_end(bytes, offset),
         (0x04, 0x01) => focused_area_client_area_unit_end(bytes, offset),
+        (0x04, 0x02) => focused_area_visual_effect_unit_end(bytes, offset),
         (0x04, 0x03) => focused_client_area_unit_end(bytes, offset),
         (0x04, 0x06) => focused_area_change_day_night_unit_end(bytes, offset),
         (0x05, 0x02 | 0x03 | 0x07) => focused_game_obj_update_unit_end(bytes, offset),
@@ -196,6 +198,7 @@ fn focused_high_level_unit_end(bytes: &[u8], offset: usize, high: HighLevel) -> 
         (0x11, 0x01 | 0x03) => focused_client_char_list_unit_end(bytes, offset),
         (0x11, 0x02 | 0x04) => focused_char_list_unit_end(bytes, offset),
         (0x12, 0x0B) => focused_client_side_message_unit_end(bytes, offset),
+        (0x14, 0x01..=0x05) => focused_dialog_unit_end(bytes, offset),
         (0x17, 0x03) => focused_sound_unit_end(bytes, offset),
         (0x22, 0x01) => focused_safe_projectile_unit_end(bytes, offset),
         (0x28, 0x01..=0x08) => focused_ambient_unit_end(bytes, offset),
@@ -416,6 +419,13 @@ fn focused_area_change_day_night_unit_end(bytes: &[u8], offset: usize) -> Focuse
     })
 }
 
+fn focused_area_visual_effect_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        let mut probe = payload.to_vec();
+        area_visual_effect::claim_or_rewrite_payload_if_verified(&mut probe).is_some()
+    })
+}
+
 fn focused_camera_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         camera::claim_payload_if_verified(payload).is_some()
@@ -443,6 +453,12 @@ fn focused_gui_timing_event_unit_end(bytes: &[u8], offset: usize) -> FocusedUnit
 fn focused_cutscene_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
     focused_claimed_unit_end(bytes, offset, 1, |payload| {
         cutscene::claim_payload_if_verified(payload).is_some()
+    })
+}
+
+fn focused_dialog_unit_end(bytes: &[u8], offset: usize) -> FocusedUnitEnd {
+    focused_claimed_unit_end(bytes, offset, 1, |payload| {
+        dialog::claim_payload_if_verified(payload).is_some()
     })
 }
 
@@ -1677,6 +1693,24 @@ mod tests {
     }
 
     #[test]
+    fn splits_area_visual_effect_with_focused_rewrite_owner() {
+        let mut bytes = legacy_area_visual_effect_payload(0x60);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x04, 0x02, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_area_visual_effect_tail_before_following_status() {
+        let mut bytes = legacy_area_visual_effect_payload(0x80);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted Area_VisualEffect row to remain unclaimed",
+        );
+    }
+
+    #[test]
     fn splits_safe_projectile_type6_with_focused_owner() {
         let mut bytes = safe_projectile_type6_payload();
         let status_offset = bytes.len();
@@ -2040,6 +2074,38 @@ mod tests {
             GameplayUnit::PendingFragment(payload) => assert_eq!(payload, bytes.as_slice()),
             _ => panic!("expected oversized ClientSideMessage tail to remain unclaimed"),
         }
+    }
+
+    #[test]
+    fn splits_dialog_entry_with_focused_fragment_owner() {
+        let mut bytes = dialog_entry_payload(0x80);
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x14, 0x01, status_offset);
+    }
+
+    #[test]
+    fn rejects_shifted_dialog_entry_tail_before_following_status() {
+        let mut bytes = dialog_entry_payload(0x60);
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_pending(
+            &bytes,
+            "expected shifted Dialog_Entry row to remain unclaimed",
+        );
+    }
+
+    #[test]
+    fn splits_client_dialog_reply_with_focused_fragment_owner() {
+        let mut bytes = client_dialog_reply_payload();
+        let status_offset = bytes.len();
+        bytes.extend_from_slice(&[b'P', 0x01, 0x01]);
+        assert_first_unit_then_status(&bytes, 0x14, 0x03, status_offset);
+    }
+
+    #[test]
+    fn rejects_dialog_close_tail_slack_before_following_status() {
+        let bytes = [b'P', 0x14, 0x05, 0x00, b'P', 0x01, 0x01];
+        assert_pending(&bytes, "expected Dialog_Close slack to remain pending");
     }
 
     #[test]
@@ -2622,6 +2688,18 @@ mod tests {
         ]
     }
 
+    fn legacy_area_visual_effect_payload(fragment_tail: u8) -> Vec<u8> {
+        let declared = 3 + 4 + 2 + (3 * 4);
+        let mut payload = vec![b'P', 0x04, 0x02];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x1234u16.to_le_bytes());
+        for value in [1.0f32, 2.0, 3.0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.push(fragment_tail);
+        payload
+    }
+
     fn safe_projectile_type6_payload() -> Vec<u8> {
         vec![
             b'P', 0x22, 0x01, 0x30, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x80, 0x34, 0x12, 0x00,
@@ -2871,6 +2949,32 @@ mod tests {
         payload.extend_from_slice(&0x00CCu16.to_le_bytes());
         payload.extend_from_slice(&(text.len() as u32).to_le_bytes());
         payload.extend_from_slice(text);
+        payload.push(0x60);
+        payload
+    }
+
+    fn dialog_entry_payload(fragment_tail: u8) -> Vec<u8> {
+        let text = b"Hello";
+        let declared = 3 + 4 + (3 * 4) + 4 + text.len();
+        let mut payload = vec![b'P', 0x14, 0x01];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x8000_0003u32.to_le_bytes());
+        payload.extend_from_slice(&0x8000_0003u32.to_le_bytes());
+        payload.extend_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        payload.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        payload.extend_from_slice(text);
+        payload.push(fragment_tail);
+        payload
+    }
+
+    fn client_dialog_reply_payload() -> Vec<u8> {
+        let declared = 3 + 4 + 4 + 4 + 1 + 4;
+        let mut payload = vec![b'P', 0x14, 0x03];
+        payload.extend_from_slice(&(declared as u32).to_le_bytes());
+        payload.extend_from_slice(&0x8000_0003u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload.push(0x60);
         payload
     }
