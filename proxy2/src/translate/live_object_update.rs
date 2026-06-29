@@ -6582,6 +6582,14 @@ mod diagnostic_tests {
         };
         let mut shifted = source;
         shifted.read_end += EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        shifted.appearance =
+            source
+                .appearance
+                .map(|appearance| reader::VerifiedEeDoorPlaceableAppearance {
+                    appearance: 0xFFFE,
+                    resref: Some([b's'; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]),
+                    ..appearance
+                });
         shifted.scale_state =
             source
                 .scale_state
@@ -6617,6 +6625,61 @@ mod diagnostic_tests {
                 EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
             ),
             "the postcondition accepts the shifted scale/state cursor only when the parser-owned values survive"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_field_postcondition_requires_appearance_branch_delta() {
+        let source = exact_placeable_update_claim_for_preservation_tests();
+        let rewritten_fields = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+        let mut shifted_without_resref = source;
+        shifted_without_resref.read_end += EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        shifted_without_resref.appearance =
+            source
+                .appearance
+                .map(|appearance| reader::VerifiedEeDoorPlaceableAppearance {
+                    appearance: 0xFFFE,
+                    resref: None,
+                    ..appearance
+                });
+        shifted_without_resref.scale_state =
+            source
+                .scale_state
+                .map(|scale_state| reader::VerifiedEeDoorPlaceableScaleState {
+                    read_offset: scale_state.read_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+                    ..scale_state
+                });
+
+        assert!(
+            !verified_placeable_update_final_row_preserved(
+                source,
+                shifted_without_resref,
+                rewritten_fields,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "a final exact U/09 row must prove the parser-owned appearance branch grew by the claimed CResRef width"
+        );
+
+        let mut shifted_with_resref = shifted_without_resref;
+        shifted_with_resref.appearance =
+            source
+                .appearance
+                .map(|appearance| reader::VerifiedEeDoorPlaceableAppearance {
+                    appearance: 0xFFFE,
+                    resref: Some([b'c'; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]),
+                    ..appearance
+                });
+        assert!(
+            verified_placeable_update_final_row_preserved(
+                source,
+                shifted_with_resref,
+                rewritten_fields,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "the postcondition accepts the byte shift only when the appearance branch itself carries the inserted CResRef"
         );
     }
 
@@ -35735,6 +35798,11 @@ fn verified_rewritten_placeable_update_appearance_record(
             && claim.mask == source_claim.mask
             && claim.parser.appearance_offset == source_claim.parser.appearance_offset
             && claim.parser.next_bit_cursor == source_claim.parser.next_bit_cursor
+            && verified_placeable_update_appearance_branch_delta(
+                source_claim.parser.appearance,
+                claim.parser.appearance,
+                appearance_byte_delta,
+            )
             && verified_placeable_update_non_appearance_fields_preserved(
                 source_claim.parser,
                 claim.parser,
@@ -35820,11 +35888,15 @@ fn verified_placeable_update_final_row_preserved(
             rewritten,
             appearance_byte_delta,
         )
-        && (rewritten_fields.appearance
-            || verified_placeable_update_appearance_preserved(
+        && if rewritten_fields.appearance {
+            verified_placeable_update_appearance_branch_delta(
                 source.appearance,
                 rewritten.appearance,
-            ))
+                appearance_byte_delta,
+            )
+        } else {
+            verified_placeable_update_appearance_preserved(source.appearance, rewritten.appearance)
+        }
 }
 
 fn verified_placeable_update_appearance_preserved(
@@ -35840,6 +35912,39 @@ fn verified_placeable_update_appearance_preserved(
         }
         _ => false,
     }
+}
+
+fn verified_placeable_update_appearance_branch_delta(
+    source: Option<reader::VerifiedEeDoorPlaceableAppearance>,
+    rewritten: Option<reader::VerifiedEeDoorPlaceableAppearance>,
+    appearance_byte_delta: isize,
+) -> bool {
+    let (Some(source), Some(rewritten)) = (source, rewritten) else {
+        return false;
+    };
+    source.read_offset == rewritten.read_offset
+        && verified_placeable_update_appearance_width_delta(source, rewritten)
+            == appearance_byte_delta
+}
+
+fn verified_placeable_update_appearance_width_delta(
+    source: reader::VerifiedEeDoorPlaceableAppearance,
+    rewritten: reader::VerifiedEeDoorPlaceableAppearance,
+) -> isize {
+    let source_width = verified_placeable_update_appearance_width(source);
+    let rewritten_width = verified_placeable_update_appearance_width(rewritten);
+    rewritten_width as isize - source_width as isize
+}
+
+fn verified_placeable_update_appearance_width(
+    appearance: reader::VerifiedEeDoorPlaceableAppearance,
+) -> usize {
+    EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        + if appearance.resref.is_some() {
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        } else {
+            0
+        }
 }
 
 fn verified_placeable_update_position_preserved(
