@@ -15,7 +15,7 @@ use super::{
     LEGACY_UPDATE_STATE_FRAGMENT_BITS, LEGACY_UPDATE_STATE_MASK, PLACEABLE_OBJECT_TYPE,
     TRIGGER_OBJECT_TYPE, area_static_row_scalar_orientation, bits, boundary, door, effects, item,
     locstring, object_ids, placeable, read_f32_le, read_u16_le, read_u32_le, reader, trigger,
-    world_status, write_u32_le, write_verified_scalar_orientation, writer,
+    world_status, write_u16_le, write_u32_le, write_verified_scalar_orientation, writer,
 };
 use crate::translate::area::{
     AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
@@ -265,6 +265,19 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                 } else {
                     (false, false)
                 };
+            let appearance_changed = if object_type == PLACEABLE_OBJECT_TYPE {
+                reconcile_placeable_update_appearance_with_area_context(
+                    area_context,
+                    object_id,
+                    live_bytes,
+                    claim.appearance_offset,
+                    raw_mask,
+                    record_offset,
+                    *record_end,
+                )?
+            } else {
+                false
+            };
             let state_changed = if object_type == PLACEABLE_OBJECT_TYPE {
                 reconcile_placeable_update_state_with_area_context(
                     area_context,
@@ -280,7 +293,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             };
             *bit_cursor = claim.next_bit_cursor;
             return Some(RecordRewrite {
-                rewritten: orientation_changed || state_changed,
+                rewritten: orientation_changed || appearance_changed || state_changed,
                 bits_changed: orientation_bits_changed || state_changed,
                 ..RecordRewrite::default()
             });
@@ -1498,6 +1511,15 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                 record_offset,
                 *record_end,
             )?;
+        let appearance_changed = reconcile_placeable_update_appearance_with_area_context(
+            area_context,
+            object_id,
+            live_bytes,
+            claim.appearance_offset,
+            translated_mask,
+            record_offset,
+            *record_end,
+        )?;
         let state_changed = reconcile_placeable_update_state_with_area_context(
             area_context,
             object_id,
@@ -1507,7 +1529,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             record_offset,
             *record_end,
         )?;
-        if orientation_changed || state_changed {
+        if orientation_changed || appearance_changed || state_changed {
             rewrite.rewritten = true;
             rewrite.bits_changed |= orientation_bits_changed || state_changed;
         }
@@ -1780,6 +1802,68 @@ fn reconcile_placeable_update_orientation_with_area_context(
         "server->client live-object placeable update scalar orientation reconciled with unique module-backed area/static row"
     );
     Some((changed, bits_changed))
+}
+
+fn reconcile_placeable_update_appearance_with_area_context(
+    area_context: Option<&AreaPlaceableContext>,
+    object_id: u32,
+    live_bytes: &mut [u8],
+    appearance_offset: Option<usize>,
+    mask: u32,
+    record_offset: usize,
+    record_end: usize,
+) -> Option<bool> {
+    if (mask & LEGACY_UPDATE_APPEARANCE_MASK) == 0 {
+        return Some(false);
+    }
+    let Some(appearance_offset) = appearance_offset else {
+        return Some(false);
+    };
+    let Some(context) = area_context else {
+        return Some(false);
+    };
+    let overlap = context.placeable_overlap_by(|row_object_id| {
+        object_ids::equivalent_legacy_external_object_ids(row_object_id, object_id)
+    });
+    let Some(area_row) = overlap.unique_module_backed_static_row() else {
+        return Some(false);
+    };
+    let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
+    let area_appearance = area_row.appearance;
+    if source_appearance == area_appearance {
+        return Some(false);
+    }
+    if source_appearance >= 0xFFFE || area_appearance >= 0xFFFE {
+        tracing::debug!(
+            object_id = format_args!("0x{object_id:08X}"),
+            record_offset,
+            record_end,
+            mask = format_args!("0x{mask:08X}"),
+            source_appearance = format_args!("0x{source_appearance:04X}"),
+            area_module_appearance = format_args!("0x{area_appearance:04X}"),
+            source_template_resref_present = source_appearance >= 0xFFFE,
+            area_module_template_resref_present = area_row.module_template_resref.is_some(),
+            area_resref = context.area_resref.as_str(),
+            area_rows = %overlap.formatted_rows(),
+            "server->client live-object placeable update appearance reconciliation skipped for custom/resref width change"
+        );
+        return Some(false);
+    }
+
+    write_u16_le(live_bytes, appearance_offset, area_appearance)?;
+    tracing::info!(
+        object_id = format_args!("0x{object_id:08X}"),
+        record_offset,
+        record_end,
+        mask = format_args!("0x{mask:08X}"),
+        source_appearance = format_args!("0x{source_appearance:04X}"),
+        emitted_appearance = format_args!("0x{area_appearance:04X}"),
+        appearance_read_offset = appearance_offset,
+        area_resref = context.area_resref.as_str(),
+        area_rows = %overlap.formatted_rows(),
+        "server->client live-object placeable update appearance reconciled with unique module-backed area/static row"
+    );
+    Some(true)
 }
 
 fn reconcile_placeable_update_state_with_area_context(
@@ -2724,6 +2808,111 @@ mod tests {
             ],
             "the vector selector, visual payload, neutral suffix, and following bits remain owned by their original fields"
         );
+    }
+
+    #[test]
+    fn exact_placeable_update_reconciliation_uses_verified_appearance_word_cursor() {
+        let object_id = 0x8000_0042u32;
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0x0042u16.to_le_bytes());
+        let mut record_end = live.len();
+        let mut bits = Vec::new();
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        let context = AreaPlaceableContext {
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0052,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    static_object: true,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+
+        let rewrite = rewrite_update_record_for_ee_with_area_context(
+            &mut live,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            &mut bit_cursor_reliable,
+            0,
+            Some(&context),
+        )
+        .expect("exact appearance-only U/09 should be rewritten through the verified parser");
+
+        assert!(rewrite.rewritten);
+        assert!(!rewrite.mask_changed);
+        assert!(!rewrite.bits_changed);
+        assert_eq!(rewrite.bytes_inserted, 0);
+        assert_eq!(rewrite.bytes_removed, 0);
+        assert_eq!(record_end, live.len());
+        assert_eq!(bit_cursor, 0);
+        assert_eq!(bits, Vec::<bool>::new());
+        assert_eq!(read_u16_le(&live, LEGACY_UPDATE_HEADER_BYTES), Some(0x0052));
+        assert_eq!(
+            read_u32_le(&live, 6),
+            Some(mask),
+            "the decompile-owned mask and record width remain unchanged"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_reconciliation_skips_custom_appearance_width_changes() {
+        let object_id = 0x8000_0042u32;
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(b"plc_custom_src\0\0");
+        let original = live.clone();
+        let mut record_end = live.len();
+        let mut bits = Vec::new();
+        let mut bit_cursor = 0usize;
+        let mut bit_cursor_reliable = true;
+
+        let context = AreaPlaceableContext {
+            static_rows: vec![AreaPlaceableContextRow {
+                object_id,
+                appearance: 0x0052,
+                object_id_confidence:
+                    crate::translate::area::AreaPlaceableContextObjectIdConfidence::Unique,
+                module_state: Some(AreaPlaceableContextState {
+                    static_object: true,
+                    ..AreaPlaceableContextState::default()
+                }),
+                ..AreaPlaceableContextRow::default()
+            }],
+            ..AreaPlaceableContext::default()
+        };
+
+        let rewrite = rewrite_update_record_for_ee_with_area_context(
+            &mut live,
+            &mut record_end,
+            &mut bits,
+            &mut bit_cursor,
+            &mut bit_cursor_reliable,
+            0,
+            Some(&context),
+        )
+        .expect("custom appearance U/09 still has an exact reader shape");
+
+        assert!(!rewrite.rewritten);
+        assert_eq!(
+            live, original,
+            "custom/resref appearance changes need an explicit width-changing rewrite"
+        );
+        assert_eq!(record_end, live.len());
+        assert_eq!(bit_cursor, 0);
     }
 
     fn compact_tail9_update_bytes(raw_mask: u32) -> Vec<u8> {
