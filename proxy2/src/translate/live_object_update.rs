@@ -6241,6 +6241,182 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_appearance_validator_requires_record_end_shift() {
+        let source = exact_placeable_update_claim_for_preservation_tests();
+        let mut rewritten = source;
+        rewritten.read_end += EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        rewritten.scale_state =
+            source
+                .scale_state
+                .map(|scale_state| reader::VerifiedEeDoorPlaceableScaleState {
+                    read_offset: scale_state.read_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+                    ..scale_state
+                });
+
+        assert!(
+            verified_placeable_update_non_appearance_fields_preserved(
+                source,
+                rewritten,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "custom appearance insertion may shift the record end by exactly one CResRef"
+        );
+        assert!(
+            !verified_placeable_update_non_appearance_fields_preserved(source, rewritten, 0),
+            "same-width appearance rewrites must not accept a shifted record end"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_appearance_validator_rejects_shifted_pre_appearance_offsets() {
+        let source = exact_placeable_update_claim_for_preservation_tests();
+
+        let mut shifted_position = source;
+        shifted_position.position =
+            source
+                .position
+                .map(|position| reader::VerifiedEeDoorPlaceablePosition {
+                    read_offset: position.read_offset + 1,
+                    ..position
+                });
+        assert!(
+            !verified_placeable_update_non_appearance_fields_preserved(source, shifted_position, 0,),
+            "position bytes are before appearance/resref and must not shift during an appearance rewrite"
+        );
+
+        let mut shifted_orientation = source;
+        shifted_orientation.scalar_orientation = source.scalar_orientation.map(|orientation| {
+            reader::VerifiedEeDoorPlaceableScalarOrientation {
+                read_offset: orientation.read_offset + 1,
+                ..orientation
+            }
+        });
+        assert!(
+            !verified_placeable_update_non_appearance_fields_preserved(
+                source,
+                shifted_orientation,
+                0,
+            ),
+            "scalar orientation bytes are before appearance/resref and must keep their exact cursor"
+        );
+
+        let vector_source = exact_placeable_update_vector_claim_for_preservation_tests();
+        let mut shifted_vector = vector_source;
+        shifted_vector.vector_orientation = vector_source.vector_orientation.map(|orientation| {
+            reader::VerifiedEeDoorPlaceableVectorOrientation {
+                read_offset: orientation.read_offset + 1,
+                ..orientation
+            }
+        });
+        assert!(
+            !verified_placeable_update_non_appearance_fields_preserved(
+                vector_source,
+                shifted_vector,
+                0,
+            ),
+            "vector orientation bytes are before appearance/resref and must keep their exact cursor"
+        );
+    }
+
+    fn exact_placeable_update_claim_for_preservation_tests()
+    -> reader::VerifiedEeDoorPlaceableUpdateRecord {
+        let appearance_offset = LEGACY_UPDATE_HEADER_BYTES
+            + LEGACY_UPDATE_POSITION_READ_BYTES
+            + EE_UPDATE_ORIENTATION_SCALAR_READ_BYTES;
+        let scale_offset = appearance_offset + EE_UPDATE_APPEARANCE_WORD_READ_BYTES;
+        let state_bit_cursor =
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS + EE_UPDATE_ORIENTATION_SCALAR_FRAGMENT_BITS;
+        reader::VerifiedEeDoorPlaceableUpdateRecord {
+            read_end: scale_offset + EE_UPDATE_SCALE_STATE_READ_BYTES,
+            position: Some(reader::VerifiedEeDoorPlaceablePosition {
+                read_offset: LEGACY_UPDATE_HEADER_BYTES,
+                bit_cursor: 0,
+                x_raw: 1000,
+                y_raw: 2000,
+                z_raw: 3000,
+                x: 10.0,
+                y: 20.0,
+                z: -16.1086,
+            }),
+            scalar_orientation: Some(reader::VerifiedEeDoorPlaceableScalarOrientation {
+                read_offset: LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES,
+                bit_cursor: LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+                scalar_tenths_degrees: 900,
+            }),
+            vector_orientation: None,
+            appearance: Some(reader::VerifiedEeDoorPlaceableAppearance {
+                read_offset: appearance_offset,
+                appearance: 0x0022,
+                resref: None,
+            }),
+            appearance_offset: Some(appearance_offset),
+            scale_state: Some(reader::VerifiedEeDoorPlaceableScaleState {
+                read_offset: scale_offset,
+                scale_raw: 1.0_f32.to_bits(),
+                generic_state_word: 0x14E5,
+            }),
+            state: Some(reader::VerifiedEeDoorPlaceableState {
+                bit_cursor: state_bit_cursor,
+                visual_selector: false,
+                visual_state_active: true,
+                locked: true,
+                lockable: false,
+                visual_payload: true,
+                neutral_ee_state_suffix: false,
+            }),
+            state_bit_cursor: Some(state_bit_cursor),
+            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1,
+        }
+    }
+
+    fn exact_placeable_update_vector_claim_for_preservation_tests()
+    -> reader::VerifiedEeDoorPlaceableUpdateRecord {
+        let appearance_offset = LEGACY_UPDATE_HEADER_BYTES
+            + LEGACY_UPDATE_POSITION_READ_BYTES
+            + EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES;
+        let scale_offset = appearance_offset + EE_UPDATE_APPEARANCE_WORD_READ_BYTES;
+        let state_bit_cursor =
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS + EE_UPDATE_ORIENTATION_VECTOR_FRAGMENT_BITS;
+        reader::VerifiedEeDoorPlaceableUpdateRecord {
+            read_end: scale_offset + EE_UPDATE_SCALE_STATE_READ_BYTES,
+            scalar_orientation: None,
+            vector_orientation: Some(reader::VerifiedEeDoorPlaceableVectorOrientation {
+                read_offset: LEGACY_UPDATE_HEADER_BYTES + LEGACY_UPDATE_POSITION_READ_BYTES,
+                bit_cursor: LEGACY_UPDATE_POSITION_FRAGMENT_BITS,
+                x_raw: 0x4000,
+                y_raw: 0x8000,
+                z_raw: 0xC000,
+                x: -1.0,
+                y: 0.0,
+                z: 1.0,
+            }),
+            appearance: Some(reader::VerifiedEeDoorPlaceableAppearance {
+                read_offset: appearance_offset,
+                appearance: 0x0022,
+                resref: None,
+            }),
+            appearance_offset: Some(appearance_offset),
+            scale_state: Some(reader::VerifiedEeDoorPlaceableScaleState {
+                read_offset: scale_offset,
+                scale_raw: 1.0_f32.to_bits(),
+                generic_state_word: 0x14E5,
+            }),
+            state: Some(reader::VerifiedEeDoorPlaceableState {
+                bit_cursor: state_bit_cursor,
+                visual_selector: false,
+                visual_state_active: true,
+                locked: true,
+                lockable: false,
+                visual_payload: true,
+                neutral_ee_state_suffix: false,
+            }),
+            state_bit_cursor: Some(state_bit_cursor),
+            next_bit_cursor: state_bit_cursor + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1,
+            ..exact_placeable_update_claim_for_preservation_tests()
+        }
+    }
+
+    #[test]
     fn exact_placeable_update_custom_resref_remove_moves_scale_state_cursor_back() {
         let object_id = 0x8000_34DCu32;
         let source_resref = *b"plc_custom_src\0\0";
@@ -35425,7 +35601,8 @@ fn verified_placeable_update_non_appearance_fields_preserved(
     // state. Appearance custom/resref rewrites may shift the scale/state byte
     // offset, but every non-appearance semantic value and fragment cursor must
     // survive exactly.
-    verified_placeable_update_position_preserved(source.position, rewritten.position)
+    shifted_read_offset(source.read_end, appearance_byte_delta) == Some(rewritten.read_end)
+        && verified_placeable_update_position_preserved(source.position, rewritten.position)
         && verified_placeable_update_scalar_orientation_preserved(
             source.scalar_orientation,
             rewritten.scalar_orientation,
@@ -35451,7 +35628,8 @@ fn verified_placeable_update_position_preserved(
     match (source, rewritten) {
         (None, None) => true,
         (Some(source), Some(rewritten)) => {
-            source.bit_cursor == rewritten.bit_cursor
+            source.read_offset == rewritten.read_offset
+                && source.bit_cursor == rewritten.bit_cursor
                 && source.x_raw == rewritten.x_raw
                 && source.y_raw == rewritten.y_raw
                 && source.z_raw == rewritten.z_raw
@@ -35467,7 +35645,8 @@ fn verified_placeable_update_scalar_orientation_preserved(
     match (source, rewritten) {
         (None, None) => true,
         (Some(source), Some(rewritten)) => {
-            source.bit_cursor == rewritten.bit_cursor
+            source.read_offset == rewritten.read_offset
+                && source.bit_cursor == rewritten.bit_cursor
                 && source.scalar_tenths_degrees == rewritten.scalar_tenths_degrees
         }
         _ => false,
@@ -35481,7 +35660,8 @@ fn verified_placeable_update_vector_orientation_preserved(
     match (source, rewritten) {
         (None, None) => true,
         (Some(source), Some(rewritten)) => {
-            source.bit_cursor == rewritten.bit_cursor
+            source.read_offset == rewritten.read_offset
+                && source.bit_cursor == rewritten.bit_cursor
                 && source.x_raw == rewritten.x_raw
                 && source.y_raw == rewritten.y_raw
                 && source.z_raw == rewritten.z_raw
