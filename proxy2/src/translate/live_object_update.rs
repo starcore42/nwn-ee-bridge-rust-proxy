@@ -6545,6 +6545,18 @@ mod diagnostic_tests {
             ),
             "a final U/09 row can exact-claim while still losing the selected module-backed lock bits"
         );
+        let appearance_only_rewrite = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                drifted_claim,
+                &row,
+                appearance_only_rewrite,
+            ),
+            "a final appearance rewrite must still prove sibling U/09 lock bits that are present in the same parser-owned row"
+        );
 
         let mut repaired_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
         repaired_bits.extend([
@@ -6570,6 +6582,14 @@ mod diagnostic_tests {
                 rewritten,
             ),
             "the postcondition accepts the same exact row once appearance and state match the selected static row"
+        );
+        assert!(
+            verified_placeable_update_rewritten_fields_match_area_static_row(
+                repaired_claim,
+                &row,
+                appearance_only_rewrite,
+            ),
+            "appearance-only rewrites accept sibling U/09 lock bits once they match the selected static row"
         );
     }
 
@@ -36138,7 +36158,9 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
         }
     }
 
-    if rewritten.state {
+    let state_must_match = rewritten.state
+        || (rewritten.any() && claim.parser.state.is_some() && row.module_state.is_some());
+    if state_must_match {
         let Some(state) = claim.parser.state else {
             return false;
         };
