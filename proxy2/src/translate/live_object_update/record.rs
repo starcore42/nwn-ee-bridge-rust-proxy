@@ -113,6 +113,13 @@ impl PlaceableUpdateStateBits {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct VerifiedPlaceableUpdateStateRewrite {
+    changed: bool,
+    source_state: PlaceableUpdateStateBits,
+    emitted_state: PlaceableUpdateStateBits,
+}
+
 pub(super) fn rewrite_update_record_for_ee(
     live_bytes: &mut Vec<u8>,
     record_end: &mut usize,
@@ -292,11 +299,13 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                 reconcile_placeable_update_state_with_area_context(
                     area_context,
                     object_id,
+                    live_bytes,
                     bits,
-                    claim.state,
+                    claim,
                     raw_mask,
                     record_offset,
                     *record_end,
+                    *bit_cursor,
                 )?
             } else {
                 false
@@ -1533,11 +1542,13 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         let state_changed = reconcile_placeable_update_state_with_area_context(
             area_context,
             object_id,
+            live_bytes,
             bits,
-            claim.state,
+            claim,
             translated_mask,
             record_offset,
             *record_end,
+            original_bit_cursor,
         )?;
         if orientation_changed || appearance_changed || state_changed {
             rewrite.rewritten = true;
@@ -1684,10 +1695,12 @@ pub(super) fn reconcile_verified_placeable_update_state_with_area_context(
         area_context,
         object_id,
         mask,
+        live_bytes,
         claim,
         bits,
         record_offset,
         record_end,
+        bit_cursor,
     )
 }
 
@@ -1695,10 +1708,12 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_context(
     area_context: &AreaPlaceableContext,
     object_id: u32,
     mask: u32,
+    live_bytes: &[u8],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
     bits: &mut [bool],
     record_offset: usize,
     record_end: usize,
+    fragment_bit_start: usize,
 ) -> Option<bool> {
     if claim.read_end != record_end {
         return None;
@@ -1706,11 +1721,13 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_context(
     reconcile_placeable_update_state_with_area_context(
         Some(area_context),
         object_id,
+        live_bytes,
         bits,
-        claim.state,
+        claim,
         mask,
         record_offset,
         record_end,
+        fragment_bit_start,
     )
 }
 
@@ -1721,10 +1738,12 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
     identity_resolved_by_position: bool,
     object_id: u32,
     mask: u32,
+    live_bytes: &[u8],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
     bits: &mut [bool],
     record_offset: usize,
     record_end: usize,
+    fragment_bit_start: usize,
 ) -> Option<bool> {
     if claim.read_end != record_end {
         return None;
@@ -1735,7 +1754,6 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
     let Some(source_state_record) = claim.state else {
         return Some(false);
     };
-    let state_cursor = source_state_record.bit_cursor;
     let module_state = area_row.module_state?;
 
     let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
@@ -1746,19 +1764,23 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
         return Some(false);
     }
 
-    let rewritten_state = source_state.with_module_static_lock_state(module_state);
-    let mut changed = false;
-    changed |= set_bool_bit(bits, state_cursor + 2, rewritten_state.locked)?;
-    changed |= set_bool_bit(bits, state_cursor + 3, rewritten_state.lockable)?;
-    let emitted_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+    let state_rewrite = rewrite_verified_placeable_update_state_bits(
+        live_bytes,
+        record_offset,
+        record_end,
+        fragment_bit_start,
+        bits,
+        claim,
+        module_state,
+    )?;
 
     tracing::info!(
         object_id = format_args!("0x{object_id:08X}"),
         record_offset,
         record_end,
         mask = format_args!("0x{mask:08X}"),
-        source_placeable_state = ?source_state,
-        emitted_placeable_state = ?emitted_state,
+        source_placeable_state = ?state_rewrite.source_state,
+        emitted_placeable_state = ?state_rewrite.emitted_state,
         area_module_state = %format_area_placeable_module_state(module_state),
         area_module_state_mismatch_fields = %conflict.formatted_fields(),
         area_static_identity_resolved_by_position = identity_resolved_by_position,
@@ -1767,7 +1789,7 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
         "server->client exact live-object placeable update lock state reconciled with selected module-backed area/static row"
     );
 
-    Some(changed)
+    Some(state_rewrite.changed)
 }
 
 fn reconcile_placeable_update_orientation_with_area_context(
@@ -1886,19 +1908,20 @@ fn reconcile_placeable_update_appearance_with_area_context(
 fn reconcile_placeable_update_state_with_area_context(
     area_context: Option<&AreaPlaceableContext>,
     object_id: u32,
+    live_bytes: &[u8],
     bits: &mut [bool],
-    state: Option<reader::VerifiedEeDoorPlaceableState>,
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
     mask: u32,
     record_offset: usize,
     record_end: usize,
+    fragment_bit_start: usize,
 ) -> Option<bool> {
     if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
         return Some(false);
     }
-    let Some(source_state_record) = state else {
+    let Some(source_state_record) = claim.state else {
         return Some(false);
     };
-    let state_cursor = source_state_record.bit_cursor;
     let Some(context) = area_context else {
         return Some(false);
     };
@@ -1917,25 +1940,106 @@ fn reconcile_placeable_update_state_with_area_context(
         return Some(false);
     }
 
-    let rewritten_state = source_state.with_module_static_lock_state(module_state);
-    let mut changed = false;
-    changed |= set_bool_bit(bits, state_cursor + 2, rewritten_state.locked)?;
-    changed |= set_bool_bit(bits, state_cursor + 3, rewritten_state.lockable)?;
-    let emitted_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+    let state_rewrite = rewrite_verified_placeable_update_state_bits(
+        live_bytes,
+        record_offset,
+        record_end,
+        fragment_bit_start,
+        bits,
+        claim,
+        module_state,
+    )?;
 
     tracing::info!(
         object_id = format_args!("0x{object_id:08X}"),
         record_offset,
         record_end,
         mask = format_args!("0x{mask:08X}"),
-        source_placeable_state = ?source_state,
-        emitted_placeable_state = ?emitted_state,
+        source_placeable_state = ?state_rewrite.source_state,
+        emitted_placeable_state = ?state_rewrite.emitted_state,
         area_module_state = %format_area_placeable_module_state(module_state),
         area_module_state_mismatch_fields = %conflict.formatted_fields(),
         "server->client live-object placeable update lock state reconciled with unique module-backed area/static row"
     );
 
-    Some(changed)
+    Some(state_rewrite.changed)
+}
+
+fn rewrite_verified_placeable_update_state_bits(
+    live_bytes: &[u8],
+    record_offset: usize,
+    record_end: usize,
+    fragment_bit_start: usize,
+    bits: &mut [bool],
+    source_claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    module_state: AreaPlaceableContextState,
+) -> Option<VerifiedPlaceableUpdateStateRewrite> {
+    if source_claim.read_end != record_end {
+        return None;
+    }
+    let source_state_record = source_claim.state?;
+    let state_cursor = source_state_record.bit_cursor;
+    let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
+    let emitted_state = source_state.with_module_static_lock_state(module_state);
+    let mut candidate_bits = bits.to_vec();
+    let mut changed = false;
+    changed |= set_bool_bit(&mut candidate_bits, state_cursor + 2, emitted_state.locked)?;
+    changed |= set_bool_bit(
+        &mut candidate_bits,
+        state_cursor + 3,
+        emitted_state.lockable,
+    )?;
+    if !changed {
+        return Some(VerifiedPlaceableUpdateStateRewrite {
+            changed,
+            source_state,
+            emitted_state,
+        });
+    }
+
+    let rewritten_claim = reader::parse_verified_ee_door_placeable_update_record(
+        live_bytes,
+        record_offset,
+        record_end,
+        &candidate_bits,
+        fragment_bit_start,
+    )?;
+    if !verified_placeable_update_state_rewrite_preserved(
+        source_claim,
+        rewritten_claim,
+        source_state_record,
+        emitted_state,
+    ) {
+        return None;
+    }
+    bits.copy_from_slice(&candidate_bits);
+    Some(VerifiedPlaceableUpdateStateRewrite {
+        changed,
+        source_state,
+        emitted_state,
+    })
+}
+
+fn verified_placeable_update_state_rewrite_preserved(
+    source_claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    rewritten_claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    source_state: reader::VerifiedEeDoorPlaceableState,
+    emitted_state: PlaceableUpdateStateBits,
+) -> bool {
+    let Some(rewritten_state) = rewritten_claim.state else {
+        return false;
+    };
+    source_claim.read_end == rewritten_claim.read_end
+        && source_claim.state_bit_cursor == rewritten_claim.state_bit_cursor
+        && source_claim.next_bit_cursor == rewritten_claim.next_bit_cursor
+        && rewritten_state.bit_cursor == source_state.bit_cursor
+        && rewritten_state.visual_selector == source_state.visual_selector
+        && rewritten_state.visual_state_active == source_state.visual_state_active
+        && rewritten_state.locked == emitted_state.locked
+        && rewritten_state.lockable == emitted_state.lockable
+        && rewritten_state.visual_payload == source_state.visual_payload
+        && rewritten_state.neutral_ee_state_suffix == source_state.neutral_ee_state_suffix
+        && !rewritten_state.neutral_ee_state_suffix
 }
 
 fn parse_compact_door_placeable_tail9_update_claim(
@@ -2825,6 +2929,58 @@ mod tests {
                 false, true, true, false, true, false, true, true, false, true, false
             ],
             "the vector selector, visual payload, neutral suffix, and following bits remain owned by their original fields"
+        );
+    }
+
+    #[test]
+    fn exact_placeable_update_state_rewrite_requires_fresh_exact_claim() {
+        let object_id = 0x8000_0042u32;
+        let mask = LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        let source_bits = vec![
+            false, // visual selector.
+            true,  // visual state active.
+            true,  // locked.
+            false, // lockable.
+            true,  // visual payload.
+            false, // EE-only neutral door/placeable state suffix.
+        ];
+        let source_claim = reader::parse_verified_ee_door_placeable_update_record(
+            &live,
+            0,
+            live.len(),
+            &source_bits,
+            0,
+        )
+        .expect("source state-only U/09 should exact-claim");
+        let mut stale_bits = source_bits.clone();
+        stale_bits[5] = true;
+        let original_stale_bits = stale_bits.clone();
+
+        let rewrite = rewrite_verified_placeable_update_state_bits(
+            &live,
+            0,
+            live.len(),
+            0,
+            &mut stale_bits,
+            source_claim,
+            AreaPlaceableContextState {
+                static_object: true,
+                lockable: true,
+                locked: false,
+                ..AreaPlaceableContextState::default()
+            },
+        );
+
+        assert!(
+            rewrite.is_none(),
+            "state rewrites must be rejected if the post-mutation EE claim no longer owns the neutral suffix"
+        );
+        assert_eq!(
+            stale_bits, original_stale_bits,
+            "failed staged validation must not commit partial lock-bit changes"
         );
     }
 

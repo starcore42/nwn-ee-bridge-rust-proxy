@@ -27165,14 +27165,25 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                             selection.identity_resolved_by_position,
                             update_claim.object_id,
                             update_claim.mask,
+                            &live_bytes,
                             update_claim.parser,
                             &mut fragment_bits,
                             record_offset,
                             record_end,
+                            mention.fragment_bit_start,
                         )?
                     } else {
                         false
                     };
+                let Some(appearance_source_claim) = verified_placeable_update_exact_claim(
+                    &live_bytes,
+                    record_offset,
+                    record_end,
+                    &fragment_bits,
+                    mention.fragment_bit_start,
+                ) else {
+                    return None;
+                };
                 // Collapse a custom appearance branch only after the other
                 // helpers have consumed the pre-drain exact parser claim.
                 // EE/Diamond read appearance before scale/state bytes, so
@@ -27186,7 +27197,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         record_offset,
                         record_end,
                         mention.fragment_bit_start,
-                        update_claim,
+                        appearance_source_claim,
                         selection,
                         &area_rows,
                         &mut summary,
