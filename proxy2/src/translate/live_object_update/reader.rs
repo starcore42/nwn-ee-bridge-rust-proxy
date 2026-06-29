@@ -29,6 +29,7 @@ pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) scalar_orientation: Option<VerifiedEeDoorPlaceableScalarOrientation>,
     pub(super) vector_orientation: Option<VerifiedEeDoorPlaceableVectorOrientation>,
     pub(super) appearance_offset: Option<usize>,
+    pub(super) scale_state: Option<VerifiedEeDoorPlaceableScaleState>,
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
 }
@@ -56,9 +57,18 @@ pub(super) struct VerifiedEeDoorPlaceableScalarOrientation {
 pub(super) struct VerifiedEeDoorPlaceableVectorOrientation {
     pub(super) read_offset: usize,
     pub(super) bit_cursor: usize,
+    pub(super) x_raw: u16,
+    pub(super) y_raw: u16,
+    pub(super) z_raw: u16,
     pub(super) x: f32,
     pub(super) y: f32,
     pub(super) z: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedEeDoorPlaceableScaleState {
+    pub(super) scale_raw: u32,
+    pub(super) generic_state_word: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -421,6 +431,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut scalar_orientation = None;
     let mut vector_orientation = None;
     let mut appearance_offset = None;
+    let mut scale_state = None;
     let mut state_bit_cursor = None;
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
@@ -467,12 +478,18 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         let orientation_bit_cursor = fragment_cursor;
         let vector_branch = fragment_bits.get(fragment_cursor).copied()?;
         if vector_branch {
+            let x_raw = read_u16_le(bytes, read_cursor)?;
+            let y_raw = read_u16_le(bytes, read_cursor + 2)?;
+            let z_raw = read_u16_le(bytes, read_cursor + 4)?;
             vector_orientation = Some(VerifiedEeDoorPlaceableVectorOrientation {
                 read_offset: orientation_read_offset,
                 bit_cursor: orientation_bit_cursor,
-                x: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor)?),
-                y: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor + 2)?),
-                z: decode_ee_vector_orientation_component(read_u16_le(bytes, read_cursor + 4)?),
+                x_raw,
+                y_raw,
+                z_raw,
+                x: decode_ee_vector_orientation_component(x_raw),
+                y: decode_ee_vector_orientation_component(y_raw),
+                z: decode_ee_vector_orientation_component(z_raw),
             });
             read_cursor = read_cursor.checked_add(EE_UPDATE_ORIENTATION_VECTOR_READ_BYTES)?;
             fragment_cursor = advance_bits(
@@ -532,7 +549,9 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         // at loc_467C6B; EE `sub_14079C050` preserves that order at
         // loc_14079C690 before loc_14079CB44. A swapped same-length row can
         // otherwise land byte-exact while decoding an impossible scale here.
+        let scale_raw = read_u32_le(bytes, read_cursor)?;
         let scale = read_f32_le(bytes, read_cursor)?;
+        let generic_state_word = read_u16_le(bytes, read_cursor + 4)?;
         if !is_plausible_legacy_object_scale(scale) {
             if debug_live_claim {
                 eprintln!(
@@ -541,6 +560,10 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             }
             return None;
         }
+        scale_state = Some(VerifiedEeDoorPlaceableScaleState {
+            scale_raw,
+            generic_state_word,
+        });
         read_cursor = read_cursor.checked_add(EE_UPDATE_SCALE_STATE_READ_BYTES)?;
         if read_cursor > record_end {
             if debug_live_claim {
@@ -586,6 +609,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         scalar_orientation,
         vector_orientation,
         appearance_offset,
+        scale_state,
         state_bit_cursor,
         next_bit_cursor: fragment_cursor,
     })
