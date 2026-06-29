@@ -6493,6 +6493,87 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_field_postcondition_rejects_state_drift_after_custom_insert() {
+        let object_id = 0x8000_34DDu32;
+        let target_resref = *b"plc_custom_fin\0\0";
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&target_resref);
+
+        let mut drifted_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        drifted_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            true,  // locked drifted away from the module row.
+            false, // lockable drifted away from the module row.
+            false, // visual payload.
+            false, // EE-only neutral door/placeable state suffix.
+        ]);
+        let drifted_claim = verified_placeable_update_exact_claim(
+            &live,
+            0,
+            live.len(),
+            &drifted_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("custom appearance+state U/09 remains syntactically exact");
+        let row = crate::translate::area::AreaPlaceableContextRow {
+            object_id,
+            appearance: 0xFFFE,
+            module_template_resref: Some(target_resref),
+            module_state: Some(crate::translate::area::AreaPlaceableContextState {
+                static_object: true,
+                lockable: true,
+                locked: false,
+                ..crate::translate::area::AreaPlaceableContextState::default()
+            }),
+            ..crate::translate::area::AreaPlaceableContextRow::default()
+        };
+        let rewritten = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            state: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                drifted_claim,
+                &row,
+                rewritten,
+            ),
+            "a final U/09 row can exact-claim while still losing the selected module-backed lock bits"
+        );
+
+        let mut repaired_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        repaired_bits.extend([
+            false, // visual selector.
+            false, // visual state active.
+            false, // locked matches module row.
+            true,  // lockable matches module row.
+            false, // visual payload.
+            false, // EE-only neutral door/placeable state suffix.
+        ]);
+        let repaired_claim = verified_placeable_update_exact_claim(
+            &live,
+            0,
+            live.len(),
+            &repaired_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("repaired custom appearance+state U/09 should exact-claim");
+        assert!(
+            verified_placeable_update_rewritten_fields_match_area_static_row(
+                repaired_claim,
+                &row,
+                rewritten,
+            ),
+            "the postcondition accepts the same exact row once appearance and state match the selected static row"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -27495,6 +27576,52 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         bytes_removed: appearance_rewrite.bytes_removed,
                     });
                 }
+                let rewritten_fields = PlaceableUpdateFieldRewriteSet {
+                    position: position_rewritten,
+                    appearance: appearance_rewrite.changed,
+                    orientation: orientation_rewritten,
+                    state: state_rewritten,
+                };
+                if rewritten_fields.any()
+                    && let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
+                        selection.target
+                {
+                    let rewritten_record_end = record_end
+                        .checked_add(appearance_rewrite.bytes_inserted)?
+                        .checked_sub(appearance_rewrite.bytes_removed)?;
+                    let Some(rewritten_claim) = verified_placeable_update_exact_claim(
+                        &live_bytes,
+                        record_offset,
+                        rewritten_record_end,
+                        &fragment_bits,
+                        mention.fragment_bit_start,
+                    ) else {
+                        return None;
+                    };
+                    if rewritten_claim.object_id != update_claim.object_id
+                        || rewritten_claim.mask != update_claim.mask
+                        || !verified_placeable_update_rewritten_fields_match_area_static_row(
+                            rewritten_claim,
+                            row,
+                            rewritten_fields,
+                        )
+                    {
+                        tracing::warn!(
+                            object_id = format_args!("0x{:08X}", update_claim.object_id),
+                            record_offset,
+                            record_end = rewritten_record_end,
+                            mask = format_args!("0x{:08X}", update_claim.mask),
+                            position_rewritten,
+                            appearance_rewritten = appearance_rewrite.changed,
+                            orientation_rewritten,
+                            state_rewritten,
+                            area_resref = area_context.area_resref.as_str(),
+                            area_rows = %area_rows,
+                            "server->client exact live-object placeable update rewrite rejected: final parser-owned fields do not match selected area/static row"
+                        );
+                        return None;
+                    }
+                }
                 if position_rewritten {
                     summary.exact_placeable_update_position_rewritten = summary
                         .exact_placeable_update_position_rewritten
@@ -35734,8 +35861,100 @@ struct PlaceableAppearanceRewrite {
     bytes_removed: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PlaceableUpdateFieldRewriteSet {
+    position: bool,
+    appearance: bool,
+    orientation: bool,
+    state: bool,
+}
+
+impl PlaceableUpdateFieldRewriteSet {
+    fn any(self) -> bool {
+        self.position || self.appearance || self.orientation || self.state
+    }
+}
+
 fn is_custom_placeable_appearance(appearance: u16) -> bool {
     appearance >= CUSTOM_PLACEABLE_APPEARANCE_MIN
+}
+
+fn verified_placeable_update_rewritten_fields_match_area_static_row(
+    claim: VerifiedPlaceableUpdateExactClaim,
+    row: &AreaPlaceableContextRow,
+    rewritten: PlaceableUpdateFieldRewriteSet,
+) -> bool {
+    if rewritten.position {
+        let Some(position) = claim.parser.position else {
+            return false;
+        };
+        let Some(area_position) = encode_area_static_row_position(row) else {
+            return false;
+        };
+        if position.x_raw != area_position.x_raw
+            || position.y_raw != area_position.y_raw
+            || position.z_raw != area_position.z_raw
+        {
+            return false;
+        }
+    }
+
+    if rewritten.orientation {
+        if let Some(orientation) = claim.parser.scalar_orientation {
+            let Some(area_orientation) = area_static_row_scalar_orientation(row) else {
+                return false;
+            };
+            if orientation.scalar_tenths_degrees != area_orientation {
+                return false;
+            }
+        } else if let Some(orientation) = claim.parser.vector_orientation {
+            let Some(area_vector) = area_static_row_vector_orientation(row) else {
+                return false;
+            };
+            if orientation.x_raw != area_vector.x_raw
+                || orientation.y_raw != area_vector.y_raw
+                || orientation.z_raw != area_vector.z_raw
+            {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    if rewritten.appearance {
+        let Some(appearance) = claim.parser.appearance else {
+            return false;
+        };
+        let expected_resref = if is_custom_placeable_appearance(row.appearance) {
+            let Some(resref) = row.module_template_resref else {
+                return false;
+            };
+            Some(resref)
+        } else {
+            None
+        };
+        if appearance.appearance != row.appearance || appearance.resref != expected_resref {
+            return false;
+        }
+    }
+
+    if rewritten.state {
+        let Some(state) = claim.parser.state else {
+            return false;
+        };
+        let Some(module_state) = row.module_state else {
+            return false;
+        };
+        if state.locked != module_state.locked
+            || state.lockable != module_state.lockable
+            || state.neutral_ee_state_suffix
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn reconcile_verified_placeable_update_orientation_with_area_context(
