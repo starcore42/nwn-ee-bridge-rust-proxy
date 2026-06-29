@@ -6682,6 +6682,15 @@ mod diagnostic_tests {
             ),
             "a final exact U/09 row must prove the parser-owned appearance branch grew by the claimed CResRef width"
         );
+        assert!(
+            !verified_placeable_update_final_row_preserved(
+                source,
+                shifted_without_resref,
+                PlaceableUpdateFieldRewriteSet::default(),
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "a final exact U/09 row must not accept a byte-shifted tail unless appearance was the rewritten field"
+        );
 
         let mut shifted_with_resref = shifted_without_resref;
         shifted_with_resref.appearance =
@@ -36089,6 +36098,9 @@ fn verified_placeable_update_final_row_preserved(
     // and EE read appearance before scale/state, so only the appearance field
     // itself may differ here; every later byte cursor may move only by the
     // inserted/removed CResRef width.
+    if appearance_byte_delta != 0 && !rewritten_fields.appearance {
+        return false;
+    }
     source.appearance_offset == rewritten.appearance_offset
         && verified_placeable_update_non_appearance_fields_preserved(
             source,
