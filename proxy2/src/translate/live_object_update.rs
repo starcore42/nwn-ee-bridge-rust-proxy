@@ -6704,6 +6704,109 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_field_postcondition_rejects_present_visual_sibling_drift() {
+        let object_id = 0x8000_34E1u32;
+        let row = AreaPlaceableContextRow {
+            object_id,
+            appearance: 0x0022,
+            x: 12.0,
+            y: 34.5,
+            z: 1.25,
+            dir_x: 0.0,
+            dir_y: 1.0,
+            dir_z: 0.0,
+            has_direction: true,
+            ..AreaPlaceableContextRow::default()
+        };
+        let row_position = encode_area_static_row_position(&row).expect("encodable row position");
+        let row_orientation =
+            area_static_row_scalar_orientation(&row).expect("encodable row orientation");
+        let build_claim = |x_raw: u16,
+                           scalar_tenths_degrees: u16,
+                           appearance: u16|
+         -> VerifiedPlaceableUpdateExactClaim {
+            let mask = LEGACY_UPDATE_POSITION_MASK
+                | LEGACY_UPDATE_ORIENTATION_MASK
+                | LEGACY_UPDATE_APPEARANCE_MASK;
+            let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&mask.to_le_bytes());
+            live.extend_from_slice(&x_raw.to_le_bytes());
+            live.extend_from_slice(&row_position.y_raw.to_le_bytes());
+            live.extend_from_slice(&((row_position.z_raw >> 2) as u16).to_le_bytes());
+            live.push(((scalar_tenths_degrees >> 4) & 0xFF) as u8);
+            live.extend_from_slice(&appearance.to_le_bytes());
+
+            let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            fragment_bits.extend([
+                ((row_position.z_raw >> 1) & 1) != 0,
+                (row_position.z_raw & 1) != 0,
+                false,
+            ]);
+            for shift in (0..4).rev() {
+                fragment_bits.push(((scalar_tenths_degrees >> shift) & 1) != 0);
+            }
+            verified_placeable_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .expect("syntactically exact position/orientation/appearance U/09")
+        };
+        let appearance_rewrite = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+        let position_rewrite = PlaceableUpdateFieldRewriteSet {
+            position: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_claim(row_position.x_raw + 1, row_orientation, row.appearance),
+                &row,
+                appearance_rewrite,
+            ),
+            "an appearance repair must reject a present sibling position branch that still drifts from the selected static row"
+        );
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_claim(row_position.x_raw, row_orientation ^ 0x0010, row.appearance),
+                &row,
+                appearance_rewrite,
+            ),
+            "an appearance repair must reject a present sibling orientation branch that still drifts from the selected static row"
+        );
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_claim(row_position.x_raw, row_orientation, row.appearance + 1),
+                &row,
+                position_rewrite,
+            ),
+            "a position repair must reject a present sibling appearance branch that still drifts from the selected static row"
+        );
+        assert!(
+            verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_claim(row_position.x_raw, row_orientation, row.appearance),
+                &row,
+                appearance_rewrite,
+            ),
+            "the selected-row postcondition accepts a repaired row only after all present parser-owned visual fields match"
+        );
+        assert!(
+            verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_claim(row_position.x_raw, row_orientation, row.appearance),
+                &row,
+                position_rewrite,
+            ),
+            "present sibling appearance/orientation fields are accepted once they match the selected static row"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -36103,37 +36206,33 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
     row: &AreaPlaceableContextRow,
     rewritten: PlaceableUpdateFieldRewriteSet,
 ) -> bool {
-    if rewritten.position {
+    let check_present_siblings = rewritten.any();
+    let position_must_match = rewritten.position
+        || (check_present_siblings
+            && claim.parser.position.is_some()
+            && area_static_row_position_available(row));
+    if position_must_match {
         let Some(position) = claim.parser.position else {
             return false;
         };
-        let Some(area_position) = encode_area_static_row_position(row) else {
-            return false;
-        };
-        if position.x_raw != area_position.x_raw
-            || position.y_raw != area_position.y_raw
-            || position.z_raw != area_position.z_raw
-        {
+        if !verified_placeable_update_position_matches_area_row(position, row) {
             return false;
         }
     }
 
-    if rewritten.orientation {
+    let orientation_present =
+        claim.parser.scalar_orientation.is_some() || claim.parser.vector_orientation.is_some();
+    let orientation_must_match = rewritten.orientation
+        || (check_present_siblings
+            && orientation_present
+            && area_static_row_orientation_available_for_claim(claim.parser, row));
+    if orientation_must_match {
         if let Some(orientation) = claim.parser.scalar_orientation {
-            let Some(area_orientation) = area_static_row_scalar_orientation(row) else {
-                return false;
-            };
-            if orientation.scalar_tenths_degrees != area_orientation {
+            if !verified_placeable_update_scalar_orientation_matches_area_row(orientation, row) {
                 return false;
             }
         } else if let Some(orientation) = claim.parser.vector_orientation {
-            let Some(area_vector) = area_static_row_vector_orientation(row) else {
-                return false;
-            };
-            if orientation.x_raw != area_vector.x_raw
-                || orientation.y_raw != area_vector.y_raw
-                || orientation.z_raw != area_vector.z_raw
-            {
+            if !verified_placeable_update_vector_orientation_matches_area_row(orientation, row) {
                 return false;
             }
         } else {
@@ -36141,19 +36240,15 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
         }
     }
 
-    if rewritten.appearance {
+    let appearance_must_match = rewritten.appearance
+        || (check_present_siblings
+            && claim.parser.appearance.is_some()
+            && area_static_row_appearance_available(row));
+    if appearance_must_match {
         let Some(appearance) = claim.parser.appearance else {
             return false;
         };
-        let expected_resref = if is_custom_placeable_appearance(row.appearance) {
-            let Some(resref) = row.module_template_resref else {
-                return false;
-            };
-            Some(resref)
-        } else {
-            None
-        };
-        if appearance.appearance != row.appearance || appearance.resref != expected_resref {
+        if !verified_placeable_update_appearance_matches_area_row(appearance, row) {
             return false;
         }
     }
@@ -36170,6 +36265,72 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
     }
 
     true
+}
+
+fn area_static_row_position_available(row: &AreaPlaceableContextRow) -> bool {
+    encode_area_static_row_position(row).is_some()
+}
+
+fn area_static_row_orientation_available_for_claim(
+    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    if claim.scalar_orientation.is_some() {
+        area_static_row_scalar_orientation(row).is_some()
+    } else if claim.vector_orientation.is_some() {
+        area_static_row_vector_orientation(row).is_some()
+    } else {
+        false
+    }
+}
+
+fn area_static_row_appearance_available(row: &AreaPlaceableContextRow) -> bool {
+    !is_custom_placeable_appearance(row.appearance) || row.module_template_resref.is_some()
+}
+
+fn verified_placeable_update_position_matches_area_row(
+    position: reader::VerifiedEeDoorPlaceablePosition,
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    encode_area_static_row_position(row).is_some_and(|area_position| {
+        position.x_raw == area_position.x_raw
+            && position.y_raw == area_position.y_raw
+            && position.z_raw == area_position.z_raw
+    })
+}
+
+fn verified_placeable_update_scalar_orientation_matches_area_row(
+    orientation: reader::VerifiedEeDoorPlaceableScalarOrientation,
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    area_static_row_scalar_orientation(row)
+        .is_some_and(|area_orientation| orientation.scalar_tenths_degrees == area_orientation)
+}
+
+fn verified_placeable_update_vector_orientation_matches_area_row(
+    orientation: reader::VerifiedEeDoorPlaceableVectorOrientation,
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    area_static_row_vector_orientation(row).is_some_and(|area_vector| {
+        orientation.x_raw == area_vector.x_raw
+            && orientation.y_raw == area_vector.y_raw
+            && orientation.z_raw == area_vector.z_raw
+    })
+}
+
+fn verified_placeable_update_appearance_matches_area_row(
+    appearance: reader::VerifiedEeDoorPlaceableAppearance,
+    row: &AreaPlaceableContextRow,
+) -> bool {
+    let expected_resref = if is_custom_placeable_appearance(row.appearance) {
+        let Some(resref) = row.module_template_resref else {
+            return false;
+        };
+        Some(resref)
+    } else {
+        None
+    };
+    appearance.appearance == row.appearance && appearance.resref == expected_resref
 }
 
 fn reconcile_verified_placeable_update_orientation_with_area_context(
