@@ -28,6 +28,7 @@ pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) position: Option<VerifiedEeDoorPlaceablePosition>,
     pub(super) scalar_orientation: Option<VerifiedEeDoorPlaceableScalarOrientation>,
     pub(super) vector_orientation: Option<VerifiedEeDoorPlaceableVectorOrientation>,
+    pub(super) appearance: Option<VerifiedEeDoorPlaceableAppearance>,
     pub(super) appearance_offset: Option<usize>,
     pub(super) scale_state: Option<VerifiedEeDoorPlaceableScaleState>,
     pub(super) state_bit_cursor: Option<usize>,
@@ -63,6 +64,13 @@ pub(super) struct VerifiedEeDoorPlaceableVectorOrientation {
     pub(super) x: f32,
     pub(super) y: f32,
     pub(super) z: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VerifiedEeDoorPlaceableAppearance {
+    pub(super) read_offset: usize,
+    pub(super) appearance: u16,
+    pub(super) resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -430,6 +438,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut position = None;
     let mut scalar_orientation = None;
     let mut vector_orientation = None;
+    let mut appearance = None;
     let mut appearance_offset = None;
     let mut scale_state = None;
     let mut state_bit_cursor = None;
@@ -528,12 +537,28 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     if (mask & LEGACY_UPDATE_APPEARANCE_MASK) != 0 {
-        appearance_offset = Some(read_cursor);
+        let appearance_read_offset = read_cursor;
+        appearance_offset = Some(appearance_read_offset);
         let appearance_word = read_u16_le(bytes, read_cursor)?;
         read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
-        if appearance_word >= 0xFFFE {
-            read_cursor = read_cursor.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-        }
+        let resref = if appearance_word >= 0xFFFE {
+            let resref_start = read_cursor;
+            let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
+            if resref_end > record_end {
+                return None;
+            }
+            let mut resref = [0_u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES];
+            resref.copy_from_slice(bytes.get(resref_start..resref_end)?);
+            read_cursor = resref_end;
+            Some(resref)
+        } else {
+            None
+        };
+        appearance = Some(VerifiedEeDoorPlaceableAppearance {
+            read_offset: appearance_read_offset,
+            appearance: appearance_word,
+            resref,
+        });
         if read_cursor > record_end {
             if debug_live_claim {
                 eprintln!(
@@ -608,6 +633,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         position,
         scalar_orientation,
         vector_orientation,
+        appearance,
         appearance_offset,
         scale_state,
         state_bit_cursor,
@@ -732,6 +758,43 @@ pub(super) fn is_plausible_legacy_object_scale(scale: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn door_placeable_update_parser_retains_custom_appearance_resref() {
+        let object_id = 0x1234_ABCD_u32;
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_SCALE_STATE_MASK;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0xFFFE_u16.to_le_bytes());
+        let resref = *b"custom_statue001";
+        live.extend_from_slice(&resref);
+        live.extend_from_slice(&1.0_f32.to_le_bytes());
+        live.extend_from_slice(&0x0016_u16.to_le_bytes());
+
+        let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &[], 0)
+            .expect("exact custom appearance update");
+        let appearance = claim.appearance.expect("appearance branch");
+
+        assert_eq!(claim.read_end, live.len());
+        assert_eq!(claim.appearance_offset, Some(LEGACY_UPDATE_HEADER_BYTES));
+        assert_eq!(appearance.read_offset, LEGACY_UPDATE_HEADER_BYTES);
+        assert_eq!(appearance.appearance, 0xFFFE);
+        assert_eq!(appearance.resref, Some(resref));
+        assert_eq!(
+            claim.scale_state.expect("scale/state branch").scale_raw,
+            1.0_f32.to_bits()
+        );
+        assert_eq!(
+            claim
+                .scale_state
+                .expect("scale/state branch")
+                .generic_state_word,
+            0x0016
+        );
+        assert_eq!(claim.next_bit_cursor, 0);
+    }
 
     #[test]
     fn legacy_low_bit_control_tail_accepts_bounded_word_suffixes() {

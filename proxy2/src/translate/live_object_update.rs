@@ -21694,38 +21694,34 @@ fn verified_record_placeable_appearance_claim(
 }
 
 fn verified_placeable_update_appearance(
-    live_bytes: &[u8],
+    _live_bytes: &[u8],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
 ) -> Option<LiveObjectPlaceableAppearance> {
-    let appearance_offset = claim.appearance_offset?;
-    let appearance = read_u16_le(live_bytes, appearance_offset)?;
-    let resref = if appearance >= 0xFFFE {
-        let start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
-        let bytes = live_bytes.get(start..start + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-        let mut resref = [0_u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES];
-        resref.copy_from_slice(bytes);
-        Some(resref)
-    } else {
-        None
-    };
-    Some(LiveObjectPlaceableAppearance { appearance, resref })
+    let appearance = claim.appearance?;
+    debug_assert_eq!(claim.appearance_offset, Some(appearance.read_offset));
+    Some(LiveObjectPlaceableAppearance {
+        appearance: appearance.appearance,
+        resref: appearance.resref,
+    })
 }
 
 fn verified_placeable_update_appearance_claim(
-    live_bytes: &[u8],
+    _live_bytes: &[u8],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
 ) -> Option<LiveObjectPlaceableAppearanceClaim> {
-    let appearance_offset = claim.appearance_offset?;
-    let appearance = read_u16_le(live_bytes, appearance_offset)?;
-    let resref_offset = if appearance >= 0xFFFE {
-        let start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
-        live_bytes.get(start..start + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-        Some(start)
+    let appearance = claim.appearance?;
+    debug_assert_eq!(claim.appearance_offset, Some(appearance.read_offset));
+    let resref_offset = if appearance.resref.is_some() {
+        Some(
+            appearance
+                .read_offset
+                .checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?,
+        )
     } else {
         None
     };
     Some(LiveObjectPlaceableAppearanceClaim {
-        appearance_offset,
+        appearance_offset: appearance.read_offset,
         resref_offset,
     })
 }
@@ -27098,7 +27094,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                                 .saturating_add(1);
                     }
                 }
-                if update_claim.parser.appearance_offset.is_some() {
+                if update_claim.parser.appearance.is_some() {
                     record_exact_placeable_identity_blocked_module_custom_rows(
                         &mut summary,
                         b'U',
@@ -27107,14 +27103,13 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                         mention.object_id,
                     );
                 }
-                let source_custom_appearance = update_claim
-                    .parser
-                    .appearance_offset
-                    .and_then(|appearance_offset| read_u16_le(&live_bytes, appearance_offset))
-                    .is_some_and(is_custom_placeable_appearance);
+                let source_custom_appearance =
+                    update_claim.parser.appearance.is_some_and(|appearance| {
+                        is_custom_placeable_appearance(appearance.appearance)
+                    });
                 let module_custom_update_target = match selection.target {
                     AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) => {
-                        update_claim.parser.appearance_offset.is_some()
+                        update_claim.parser.appearance.is_some()
                             && is_custom_placeable_appearance(row.appearance)
                             && row.module_template_resref.is_some()
                     }
@@ -27122,7 +27117,7 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                 };
                 if let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                     selection.target
-                    && update_claim.parser.appearance_offset.is_some()
+                    && update_claim.parser.appearance.is_some()
                     && is_custom_placeable_appearance(row.appearance)
                     && row.module_template_resref.is_none()
                 {
@@ -29648,7 +29643,7 @@ fn placeable_update_owned_output_for_module_static_row(
         None
     };
 
-    let appearance = if claim.parser.appearance_offset.is_some() {
+    let appearance = if claim.parser.appearance.is_some() {
         let resref = if is_custom_placeable_appearance(row.appearance) {
             Some(row.module_template_resref?)
         } else {
@@ -33684,6 +33679,12 @@ fn verified_synthesized_placeable_custom_appearance_update_exact_claim(
     claim.object_id == object_id
         && claim.mask == LEGACY_UPDATE_APPEARANCE_MASK
         && claim.parser.appearance_offset == Some(record_offset + LEGACY_UPDATE_HEADER_BYTES)
+        && claim.parser.appearance
+            == Some(reader::VerifiedEeDoorPlaceableAppearance {
+                read_offset: record_offset + LEGACY_UPDATE_HEADER_BYTES,
+                appearance,
+                resref: Some(template_resref),
+            })
         && claim.parser.next_bit_cursor == fragment_bit_cursor
         && verified_placeable_update_appearance(live_bytes, claim.parser)
             == Some(LiveObjectPlaceableAppearance {
@@ -35076,9 +35077,11 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
     area_rows: &str,
     summary: &mut LiveObjectUpdateRewriteSummary,
 ) -> Option<PlaceableAppearanceRewrite> {
-    let Some(appearance_offset) = claim.parser.appearance_offset else {
+    let Some(source_appearance_record) = claim.parser.appearance else {
         return Some(PlaceableAppearanceRewrite::default());
     };
+    let appearance_offset = source_appearance_record.read_offset;
+    debug_assert_eq!(claim.parser.appearance_offset, Some(appearance_offset));
 
     let Some(area_row) = placeable_static_reconciliation_row_for_selected_record(
         area_context,
@@ -35092,15 +35095,10 @@ fn reconcile_verified_placeable_update_appearance_with_area_context(
         return Some(PlaceableAppearanceRewrite::default());
     };
     let area_appearance = area_row.appearance;
-    let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
+    let source_appearance = source_appearance_record.appearance;
     let source_is_custom = is_custom_placeable_appearance(source_appearance);
     let source_resref = if source_is_custom {
-        let resref_start = appearance_offset.checked_add(EE_UPDATE_APPEARANCE_WORD_READ_BYTES)?;
-        let resref_end = resref_start.checked_add(EE_UPDATE_APPEARANCE_RESREF_READ_BYTES)?;
-        if resref_end > record_end {
-            return None;
-        }
-        Some(live_bytes.get(resref_start..resref_end)?.try_into().ok()?)
+        Some(source_appearance_record.resref?)
     } else {
         None
     };

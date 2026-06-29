@@ -270,7 +270,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                     area_context,
                     object_id,
                     live_bytes,
-                    claim.appearance_offset,
+                    claim.appearance,
                     raw_mask,
                     record_offset,
                     *record_end,
@@ -1515,7 +1515,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             area_context,
             object_id,
             live_bytes,
-            claim.appearance_offset,
+            claim.appearance,
             translated_mask,
             record_offset,
             *record_end,
@@ -1808,7 +1808,7 @@ fn reconcile_placeable_update_appearance_with_area_context(
     area_context: Option<&AreaPlaceableContext>,
     object_id: u32,
     live_bytes: &mut [u8],
-    appearance_offset: Option<usize>,
+    appearance: Option<reader::VerifiedEeDoorPlaceableAppearance>,
     mask: u32,
     record_offset: usize,
     record_end: usize,
@@ -1816,9 +1816,10 @@ fn reconcile_placeable_update_appearance_with_area_context(
     if (mask & LEGACY_UPDATE_APPEARANCE_MASK) == 0 {
         return Some(false);
     }
-    let Some(appearance_offset) = appearance_offset else {
+    let Some(source_appearance_record) = appearance else {
         return Some(false);
     };
+    let appearance_offset = source_appearance_record.read_offset;
     let Some(context) = area_context else {
         return Some(false);
     };
@@ -1828,7 +1829,7 @@ fn reconcile_placeable_update_appearance_with_area_context(
     let Some(area_row) = overlap.unique_module_backed_static_row() else {
         return Some(false);
     };
-    let source_appearance = read_u16_le(live_bytes, appearance_offset)?;
+    let source_appearance = source_appearance_record.appearance;
     let area_appearance = area_row.appearance;
     if source_appearance == area_appearance {
         return Some(false);
@@ -1841,7 +1842,7 @@ fn reconcile_placeable_update_appearance_with_area_context(
             mask = format_args!("0x{mask:08X}"),
             source_appearance = format_args!("0x{source_appearance:04X}"),
             area_module_appearance = format_args!("0x{area_appearance:04X}"),
-            source_template_resref_present = source_appearance >= 0xFFFE,
+            source_template_resref_present = source_appearance_record.resref.is_some(),
             area_module_template_resref_present = area_row.module_template_resref.is_some(),
             area_resref = context.area_resref.as_str(),
             area_rows = %overlap.formatted_rows(),
