@@ -36142,13 +36142,7 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
         let Some(state) = claim.parser.state else {
             return false;
         };
-        let Some(module_state) = row.module_state else {
-            return false;
-        };
-        if state.locked != module_state.locked
-            || state.lockable != module_state.lockable
-            || state.neutral_ee_state_suffix
-        {
+        if !record::verified_placeable_update_state_matches_area_row(state, row) {
             return false;
         }
     }

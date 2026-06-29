@@ -19,7 +19,8 @@ use super::{
 };
 use crate::translate::area::{
     AreaPlaceableContext, AreaPlaceableContextRow, AreaPlaceableContextState,
-    AreaPlaceableObservedState, format_area_placeable_module_state,
+    AreaPlaceableContextStateConflict, AreaPlaceableObservedState,
+    format_area_placeable_module_state,
 };
 #[cfg(test)]
 use crate::translate::area::{AreaPlaceableContextRowKind, format_area_placeable_context_row};
@@ -111,6 +112,31 @@ impl PlaceableUpdateStateBits {
             ..self
         }
     }
+}
+
+pub(super) fn verified_placeable_update_state_conflict_with_module_state(
+    state_record: reader::VerifiedEeDoorPlaceableState,
+    module_state: AreaPlaceableContextState,
+) -> Option<AreaPlaceableContextStateConflict> {
+    if state_record.neutral_ee_state_suffix {
+        return None;
+    }
+    Some(
+        PlaceableUpdateStateBits::from_verified(state_record)
+            .observed_area_state()
+            .conflict_with_module_state(module_state),
+    )
+}
+
+pub(super) fn verified_placeable_update_state_matches_area_row(
+    state_record: reader::VerifiedEeDoorPlaceableState,
+    area_row: &AreaPlaceableContextRow,
+) -> bool {
+    let Some(module_state) = area_row.module_state else {
+        return false;
+    };
+    verified_placeable_update_state_conflict_with_module_state(state_record, module_state)
+        .is_some_and(|conflict| !conflict.any())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1756,10 +1782,10 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
     };
     let module_state = area_row.module_state?;
 
-    let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
-    let conflict = source_state
-        .observed_area_state()
-        .conflict_with_module_state(module_state);
+    let conflict = verified_placeable_update_state_conflict_with_module_state(
+        source_state_record,
+        module_state,
+    )?;
     if !conflict.any() {
         return Some(false);
     }
@@ -1932,10 +1958,10 @@ fn reconcile_placeable_update_state_with_area_context(
         return Some(false);
     };
 
-    let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
-    let conflict = source_state
-        .observed_area_state()
-        .conflict_with_module_state(module_state);
+    let conflict = verified_placeable_update_state_conflict_with_module_state(
+        source_state_record,
+        module_state,
+    )?;
     if !conflict.any() {
         return Some(false);
     }
@@ -2791,6 +2817,58 @@ mod tests {
             lockable,
             visual_payload,
         }
+    }
+
+    fn verified_state(
+        locked: bool,
+        lockable: bool,
+        neutral_ee_state_suffix: bool,
+    ) -> reader::VerifiedEeDoorPlaceableState {
+        reader::VerifiedEeDoorPlaceableState {
+            bit_cursor: CNW_FRAGMENT_HEADER_BITS,
+            visual_selector: false,
+            visual_state_active: false,
+            locked,
+            lockable,
+            visual_payload: false,
+            neutral_ee_state_suffix,
+        }
+    }
+
+    #[test]
+    fn verified_update_state_area_match_uses_observed_lock_state() {
+        let row = AreaPlaceableContextRow {
+            module_state: Some(AreaPlaceableContextState {
+                useable: true,
+                trap_disarmable: true,
+                lockable: true,
+                locked: false,
+                ..AreaPlaceableContextState::default()
+            }),
+            ..AreaPlaceableContextRow::default()
+        };
+
+        assert!(
+            verified_placeable_update_state_matches_area_row(
+                verified_state(false, true, false),
+                &row
+            ),
+            "U/09 state rows only observe the decompiled lockable/locked bits; use/trap state stays with A/09"
+        );
+        assert!(
+            !verified_placeable_update_state_matches_area_row(
+                verified_state(true, false, false),
+                &row
+            ),
+            "lockable/locked drift must still reject the selected module-backed static row"
+        );
+        assert!(
+            !verified_placeable_update_state_matches_area_row(
+                verified_state(false, true, true),
+                &row
+            ),
+            "the impossible EE neutral state suffix must not be accepted as a repaired U/09 row"
+        );
     }
 
     #[test]
