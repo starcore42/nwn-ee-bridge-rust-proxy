@@ -31,6 +31,7 @@ pub(super) struct VerifiedEeDoorPlaceableUpdateRecord {
     pub(super) appearance: Option<VerifiedEeDoorPlaceableAppearance>,
     pub(super) appearance_offset: Option<usize>,
     pub(super) scale_state: Option<VerifiedEeDoorPlaceableScaleState>,
+    pub(super) state: Option<VerifiedEeDoorPlaceableState>,
     pub(super) state_bit_cursor: Option<usize>,
     pub(super) next_bit_cursor: usize,
 }
@@ -77,6 +78,17 @@ pub(super) struct VerifiedEeDoorPlaceableAppearance {
 pub(super) struct VerifiedEeDoorPlaceableScaleState {
     pub(super) scale_raw: u32,
     pub(super) generic_state_word: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VerifiedEeDoorPlaceableState {
+    pub(super) bit_cursor: usize,
+    pub(super) visual_selector: bool,
+    pub(super) visual_state_active: bool,
+    pub(super) locked: bool,
+    pub(super) lockable: bool,
+    pub(super) visual_payload: bool,
+    pub(super) neutral_ee_state_suffix: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -441,6 +453,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     let mut appearance = None;
     let mut appearance_offset = None;
     let mut scale_state = None;
+    let mut state = None;
     let mut state_bit_cursor = None;
 
     if (mask & LEGACY_UPDATE_POSITION_MASK) != 0 {
@@ -601,7 +614,13 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
     }
 
     if (mask & LEGACY_UPDATE_STATE_MASK) != 0 {
-        state_bit_cursor = Some(fragment_cursor);
+        let state_cursor = fragment_cursor;
+        state_bit_cursor = Some(state_cursor);
+        let visual_selector = fragment_bits.get(state_cursor).copied()?;
+        let visual_state_active = fragment_bits.get(state_cursor + 1).copied()?;
+        let locked = fragment_bits.get(state_cursor + 2).copied()?;
+        let lockable = fragment_bits.get(state_cursor + 3).copied()?;
+        let visual_payload = fragment_bits.get(state_cursor + 4).copied()?;
         fragment_cursor = advance_bits(
             fragment_bits,
             fragment_cursor,
@@ -612,9 +631,19 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             // extra BOOL beyond Diamond's five legacy state bits. The
             // translator inserts `false`, so an exact bridge packet must carry
             // that neutral branch.
-            if fragment_bits.get(fragment_cursor).copied()? {
+            let neutral_ee_state_suffix = fragment_bits.get(fragment_cursor).copied()?;
+            if neutral_ee_state_suffix {
                 return None;
             }
+            state = Some(VerifiedEeDoorPlaceableState {
+                bit_cursor: state_cursor,
+                visual_selector,
+                visual_state_active,
+                locked,
+                lockable,
+                visual_payload,
+                neutral_ee_state_suffix,
+            });
             fragment_cursor = advance_bits(fragment_bits, fragment_cursor, 1)?;
         }
     }
@@ -636,6 +665,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         appearance,
         appearance_offset,
         scale_state,
+        state,
         state_bit_cursor,
         next_bit_cursor: fragment_cursor,
     })
@@ -793,7 +823,45 @@ mod tests {
                 .generic_state_word,
             0x0016
         );
+        assert_eq!(claim.state, None);
         assert_eq!(claim.next_bit_cursor, 0);
+    }
+
+    #[test]
+    fn door_placeable_update_parser_retains_verified_state_branch() {
+        let object_id = 0x1234_ABCD_u32;
+        let mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_STATE_MASK;
+        let mut live = Vec::new();
+        live.extend_from_slice(&[b'U', PLACEABLE_OBJECT_TYPE]);
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&[0x10, 0x00, 0x20, 0x00, 0x30, 0x00]);
+        let bits = vec![
+            true, false, // position low Z bits.
+            true, false, true, false, true,  // five legacy state bits.
+            false, // EE-only neutral state suffix.
+            true,  // following stream bit, not owned by this record.
+        ];
+
+        let claim = parse_verified_ee_door_placeable_update_record(&live, 0, live.len(), &bits, 0)
+            .expect("exact position+state update");
+        let state = claim.state.expect("verified state branch");
+
+        assert_eq!(
+            claim.state_bit_cursor,
+            Some(LEGACY_UPDATE_POSITION_FRAGMENT_BITS)
+        );
+        assert_eq!(state.bit_cursor, LEGACY_UPDATE_POSITION_FRAGMENT_BITS);
+        assert!(state.visual_selector);
+        assert!(!state.visual_state_active);
+        assert!(state.locked);
+        assert!(!state.lockable);
+        assert!(state.visual_payload);
+        assert!(!state.neutral_ee_state_suffix);
+        assert_eq!(
+            claim.next_bit_cursor,
+            LEGACY_UPDATE_POSITION_FRAGMENT_BITS + LEGACY_UPDATE_STATE_FRAGMENT_BITS + 1
+        );
     }
 
     #[test]

@@ -90,6 +90,16 @@ struct PlaceableUpdateStateBits {
 }
 
 impl PlaceableUpdateStateBits {
+    fn from_verified(state: reader::VerifiedEeDoorPlaceableState) -> Self {
+        Self {
+            visual_selector: state.visual_selector,
+            visual_state_active: state.visual_state_active,
+            locked: state.locked,
+            lockable: state.lockable,
+            visual_payload: state.visual_payload,
+        }
+    }
+
     fn observed_area_state(self) -> AreaPlaceableObservedState {
         AreaPlaceableObservedState::from_update_lock_state(self.lockable, self.locked)
     }
@@ -283,7 +293,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
                     area_context,
                     object_id,
                     bits,
-                    claim.state_bit_cursor,
+                    claim.state,
                     raw_mask,
                     record_offset,
                     *record_end,
@@ -1524,7 +1534,7 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
             area_context,
             object_id,
             bits,
-            claim.state_bit_cursor,
+            claim.state,
             translated_mask,
             record_offset,
             *record_end,
@@ -1544,8 +1554,13 @@ pub(super) fn rewrite_update_record_for_ee_with_area_context(
         )
         .and_then(|claim| {
             claim
-                .state_bit_cursor
-                .and_then(|state_cursor| placeable_update_state_bits_at_cursor(bits, state_cursor))
+                .state
+                .map(PlaceableUpdateStateBits::from_verified)
+                .or_else(|| {
+                    claim.state_bit_cursor.and_then(|state_cursor| {
+                        placeable_update_state_bits_at_cursor(bits, state_cursor)
+                    })
+                })
         })
     } else {
         None
@@ -1692,7 +1707,7 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_context(
         Some(area_context),
         object_id,
         bits,
-        claim.state_bit_cursor,
+        claim.state,
         mask,
         record_offset,
         record_end,
@@ -1717,12 +1732,13 @@ pub(super) fn reconcile_verified_placeable_update_state_claim_with_area_row(
     if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
         return Some(false);
     }
-    let Some(state_cursor) = claim.state_bit_cursor else {
+    let Some(source_state_record) = claim.state else {
         return Some(false);
     };
+    let state_cursor = source_state_record.bit_cursor;
     let module_state = area_row.module_state?;
 
-    let source_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+    let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
     let conflict = source_state
         .observed_area_state()
         .conflict_with_module_state(module_state);
@@ -1871,7 +1887,7 @@ fn reconcile_placeable_update_state_with_area_context(
     area_context: Option<&AreaPlaceableContext>,
     object_id: u32,
     bits: &mut [bool],
-    state_bit_cursor: Option<usize>,
+    state: Option<reader::VerifiedEeDoorPlaceableState>,
     mask: u32,
     record_offset: usize,
     record_end: usize,
@@ -1879,9 +1895,10 @@ fn reconcile_placeable_update_state_with_area_context(
     if (mask & LEGACY_UPDATE_STATE_MASK) == 0 {
         return Some(false);
     }
-    let Some(state_cursor) = state_bit_cursor else {
+    let Some(source_state_record) = state else {
         return Some(false);
     };
+    let state_cursor = source_state_record.bit_cursor;
     let Some(context) = area_context else {
         return Some(false);
     };
@@ -1892,7 +1909,7 @@ fn reconcile_placeable_update_state_with_area_context(
         return Some(false);
     };
 
-    let source_state = placeable_update_state_bits_at_cursor(bits, state_cursor)?;
+    let source_state = PlaceableUpdateStateBits::from_verified(source_state_record);
     let conflict = source_state
         .observed_area_state()
         .conflict_with_module_state(module_state);

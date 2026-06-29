@@ -21747,14 +21747,15 @@ fn verified_record_placeable_state(
 }
 
 fn verified_placeable_update_state(
-    fragment_bits: &[bool],
+    _fragment_bits: &[bool],
     claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
 ) -> Option<LiveObjectPlaceableState> {
-    let cursor = claim.state_bit_cursor?;
+    let state = claim.state?;
+    debug_assert_eq!(claim.state_bit_cursor, Some(state.bit_cursor));
 
     Some(LiveObjectPlaceableState::from_update_lock_state(
-        fragment_bits.get(cursor + 3).copied()?,
-        fragment_bits.get(cursor + 2).copied()?,
+        state.lockable,
+        state.locked,
     ))
 }
 
@@ -29657,7 +29658,7 @@ fn placeable_update_owned_output_for_module_static_row(
         None
     };
 
-    let lock_state = if claim.parser.state_bit_cursor.is_some() {
+    let lock_state = if claim.parser.state.is_some() {
         let module_state = row.module_state?;
         Some(PlaceableUpdateLockOutput {
             lockable: module_state.lockable,
@@ -35296,6 +35297,7 @@ fn verified_placeable_update_non_appearance_fields_preserved(
             source.scale_state,
             rewritten.scale_state,
         )
+        && source.state == rewritten.state
         && source.state_bit_cursor == rewritten.state_bit_cursor
         && source.next_bit_cursor == rewritten.next_bit_cursor
 }
