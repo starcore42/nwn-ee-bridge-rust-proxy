@@ -6807,6 +6807,90 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_field_postcondition_rejects_unproved_orientation_branch_sibling() {
+        let object_id = 0x8000_34E2u32;
+        let row = AreaPlaceableContextRow {
+            object_id,
+            appearance: 0x0022,
+            dir_x: 0.0,
+            dir_y: 1.0,
+            dir_z: 1.0,
+            has_direction: true,
+            ..AreaPlaceableContextRow::default()
+        };
+        let row_scalar =
+            area_static_row_scalar_orientation(&row).expect("row has a decompile-backed yaw");
+        assert!(
+            area_static_row_vector_orientation(&row).is_none(),
+            "nonzero static-row Z cannot satisfy the vector branch proof"
+        );
+        let build_scalar_claim = |scalar_tenths_degrees: u16| -> VerifiedPlaceableUpdateExactClaim {
+            let mask = LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_APPEARANCE_MASK;
+            let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&mask.to_le_bytes());
+            live.push(((scalar_tenths_degrees >> 4) & 0xFF) as u8);
+            live.extend_from_slice(&row.appearance.to_le_bytes());
+
+            let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            fragment_bits.push(false);
+            for shift in (0..4).rev() {
+                fragment_bits.push(((scalar_tenths_degrees >> shift) & 1) != 0);
+            }
+            verified_placeable_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .expect("scalar orientation+appearance U/09 should exact-claim")
+        };
+        let build_vector_claim = || -> VerifiedPlaceableUpdateExactClaim {
+            let mask = LEGACY_UPDATE_ORIENTATION_MASK | LEGACY_UPDATE_APPEARANCE_MASK;
+            let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+            live.extend_from_slice(&object_id.to_le_bytes());
+            live.extend_from_slice(&mask.to_le_bytes());
+            live.extend_from_slice(&0u16.to_le_bytes());
+            live.extend_from_slice(&0u16.to_le_bytes());
+            live.extend_from_slice(&0u16.to_le_bytes());
+            live.extend_from_slice(&row.appearance.to_le_bytes());
+
+            let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+            fragment_bits.push(true);
+            verified_placeable_update_exact_claim(
+                &live,
+                0,
+                live.len(),
+                &fragment_bits,
+                CNW_FRAGMENT_HEADER_BITS,
+            )
+            .expect("vector orientation+appearance U/09 should exact-claim")
+        };
+        let appearance_rewrite = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+
+        assert!(
+            !verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_vector_claim(),
+                &row,
+                appearance_rewrite,
+            ),
+            "an appearance repair must reject a present vector-orientation sibling when the selected static row only proves scalar yaw"
+        );
+        assert!(
+            verified_placeable_update_rewritten_fields_match_area_static_row(
+                build_scalar_claim(row_scalar),
+                &row,
+                appearance_rewrite,
+            ),
+            "the same selected row accepts a present scalar-orientation sibling once it matches the proven yaw"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -36225,7 +36309,7 @@ fn verified_placeable_update_rewritten_fields_match_area_static_row(
     let orientation_must_match = rewritten.orientation
         || (check_present_siblings
             && orientation_present
-            && area_static_row_orientation_available_for_claim(claim.parser, row));
+            && area_static_row_orientation_available(row));
     if orientation_must_match {
         if let Some(orientation) = claim.parser.scalar_orientation {
             if !verified_placeable_update_scalar_orientation_matches_area_row(orientation, row) {
@@ -36271,17 +36355,9 @@ fn area_static_row_position_available(row: &AreaPlaceableContextRow) -> bool {
     encode_area_static_row_position(row).is_some()
 }
 
-fn area_static_row_orientation_available_for_claim(
-    claim: reader::VerifiedEeDoorPlaceableUpdateRecord,
-    row: &AreaPlaceableContextRow,
-) -> bool {
-    if claim.scalar_orientation.is_some() {
-        area_static_row_scalar_orientation(row).is_some()
-    } else if claim.vector_orientation.is_some() {
-        area_static_row_vector_orientation(row).is_some()
-    } else {
-        false
-    }
+fn area_static_row_orientation_available(row: &AreaPlaceableContextRow) -> bool {
+    area_static_row_scalar_orientation(row).is_some()
+        || area_static_row_vector_orientation(row).is_some()
 }
 
 fn area_static_row_appearance_available(row: &AreaPlaceableContextRow) -> bool {
