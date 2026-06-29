@@ -6171,6 +6171,26 @@ mod diagnostic_tests {
             Some(generic_state),
             "generic state word must remain immediately after the shifted scale"
         );
+        let rewritten_bits =
+            bits::decode_msb_valid_bits(&payload[claim.declared..], CNW_FRAGMENT_HEADER_BITS)
+                .expect("rewritten exact U/09 fragment bits");
+        let exact_claim = verified_placeable_update_exact_claim(
+            rewritten_live,
+            0,
+            rewritten_live.len(),
+            &rewritten_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("rewritten custom appearance U/09 should exact-claim");
+        assert_eq!(
+            exact_claim
+                .parser
+                .scale_state
+                .expect("scale/state branch")
+                .read_offset,
+            scale_offset,
+            "the parser-owned scale/state cursor must move after the inserted CResRef"
+        );
     }
 
     #[test]
@@ -6218,6 +6238,82 @@ mod diagnostic_tests {
             ),
             "custom appearance width rewrites must reject shifted or corrupted scale/state tails"
         );
+    }
+
+    #[test]
+    fn exact_placeable_update_custom_resref_remove_moves_scale_state_cursor_back() {
+        let object_id = 0x8000_34DCu32;
+        let source_resref = *b"plc_custom_src\0\0";
+        let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_SCALE_STATE_MASK;
+        let scale = 0.75f32;
+        let generic_state = 0x2233u16;
+        let mut live = vec![b'U', PLACEABLE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&mask.to_le_bytes());
+        live.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        live.extend_from_slice(&source_resref);
+        live.extend_from_slice(&scale.to_le_bytes());
+        live.extend_from_slice(&generic_state.to_le_bytes());
+        let record_end = live.len();
+        let fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        let source_claim = verified_placeable_update_exact_claim(
+            &live,
+            0,
+            record_end,
+            &fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("source custom appearance+scale/state U/09 should exact-claim");
+        assert_eq!(
+            source_claim
+                .parser
+                .scale_state
+                .expect("source scale/state branch")
+                .read_offset,
+            LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        );
+
+        let appearance_offset = LEGACY_UPDATE_HEADER_BYTES;
+        let resref_start = appearance_offset + EE_UPDATE_APPEARANCE_WORD_READ_BYTES;
+        let resref_end = resref_start + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        let mut candidate = live.clone();
+        write_u16_le(&mut candidate, appearance_offset, 0x0022).expect("test appearance write");
+        candidate.drain(resref_start..resref_end);
+        let rewritten_record_end = record_end - EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+
+        assert!(
+            verified_rewritten_placeable_update_appearance_record(
+                &candidate,
+                &fragment_bits,
+                0,
+                rewritten_record_end,
+                CNW_FRAGMENT_HEADER_BITS,
+                source_claim,
+                0x0022,
+                None,
+            ),
+            "custom-to-normal appearance rewrites must prove scale/state moved back by exactly one CResRef"
+        );
+        let rewritten_claim = verified_placeable_update_exact_claim(
+            &candidate,
+            0,
+            rewritten_record_end,
+            &fragment_bits,
+            CNW_FRAGMENT_HEADER_BITS,
+        )
+        .expect("rewritten normal appearance+scale/state U/09 should exact-claim");
+        let rewritten_scale_state = rewritten_claim
+            .parser
+            .scale_state
+            .expect("rewritten scale/state branch");
+        assert_eq!(
+            rewritten_scale_state.read_offset,
+            LEGACY_UPDATE_HEADER_BYTES + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        );
+        assert_eq!(rewritten_scale_state.scale_raw, scale.to_bits());
+        assert_eq!(rewritten_scale_state.generic_state_word, generic_state);
     }
 
     #[test]
@@ -35262,6 +35358,13 @@ fn verified_rewritten_placeable_update_appearance_record(
     target_appearance: u16,
     target_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
 ) -> bool {
+    let Some(appearance_byte_delta) = verified_placeable_update_appearance_byte_delta(
+        source_claim.parser.appearance,
+        target_appearance,
+        target_resref,
+    ) else {
+        return false;
+    };
     verified_placeable_update_exact_claim(
         live_bytes,
         record_offset,
@@ -35277,6 +35380,7 @@ fn verified_rewritten_placeable_update_appearance_record(
             && verified_placeable_update_non_appearance_fields_preserved(
                 source_claim.parser,
                 claim.parser,
+                appearance_byte_delta,
             )
             && verified_placeable_update_appearance(live_bytes, claim.parser)
                 == Some(LiveObjectPlaceableAppearance {
@@ -35286,9 +35390,35 @@ fn verified_rewritten_placeable_update_appearance_record(
     })
 }
 
+fn verified_placeable_update_appearance_byte_delta(
+    source: Option<reader::VerifiedEeDoorPlaceableAppearance>,
+    target_appearance: u16,
+    target_resref: Option<[u8; EE_UPDATE_APPEARANCE_RESREF_READ_BYTES]>,
+) -> Option<isize> {
+    let source = source?;
+    let source_width = EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        + if source.resref.is_some() {
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        } else {
+            0
+        };
+    let target_width = EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+        + if is_custom_placeable_appearance(target_appearance) {
+            target_resref?;
+            EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
+        } else {
+            if target_resref.is_some() {
+                return None;
+            }
+            0
+        };
+    Some(target_width as isize - source_width as isize)
+}
+
 fn verified_placeable_update_non_appearance_fields_preserved(
     source: reader::VerifiedEeDoorPlaceableUpdateRecord,
     rewritten: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    appearance_byte_delta: isize,
 ) -> bool {
     // EE and Diamond read the generic door/placeable update in the same order:
     // position, orientation, appearance/resref, scale/state, then fragment
@@ -35307,6 +35437,7 @@ fn verified_placeable_update_non_appearance_fields_preserved(
         && verified_placeable_update_scale_state_preserved(
             source.scale_state,
             rewritten.scale_state,
+            appearance_byte_delta,
         )
         && source.state == rewritten.state
         && source.state_bit_cursor == rewritten.state_bit_cursor
@@ -35362,14 +35493,25 @@ fn verified_placeable_update_vector_orientation_preserved(
 fn verified_placeable_update_scale_state_preserved(
     source: Option<reader::VerifiedEeDoorPlaceableScaleState>,
     rewritten: Option<reader::VerifiedEeDoorPlaceableScaleState>,
+    appearance_byte_delta: isize,
 ) -> bool {
     match (source, rewritten) {
         (None, None) => true,
         (Some(source), Some(rewritten)) => {
-            source.scale_raw == rewritten.scale_raw
+            shifted_read_offset(source.read_offset, appearance_byte_delta)
+                == Some(rewritten.read_offset)
+                && source.scale_raw == rewritten.scale_raw
                 && source.generic_state_word == rewritten.generic_state_word
         }
         _ => false,
+    }
+}
+
+fn shifted_read_offset(offset: usize, delta: isize) -> Option<usize> {
+    if delta >= 0 {
+        offset.checked_add(delta as usize)
+    } else {
+        offset.checked_sub(delta.unsigned_abs())
     }
 }
 

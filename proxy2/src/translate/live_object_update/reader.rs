@@ -76,6 +76,7 @@ pub(super) struct VerifiedEeDoorPlaceableAppearance {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedEeDoorPlaceableScaleState {
+    pub(super) read_offset: usize,
     pub(super) scale_raw: u32,
     pub(super) generic_state_word: u16,
 }
@@ -587,6 +588,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
         // at loc_467C6B; EE `sub_14079C050` preserves that order at
         // loc_14079C690 before loc_14079CB44. A swapped same-length row can
         // otherwise land byte-exact while decoding an impossible scale here.
+        let scale_state_read_offset = read_cursor;
         let scale_raw = read_u32_le(bytes, read_cursor)?;
         let scale = read_f32_le(bytes, read_cursor)?;
         let generic_state_word = read_u16_le(bytes, read_cursor + 4)?;
@@ -599,6 +601,7 @@ pub(super) fn parse_verified_ee_door_placeable_update_record(
             return None;
         }
         scale_state = Some(VerifiedEeDoorPlaceableScaleState {
+            read_offset: scale_state_read_offset,
             scale_raw,
             generic_state_word,
         });
@@ -812,17 +815,15 @@ mod tests {
         assert_eq!(appearance.read_offset, LEGACY_UPDATE_HEADER_BYTES);
         assert_eq!(appearance.appearance, 0xFFFE);
         assert_eq!(appearance.resref, Some(resref));
+        let scale_state = claim.scale_state.expect("scale/state branch");
         assert_eq!(
-            claim.scale_state.expect("scale/state branch").scale_raw,
-            1.0_f32.to_bits()
+            scale_state.read_offset,
+            LEGACY_UPDATE_HEADER_BYTES
+                + EE_UPDATE_APPEARANCE_WORD_READ_BYTES
+                + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES
         );
-        assert_eq!(
-            claim
-                .scale_state
-                .expect("scale/state branch")
-                .generic_state_word,
-            0x0016
-        );
+        assert_eq!(scale_state.scale_raw, 1.0_f32.to_bits());
+        assert_eq!(scale_state.generic_state_word, 0x0016);
         assert_eq!(claim.state, None);
         assert_eq!(claim.next_bit_cursor, 0);
     }
