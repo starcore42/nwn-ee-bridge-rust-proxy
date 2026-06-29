@@ -6574,6 +6574,53 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_placeable_update_field_postcondition_rejects_scale_state_drift_after_custom_insert() {
+        let source = exact_placeable_update_claim_for_preservation_tests();
+        let rewritten_fields = PlaceableUpdateFieldRewriteSet {
+            appearance: true,
+            ..PlaceableUpdateFieldRewriteSet::default()
+        };
+        let mut shifted = source;
+        shifted.read_end += EE_UPDATE_APPEARANCE_RESREF_READ_BYTES;
+        shifted.scale_state =
+            source
+                .scale_state
+                .map(|scale_state| reader::VerifiedEeDoorPlaceableScaleState {
+                    read_offset: scale_state.read_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+                    generic_state_word: scale_state.generic_state_word ^ 0x0001,
+                    ..scale_state
+                });
+
+        assert!(
+            !verified_placeable_update_final_row_preserved(
+                source,
+                shifted,
+                rewritten_fields,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "a final exact U/09 row must not hide shifted scale/state corruption behind a custom appearance insert"
+        );
+
+        let mut preserved = shifted;
+        preserved.scale_state =
+            source
+                .scale_state
+                .map(|scale_state| reader::VerifiedEeDoorPlaceableScaleState {
+                    read_offset: scale_state.read_offset + EE_UPDATE_APPEARANCE_RESREF_READ_BYTES,
+                    ..scale_state
+                });
+        assert!(
+            verified_placeable_update_final_row_preserved(
+                source,
+                preserved,
+                rewritten_fields,
+                EE_UPDATE_APPEARANCE_RESREF_READ_BYTES as isize,
+            ),
+            "the postcondition accepts the shifted scale/state cursor only when the parser-owned values survive"
+        );
+    }
+
+    #[test]
     fn exact_placeable_update_summary_counts_module_custom_appearance_skip_when_state_rewrites() {
         let object_id = 0x8000_34D8u32;
         let mask = LEGACY_UPDATE_APPEARANCE_MASK | LEGACY_UPDATE_STATE_MASK;
@@ -27586,6 +27633,8 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     && let AreaPlaceableContextStaticReconciliationTarget::UniqueModuleBacked(row) =
                         selection.target
                 {
+                    let appearance_byte_delta = appearance_rewrite.bytes_inserted as isize
+                        - appearance_rewrite.bytes_removed as isize;
                     let rewritten_record_end = record_end
                         .checked_add(appearance_rewrite.bytes_inserted)?
                         .checked_sub(appearance_rewrite.bytes_removed)?;
@@ -27600,6 +27649,12 @@ fn rewrite_verified_placeable_states_with_area_context_if_possible(
                     };
                     if rewritten_claim.object_id != update_claim.object_id
                         || rewritten_claim.mask != update_claim.mask
+                        || !verified_placeable_update_final_row_preserved(
+                            appearance_source_claim.parser,
+                            rewritten_claim.parser,
+                            rewritten_fields,
+                            appearance_byte_delta,
+                        )
                         || !verified_placeable_update_rewritten_fields_match_area_static_row(
                             rewritten_claim,
                             row,
@@ -35746,6 +35801,45 @@ fn verified_placeable_update_non_appearance_fields_preserved(
         && source.state == rewritten.state
         && source.state_bit_cursor == rewritten.state_bit_cursor
         && source.next_bit_cursor == rewritten.next_bit_cursor
+}
+
+fn verified_placeable_update_final_row_preserved(
+    source: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    rewritten: reader::VerifiedEeDoorPlaceableUpdateRecord,
+    rewritten_fields: PlaceableUpdateFieldRewriteSet,
+    appearance_byte_delta: isize,
+) -> bool {
+    // The final row check uses the parser claim taken after position,
+    // orientation, and state edits but before appearance width edits. Diamond
+    // and EE read appearance before scale/state, so only the appearance field
+    // itself may differ here; every later byte cursor may move only by the
+    // inserted/removed CResRef width.
+    source.appearance_offset == rewritten.appearance_offset
+        && verified_placeable_update_non_appearance_fields_preserved(
+            source,
+            rewritten,
+            appearance_byte_delta,
+        )
+        && (rewritten_fields.appearance
+            || verified_placeable_update_appearance_preserved(
+                source.appearance,
+                rewritten.appearance,
+            ))
+}
+
+fn verified_placeable_update_appearance_preserved(
+    source: Option<reader::VerifiedEeDoorPlaceableAppearance>,
+    rewritten: Option<reader::VerifiedEeDoorPlaceableAppearance>,
+) -> bool {
+    match (source, rewritten) {
+        (None, None) => true,
+        (Some(source), Some(rewritten)) => {
+            source.read_offset == rewritten.read_offset
+                && source.appearance == rewritten.appearance
+                && source.resref == rewritten.resref
+        }
+        _ => false,
+    }
 }
 
 fn verified_placeable_update_position_preserved(
