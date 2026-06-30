@@ -8,6 +8,582 @@ evidence and date or remove it from the active list. Specific modules, assets,
 resrefs, captures, and chapters belong here only as evidence for a broader rule,
 not as standalone workaround targets.
 
+## 2026-06-25 manual automation/code review correction
+
+- 2026-06-28 automation instruction refresh: every recurring run must check
+  the newest real live HG harness capture first. Only a capture that reached
+  gameplay and is no more than 24 hours old counts as current evidence. If the
+  latest gameplay-reaching capture is stale or missing, run a fresh live HG
+  capture before ordinary proxy work. If the previous capture did not reach
+  gameplay, fix the harness/server-connection blocker first, update
+  `docs/harness-regression-policy.md`, and rerun.
+- The recurring automation/project workspace must use the populated checkout at
+  `D:\Codex Projects\NWN EE Bridge`. Future runs must start there and fail
+  visibly if `Cargo.toml`, `.git`, or `proxy2` are missing.
+- Recent `A/09` fixed-width custom-carrier work contains real implementation,
+  including source-carried pre-add custom carrier synthesis, but too many
+  consecutive runs ended with packet bytes unchanged and "next replay" notes.
+  Do not add another carrier counter-only slice until a fresh replay or harness
+  blocker is recorded.
+- Manual Diamond live-capture review:
+  `C:\nwnbridge\codex-review-diamond-client-20260625-174949` built the probe,
+  launched Diamond against HG server `213` (`158.69.144.21:5133`), accepted
+  `BNVR A`, sent startup/login `M...` frames, received vault/module-list data,
+  and wrote 24 packet dumps. The unattended run stalled before gameplay because
+  the auto-character path tried PRE_PLAYMOD selection while the entry list was
+  still empty (`entries=0 count=0`). Treat this as the next harness production
+  target if gameplay replay cannot be obtained manually.
+- Immediate automation target: either produce a gameplay-level live HG or local
+  harness replay for the current fixed-width `A/09` residual carrier evidence,
+  or fix the Diamond auto-character/refresh retry path so the replay can run
+  unattended. Only after that evidence should another `U/09` carrier emission
+  rule be widened.
+- 2026-06-28 live-data gate satisfied by
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`: probe window
+  `2026-06-28 00:05:38.124 -> 00:07:37.612`, 119 packet files, gameplay reached
+  through module/resource load, area load, and repeated live-object/status
+  traffic. Follow-up production slice moved `P/04/01 Area_ClientArea` ownership
+  into the focused gameplay-stream splitter, using the existing exact EE
+  LoadArea proof/legacy rewrite as the owner; replay
+  `C:\nwnbridge\codex-proxy2-replay-area-stream-automation-20260628-190900`
+  stayed at 0 quarantines and 214 strict allows. Next concrete path: inspect
+  residual gameplay pressure from `P/05` live-object/add/update or the next
+  high-frequency focused family in the same fresh capture, rather than adding
+  more carrier counters.
+- 2026-06-28 follow-up replay
+  `C:\nwnbridge\codex-proxy2-replay-baseline-automation-1950-20260628-195131`
+  against the same fresh gameplay capture stayed at 0 quarantines, 214 strict
+  allows, and no live-object/carrier residuals. Current replay pressure is still
+  `Journal_Updated` plus `P/05` live-object, both already focused, so the
+  production slice hardened a replay-adjacent strict gap: `P/17/03
+  Sound_Object_Stop` now has focused gameplay-stream ownership and rejects
+  shifted fragment tails before following high-level packets. This capture does
+  not contain Sound packets; next live capture with Sound traffic should confirm
+  the focused owner in replay.
+- 2026-06-28 follow-up module-resource stream hardening: the same fresh
+  gameplay capture exercises the early `P/01/03 ServerStatus_ModuleResources`
+  transition through Module_Info/resource-load replay. `P/01/03` now has
+  focused gameplay-stream ownership through the existing decompile-backed
+  `CNWCModule::LoadModuleResources` parser/writer, so shifted NWSync BOOL
+  fragment tails cannot split before a following high-level status packet.
+- 2026-06-28 follow-up status stream hardening: the same fresh gameplay replay
+  repeatedly uses `P/01/01 ServerStatus_Status` as the boundary after module,
+  loadbar, and synthetic area-load transitions. `P/01/01` now routes through
+  the focused `server_status` owner before generic fixed-length splitting, so
+  unowned slack after the empty status envelope keeps the stream pending
+  instead of splitting a false boundary. Next production path: continue moving
+  replay-exercised fixed/generic high-level families into exact focused stream
+  owners, or return to `P/05`/`A/09` only when fresh replay shows residual
+  carrier or live-object pressure again.
+- 2026-06-28 follow-up login stream hardening: the same fresh gameplay replay
+  exercises `P/02/05 Login_Confirm`, `P/02/0C Login_GetWaypoint`, and client
+  `P/02/11 Login_ServerSubDirectoryCharacter`. `P/02` login/client-login rows
+  now route through the existing decompile-backed focused owners before generic
+  splitting, so no-body login signals and declared login rows reject unowned
+  tail slack before a following high-level packet. Replay
+  `C:\nwnbridge\codex-proxy2-replay-login-stream-automation-20260628-225950`
+  stayed at 0 quarantines, 214 strict allows, and 0 fixed-width/live-object
+  residuals. Next production path: continue focused stream ownership for any
+  remaining replay-exercised generic boundary families, or return to
+  `P/05`/`A/09` only if fresh replay pressure reappears.
+- 2026-06-29 follow-up PlayModuleCharacterList stream hardening: at the live
+  gate the latest gameplay-reaching HG capture was still
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260628-000537`, last packet
+  `2026-06-28T00:07:37.5989693+10:00`, about 23h47m old, with gameplay reached.
+  The same replay exercises client `P/31/01` start and `P/31/02` stop controls.
+  `P/31/01..03` now route through the existing decompile-backed
+  PlayModuleCharacterList focused owner before generic fixed/declared
+  splitting, so no-body client controls and response fragment cursors reject
+  unowned tail slack before following high-level packets. Replay
+  `C:\nwnbridge\codex-proxy2-replay-play-module-stream-automation-20260629-0009`
+  stayed at 0 quarantines, 214 strict allows, and 0 fixed-width/live-object
+  residuals. This capture is now over 24h old after the run crossed midnight
+  local time; the next automation run should refresh live HG gameplay evidence
+  before ordinary proxy work.
+- 2026-06-29 live-data gate refresh: stale prior gameplay capture forced a new
+  HG Diamond capture. First run
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260629-005550` reached `BNVR A`
+  and one `P/01/03` response but did not reach gameplay because the driver
+  fell back from the server-list DirectConnect path to native DirectConnect and
+  never sent the client `P/11/01` character-list startup packet. Production
+  harness fix now reuses the remembered `SERVERLIST_PANEL` when Diamond's
+  global app-state slot is empty, instead of treating the server-list path as
+  absent. Confirming capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143` produced 151
+  packet dumps, window `2026-06-29 01:01:44.364 -> 01:04:43.744 +10:00`, and
+  reached gameplay with module/resource load, area/gameplay traffic, and 67
+  live-object frames. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-fresh-live-20260629-20260629-010523` stayed
+  at 0 quarantines, 280 strict allows, 67 captured live-object frames, 18 exact
+  live-object shapes, and 0 fixed-width/live-object residuals. Next production
+  path remains a replay-exercised packet-family stream-owner slice only when a
+  fresh capture shows residual pressure; current fresh evidence has no
+  quarantine/residual blocker.
+- 2026-06-29 follow-up client stream-owner hardening: live-data gate used the
+  same gameplay-reaching capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`, still fresh at
+  run start. The replay exercises client `P/01/00 ServerStatus_0`,
+  `P/03/02 Module_Loaded`, `P/04/03 Area_AreaLoaded`, and
+  `P/1E/02 GuiQuickbar_SetButton`. Those rows now route through their existing
+  focused client validators in the gameplay-stream splitter before generic
+  fixed/declared splitting, so no-body client controls and quickbar fragment
+  cursors reject unowned slack before following high-level client packets.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-stream-automation-20260629-020541`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue migrating replay-exercised generic boundaries into
+  focused owners, or switch back to `P/05`/`A/09` only when fresh replay shows
+  live-object or carrier residual pressure.
+- 2026-06-29 follow-up focused server-family stream hardening: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`, still fresh
+  at run start with last packet `2026-06-29 01:04:43 +10:00` (about 2 hours
+  old). `P/03/0E Module_EndGame`, `P/04/06 Area_ChangeDayNight`, `P/10/*
+  Camera`, `P/22/01 SafeProjectile`, `P/28/01..08 Ambient`, `P/30/01
+  GuiTimingEvent`, and `P/33/* Cutscene` now route through their existing
+  decompile-backed focused validators in the gameplay-stream splitter before
+  generic declared splitting. Shifted fragment tails remain pending instead of
+  forming false boundaries. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-focused-server-stream-automation-20260629-030715`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: add focused stream owners for the remaining dispatch-owned
+  families that still split generically, or return to `P/05`/`A/09` only when
+  fresh live replay shows residual pressure.
+- 2026-06-29 follow-up Dialog/Area_VisualEffect stream hardening: live-data
+  gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet dump
+  timestamp `2026-06-29 01:04:43 +10:00`, about 3h05m old at verification
+  time, with gameplay reached. `P/04/02 Area_VisualEffect` and
+  `P/14/01..05 Dialog` now route through their existing decompile-backed
+  focused validators in the gameplay-stream splitter before generic declared
+  splitting. The new regressions cover the legacy Area_VisualEffect identity
+  transform insertion path, direct-string Dialog_Entry fragment bits, client
+  Dialog_Reply, Dialog_Close slack rejection, and shifted-tail rejection.
+  Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-dialog-area-vfx-stream-automation-20260629-0417`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue moving remaining server-dispatch/client-dispatch
+  exact validators into focused stream ownership, then switch back to
+  `P/05`/`A/09` only if fresh live replay shows residual pressure.
+- 2026-06-29 follow-up client-high stream hardening: live-data gate used the
+  same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 4h03m old at verification time, with
+  gameplay reached. Client `P/06` Input, `P/0D` GuiInventory, `P/15/01`
+  GuiCharacterSheet, and consumed EE-only `P/35/01` GuiEvent now route through
+  their existing decompile-backed focused validators in the gameplay-stream
+  splitter before generic declared splitting. Shifted client fragment tails
+  remain pending instead of splitting before a plausible following high-level
+  status packet. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-client-high-stream-automation-20260629-0500`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue focused ownership for any remaining generic
+  client/server families only if replay or local harness traffic exercises
+  them; otherwise return to live-object/area static state work with fresh
+  capture evidence.
+- 2026-06-29 follow-up placeable alias lifecycle hardening: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 4h55m old at gate time, with gameplay
+  reached. The semantic object registry now applies the existing
+  compact/external placeable alias owner rule to active lifecycle lookup, so a
+  compact `U/09`/`D/09` row can see the active external `A/09` owner before
+  missing-object cleanup and delete handling. Focused regression
+  `active_placeable_lifecycle_lookup_uses_compact_external_aliases` passed, and
+  strict replay
+  `C:\nwnbridge\codex-proxy2-replay-placeable-alias-lifecycle-automation-20260629-0600`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue live-object/area static state work, prioritizing
+  any alias/lifecycle path that can strand compact and external ids as separate
+  owners.
+- 2026-06-29 follow-up untyped placeable-owner lifecycle hardening: live-data
+  gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 5h55m old at gate time, with gameplay
+  reached. Untyped active-object lifecycle lookup now shares the
+  compact/external placeable alias owner rule used by typed `U/09`/`D/09`
+  checks, so inventory-owner rows with object type `0` can see an active
+  external placeable owner before missing-object cleanup. Focused regression
+  `untyped_lifecycle_lookup_uses_placeable_compact_external_aliases` passed,
+  and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-untyped-placeable-owner-automation-20260629-0703`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue live-object/area static state work, especially
+  typed model/writer paths where area static context can prove generalized
+  placeable state or appearance repair.
+- 2026-06-29 follow-up untyped area/static conflict lookup hardening:
+  live-data gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 6h55m old at gate time, with gameplay
+  reached. Untyped live-object owner rows now share the compact/external
+  placeable alias rule used by typed `U/09`/`D/09` rows when looking up
+  unresolved area/static placeable conflicts, so inventory-owner diagnostics
+  and repair-enabling summaries can see the external `A/09` owner instead of
+  dropping conflict context. Focused regressions confirm untyped compact
+  placeable ids resolve the conflict owner while compact creature ids and
+  typed non-placeable rows do not. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-untyped-conflict-owner-automation-20260629-0805`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue area-static/live-object repair work where the
+  conflict summaries can choose generalized placeable appearance/state repairs,
+  or refresh live HG evidence first once this capture is older than 24 hours.
+- 2026-06-29 follow-up delete lifecycle hardening: live-data gate used the same
+  gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 7h55m old at gate time, with gameplay
+  reached. `D/09` live-object deletion now clears object lifecycle facts
+  (name, position, orientation, bounds, placeable appearance/state, and
+  area/static conflict context) before an object id can be reused, preventing
+  stale state from feeding later repair or diagnostic paths when a compact
+  add omits those fields. Focused regression
+  `delete_clears_lifecycle_fields_before_object_id_reuse` passed, and strict
+  replay
+  `C:\nwnbridge\codex-proxy2-replay-clear-delete-lifecycle-automation-20260629-0900`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: continue area-static/live-object repair work where the
+  current conflict summaries can choose generalized placeable appearance/state
+  repairs, or refresh live HG evidence first once this capture is older than 24
+  hours.
+- 2026-06-29 follow-up record-level placeable appearance repair: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 9h05m old at gate time, with gameplay
+  reached. The exact `U/09` door/placeable update reader proves the appearance
+  WORD cursor before scale/state bits, so record-level area/static reconciliation
+  now rewrites normal-to-normal placeable appearance words from a unique
+  module-backed static row without moving bytes or fragment bits. Custom
+  `>=0xFFFE` appearance/resref width changes still stay with the parent exact
+  validating rewrite path and are intentionally skipped in the record-local
+  helper. Focused regressions
+  `exact_placeable_update_reconciliation_uses_verified_appearance_word_cursor`
+  and
+  `exact_placeable_update_reconciliation_skips_custom_appearance_width_changes`
+  passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-normal-placeable-appearance-automation-20260629-1011`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact live-object shapes, and 0 fixed-width/live-object residuals. Next
+  production path: extend the record-local path only after decompile-backed
+  proof and exact validation for custom/resref insert/remove widths, or refresh
+  live HG evidence first once this capture is older than 24 hours.
+- 2026-06-29 follow-up custom/resref placeable appearance validation:
+  live-data gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 9h56m old at gate time, with gameplay
+  reached. The exact `U/09` door/placeable update parser now retains raw
+  vector-orientation and scale/state fields, and the custom/resref appearance
+  width-changing validator requires every non-appearance field plus state/next
+  bit cursors to survive insert/remove rewrites. This hardens the existing
+  module-backed custom TemplateResRef path against byte-plausible shifted
+  scale/state tails. Focused regressions
+  `exact_placeable_update_custom_resref_insert_preserves_scale_state_tail`
+  and
+  `exact_placeable_update_custom_resref_validator_rejects_shifted_scale_state_tail`
+  passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-custom-placeable-scale-automation-20260629-1100`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact live-object/placeable state work where custom
+  appearance or area/static repairs can shift following read-buffer fields,
+  refreshing HG live evidence once this capture exceeds 24 hours.
+- 2026-06-29 parser-owned `U/09` appearance branch model:
+  live-data gate used the gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 10h56m old at gate time, with gameplay
+  reached. The exact door/placeable update parser now carries the appearance
+  WORD plus optional 16-byte CResRef as a typed verified field, so downstream
+  exact reconciliation and record-local appearance repair no longer re-read
+  that branch ad hoc after the parser has already proven EE/Diamond cursor
+  order. Focused regressions
+  `door_placeable_update_parser_retains_custom_appearance_resref` and
+  `exact_placeable_update_reconciliation*` passed, `cargo check -p
+  hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-appearance-parser-model-automation-20260629-121115`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: use the parser-owned appearance branch to continue
+  decompile-backed exact live-object/placeable state or custom appearance work,
+  refreshing HG live evidence once this capture exceeds 24 hours.
+- 2026-06-29 parser-owned `U/09` state branch model: live-data gate used the
+  same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 11h57m old at gate time, with gameplay
+  reached. The exact door/placeable update parser now carries the five legacy
+  state bits plus EE's neutral state suffix as a typed verified field, so
+  exact reconciliation and diagnostics consume parser-proven lock/visual bits
+  instead of re-reading them from an ad hoc cursor after other branches have
+  been validated. The custom/resref appearance validator also requires that
+  parser-owned state branch to survive width-changing rewrites. Focused
+  regressions
+  `door_placeable_update_parser_retains_verified_state_branch`,
+  `door_placeable_update_parser_retains_custom_appearance_resref`,
+  `exact_placeable_update_reconciliation_uses_verified_vector_state_cursor`,
+  and `exact_placeable_update_mentions_use_verified_vector_state_cursor`
+  passed, `cargo check -p hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-parser-owned-state-automation-20260629-135120`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: use the parser-owned appearance/state model to finish
+  bounded exact placeable state writer/repair work, refreshing HG live evidence
+  once this capture exceeds 24 hours.
+- 2026-06-29 staged exact `U/09` state writer validation: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; last packet
+  `2026-06-29 01:04:43 +10:00`, about 13 hours old at gate time, with gameplay
+  reached. Exact placeable update state repair now stages lockable/locked bit
+  edits, re-runs the EE door/placeable parser, and commits only if the same
+  parser-owned state cursor, next cursor, legacy visual bits, and EE neutral
+  suffix survive. The whole-payload exact appearance pass also refreshes the
+  parser claim after same-row position/orientation/state edits, so its
+  non-appearance preservation check compares against the current proven row
+  instead of a stale pre-rewrite claim. Focused regression
+  `exact_placeable_update_state_rewrite_requires_fresh_exact_claim` passed,
+  the `exact_placeable_update_` subset passed, `cargo check -p
+  hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-staged-state-automation-20260629-1420`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: keep tightening exact placeable update repair validation for
+  multi-field same-row edits, refreshing HG live evidence once this capture
+  exceeds 24 hours.
+- 2026-06-29 exact `U/09` scale/state cursor validation: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 14 hours old at gate
+  time, with gameplay reached. The exact door/placeable update parser now
+  carries the scale/state read offset, and custom/resref appearance validation
+  requires that cursor to move by exactly the inserted or removed 16-byte
+  CResRef width while preserving scale, generic state, fragment state, and next
+  cursors. Focused parser/custom-resref tests passed, the `exact_placeable_update_`
+  subset passed, `cargo check -p hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-scale-state-cursor-automation-20260629-151334`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update multi-field validation and
+  writer repair, refreshing HG live evidence once this capture exceeds 24 hours.
+- 2026-06-29 exact `U/09` pre-appearance cursor validation: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 15 hours old at gate
+  time, with gameplay reached. The custom/resref appearance validator now also
+  requires the whole record end to shift by exactly the inserted or removed
+  CResRef width, while position and scalar/vector orientation read offsets
+  before the appearance branch remain fixed. This extends the existing
+  decompile-backed order proof for Diamond `sub_467AE0` and EE
+  `sub_14079C050`: position, orientation, appearance/resref, scale/state, then
+  fragment state. Focused regressions
+  `exact_placeable_update_appearance_validator_requires_record_end_shift` and
+  `exact_placeable_update_appearance_validator_rejects_shifted_pre_appearance_offsets`
+  passed, the `exact_placeable_update_` subset passed, `cargo check -p
+  hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-appearance-offset-validator-automation-20260629-1604`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update multi-field writer/validator
+  repair, or refresh HG live evidence first once this capture exceeds 24 hours.
+- 2026-06-29 exact `U/09` rewritten-field postcondition: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 16 hours old at gate
+  time, with gameplay reached. Exact placeable update reconciliation now
+  re-parses each rewritten row after same-row edits, including custom/resref
+  appearance width changes, and requires parser-owned rewritten position,
+  appearance/resref, scalar/vector orientation, and lock state fields to match
+  the selected module-backed area/static row before counting the row as
+  repaired. Focused regression
+  `exact_placeable_update_field_postcondition_rejects_state_drift_after_custom_insert`
+  passed, the `exact_placeable_update_` subset passed, `cargo check -p
+  hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-placeable-field-postcondition-automation-20260629-171317`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update writer repair using this
+  final-row proof, or refresh HG live evidence first once this capture exceeds
+  24 hours.
+- 2026-06-29 exact `U/09` final-row scale/state preservation: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 17 hours old at gate
+  time, with gameplay reached. Exact placeable update reconciliation now checks
+  the final parser-owned row against the pre-appearance exact claim after
+  position/orientation/state edits, so custom/resref appearance width changes
+  can only move the scale/generic-state cursor by the inserted or removed
+  CResRef width while preserving the parser-owned values and fragment cursors.
+  Focused regressions
+  `exact_placeable_update_field_postcondition_rejects_scale_state_drift_after_custom_insert`
+  and `exact_placeable_update_field_postcondition_rejects_state_drift_after_custom_insert`
+  passed, the `exact_placeable_update_` subset passed, `cargo check -p
+  hgbridge-proxy2` passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-final-placeable-scale-postcondition-automation-20260629-181353`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update writer repair, or refresh HG
+  live evidence first once this capture exceeds 24 hours.
+- 2026-06-29 exact `U/09` appearance-branch byte-delta validation: live-data
+  gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 18 hours old at gate
+  time, with gameplay reached. Custom/resref appearance validation now requires
+  the parser-owned appearance branch itself to widen or shrink by the claimed
+  16-byte CResRef delta before accepting shifted later scale/state cursors.
+  This prevents a byte-plausible final `U/09` row from relying only on record
+  end and later-cursor alignment while the appearance branch remains
+  impossible. Focused regressions
+  `exact_placeable_update_field_postcondition_requires_appearance_branch_delta`,
+  `exact_placeable_update_field_postcondition_rejects_scale_state_drift_after_custom_insert`,
+  and `exact_placeable_update_appearance_validator*` passed, the
+  `exact_placeable_update_` subset passed, `cargo check -p hgbridge-proxy2`
+  passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-appearance-branch-delta-automation-20260629-1908`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update writer repair if more
+  bounded cursor invariants remain; otherwise refresh HG live evidence first
+  once this capture exceeds 24 hours.
+- 2026-06-29 exact `U/09` update-state postcondition model: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 19h04m old at gate
+  time, with gameplay reached. The final exact placeable update row
+  postcondition now routes parser-owned state through the typed
+  update-state-to-area-state model instead of duplicating lock-bit comparison in
+  the parent validator. This keeps `U/09` state rows scoped to the decompiled
+  lockable/locked bits, keeps `A/09` as the owner for use/trap state, and still
+  rejects an impossible non-neutral EE state suffix before a row can count as
+  repaired. Focused regression
+  `verified_update_state_area_match_uses_observed_lock_state` passed, the
+  `exact_placeable_update_` subset passed, `cargo check -p hgbridge-proxy2`
+  passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-update-state-observed-postcondition-automation-20260629-2019`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update writer/postcondition repair
+  only while this live capture remains fresh; otherwise refresh HG live evidence
+  first.
+- 2026-06-29 exact `U/09` sibling-state postcondition hardening: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 20h04m old at gate
+  time, with gameplay reached. The final selected-row postcondition now also
+  checks parser-owned `U/09` state bits that are present beside another repaired
+  field when the module-backed area/static row has state, so an appearance-only
+  repair cannot commit while preserving drifted lock bits or an impossible EE
+  state suffix in the same exact row. Regression
+  `exact_placeable_update_field_postcondition_rejects_state_drift_after_custom_insert`
+  now covers the appearance-only sibling-state case, the
+  `exact_placeable_update_` subset passed, `cargo check -p hgbridge-proxy2`
+  passed, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-sibling-state-postcondition-automation-20260629-2119`
+  stayed at 0 quarantines, 280 strict allows, 67 captured live-object frames,
+  18 exact shape matches, and 0 fixed-width/live-object residuals. Next
+  production path: continue exact placeable update writer/postcondition repair
+  only if fresh evidence remains under 24 hours; otherwise refresh HG live
+  gameplay evidence first.
+- 2026-06-29 exact `U/09` sibling visual-field postcondition hardening:
+  live-data gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 21h07m old at gate
+  time, with gameplay reached. The final selected-row postcondition now checks
+  present sibling position, orientation, and appearance branches whenever any
+  exact placeable update field is repaired and the module-backed static row has
+  a concrete target for that sibling. Rewritten fields still must match, while
+  packet-authored siblings remain allowed when the static row lacks the
+  required proof, such as missing TemplateResRef for a custom appearance or no
+  area direction. Regression
+  `exact_placeable_update_field_postcondition_rejects_present_visual_sibling_drift`
+  covers position, orientation, and appearance drift in syntactically exact
+  rows. Verification passed `cargo fmt --all --check`,
+  `cargo test -q -p hgbridge-proxy2 exact_placeable_update_ -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, `git diff --check`, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-sibling-visual-postcondition-automation-20260629-2208`
+  with 0 quarantines, 280 strict allows, 67 captured live-object frames, 18
+  exact shape matches, and 0 fixed-width/live-object residuals. Next production
+  path: refresh HG live gameplay evidence first on the next run if this capture
+  has exceeded 24 hours; otherwise continue exact placeable update
+  writer/postcondition repair.
+- 2026-06-29 exact `U/09` orientation-branch sibling proof hardening:
+  live-data gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 22h05m old at gate
+  time, with gameplay reached. The final selected-row postcondition now treats
+  a present orientation sibling as requiring proof whenever the selected
+  module-backed static row has any decompile-backed orientation target. A
+  repaired exact row can no longer commit just because its scalar/vector branch
+  differs from the only target the static row can prove. Regression
+  `exact_placeable_update_field_postcondition_rejects_unproved_orientation_branch_sibling`
+  covers a vector sibling beside an appearance repair when the selected row
+  only proves scalar yaw. Verification passed `cargo fmt --all --check`,
+  `cargo test -q -p hgbridge-proxy2 exact_placeable_update_ -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, `git diff --check`, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-orientation-sibling-postcondition-automation-20260629-231933`
+  with 0 quarantines, 280 strict allows, 67 captured live-object frames, 18
+  exact shape matches, and 0 fixed-width/live-object residuals. Next production
+  path: refresh HG live gameplay evidence first on the next run if this capture
+  has exceeded 24 hours; otherwise continue exact placeable update
+  writer/postcondition repair.
+- 2026-06-30 exact `U/09` appearance-delta ownership hardening: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-serverlist-retry-20260629-010143`; packet window
+  `2026-06-29 01:01:54.950 -> 01:04:43.126 +10:00`, about 23h05m old at gate
+  time, with gameplay reached. The final exact-row postcondition now rejects a
+  nonzero CResRef byte-shift unless the parser-owned appearance branch is the
+  rewritten field, so later scale/state cursors cannot be accepted under an
+  inconsistent same-row rewrite cause. Regression
+  `exact_placeable_update_field_postcondition_requires_appearance_branch_delta`
+  covers the byte-shifted tail without an appearance rewrite. Verification
+  passed `cargo fmt --all --check`, the focused regression,
+  `cargo test -q -p hgbridge-proxy2 exact_placeable_update_ -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, `git diff --check`, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-final-appearance-delta-automation-20260630-0019`
+  with 0 quarantines, 280 strict allows, 67 captured live-object frames, 18
+  exact shape matches, and 0 fixed-width/live-object residuals. Next run should
+  refresh live HG gameplay evidence first if this capture has exceeded 24 hours.
+- 2026-06-30 `P/11/04 CharList_UpdateCharResponse` empty-cursor padding fix:
+  live-data gate used gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 10h10m old at gate
+  time, with gameplay reached. Replays of this fresh capture exposed two early
+  quarantines on deflated `P/11/04` update responses whose byte-only BIC body
+  ended with empty CNW cursor high bits but preserved low padding bits (`0x68`).
+  The translator now treats a single trailing `0b011xxxxx` byte as the empty
+  `GetWriteMessage` cursor and still rejects missing tails, non-empty cursor
+  classes, and extra fragment bytes. Verification passed `cargo fmt --all
+  --check`, `cargo test -q -p hgbridge-proxy2 char_list -- --nocapture`,
+  `cargo check -q -p hgbridge-proxy2`, and strict replay
+  `C:\nwnbridge\codex-proxy2-replay-charlist-update-tail-full-automation-20260630-1650`
+  with 0 quarantines, 3,547 strict allows, 2,781 captured direct live-object
+  frames, 445 exact shape matches, 10 area rewrites, and 0 fixed-width or
+  live-object terminal residuals. Next production path: continue reducing the
+  remaining live-object/area exact-shape gaps with this fresh capture as the
+  regression seed until the next live-data refresh is due.
+- 2026-06-30 live-object exact-claim coverage diagnostic: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 12h14m old at gate
+  time, with gameplay reached. Production `proxy2` now logs compact typed
+  `GameObjUpdate_LiveObject` exact-claim summaries after lifecycle proof, so
+  replay can distinguish already-exact accepted payloads from rewrite-produced
+  exact shapes. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-exact-claim-summary-automation-20260630-1844`
+  used alternate local ports because an older debug proxy still held the
+  default port, and completed with 0 quarantines, 3,547 strict allows, 445
+  exact rewrite matches, 3,226 exact lifecycle claim summaries, 2,781 captured
+  direct live-object frames, 10 area rewrites, and 0 fixed-width or live-object
+  terminal residuals. Aggregated exact claims covered 5,106 typed records,
+  including 463 adds, 21 update records, 438 deletes, 875 inventory records,
+  443 creature appearances, 2,861 creature update records, 5 world-status
+  records, 15 placeable-appearance mentions, and 30 placeable-state mentions.
+  Next production path: use these exact-claim counters to target the still
+  rewrite-dependent placeable add/update clusters and inventory/creature update
+  families, rather than broadening validators without a typed counter.
+
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
 Reported: 2026-05-25 during automation prompt review.
@@ -6168,13 +6744,15 @@ Current status:
   tightened the existing decompile-backed character-list proof without changing
   valid packet semantics. `CharList_ListResponse` now rejects nonzero padding
   bits after the exact `ReadCExoLocStringClient` cursor, and
-  `CharList_UpdateCharResponse` must carry the byte-only BIC body followed by
-  the exact empty CNW fragment byte `0x60`; arbitrary post-BIC fragment storage
-  is no longer treated as owned. Public fixture-free tests now cover the list
-  response server-locstring bit cursor, padding-bit rejection, and update
-  response empty-fragment handoff. Keep the broader player-model issue focused
-  on live-object current-player appearance unless future evidence shows the
-  BIC/CharList source fields are already wrong before the first `P/05/01`.
+  `CharList_UpdateCharResponse` must carry the byte-only BIC body followed by a
+  single empty CNW fragment cursor byte. The 2026-06-30 fresh HG capture proved
+  the update-response empty cursor by high bits (`0b011xxxxx`) rather than exact
+  byte `0x60`; arbitrary post-BIC fragment storage is still not owned. Public
+  fixture-free tests now cover the list response server-locstring bit cursor,
+  padding-bit rejection, and update response empty-fragment handoff. Keep the
+  broader player-model issue focused on live-object current-player appearance
+  unless future evidence shows the BIC/CharList source fields are already wrong
+  before the first `P/05/01`.
 - 2026-05-28 `P/05/01` full creature appearance cross-record fence audit:
   tightened the byte-only `P/5` parser so it no longer assumes a three-bit
   packetized fragment fence before a following `U/5` record when no fragment

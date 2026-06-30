@@ -105,6 +105,85 @@ struct LiveObjectExactRewriteClaim {
     summary: live_update::ExactLiveObjectRewriteSummary,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct LiveObjectExactClaimTraceSummary {
+    records_examined: u32,
+    add_records: u32,
+    update_records: u32,
+    delete_records: u32,
+    inventory_records: u32,
+    inventory_fragment_bits: u32,
+    live_gui_records: u32,
+    live_gui_fragment_bits: u32,
+    creature_appearance_records: u32,
+    creature_update_records: u32,
+    world_status_records: u32,
+    read_buffer_only_records: u32,
+    mentions: u32,
+    materialized_mentions: u32,
+    add_mentions: u32,
+    update_mentions: u32,
+    delete_mentions: u32,
+    position_mentions: u32,
+    orientation_mentions: u32,
+    bounds_mentions: u32,
+    placeable_appearance_mentions: u32,
+    placeable_state_mentions: u32,
+    materialized_item_object_ids: u32,
+}
+
+impl LiveObjectExactClaimTraceSummary {
+    fn from_claim(claim: &live_update::ClaimSummary) -> Self {
+        let mut trace = Self {
+            records_examined: claim.records_examined,
+            add_records: claim.add_records,
+            update_records: claim.update_records,
+            delete_records: claim.delete_records,
+            inventory_records: claim.inventory_records,
+            inventory_fragment_bits: claim.inventory_fragment_bits,
+            live_gui_records: claim.live_gui_read_buffer_records
+                + claim.live_gui_item_create_records,
+            live_gui_fragment_bits: claim.live_gui_fragment_bits,
+            creature_appearance_records: claim.creature_appearance_records,
+            creature_update_records: claim.creature_update_records,
+            world_status_records: claim.world_status_records,
+            read_buffer_only_records: claim.read_buffer_only_records,
+            mentions: claim.mentions.len() as u32,
+            materialized_item_object_ids: claim.materialized_item_object_ids.len() as u32,
+            ..Self::default()
+        };
+
+        for mention in &claim.mentions {
+            if mention.requires_materialized_object {
+                trace.materialized_mentions += 1;
+            }
+            match mention.opcode {
+                b'A' => trace.add_mentions += 1,
+                b'U' => trace.update_mentions += 1,
+                b'D' => trace.delete_mentions += 1,
+                _ => {}
+            }
+            if mention.position.is_some() {
+                trace.position_mentions += 1;
+            }
+            if mention.orientation.is_some() {
+                trace.orientation_mentions += 1;
+            }
+            if mention.bounds.is_some() {
+                trace.bounds_mentions += 1;
+            }
+            if mention.placeable_appearance.is_some() {
+                trace.placeable_appearance_mentions += 1;
+            }
+            if mention.placeable_state.is_some() {
+                trace.placeable_state_mentions += 1;
+            }
+        }
+
+        trace
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct AreaStaticPlaceableConflictTraceSummary {
     unresolved: semantic::AreaStaticPlaceableConflictRecordSummary,
@@ -778,19 +857,13 @@ fn finalize_server_translator_claim(
         }
     }
 
-    if family == VerifiedFamily::GameObjUpdateLiveObject
-        && live_update::claim_payload_if_verified_with_lifecycle(
-            payload,
-            |object_type, object_id| {
-                object_registry
-                    .map(|registry| {
-                        registry.has_active_live_object_for_record(object_type, object_id)
-                    })
-                    .unwrap_or(false)
-            },
-        )
-        .is_none()
-    {
+    let mut live_object_lifecycle_claim = None;
+    if family == VerifiedFamily::GameObjUpdateLiveObject {
+        live_object_lifecycle_claim =
+            claim_live_object_payload_with_lifecycle(payload, object_registry);
+    }
+
+    if family == VerifiedFamily::GameObjUpdateLiveObject && live_object_lifecycle_claim.is_none() {
         if let Some(summary) = live_update::remove_unmaterialized_update_records_payload_if_possible(
             payload,
             |object_type, object_id| {
@@ -816,21 +889,11 @@ fn finalize_server_translator_claim(
                 "server live-object payload removed Diamond no-op missing-object updates after exact lifecycle proof"
             );
         }
+        live_object_lifecycle_claim =
+            claim_live_object_payload_with_lifecycle(payload, object_registry);
     }
 
-    if family == VerifiedFamily::GameObjUpdateLiveObject
-        && live_update::claim_payload_if_verified_with_lifecycle(
-            payload,
-            |object_type, object_id| {
-                object_registry
-                    .map(|registry| {
-                        registry.has_active_live_object_for_record(object_type, object_id)
-                    })
-                    .unwrap_or(false)
-            },
-        )
-        .is_none()
-    {
+    if family == VerifiedFamily::GameObjUpdateLiveObject && live_object_lifecycle_claim.is_none() {
         rewrite.quarantine_reason = Some("live-object-lifecycle-unverified");
         let dump_path =
             dump_unrewritten_semantic_payload(payload, "live-object-lifecycle-unverified");
@@ -841,6 +904,10 @@ fn finalize_server_translator_claim(
             "server live-object payload quarantined: exact record shape passed but EE lifecycle proof failed"
         );
         return false;
+    }
+
+    if let Some(claim) = live_object_lifecycle_claim.as_ref() {
+        trace_live_object_exact_claim_summary(family_name, claim);
     }
 
     let unresolved_placeable_conflicts = if family == VerifiedFamily::GameObjUpdateLiveObject {
@@ -861,6 +928,54 @@ fn finalize_server_translator_claim(
         rewrite.area_rewrite = Some(area_rewrite);
     }
     true
+}
+
+fn claim_live_object_payload_with_lifecycle(
+    payload: &[u8],
+    object_registry: Option<&semantic::ObjectRegistry>,
+) -> Option<live_update::ClaimSummary> {
+    live_update::claim_payload_if_verified_with_lifecycle(payload, |object_type, object_id| {
+        object_registry
+            .map(|registry| registry.has_active_live_object_for_record(object_type, object_id))
+            .unwrap_or(false)
+    })
+}
+
+fn trace_live_object_exact_claim_summary(
+    family_name: &'static str,
+    claim: &live_update::ClaimSummary,
+) {
+    let trace = LiveObjectExactClaimTraceSummary::from_claim(claim);
+    tracing::info!(
+        family = family_name,
+        declared = claim.declared,
+        live_bytes_length = claim.live_bytes_length,
+        fragment_bytes = claim.fragment_bytes,
+        records_examined = trace.records_examined,
+        add_records = trace.add_records,
+        update_records = trace.update_records,
+        delete_records = trace.delete_records,
+        inventory_records = trace.inventory_records,
+        inventory_fragment_bits = trace.inventory_fragment_bits,
+        live_gui_records = trace.live_gui_records,
+        live_gui_fragment_bits = trace.live_gui_fragment_bits,
+        creature_appearance_records = trace.creature_appearance_records,
+        creature_update_records = trace.creature_update_records,
+        world_status_records = trace.world_status_records,
+        read_buffer_only_records = trace.read_buffer_only_records,
+        mentions = trace.mentions,
+        materialized_mentions = trace.materialized_mentions,
+        add_mentions = trace.add_mentions,
+        update_mentions = trace.update_mentions,
+        delete_mentions = trace.delete_mentions,
+        position_mentions = trace.position_mentions,
+        orientation_mentions = trace.orientation_mentions,
+        bounds_mentions = trace.bounds_mentions,
+        placeable_appearance_mentions = trace.placeable_appearance_mentions,
+        placeable_state_mentions = trace.placeable_state_mentions,
+        materialized_item_object_ids = trace.materialized_item_object_ids,
+        "server live-object payload accepted exact EE shape with lifecycle proof"
+    );
 }
 
 fn trace_unresolved_area_static_placeable_conflicts(
@@ -4175,6 +4290,89 @@ mod live_object_dispatch_tests {
             ));
             assert_eq!(payload, original);
         }
+    }
+}
+
+#[cfg(test)]
+mod exact_claim_trace_tests {
+    use super::*;
+    use crate::translate::live_object_update::{
+        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordPosition,
+    };
+
+    fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
+        LiveObjectRecordMention {
+            opcode,
+            object_type,
+            object_id,
+            requires_materialized_object: matches!(opcode, b'U' | b'P' | b'I' | b'G' | b'W'),
+            record_offset: 0,
+            record_end: 0,
+            fragment_bit_start: 0,
+            fragment_bit_end: 0,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_appearance_claim: None,
+            placeable_state: None,
+        }
+    }
+
+    #[test]
+    fn exact_claim_trace_summary_counts_typed_mentions() {
+        let mut add = mention(b'A', 0x09, 0x8000_0001);
+        add.placeable_state = Some(LiveObjectPlaceableState {
+            useable: Some(true),
+            trap_disarmable: Some(false),
+            lockable: Some(true),
+            locked: Some(false),
+        });
+        let mut update = mention(b'U', 0x09, 0x8000_0001);
+        update.position = Some(LiveObjectRecordPosition {
+            x_raw: 1,
+            y_raw: 2,
+            z_raw: 3,
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        });
+        let delete = mention(b'D', 0x09, 0x8000_0001);
+
+        let claim = live_update::ClaimSummary {
+            records_examined: 3,
+            add_records: 1,
+            update_records: 1,
+            delete_records: 1,
+            inventory_records: 2,
+            inventory_fragment_bits: 6,
+            live_gui_read_buffer_records: 1,
+            live_gui_item_create_records: 1,
+            live_gui_fragment_bits: 5,
+            materialized_item_object_ids: vec![0x8000_0100, 0x8000_0101],
+            mentions: vec![add, update, delete],
+            ..Default::default()
+        };
+
+        let trace = LiveObjectExactClaimTraceSummary::from_claim(&claim);
+
+        assert_eq!(trace.records_examined, 3);
+        assert_eq!(trace.add_records, 1);
+        assert_eq!(trace.update_records, 1);
+        assert_eq!(trace.delete_records, 1);
+        assert_eq!(trace.inventory_records, 2);
+        assert_eq!(trace.inventory_fragment_bits, 6);
+        assert_eq!(trace.live_gui_records, 2);
+        assert_eq!(trace.live_gui_fragment_bits, 5);
+        assert_eq!(trace.mentions, 3);
+        assert_eq!(trace.materialized_mentions, 1);
+        assert_eq!(trace.add_mentions, 1);
+        assert_eq!(trace.update_mentions, 1);
+        assert_eq!(trace.delete_mentions, 1);
+        assert_eq!(trace.position_mentions, 1);
+        assert_eq!(trace.placeable_state_mentions, 1);
+        assert_eq!(trace.materialized_item_object_ids, 2);
     }
 }
 
