@@ -127,6 +127,7 @@ struct LiveObjectExactClaimTraceSummary {
     inventory_owner_mask_2a00_mentions: u32,
     inventory_owner_mask_2e00_mentions: u32,
     inventory_owner_mask_2e01_mentions: u32,
+    inventory_owner_mask_2000_mentions: u32,
     inventory_owner_mask_d5ff_mentions: u32,
     inventory_owner_mask_other_mentions: u32,
     inventory_owner_branch_0001_mentions: u32,
@@ -144,10 +145,26 @@ struct LiveObjectExactClaimTraceSummary {
     inventory_owner_branch_1000_ui_clear_mentions: u32,
     inventory_owner_branch_2000_feature25_mentions: u32,
     inventory_owner_feature25_claim_mentions: u32,
+    inventory_owner_feature25_owner_sentinel_mentions: u32,
+    inventory_owner_feature25_owner_compact_mentions: u32,
+    inventory_owner_feature25_owner_external_mentions: u32,
+    inventory_owner_feature25_mask_2000_mentions: u32,
+    inventory_owner_feature25_mask_2a00_mentions: u32,
+    inventory_owner_feature25_mask_2e00_mentions: u32,
+    inventory_owner_feature25_mask_2e01_mentions: u32,
+    inventory_owner_feature25_mask_other_mentions: u32,
+    inventory_owner_feature25_materialized_owner_mentions: u32,
+    inventory_owner_feature25_unmaterialized_owner_mentions: u32,
     inventory_owner_feature25_first_object_refs: u32,
+    inventory_owner_feature25_first_materialized_object_refs: u32,
+    inventory_owner_feature25_first_unmaterialized_object_refs: u32,
     inventory_owner_feature25_second_object_refs: u32,
+    inventory_owner_feature25_second_materialized_object_refs: u32,
+    inventory_owner_feature25_second_unmaterialized_object_refs: u32,
     inventory_owner_feature25_second_fragment_bits: u32,
     inventory_owner_feature25_legacy_tail_object_refs: u32,
+    inventory_owner_feature25_legacy_tail_materialized_object_refs: u32,
+    inventory_owner_feature25_legacy_tail_unmaterialized_object_refs: u32,
     inventory_owner_branch_4000_state_stream_mentions: u32,
     inventory_owner_branch_8000_fixed_scalar_mentions: u32,
     live_gui_records: u32,
@@ -199,6 +216,16 @@ struct LiveObjectExactClaimTraceSummary {
 
 impl LiveObjectExactClaimTraceSummary {
     fn from_claim(claim: &live_update::ClaimSummary) -> Self {
+        Self::from_claim_with_materialization(claim, |_, _| false)
+    }
+
+    fn from_claim_with_materialization<F>(
+        claim: &live_update::ClaimSummary,
+        mut materialized: F,
+    ) -> Self
+    where
+        F: FnMut(u8, u32) -> bool,
+    {
         let mut trace = Self {
             records_examined: claim.records_examined,
             add_records: claim.add_records,
@@ -217,6 +244,9 @@ impl LiveObjectExactClaimTraceSummary {
             materialized_item_object_ids: claim.materialized_item_object_ids.len() as u32,
             ..Self::default()
         };
+
+        let mut materialized_in_payload = BTreeSet::<u32>::new();
+        materialized_in_payload.extend(claim.materialized_item_object_ids.iter().copied());
 
         for mention in &claim.mentions {
             if mention.requires_materialized_object {
@@ -255,6 +285,10 @@ impl LiveObjectExactClaimTraceSummary {
                     0x2E01 => {
                         trace.inventory_owner_mask_2e01_mentions =
                             trace.inventory_owner_mask_2e01_mentions.saturating_add(1);
+                    }
+                    0x2000 => {
+                        trace.inventory_owner_mask_2000_mentions =
+                            trace.inventory_owner_mask_2000_mentions.saturating_add(1);
                     }
                     0xD5FF => {
                         trace.inventory_owner_mask_d5ff_mentions =
@@ -336,16 +370,98 @@ impl LiveObjectExactClaimTraceSummary {
                     trace.inventory_owner_feature25_claim_mentions = trace
                         .inventory_owner_feature25_claim_mentions
                         .saturating_add(1);
+                    match inventory.owner_id {
+                        0xFFFF_FFFD | 0xFFFF_FFFE | 0xFFFF_FFEC => {
+                            trace.inventory_owner_feature25_owner_sentinel_mentions = trace
+                                .inventory_owner_feature25_owner_sentinel_mentions
+                                .saturating_add(1);
+                        }
+                        1..=0x00FF_FFFF => {
+                            trace.inventory_owner_feature25_owner_compact_mentions = trace
+                                .inventory_owner_feature25_owner_compact_mentions
+                                .saturating_add(1);
+                        }
+                        owner_id if owner_id & 0x8000_0000 != 0 => {
+                            trace.inventory_owner_feature25_owner_external_mentions = trace
+                                .inventory_owner_feature25_owner_external_mentions
+                                .saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                    match inventory.mask {
+                        0x2000 => {
+                            trace.inventory_owner_feature25_mask_2000_mentions = trace
+                                .inventory_owner_feature25_mask_2000_mentions
+                                .saturating_add(1);
+                        }
+                        0x2A00 => {
+                            trace.inventory_owner_feature25_mask_2a00_mentions = trace
+                                .inventory_owner_feature25_mask_2a00_mentions
+                                .saturating_add(1);
+                        }
+                        0x2E00 => {
+                            trace.inventory_owner_feature25_mask_2e00_mentions = trace
+                                .inventory_owner_feature25_mask_2e00_mentions
+                                .saturating_add(1);
+                        }
+                        0x2E01 => {
+                            trace.inventory_owner_feature25_mask_2e01_mentions = trace
+                                .inventory_owner_feature25_mask_2e01_mentions
+                                .saturating_add(1);
+                        }
+                        _ => {
+                            trace.inventory_owner_feature25_mask_other_mentions = trace
+                                .inventory_owner_feature25_mask_other_mentions
+                                .saturating_add(1);
+                        }
+                    }
+                    if feature25_object_id_materialized_for_trace(
+                        inventory.owner_id,
+                        &materialized_in_payload,
+                        &mut materialized,
+                    ) {
+                        trace.inventory_owner_feature25_materialized_owner_mentions = trace
+                            .inventory_owner_feature25_materialized_owner_mentions
+                            .saturating_add(1);
+                    } else {
+                        trace.inventory_owner_feature25_unmaterialized_owner_mentions = trace
+                            .inventory_owner_feature25_unmaterialized_owner_mentions
+                            .saturating_add(1);
+                    }
                     trace.inventory_owner_feature25_first_object_refs = trace
                         .inventory_owner_feature25_first_object_refs
                         .saturating_add(
                             u32::try_from(feature25.first_object_ids.len()).unwrap_or(u32::MAX),
                         );
+                    let (materialized_refs, unmaterialized_refs) =
+                        count_feature25_object_ref_materialization_for_trace(
+                            &feature25.first_object_ids,
+                            &materialized_in_payload,
+                            &mut materialized,
+                        );
+                    trace.inventory_owner_feature25_first_materialized_object_refs = trace
+                        .inventory_owner_feature25_first_materialized_object_refs
+                        .saturating_add(materialized_refs);
+                    trace.inventory_owner_feature25_first_unmaterialized_object_refs = trace
+                        .inventory_owner_feature25_first_unmaterialized_object_refs
+                        .saturating_add(unmaterialized_refs);
                     trace.inventory_owner_feature25_second_object_refs = trace
                         .inventory_owner_feature25_second_object_refs
                         .saturating_add(
                             u32::try_from(feature25.second_object_ids.len()).unwrap_or(u32::MAX),
                         );
+                    let (materialized_refs, unmaterialized_refs) =
+                        count_feature25_object_ref_materialization_for_trace(
+                            &feature25.second_object_ids,
+                            &materialized_in_payload,
+                            &mut materialized,
+                        );
+                    trace.inventory_owner_feature25_second_materialized_object_refs = trace
+                        .inventory_owner_feature25_second_materialized_object_refs
+                        .saturating_add(materialized_refs);
+                    trace.inventory_owner_feature25_second_unmaterialized_object_refs = trace
+                        .inventory_owner_feature25_second_unmaterialized_object_refs
+                        .saturating_add(unmaterialized_refs);
                     trace.inventory_owner_feature25_second_fragment_bits = trace
                         .inventory_owner_feature25_second_fragment_bits
                         .saturating_add(
@@ -362,6 +478,18 @@ impl LiveObjectExactClaimTraceSummary {
                             u32::try_from(feature25.legacy_tail_object_ids.len())
                                 .unwrap_or(u32::MAX),
                         );
+                    let (materialized_refs, unmaterialized_refs) =
+                        count_feature25_object_ref_materialization_for_trace(
+                            &feature25.legacy_tail_object_ids,
+                            &materialized_in_payload,
+                            &mut materialized,
+                        );
+                    trace.inventory_owner_feature25_legacy_tail_materialized_object_refs = trace
+                        .inventory_owner_feature25_legacy_tail_materialized_object_refs
+                        .saturating_add(materialized_refs);
+                    trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs = trace
+                        .inventory_owner_feature25_legacy_tail_unmaterialized_object_refs
+                        .saturating_add(unmaterialized_refs);
                 }
                 if branches.bit_4000_state_stream {
                     trace.inventory_owner_branch_4000_state_stream_mentions = trace
@@ -483,10 +611,54 @@ impl LiveObjectExactClaimTraceSummary {
                 0 => trace.untyped_mentions += 1,
                 _ => trace.other_object_type_mentions += 1,
             }
+            match mention.opcode {
+                b'A' => {
+                    materialized_in_payload.insert(mention.object_id);
+                }
+                b'D' => {
+                    materialized_in_payload.remove(&mention.object_id);
+                }
+                _ => {}
+            }
         }
 
         trace
     }
+}
+
+fn feature25_object_id_materialized_for_trace<F>(
+    object_id: u32,
+    materialized_in_payload: &BTreeSet<u32>,
+    materialized: &mut F,
+) -> bool
+where
+    F: FnMut(u8, u32) -> bool,
+{
+    materialized_in_payload.contains(&object_id) || materialized(0, object_id)
+}
+
+fn count_feature25_object_ref_materialization_for_trace<F>(
+    object_ids: &[u32],
+    materialized_in_payload: &BTreeSet<u32>,
+    materialized: &mut F,
+) -> (u32, u32)
+where
+    F: FnMut(u8, u32) -> bool,
+{
+    let mut materialized_refs = 0_u32;
+    let mut unmaterialized_refs = 0_u32;
+    for object_id in object_ids {
+        if feature25_object_id_materialized_for_trace(
+            *object_id,
+            materialized_in_payload,
+            materialized,
+        ) {
+            materialized_refs = materialized_refs.saturating_add(1);
+        } else {
+            unmaterialized_refs = unmaterialized_refs.saturating_add(1);
+        }
+    }
+    (materialized_refs, unmaterialized_refs)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1212,7 +1384,7 @@ fn finalize_server_translator_claim(
     }
 
     if let Some(claim) = live_object_lifecycle_claim.as_ref() {
-        trace_live_object_exact_claim_summary(family_name, claim);
+        trace_live_object_exact_claim_summary(family_name, claim, object_registry);
     }
 
     let unresolved_placeable_conflicts = if family == VerifiedFamily::GameObjUpdateLiveObject {
@@ -1249,8 +1421,16 @@ fn claim_live_object_payload_with_lifecycle(
 fn trace_live_object_exact_claim_summary(
     family_name: &'static str,
     claim: &live_update::ClaimSummary,
+    object_registry: Option<&semantic::ObjectRegistry>,
 ) {
-    let trace = LiveObjectExactClaimTraceSummary::from_claim(claim);
+    let trace = LiveObjectExactClaimTraceSummary::from_claim_with_materialization(
+        claim,
+        |object_type, object_id| {
+            object_registry
+                .map(|registry| registry.has_active_live_object_for_record(object_type, object_id))
+                .unwrap_or(false)
+        },
+    );
     tracing::info!(
         family = family_name,
         declared = claim.declared,
@@ -1270,6 +1450,7 @@ fn trace_live_object_exact_claim_summary(
         inventory_owner_mask_2a00_mentions = trace.inventory_owner_mask_2a00_mentions,
         inventory_owner_mask_2e00_mentions = trace.inventory_owner_mask_2e00_mentions,
         inventory_owner_mask_2e01_mentions = trace.inventory_owner_mask_2e01_mentions,
+        inventory_owner_mask_2000_mentions = trace.inventory_owner_mask_2000_mentions,
         inventory_owner_mask_d5ff_mentions = trace.inventory_owner_mask_d5ff_mentions,
         inventory_owner_mask_other_mentions = trace.inventory_owner_mask_other_mentions,
         inventory_owner_branch_0001_mentions = trace.inventory_owner_branch_0001_mentions,
@@ -1297,14 +1478,46 @@ fn trace_live_object_exact_claim_summary(
         inventory_owner_branch_2000_feature25_mentions =
             trace.inventory_owner_branch_2000_feature25_mentions,
         inventory_owner_feature25_claim_mentions = trace.inventory_owner_feature25_claim_mentions,
+        inventory_owner_feature25_owner_sentinel_mentions =
+            trace.inventory_owner_feature25_owner_sentinel_mentions,
+        inventory_owner_feature25_owner_compact_mentions =
+            trace.inventory_owner_feature25_owner_compact_mentions,
+        inventory_owner_feature25_owner_external_mentions =
+            trace.inventory_owner_feature25_owner_external_mentions,
+        inventory_owner_feature25_mask_2000_mentions =
+            trace.inventory_owner_feature25_mask_2000_mentions,
+        inventory_owner_feature25_mask_2a00_mentions =
+            trace.inventory_owner_feature25_mask_2a00_mentions,
+        inventory_owner_feature25_mask_2e00_mentions =
+            trace.inventory_owner_feature25_mask_2e00_mentions,
+        inventory_owner_feature25_mask_2e01_mentions =
+            trace.inventory_owner_feature25_mask_2e01_mentions,
+        inventory_owner_feature25_mask_other_mentions =
+            trace.inventory_owner_feature25_mask_other_mentions,
+        inventory_owner_feature25_materialized_owner_mentions =
+            trace.inventory_owner_feature25_materialized_owner_mentions,
+        inventory_owner_feature25_unmaterialized_owner_mentions =
+            trace.inventory_owner_feature25_unmaterialized_owner_mentions,
         inventory_owner_feature25_first_object_refs =
             trace.inventory_owner_feature25_first_object_refs,
+        inventory_owner_feature25_first_materialized_object_refs =
+            trace.inventory_owner_feature25_first_materialized_object_refs,
+        inventory_owner_feature25_first_unmaterialized_object_refs =
+            trace.inventory_owner_feature25_first_unmaterialized_object_refs,
         inventory_owner_feature25_second_object_refs =
             trace.inventory_owner_feature25_second_object_refs,
+        inventory_owner_feature25_second_materialized_object_refs =
+            trace.inventory_owner_feature25_second_materialized_object_refs,
+        inventory_owner_feature25_second_unmaterialized_object_refs =
+            trace.inventory_owner_feature25_second_unmaterialized_object_refs,
         inventory_owner_feature25_second_fragment_bits =
             trace.inventory_owner_feature25_second_fragment_bits,
         inventory_owner_feature25_legacy_tail_object_refs =
             trace.inventory_owner_feature25_legacy_tail_object_refs,
+        inventory_owner_feature25_legacy_tail_materialized_object_refs =
+            trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
+        inventory_owner_feature25_legacy_tail_unmaterialized_object_refs =
+            trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs,
         inventory_owner_branch_4000_state_stream_mentions =
             trace.inventory_owner_branch_4000_state_stream_mentions,
         inventory_owner_branch_8000_fixed_scalar_mentions =
@@ -4824,6 +5037,7 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.inventory_owner_mask_2a00_mentions, 0);
         assert_eq!(trace.inventory_owner_mask_2e00_mentions, 1);
         assert_eq!(trace.inventory_owner_mask_2e01_mentions, 0);
+        assert_eq!(trace.inventory_owner_mask_2000_mentions, 0);
         assert_eq!(trace.inventory_owner_mask_d5ff_mentions, 0);
         assert_eq!(trace.inventory_owner_mask_other_mentions, 0);
         assert_eq!(trace.inventory_owner_branch_0001_mentions, 0);
@@ -4847,10 +5061,50 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.inventory_owner_branch_1000_ui_clear_mentions, 0);
         assert_eq!(trace.inventory_owner_branch_2000_feature25_mentions, 1);
         assert_eq!(trace.inventory_owner_feature25_claim_mentions, 1);
+        assert_eq!(trace.inventory_owner_feature25_owner_sentinel_mentions, 1);
+        assert_eq!(trace.inventory_owner_feature25_owner_compact_mentions, 0);
+        assert_eq!(trace.inventory_owner_feature25_owner_external_mentions, 0);
+        assert_eq!(trace.inventory_owner_feature25_mask_2000_mentions, 0);
+        assert_eq!(trace.inventory_owner_feature25_mask_2a00_mentions, 0);
+        assert_eq!(trace.inventory_owner_feature25_mask_2e00_mentions, 1);
+        assert_eq!(trace.inventory_owner_feature25_mask_2e01_mentions, 0);
+        assert_eq!(trace.inventory_owner_feature25_mask_other_mentions, 0);
+        assert_eq!(
+            trace.inventory_owner_feature25_materialized_owner_mentions,
+            0
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_unmaterialized_owner_mentions,
+            1
+        );
         assert_eq!(trace.inventory_owner_feature25_first_object_refs, 1);
+        assert_eq!(
+            trace.inventory_owner_feature25_first_materialized_object_refs,
+            1
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_first_unmaterialized_object_refs,
+            0
+        );
         assert_eq!(trace.inventory_owner_feature25_second_object_refs, 1);
+        assert_eq!(
+            trace.inventory_owner_feature25_second_materialized_object_refs,
+            1
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_second_unmaterialized_object_refs,
+            0
+        );
         assert_eq!(trace.inventory_owner_feature25_second_fragment_bits, 3);
         assert_eq!(trace.inventory_owner_feature25_legacy_tail_object_refs, 1);
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
+            0
+        );
+        assert_eq!(
+            trace.inventory_owner_feature25_legacy_tail_unmaterialized_object_refs,
+            1
+        );
         assert_eq!(trace.inventory_owner_branch_4000_state_stream_mentions, 0);
         assert_eq!(trace.inventory_owner_branch_8000_fixed_scalar_mentions, 0);
         assert_eq!(trace.live_gui_records, 2);
@@ -4893,6 +5147,19 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.untyped_mentions, 1);
         assert_eq!(trace.other_object_type_mentions, 0);
         assert_eq!(trace.materialized_item_object_ids, 2);
+
+        let registry_trace =
+            LiveObjectExactClaimTraceSummary::from_claim_with_materialization(&claim, |_, id| {
+                id == 0xFFFF_FFEC || id == 0x8000_0102
+            });
+        assert_eq!(
+            registry_trace.inventory_owner_feature25_materialized_owner_mentions,
+            1
+        );
+        assert_eq!(
+            registry_trace.inventory_owner_feature25_legacy_tail_materialized_object_refs,
+            1
+        );
     }
 }
 

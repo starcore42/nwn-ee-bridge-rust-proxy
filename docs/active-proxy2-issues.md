@@ -676,6 +676,31 @@ not as standalone workaround targets.
   owner/mask and materialization state, then implement the bounded inventory
   state/writer rule that consumes or validates the referenced objects instead
   of leaving them as diagnostics.
+- 2026-07-01 inventory Feature-25 materialization classification: live-data
+  gate used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 18h13m old at gate
+  time, with gameplay reached. Exact live-object trace summaries now classify
+  inventory Feature-25 claims by owner kind, specific mask, owner
+  materialization, and first/second/legacy-tail object-reference
+  materialization using the same semantic object-registry lifecycle lookup as
+  live-object exact claim validation. The replay harness now exposes
+  `-DrainReceiveTimeoutMilliseconds` so long fresh captures do not spend the
+  run on empty UDP receive waits; the first two replay attempts proved the
+  previous default could exceed automation limits. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-materialization-automation-20260701-0114`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact rewrites, 3,226 exact lifecycle claim summaries, 2,781 direct
+  live-object frames, 10 area rewrites, and 0 fixed-width/live-object terminal
+  residuals. All 870 Feature-25 claims had external and materialized owners;
+  869 were exact mask `0x2000` and 1 was another mask. First-list refs were
+  fully materialized (437/437), while second-list refs were almost entirely
+  not yet materialized at reference time (1/442 materialized, 441/442
+  unmaterialized), with 0 legacy-tail refs. Next production path: implement a
+  bounded inventory state/writer rule for second-list Feature-25 refs that
+  treats those refs as deferred/reference-only inventory links rather than
+  requiring immediate object materialization, with decompile-backed proof for
+  the three BOOLs per second-list object.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
