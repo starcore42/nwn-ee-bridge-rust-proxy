@@ -12,10 +12,11 @@ use super::constants::NWN_OBJECT_INVALID;
 ///
 /// The quickbar reader/writer remains packet-pure: it does not own the object
 /// registry and it does not decide game truth. The gateway may provide this
-/// narrow predicate after verified live-object / GUI item-create packets have
-/// populated a wire-derived registry. Full explicit type-1 item bodies may also
-/// be self-materializing: EE `sub_14079DB00` calls `sub_14079FAC0`, constructs a
-/// client item object when the id is not already present, then registers it with
+/// narrow predicate after verified live-object, GUI item-create, or exact
+/// inventory Feature-25 packets have populated a wire-derived item context. Full
+/// explicit type-1 item bodies may also be self-materializing: EE
+/// `sub_14079DB00` calls `sub_14079FAC0`, constructs a client item object when
+/// the id is not already present, then registers it with
 /// `CGameObjectArray::AddExternalObject` before applying the quickbar slot.
 /// Ambiguous/recovered compact item bodies still remain blanked by policy.
 pub struct QuickbarMaterializationContext<'a> {

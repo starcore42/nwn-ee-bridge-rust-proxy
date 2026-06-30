@@ -65,6 +65,7 @@ pub(crate) struct LiveObjectEvent {
     pub(crate) observed: ObservedHighLevel,
     pub(crate) mentions: Vec<LiveObjectMention>,
     pub(crate) materialized_item_object_ids: Vec<u32>,
+    pub(crate) inventory_feature25_references: Vec<LiveObjectInventoryFeature25Reference>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,15 @@ pub(crate) struct LiveObjectMention {
     pub(crate) bounds: Option<LiveObjectBounds>,
     pub(crate) placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub(crate) placeable_state: Option<LiveObjectPlaceableState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveObjectInventoryFeature25Reference {
+    pub(crate) owner_id: u32,
+    pub(crate) mask: u16,
+    pub(crate) first_object_ids: Vec<u32>,
+    pub(crate) second_object_ids: Vec<u32>,
+    pub(crate) legacy_tail_object_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

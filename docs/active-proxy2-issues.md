@@ -701,6 +701,29 @@ not as standalone workaround targets.
   treats those refs as deferred/reference-only inventory links rather than
   requiring immediate object materialization, with decompile-backed proof for
   the three BOOLs per second-list object.
+- 2026-07-01 inventory Feature-25 deferred state rule: live-data gate used the
+  same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 19h14m old at gate
+  time, with gameplay reached. Exact `I/0x2000` Feature-25 claims now feed a
+  typed semantic event and object-registry cache for first-list, second-list,
+  and legacy-tail inventory item refs. The cache is deliberately separate from
+  active object/materialized-item lifecycle proof, so the 441 deferred
+  second-list refs in the fresh HG replay can support later item/quickbar
+  context without making missing-object cleanup accept unmaterialized live
+  updates. Quickbar materialization gateways now ask for known inventory item
+  context instead of only active object ids. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-feature25-deferred-state-automation-20260701-0154`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact rewrites, 3,226 exact lifecycle claim summaries, 2,781 direct
+  live-object frames, 10 area rewrites, and 0 fixed-width/live-object terminal
+  residuals. The replay preserved the prior evidence: 870 Feature-25 claims,
+  437/437 materialized first-list refs, 1/442 materialized second-list refs,
+  441/442 deferred second-list refs, 1,326 second-list BOOL bits, and 0
+  legacy-tail refs. Next production path: use the new deferred inventory item
+  context to narrow quickbar/inventory item writer decisions, while keeping
+  compact or recovered quickbar item bodies blanked until their own
+  decompile-backed EE materialization proof exists.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

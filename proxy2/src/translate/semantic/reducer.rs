@@ -13,10 +13,11 @@ use crate::{
 };
 
 use super::{
-    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent, LiveObjectMention,
-    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectOrientationVector,
-    LiveObjectPlaceableState, LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel,
-    PlayerListEvent, ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
+    AreaEvent, ChatEvent, ClientInputEvent, InventoryEvent, LiveObjectEvent,
+    LiveObjectInventoryFeature25Reference, LiveObjectMention, LiveObjectOrientation,
+    LiveObjectOrientationSource, LiveObjectOrientationVector, LiveObjectPlaceableState,
+    LiveObjectPosition, LoginEvent, ModuleInfoEvent, ObservedHighLevel, PlayerListEvent,
+    ProtocolEvent, QuickbarEvent, SemanticSessionState, ServerStatusEvent,
 };
 
 pub(crate) fn observe_verified_payload(
@@ -100,12 +101,13 @@ fn observe_family_payload(
             // `GameObjUpdate_LiveObject` parser. This preserves the strict
             // discipline from the EE/Diamond readers: no loose byte scans, no
             // packet-family inference without proven record boundaries.
-            let (mentions, materialized_item_object_ids) =
+            let (mentions, materialized_item_object_ids, inventory_feature25_references) =
                 live_object_observations_from_payload(payload);
             ProtocolEvent::LiveObject(LiveObjectEvent {
                 observed,
                 mentions,
                 materialized_item_object_ids,
+                inventory_feature25_references,
             })
         }
         VerifiedFamily::PlayerList => {
@@ -191,6 +193,9 @@ fn apply_event(
             state
                 .objects
                 .observe_materialized_item_object_ids(&event.materialized_item_object_ids);
+            state
+                .objects
+                .observe_inventory_feature25_references(&event.inventory_feature25_references);
         }
         ProtocolEvent::PlayerList(event) => {
             state
@@ -248,74 +253,175 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn live_object_observations_from_payload(payload: &[u8]) -> (Vec<LiveObjectMention>, Vec<u32>) {
+fn live_object_observations_from_payload(
+    payload: &[u8],
+) -> (
+    Vec<LiveObjectMention>,
+    Vec<u32>,
+    Vec<LiveObjectInventoryFeature25Reference>,
+) {
     let Some(claim) = live_object_update::claim_payload_if_verified(payload) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let materialized_item_object_ids = claim.materialized_item_object_ids;
+    let mut inventory_feature25_references = Vec::new();
     let mentions = claim
         .mentions
         .into_iter()
-        .map(|mention| LiveObjectMention {
-            opcode: mention.opcode,
-            object_type: mention.object_type,
-            object_id: mention.object_id,
-            name: mention.name,
-            position: mention.position.map(|position| LiveObjectPosition {
-                x: position.x,
-                y: position.y,
-                z: position.z,
-            }),
-            orientation: mention
-                .orientation
-                .map(|orientation| LiveObjectOrientation {
-                    source: match orientation.source {
-                        live_object_update::LiveObjectRecordOrientationSource::Scalar => {
-                            LiveObjectOrientationSource::Scalar
-                        }
-                        live_object_update::LiveObjectRecordOrientationSource::Vector => {
-                            LiveObjectOrientationSource::Vector
-                        }
-                    },
-                    scalar_tenths_degrees: orientation.scalar_tenths_degrees,
-                    vector: orientation
-                        .vector
-                        .map(|vector| LiveObjectOrientationVector {
-                            x: vector.x,
-                            y: vector.y,
-                            z: vector.z,
-                        }),
-                }),
-            bounds: mention.bounds.map(|bounds| super::LiveObjectBounds {
-                min_x: bounds.min_x,
-                min_y: bounds.min_y,
-                min_z: bounds.min_z,
-                max_x: bounds.max_x,
-                max_y: bounds.max_y,
-                max_z: bounds.max_z,
-            }),
-            placeable_appearance: mention.placeable_appearance.map(|appearance| {
-                super::LiveObjectPlaceableAppearance {
-                    appearance: appearance.appearance,
-                    resref: appearance.resref,
+        .map(|mention| {
+            if let Some(inventory) = mention.inventory_owner.as_ref() {
+                if let Some(feature25) = inventory.feature25.as_ref() {
+                    inventory_feature25_references.push(LiveObjectInventoryFeature25Reference {
+                        owner_id: inventory.owner_id,
+                        mask: inventory.mask,
+                        first_object_ids: feature25.first_object_ids.clone(),
+                        second_object_ids: feature25.second_object_ids.clone(),
+                        legacy_tail_object_ids: feature25.legacy_tail_object_ids.clone(),
+                    });
                 }
-            }),
-            placeable_state: mention
-                .placeable_state
-                .map(|state| LiveObjectPlaceableState {
-                    useable: state.useable,
-                    trap_disarmable: state.trap_disarmable,
-                    lockable: state.lockable,
-                    locked: state.locked,
+            }
+            LiveObjectMention {
+                opcode: mention.opcode,
+                object_type: mention.object_type,
+                object_id: mention.object_id,
+                name: mention.name,
+                position: mention.position.map(|position| LiveObjectPosition {
+                    x: position.x,
+                    y: position.y,
+                    z: position.z,
                 }),
+                orientation: mention
+                    .orientation
+                    .map(|orientation| LiveObjectOrientation {
+                        source: match orientation.source {
+                            live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                                LiveObjectOrientationSource::Scalar
+                            }
+                            live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                                LiveObjectOrientationSource::Vector
+                            }
+                        },
+                        scalar_tenths_degrees: orientation.scalar_tenths_degrees,
+                        vector: orientation
+                            .vector
+                            .map(|vector| LiveObjectOrientationVector {
+                                x: vector.x,
+                                y: vector.y,
+                                z: vector.z,
+                            }),
+                    }),
+                bounds: mention.bounds.map(|bounds| super::LiveObjectBounds {
+                    min_x: bounds.min_x,
+                    min_y: bounds.min_y,
+                    min_z: bounds.min_z,
+                    max_x: bounds.max_x,
+                    max_y: bounds.max_y,
+                    max_z: bounds.max_z,
+                }),
+                placeable_appearance: mention.placeable_appearance.map(|appearance| {
+                    super::LiveObjectPlaceableAppearance {
+                        appearance: appearance.appearance,
+                        resref: appearance.resref,
+                    }
+                }),
+                placeable_state: mention
+                    .placeable_state
+                    .map(|state| LiveObjectPlaceableState {
+                        useable: state.useable,
+                        trap_disarmable: state.trap_disarmable,
+                        lockable: state.lockable,
+                        locked: state.locked,
+                    }),
+            }
         })
         .collect();
-    (mentions, materialized_item_object_ids)
+    (
+        mentions,
+        materialized_item_object_ids,
+        inventory_feature25_references,
+    )
 }
 
 fn current_area_object_id_from_payload(payload: &[u8]) -> Option<u32> {
     const AREA_OBJECT_ID_OFFSET: usize = 3 + 4 + 4 + 4 * 4;
     read_u32_le(payload, AREA_OBJECT_ID_OFFSET)
+}
+
+#[cfg(test)]
+mod fixture_free_tests {
+    use super::*;
+    use crate::{
+        packet::Direction,
+        translate::{VerifiedFamily, VerifiedProof},
+    };
+
+    fn pack_msb_valid_bits(mut bits: Vec<bool>, header_bits: usize) -> Vec<u8> {
+        assert!(bits.len() >= header_bits);
+        let final_fragment_bits = bits.len() % 8;
+        bits[0] = (final_fragment_bits & 0x04) != 0;
+        bits[1] = (final_fragment_bits & 0x02) != 0;
+        bits[2] = (final_fragment_bits & 0x01) != 0;
+
+        let mut packed = vec![0u8; bits.len().div_ceil(8)];
+        for (bit_index, bit) in bits.into_iter().enumerate() {
+            if bit {
+                packed[bit_index / 8] |= 0x80 >> (bit_index % 8);
+            }
+        }
+        packed
+    }
+
+    fn live_object_payload_with_bits(live: &[u8], owned_bits: &[bool]) -> Vec<u8> {
+        let mut payload = vec![b'P', 0x05, 0x01];
+        let declared = (3 + 4 + live.len()) as u32;
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(live);
+
+        let mut fragment_bits = vec![false; 3];
+        fragment_bits.extend_from_slice(owned_bits);
+        payload.extend_from_slice(&pack_msb_valid_bits(fragment_bits, 3));
+        payload
+    }
+
+    #[test]
+    fn live_object_feature25_references_feed_deferred_inventory_state() {
+        let owner_id = 0x8000_0010u32;
+        let first_item_id = 0x8000_0100u32;
+        let second_item_id = 0x8000_0101u32;
+        let mut live = vec![b'I'];
+        live.extend_from_slice(&owner_id.to_le_bytes());
+        live.extend_from_slice(&0x2000u16.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&first_item_id.to_le_bytes());
+        live.extend_from_slice(&1u32.to_le_bytes());
+        live.extend_from_slice(&second_item_id.to_le_bytes());
+        let payload = live_object_payload_with_bits(&live, &[false, true, false]);
+
+        let mut state = SemanticSessionState::default();
+        observe_verified_payload(
+            &mut state,
+            Direction::ServerToClient,
+            &VerifiedProof::Family(VerifiedFamily::GameObjUpdateLiveObject),
+            &payload,
+        );
+
+        assert!(
+            state
+                .objects
+                .has_known_inventory_item_object_id(first_item_id),
+            "Feature-25 first-list refs should become inventory item context"
+        );
+        assert!(
+            state
+                .objects
+                .has_known_inventory_item_object_id(second_item_id),
+            "Feature-25 second-list refs are deferred item context even before object materialization"
+        );
+        assert!(
+            !state.objects.has_active_object_id(second_item_id),
+            "deferred Feature-25 refs must not become active lifecycle materialization"
+        );
+    }
 }
 
 #[cfg(all(test, hgbridge_private_fixtures))]

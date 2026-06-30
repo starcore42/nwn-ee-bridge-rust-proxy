@@ -25,8 +25,9 @@ use crate::translate::{
 };
 
 use super::event::{
-    LiveObjectBounds, LiveObjectMention, LiveObjectOrientation, LiveObjectOrientationSource,
-    LiveObjectPlaceableAppearance, LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
+    LiveObjectBounds, LiveObjectInventoryFeature25Reference, LiveObjectMention,
+    LiveObjectOrientation, LiveObjectOrientationSource, LiveObjectPlaceableAppearance,
+    LiveObjectPlaceableState, LiveObjectPosition, ProtocolEvent,
 };
 
 const MAX_RECENT_EVENTS: usize = 128;
@@ -98,20 +99,41 @@ pub(crate) struct ObjectRegistry {
     pub(crate) known: BTreeMap<u32, KnownObjectState>,
     session_creature_ids_by_compact: BTreeMap<u32, u32>,
     materialized_item_object_ids: BTreeSet<u32>,
+    inventory_feature25_first_item_refs: BTreeSet<u32>,
+    inventory_feature25_second_item_refs: BTreeSet<u32>,
+    inventory_feature25_legacy_tail_item_refs: BTreeSet<u32>,
+    pub(crate) inventory_feature25_reference_records: u64,
+    pub(crate) inventory_feature25_first_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_second_item_ref_mentions: u64,
+    pub(crate) inventory_feature25_legacy_tail_item_ref_mentions: u64,
 }
 
 impl ObjectRegistry {
     pub(crate) fn reset_for_area(&mut self) {
-        if !self.known.is_empty() || !self.materialized_item_object_ids.is_empty() {
+        if !self.known.is_empty()
+            || !self.materialized_item_object_ids.is_empty()
+            || !self.inventory_feature25_first_item_refs.is_empty()
+            || !self.inventory_feature25_second_item_refs.is_empty()
+            || !self.inventory_feature25_legacy_tail_item_refs.is_empty()
+        {
             tracing::debug!(
                 known_objects = self.known.len(),
                 materialized_item_objects = self.materialized_item_object_ids.len(),
+                inventory_feature25_first_item_refs =
+                    self.inventory_feature25_first_item_refs.len(),
+                inventory_feature25_second_item_refs =
+                    self.inventory_feature25_second_item_refs.len(),
+                inventory_feature25_legacy_tail_item_refs =
+                    self.inventory_feature25_legacy_tail_item_refs.len(),
                 session_creature_aliases = self.session_creature_ids_by_compact.len(),
                 "semantic object registry reset for new Area_ClientArea"
             );
         }
         self.known.clear();
         self.materialized_item_object_ids.clear();
+        self.inventory_feature25_first_item_refs.clear();
+        self.inventory_feature25_second_item_refs.clear();
+        self.inventory_feature25_legacy_tail_item_refs.clear();
     }
 
     pub(crate) fn observe_player_list_object_ids(&mut self, object_ids: &[PlayerListObjectIds]) {
@@ -623,6 +645,60 @@ impl ObjectRegistry {
         }
     }
 
+    pub(crate) fn observe_inventory_feature25_references(
+        &mut self,
+        references: &[LiveObjectInventoryFeature25Reference],
+    ) {
+        for reference in references {
+            self.inventory_feature25_reference_records =
+                self.inventory_feature25_reference_records.saturating_add(1);
+            let first_refs = observe_inventory_feature25_item_refs(
+                &mut self.inventory_feature25_first_item_refs,
+                &reference.first_object_ids,
+            );
+            let second_refs = observe_inventory_feature25_item_refs(
+                &mut self.inventory_feature25_second_item_refs,
+                &reference.second_object_ids,
+            );
+            let legacy_tail_refs = observe_inventory_feature25_item_refs(
+                &mut self.inventory_feature25_legacy_tail_item_refs,
+                &reference.legacy_tail_object_ids,
+            );
+            self.inventory_feature25_first_item_ref_mentions = self
+                .inventory_feature25_first_item_ref_mentions
+                .saturating_add(first_refs);
+            self.inventory_feature25_second_item_ref_mentions = self
+                .inventory_feature25_second_item_ref_mentions
+                .saturating_add(second_refs);
+            self.inventory_feature25_legacy_tail_item_ref_mentions = self
+                .inventory_feature25_legacy_tail_item_ref_mentions
+                .saturating_add(legacy_tail_refs);
+            if second_refs != 0 {
+                tracing::debug!(
+                    owner_id = format_args!("0x{:08X}", reference.owner_id),
+                    mask = format_args!("0x{:04X}", reference.mask),
+                    first_refs,
+                    second_refs,
+                    legacy_tail_refs,
+                    "semantic object registry observed deferred inventory Feature-25 item references"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
+        self.has_active_object_id(object_id)
+            || self
+                .inventory_feature25_first_item_refs
+                .contains(&object_id)
+            || self
+                .inventory_feature25_second_item_refs
+                .contains(&object_id)
+            || self
+                .inventory_feature25_legacy_tail_item_refs
+                .contains(&object_id)
+    }
+
     pub(crate) fn has_active_object_id(&self, object_id: u32) -> bool {
         if self.materialized_item_object_ids.contains(&object_id) {
             return true;
@@ -974,6 +1050,22 @@ fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
     }
     let compact_id = object_id & 0xFF;
     (compact_id != 0).then_some(compact_id)
+}
+
+fn observe_inventory_feature25_item_refs(target: &mut BTreeSet<u32>, object_ids: &[u32]) -> u64 {
+    let mut accepted = 0_u64;
+    for object_id in object_ids.iter().copied() {
+        if !valid_inventory_feature25_item_ref(object_id) {
+            continue;
+        }
+        target.insert(object_id);
+        accepted = accepted.saturating_add(1);
+    }
+    accepted
+}
+
+fn valid_inventory_feature25_item_ref(object_id: u32) -> bool {
+    object_id != 0 && object_id != 0x7F00_0000 && object_id != u32::MAX
 }
 
 #[derive(Debug, Default)]

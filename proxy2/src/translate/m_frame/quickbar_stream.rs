@@ -61,7 +61,8 @@ fn rewrite_quickbar_payload_for_stream(
     object_registry: Option<&semantic::ObjectRegistry>,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
     if let Some(registry) = object_registry {
-        let item_object_is_known = |object_id| registry.has_active_object_id(object_id);
+        let item_object_is_known =
+            |object_id| registry.has_known_inventory_item_object_id(object_id);
         let materialization = quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
         if let Some((_, summary)) =
             quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(

@@ -3319,7 +3319,7 @@ fn translate_quickbar_with_registry(
     let Some(registry) = object_registry else {
         return translate_quickbar(payload, None, SemanticScope::DeflatedReassembly, None);
     };
-    let item_object_is_known = |object_id| registry.has_active_object_id(object_id);
+    let item_object_is_known = |object_id| registry.has_known_inventory_item_object_id(object_id);
     let materialization = quickbar::QuickbarMaterializationContext::new(&item_object_is_known);
     if quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
         payload,
