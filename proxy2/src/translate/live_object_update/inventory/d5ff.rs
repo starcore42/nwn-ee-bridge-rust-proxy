@@ -217,9 +217,7 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
 
     if remaining_bits == candidate.bits {
         *bit_cursor = bit_cursor.saturating_add(candidate.bits);
-        return Some(InventoryRecordClaim {
-            fragment_bits: candidate.bits,
-        });
+        return inventory_record_claim(bytes, record_offset, candidate.bits);
     }
 
     if record_end != bytes.len() {
@@ -228,9 +226,7 @@ pub(super) fn advance_verified_inventory_d5ff_hg_creature_equipment_state_shape(
         // live-object submessage can silently drain the next record's BOOL
         // cursor.
         *bit_cursor = bit_cursor.saturating_add(candidate.bits);
-        return Some(InventoryRecordClaim {
-            fragment_bits: candidate.bits,
-        });
+        return inventory_record_claim(bytes, record_offset, candidate.bits);
     }
 
     // Diamond sub_455940 and EE sub_1407B4F70 return to the caller after the

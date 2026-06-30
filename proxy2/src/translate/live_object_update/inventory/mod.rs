@@ -37,6 +37,8 @@ const GENERIC_INVENTORY_PARSE_MASK: u16 = 0x0001
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct InventoryRecordClaim {
+    pub owner_id: u32,
+    pub mask: u16,
     pub fragment_bits: usize,
 }
 
@@ -221,9 +223,7 @@ pub(super) fn advance_verified_inventory_record(
     }
     if let Some(shape) = matched_gui_quickbar_link_shape {
         *bit_cursor = bit_cursor.saturating_add(shape.fragment_bits);
-        return Some(InventoryRecordClaim {
-            fragment_bits: shape.fragment_bits,
-        });
+        return inventory_record_claim(bytes, offset, shape.fragment_bits);
     }
 
     if let Some(claim) = try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
@@ -265,8 +265,52 @@ pub(super) fn advance_verified_inventory_record(
         )?
     };
     *bit_cursor = bit_cursor.saturating_add(candidate.bits);
+    inventory_record_claim(bytes, offset, candidate.bits)
+}
+
+pub(super) fn verified_inventory_owner_claim_for_ee(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    expected_next_bit_cursor: usize,
+) -> Option<super::LiveObjectInventoryOwnerClaim> {
+    let mut proof_cursor = bit_cursor;
+    let claim = advance_verified_inventory_record(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut proof_cursor,
+    )?;
+    if proof_cursor != expected_next_bit_cursor {
+        return None;
+    }
+
+    // Diamond `sub_455940` and EE `sub_1407B4F70` both read the inventory
+    // record as `I + OBJECTID owner + WORD mask`, then walk the enabled mask
+    // branches in the fixed order modelled by `mask.rs`.  Expose this claim
+    // only after the same exact cursor validator succeeds so owner/mask
+    // diagnostics cannot outpace the fragment-bit proof.
+    Some(super::LiveObjectInventoryOwnerClaim {
+        owner_id: claim.owner_id,
+        mask: claim.mask,
+        fragment_bits: claim.fragment_bits,
+        bit_cursor,
+        next_bit_cursor: proof_cursor,
+    })
+}
+
+fn inventory_record_claim(
+    bytes: &[u8],
+    record_offset: usize,
+    fragment_bits: usize,
+) -> Option<InventoryRecordClaim> {
     Some(InventoryRecordClaim {
-        fragment_bits: candidate.bits,
+        owner_id: read_u32_le(bytes, record_offset.checked_add(1)?)?,
+        mask: read_u16_le(bytes, record_offset.checked_add(5)?)?,
+        fragment_bits,
     })
 }
 
@@ -1461,9 +1505,7 @@ fn try_advance_inventory_2000_gui_hand_trap_feature25_object_list(
     }
 
     *bit_cursor = bit_cursor.saturating_add(consumed_bits);
-    Some(InventoryRecordClaim {
-        fragment_bits: consumed_bits,
-    })
+    inventory_record_claim(bytes, offset, consumed_bits)
 }
 
 #[cfg(test)]

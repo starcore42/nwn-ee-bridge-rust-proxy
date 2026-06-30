@@ -119,6 +119,16 @@ struct LiveObjectExactClaimTraceSummary {
     delete_records: u32,
     inventory_records: u32,
     inventory_fragment_bits: u32,
+    inventory_owner_claim_mentions: u32,
+    inventory_owner_claim_fragment_bits: u32,
+    inventory_owner_sentinel_mentions: u32,
+    inventory_owner_compact_mentions: u32,
+    inventory_owner_external_mentions: u32,
+    inventory_owner_mask_2a00_mentions: u32,
+    inventory_owner_mask_2e00_mentions: u32,
+    inventory_owner_mask_2e01_mentions: u32,
+    inventory_owner_mask_d5ff_mentions: u32,
+    inventory_owner_mask_other_mentions: u32,
     live_gui_records: u32,
     live_gui_fragment_bits: u32,
     creature_appearance_records: u32,
@@ -190,6 +200,50 @@ impl LiveObjectExactClaimTraceSummary {
         for mention in &claim.mentions {
             if mention.requires_materialized_object {
                 trace.materialized_mentions += 1;
+            }
+            if let Some(inventory) = mention.inventory_owner {
+                trace.inventory_owner_claim_mentions =
+                    trace.inventory_owner_claim_mentions.saturating_add(1);
+                trace.inventory_owner_claim_fragment_bits = trace
+                    .inventory_owner_claim_fragment_bits
+                    .saturating_add(u32::try_from(inventory.fragment_bits).unwrap_or(u32::MAX));
+                match inventory.owner_id {
+                    0xFFFF_FFFD | 0xFFFF_FFFE | 0xFFFF_FFEC => {
+                        trace.inventory_owner_sentinel_mentions =
+                            trace.inventory_owner_sentinel_mentions.saturating_add(1);
+                    }
+                    1..=0x00FF_FFFF => {
+                        trace.inventory_owner_compact_mentions =
+                            trace.inventory_owner_compact_mentions.saturating_add(1);
+                    }
+                    owner_id if owner_id & 0x8000_0000 != 0 => {
+                        trace.inventory_owner_external_mentions =
+                            trace.inventory_owner_external_mentions.saturating_add(1);
+                    }
+                    _ => {}
+                }
+                match inventory.mask {
+                    0x2A00 => {
+                        trace.inventory_owner_mask_2a00_mentions =
+                            trace.inventory_owner_mask_2a00_mentions.saturating_add(1);
+                    }
+                    0x2E00 => {
+                        trace.inventory_owner_mask_2e00_mentions =
+                            trace.inventory_owner_mask_2e00_mentions.saturating_add(1);
+                    }
+                    0x2E01 => {
+                        trace.inventory_owner_mask_2e01_mentions =
+                            trace.inventory_owner_mask_2e01_mentions.saturating_add(1);
+                    }
+                    0xD5FF => {
+                        trace.inventory_owner_mask_d5ff_mentions =
+                            trace.inventory_owner_mask_d5ff_mentions.saturating_add(1);
+                    }
+                    _ => {
+                        trace.inventory_owner_mask_other_mentions =
+                            trace.inventory_owner_mask_other_mentions.saturating_add(1);
+                    }
+                }
             }
             match mention.opcode {
                 b'A' => trace.add_mentions += 1,
@@ -1079,6 +1133,16 @@ fn trace_live_object_exact_claim_summary(
         delete_records = trace.delete_records,
         inventory_records = trace.inventory_records,
         inventory_fragment_bits = trace.inventory_fragment_bits,
+        inventory_owner_claim_mentions = trace.inventory_owner_claim_mentions,
+        inventory_owner_claim_fragment_bits = trace.inventory_owner_claim_fragment_bits,
+        inventory_owner_sentinel_mentions = trace.inventory_owner_sentinel_mentions,
+        inventory_owner_compact_mentions = trace.inventory_owner_compact_mentions,
+        inventory_owner_external_mentions = trace.inventory_owner_external_mentions,
+        inventory_owner_mask_2a00_mentions = trace.inventory_owner_mask_2a00_mentions,
+        inventory_owner_mask_2e00_mentions = trace.inventory_owner_mask_2e00_mentions,
+        inventory_owner_mask_2e01_mentions = trace.inventory_owner_mask_2e01_mentions,
+        inventory_owner_mask_d5ff_mentions = trace.inventory_owner_mask_d5ff_mentions,
+        inventory_owner_mask_other_mentions = trace.inventory_owner_mask_other_mentions,
         live_gui_records = trace.live_gui_records,
         live_gui_fragment_bits = trace.live_gui_fragment_bits,
         creature_appearance_records = trace.creature_appearance_records,
@@ -4449,10 +4513,11 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectCreatureUpdateClaim, LiveObjectPlaceableAppearance,
-        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
-        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
-        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
+        LiveObjectCreatureUpdateClaim, LiveObjectInventoryOwnerClaim,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
+        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
+        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
+        LiveObjectRecordPosition,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -4469,6 +4534,7 @@ mod exact_claim_trace_tests {
             position: None,
             orientation: None,
             creature_update: None,
+            inventory_owner: None,
             bounds: None,
             placeable_appearance: None,
             placeable_appearance_claim: None,
@@ -4538,9 +4604,18 @@ mod exact_claim_trace_tests {
             orientation_bit_cursor: Some(5),
         });
         let item = mention(b'I', 0x06, 0x8000_0100);
+        let mut inventory = mention(b'I', 0, 0xFFFF_FFEC);
+        inventory.requires_materialized_object = false;
+        inventory.inventory_owner = Some(LiveObjectInventoryOwnerClaim {
+            owner_id: 0xFFFF_FFEC,
+            mask: 0x2E00,
+            fragment_bits: 6,
+            bit_cursor: 3,
+            next_bit_cursor: 9,
+        });
 
         let claim = live_update::ClaimSummary {
-            records_examined: 5,
+            records_examined: 6,
             add_records: 1,
             update_records: 2,
             delete_records: 1,
@@ -4550,21 +4625,31 @@ mod exact_claim_trace_tests {
             live_gui_item_create_records: 1,
             live_gui_fragment_bits: 5,
             materialized_item_object_ids: vec![0x8000_0100, 0x8000_0101],
-            mentions: vec![add, update, delete, creature_update, item],
+            mentions: vec![add, update, delete, creature_update, item, inventory],
             ..Default::default()
         };
 
         let trace = LiveObjectExactClaimTraceSummary::from_claim(&claim);
 
-        assert_eq!(trace.records_examined, 5);
+        assert_eq!(trace.records_examined, 6);
         assert_eq!(trace.add_records, 1);
         assert_eq!(trace.update_records, 2);
         assert_eq!(trace.delete_records, 1);
         assert_eq!(trace.inventory_records, 2);
         assert_eq!(trace.inventory_fragment_bits, 6);
+        assert_eq!(trace.inventory_owner_claim_mentions, 1);
+        assert_eq!(trace.inventory_owner_claim_fragment_bits, 6);
+        assert_eq!(trace.inventory_owner_sentinel_mentions, 1);
+        assert_eq!(trace.inventory_owner_compact_mentions, 0);
+        assert_eq!(trace.inventory_owner_external_mentions, 0);
+        assert_eq!(trace.inventory_owner_mask_2a00_mentions, 0);
+        assert_eq!(trace.inventory_owner_mask_2e00_mentions, 1);
+        assert_eq!(trace.inventory_owner_mask_2e01_mentions, 0);
+        assert_eq!(trace.inventory_owner_mask_d5ff_mentions, 0);
+        assert_eq!(trace.inventory_owner_mask_other_mentions, 0);
         assert_eq!(trace.live_gui_records, 2);
         assert_eq!(trace.live_gui_fragment_bits, 5);
-        assert_eq!(trace.mentions, 5);
+        assert_eq!(trace.mentions, 6);
         assert_eq!(trace.materialized_mentions, 3);
         assert_eq!(trace.add_mentions, 1);
         assert_eq!(trace.update_mentions, 2);
@@ -4599,7 +4684,7 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.item_mentions, 1);
         assert_eq!(trace.trigger_mentions, 0);
         assert_eq!(trace.door_mentions, 0);
-        assert_eq!(trace.untyped_mentions, 0);
+        assert_eq!(trace.untyped_mentions, 1);
         assert_eq!(trace.other_object_type_mentions, 0);
         assert_eq!(trace.materialized_item_object_ids, 2);
     }

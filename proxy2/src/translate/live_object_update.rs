@@ -19964,6 +19964,15 @@ pub struct LiveObjectCreatureUpdateClaim {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectInventoryOwnerClaim {
+    pub owner_id: u32,
+    pub mask: u16,
+    pub fragment_bits: usize,
+    pub bit_cursor: usize,
+    pub next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectPlaceableAppearance {
     pub appearance: u16,
     pub resref: Option<[u8; 16]>,
@@ -20020,6 +20029,7 @@ pub struct LiveObjectRecordMention {
     pub position: Option<LiveObjectRecordPosition>,
     pub orientation: Option<LiveObjectRecordOrientation>,
     pub creature_update: Option<LiveObjectCreatureUpdateClaim>,
+    pub inventory_owner: Option<LiveObjectInventoryOwnerClaim>,
     pub bounds: Option<LiveObjectRecordBounds>,
     pub placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub placeable_appearance_claim: Option<LiveObjectPlaceableAppearanceClaim>,
@@ -21756,6 +21766,15 @@ fn verified_record_mention(
         opcode,
         object_type,
     );
+    let inventory_owner_claim = verified_inventory_owner_mention_claim(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        next_bit_cursor,
+        opcode,
+    );
     let placeable_appearance_claim = verified_record_placeable_appearance_claim(
         live_bytes,
         record_end,
@@ -21786,6 +21805,7 @@ fn verified_record_mention(
         ),
         orientation: verified_record_orientation(opcode, object_type, door_placeable_update_claim),
         creature_update: creature_update_claim,
+        inventory_owner: inventory_owner_claim,
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
         placeable_appearance: verified_record_placeable_appearance(
             live_bytes,
@@ -21864,6 +21884,28 @@ fn verified_creature_update_mention_claim(
         return None;
     }
     creature::verified_creature_update_claim_for_ee(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        next_bit_cursor,
+    )
+}
+
+fn verified_inventory_owner_mention_claim(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    next_bit_cursor: usize,
+    opcode: u8,
+) -> Option<LiveObjectInventoryOwnerClaim> {
+    if opcode != b'I' {
+        return None;
+    }
+    inventory::verified_inventory_owner_claim_for_ee(
         live_bytes,
         offset,
         record_end,

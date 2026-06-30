@@ -623,6 +623,24 @@ not as standalone workaround targets.
   path: reduce the remaining 875 untyped inventory-owner rows into a bounded
   owner/opcode parser invariant, then use the typed creature claim mask counts
   to choose any remaining `U/05` branch-specific model work.
+- 2026-06-30 parser-owned inventory owner claim model: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 15h13m old at
+  gate time, with gameplay reached. Exact `I` inventory owner mentions now
+  expose owner id, mask, fragment-bit count, and accepted bit-cursor bounds
+  only after the decompile-backed inventory validator replays the record and
+  lands on the same next cursor. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-owner-claim-automation-20260630-2225`
+  completed with 0 quarantines, 3,547 strict allows, 445 exact rewrite
+  matches, 3,226 exact lifecycle claim summaries, 2,781 captured direct
+  live-object frames, 10 area rewrites, and 0 fixed-width or live-object
+  terminal residuals. All 875 formerly untyped inventory-owner mentions now
+  carry exact owner claims; the aggregate showed 1 `0xD5FF` mask and 874
+  other masks, all with external-owner ids and no compact/sentinel owners.
+  Next production path: break down the 874 non-`0xD5FF` inventory masks into
+  bounded branch counters, then choose the next exact writer/parser slice from
+  those mask families or the remaining `U/05` update-mask counts.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
