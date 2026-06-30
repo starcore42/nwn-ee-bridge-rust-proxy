@@ -32,6 +32,10 @@
 //!   `0x11`, minor `0x04` with `CreateWriteMessage`, then writes a BYTE
 //!   response value, a fixed 16-byte `CResRef`, a DWORD BIC byte count, and
 //!   the raw BIC bytes via `WriteVOIDPtr`.
+//! - The update response body writes no BOOL fields after the read-buffer body.
+//!   Its single trailing CNW byte is therefore only `GetWriteMessage`'s empty
+//!   final cursor (`0b011xxxxx`), with low padding bits preserved by the
+//!   original writer and ignored by the reader.
 //! - Diamond/HG captures use the same outer stream shape but the embedded BIC
 //!   GFF can arrive in a legacy non-canonical section layout. EE consumes the
 //!   same semantic BIC fields, so this translator canonicalizes only the GFF
@@ -55,7 +59,8 @@ const C_RESREF_TEXT_BYTES: usize = 16;
 const CLASS_RECORD_BYTES: usize = 5;
 const UPDATE_RESPONSE_STATUS_BYTES: usize = 1;
 const UPDATE_RESPONSE_BIC_SIZE_BYTES: usize = 4;
-const EMPTY_CNW_FRAGMENT_BYTE: u8 = 0x60;
+const CNW_FRAGMENT_CURSOR_MASK: u8 = 0xE0;
+const EMPTY_CNW_FRAGMENT_CURSOR: u8 = 0x60;
 const UPDATE_RESPONSE_FIXED_PREFIX_BYTES: usize =
     UPDATE_RESPONSE_STATUS_BYTES + C_RESREF_TEXT_BYTES + UPDATE_RESPONSE_BIC_SIZE_BYTES;
 const MAX_REASONABLE_REASSEMBLED_GAMEPLAY_PAYLOAD: usize = 1024 * 1024;
@@ -292,8 +297,7 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
     let declared = usize::try_from(read_le_u32(payload, HIGH_LEVEL_HEADER_BYTES)?).ok()?;
     if declared < HIGH_LEVEL_HEADER_BYTES + CNW_LENGTH_BYTES + UPDATE_RESPONSE_FIXED_PREFIX_BYTES
         || declared > payload.len()
-        || payload.len() != declared.checked_add(1)?
-        || payload.get(declared).copied() != Some(EMPTY_CNW_FRAGMENT_BYTE)
+        || !update_response_fragment_tail_valid(payload.get(declared..)?)
     {
         return None;
     }
@@ -390,6 +394,13 @@ fn translate_update_char_response(payload: &mut Vec<u8>) -> Option<CharListClaim
         old_bic_size,
         new_bic_size: canonical_bic.len(),
     })
+}
+
+fn update_response_fragment_tail_valid(fragment_tail: &[u8]) -> bool {
+    matches!(
+        fragment_tail,
+        [byte] if (byte & CNW_FRAGMENT_CURSOR_MASK) == EMPTY_CNW_FRAGMENT_CURSOR
+    )
 }
 
 fn write_le_u32(bytes: &mut [u8], offset: usize, value: u32) -> Option<()> {
@@ -569,7 +580,7 @@ mod tests {
 
     #[test]
     fn claims_update_response_with_exact_empty_fragment_tail() {
-        let mut payload = build_update_response_payload(&[EMPTY_CNW_FRAGMENT_BYTE]);
+        let mut payload = build_update_response_payload(&[EMPTY_CNW_FRAGMENT_CURSOR]);
 
         let summary = claim_payload_if_verified(&mut payload).expect(
             "UpdateCharResponse byte-only BIC body should own only the empty fragment byte",
@@ -578,16 +589,27 @@ mod tests {
         assert_eq!(summary.kind, CharListClaimKind::UpdateCharResponse);
         assert_eq!(summary.fragment_bytes, 1);
         assert!(!summary.bic_rewritten);
-        assert_eq!(payload.last().copied(), Some(EMPTY_CNW_FRAGMENT_BYTE));
+        assert_eq!(payload.last().copied(), Some(EMPTY_CNW_FRAGMENT_CURSOR));
     }
 
     #[test]
-    fn rejects_update_response_without_exact_empty_fragment_tail() {
-        for tail in [
-            Vec::new(),
-            vec![EMPTY_CNW_FRAGMENT_BYTE | 1],
-            vec![EMPTY_CNW_FRAGMENT_BYTE, 0],
-        ] {
+    fn claims_update_response_with_empty_fragment_cursor_padding_bits() {
+        for tail in [0x60, 0x68, 0x7F] {
+            let mut payload = build_update_response_payload(&[tail]);
+
+            let summary = claim_payload_if_verified(&mut payload).expect(
+                "UpdateCharResponse writes no BOOLs; low final-byte padding bits are preserved",
+            );
+
+            assert_eq!(summary.kind, CharListClaimKind::UpdateCharResponse);
+            assert_eq!(summary.fragment_bytes, 1);
+            assert_eq!(payload.last().copied(), Some(tail));
+        }
+    }
+
+    #[test]
+    fn rejects_update_response_without_valid_empty_fragment_tail() {
+        for tail in [Vec::new(), vec![0x80], vec![EMPTY_CNW_FRAGMENT_CURSOR, 0]] {
             let mut payload = build_update_response_payload(&tail);
 
             assert!(
