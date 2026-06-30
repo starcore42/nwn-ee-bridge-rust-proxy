@@ -847,6 +847,25 @@ not as standalone workaround targets.
   production path remains obtaining or replaying a `SetAllButtons` stream with
   real item slots after verified Feature-25 refs; this slot profile proves the
   current fresh HG capture cannot decide compact item-slot emission.
+- 2026-07-01 committed quickbar summary diagnostics: live-data gate used the
+  same fresh gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`; packet window
+  `2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`, about two hours old at
+  verification time, with gameplay reached. The focused gameplay-stream
+  splitter now calls explicit quickbar stream-probe rewrite helpers, and
+  quickbar rewrite logs carry `trace_role` plus `committed` fields. The replay
+  harness now aggregates only `committed=true` quickbar summaries, so
+  speculative normalized split probes no longer inflate slot-preservation or
+  blanking counters. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-committed-summary-automation-20260701-0849`
+  stayed at 0 quarantines, 223 strict allows, 79 direct live-object frames, 14
+  exact live-object rewrites, 60 exact lifecycle claim summaries, 10 area
+  rewrites, and 1 committed quickbar rewrite summary. The actual committed
+  SetAllButtons output had 0 item buttons, 29 blank slots, 5 spells, 2 preserved
+  general buttons, 0 general blanks, and 0 unsupported blanks; the earlier 676
+  unsupported blanks were stream-probe diagnostics, not sent proxy output. Next
+  production path remains obtaining or replaying a `SetAllButtons` stream with
+  real item slots after verified Feature-25 refs.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

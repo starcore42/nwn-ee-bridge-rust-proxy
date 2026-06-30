@@ -23,9 +23,31 @@ pub fn rewrite_simple_quickbar_payload_if_possible(
     rewrite_simple_quickbar_payload_with_context_if_possible(payload, None)
 }
 
+pub(crate) fn rewrite_simple_quickbar_payload_for_stream_probe_if_possible(
+    payload: &mut Vec<u8>,
+) -> Option<QuickbarRewriteSummary> {
+    rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
+        payload,
+        None,
+        QuickbarRewriteTraceRole::StreamProbe,
+    )
+}
+
 pub fn rewrite_simple_quickbar_payload_with_context_if_possible(
     payload: &mut Vec<u8>,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<QuickbarRewriteSummary> {
+    rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
+        payload,
+        materialization,
+        QuickbarRewriteTraceRole::Committed,
+    )
+}
+
+fn rewrite_simple_quickbar_payload_with_context_and_trace_if_possible(
+    payload: &mut Vec<u8>,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+    trace_role: QuickbarRewriteTraceRole,
 ) -> Option<QuickbarRewriteSummary> {
     let old_payload_length = payload.len();
     let parsed = parse_cnw_quickbar_payload(payload)?;
@@ -44,7 +66,7 @@ pub fn rewrite_simple_quickbar_payload_with_context_if_possible(
         read_le_u32(&rewritten, HIGH_LEVEL_HEADER_BYTES).unwrap_or(old_declared),
         materialization,
     );
-    trace_quickbar_rewrite_summary("simple", &summary);
+    trace_quickbar_rewrite_summary("simple", &summary, trace_role);
     dump_quickbar_payload("simple_after", &rewritten);
     *payload = rewritten;
     Some(summary)
@@ -78,9 +100,31 @@ pub fn normalize_and_rewrite_quickbar_payload_if_possible(
     normalize_and_rewrite_quickbar_payload_with_context_if_possible(payload, None)
 }
 
+pub(crate) fn normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible(
+    payload: &mut Vec<u8>,
+) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
+    normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
+        payload,
+        None,
+        QuickbarRewriteTraceRole::StreamProbe,
+    )
+}
+
 pub fn normalize_and_rewrite_quickbar_payload_with_context_if_possible(
     payload: &mut Vec<u8>,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
+    normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
+        payload,
+        materialization,
+        QuickbarRewriteTraceRole::Committed,
+    )
+}
+
+fn normalize_and_rewrite_quickbar_payload_with_context_and_trace_if_possible(
+    payload: &mut Vec<u8>,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+    trace_role: QuickbarRewriteTraceRole,
 ) -> Option<(PrefixedFragmentsNormalizeSummary, QuickbarRewriteSummary)> {
     let mut normalized = payload.clone();
     let normalize = normalize_quickbar_payload_if_needed(&mut normalized)?;
@@ -99,7 +143,7 @@ pub fn normalize_and_rewrite_quickbar_payload_with_context_if_possible(
         new_declared,
         materialization,
     );
-    trace_quickbar_rewrite_summary("normalized", &summary);
+    trace_quickbar_rewrite_summary("normalized", &summary, trace_role);
     dump_quickbar_payload("normalized_after", &rewritten);
     *payload = rewritten;
     Some((normalize, summary))
@@ -551,9 +595,34 @@ fn trace_quickbar_rewrite_skip(reason: &str, payload: &[u8]) {
     );
 }
 
-fn trace_quickbar_rewrite_summary(path: &str, summary: &QuickbarRewriteSummary) {
+#[derive(Debug, Clone, Copy)]
+enum QuickbarRewriteTraceRole {
+    Committed,
+    StreamProbe,
+}
+
+impl QuickbarRewriteTraceRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Committed => "committed",
+            Self::StreamProbe => "stream_probe",
+        }
+    }
+
+    fn is_committed(self) -> bool {
+        matches!(self, Self::Committed)
+    }
+}
+
+fn trace_quickbar_rewrite_summary(
+    path: &str,
+    summary: &QuickbarRewriteSummary,
+    trace_role: QuickbarRewriteTraceRole,
+) {
     tracing::info!(
         path,
+        trace_role = trace_role.as_str(),
+        committed = trace_role.is_committed(),
         old_payload_length = summary.old_payload_length,
         new_payload_length = summary.new_payload_length,
         old_declared = summary.old_declared,

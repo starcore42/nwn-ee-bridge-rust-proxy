@@ -938,14 +938,16 @@ fn quickbar_payload_claims_complete_unit(payload: &[u8]) -> bool {
 
     let mut probe = payload.to_vec();
     if let Some((_, summary)) =
-        quickbar::normalize_and_rewrite_quickbar_payload_if_possible(&mut probe)
+        quickbar::normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible(&mut probe)
     {
         return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
             && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
     }
 
     let mut probe = payload.to_vec();
-    if let Some(summary) = quickbar::rewrite_simple_quickbar_payload_if_possible(&mut probe) {
+    if let Some(summary) =
+        quickbar::rewrite_simple_quickbar_payload_for_stream_probe_if_possible(&mut probe)
+    {
         return !quickbar::rewrite_summary_needs_more_quickbar_bytes(&summary)
             && quickbar::ee_set_all_buttons_payload_shape_valid(&probe);
     }

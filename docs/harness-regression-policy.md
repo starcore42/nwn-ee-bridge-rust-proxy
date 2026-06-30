@@ -33,7 +33,7 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-01 07:43 +10: the current
+Latest known live HG status, as of 2026-07-01 08:45 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 165
@@ -41,22 +41,25 @@ packet files, and packet window
 `2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`. Gameplay was reached through
 character/module entry and in-area HG gameplay messages including "You are now
 in a No PVP area" and "You are now in Docks of Ascension (No PVP)." At the
-latest live-data gate the newest packet was about one hour old. The strict
+latest live-data gate the newest packet was about two hours old. The strict
 proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-quickbar-slot-profile-automation-20260701-0747`
-reported 0 quarantines, 256 strict allows, 79 captured direct live-object
-frames, 16 exact live-object rewrite matches, 77 exact lifecycle claim
-summaries, 10 area rewrites, 40 quickbar rewrite summaries, 0 quickbar item
-buttons, 492 blank quickbar slots, 192 spell slots, 80 preserved general
-buttons, 676 unsupported blanked slots, 0 strict quarantine decisions, and 0
-fixed-width/live-object residuals. Inventory Feature-25 evidence in this
-shorter fresh capture showed 18 typed Feature-25 claims, 9/9 first-list refs
-materialized, 1/13 second-list refs materialized, 12/13 second-list refs not
-yet materialized at reference time, 39 second-list BOOL bits, and 0 legacy-tail
-refs. The current production rule keeps Feature-25 refs as deferred
-item-context proof, clears GUI-materialized and Feature-25 quickbar item proof
-when an exact `D/06` live-object delete is observed, and now reports true
-type-0 blank quickbar slots separately from item/spell/general slot buckets.
+`C:\nwnbridge\codex-proxy2-replay-quickbar-committed-summary-automation-20260701-0849`
+reported 0 quarantines, 223 strict allows, 79 captured direct live-object
+frames, 14 exact live-object rewrite matches, 60 exact lifecycle claim
+summaries, 10 area rewrites, 1 committed quickbar rewrite summary, 0 quickbar
+item buttons, 29 blank quickbar slots, 5 spell slots, 2 preserved general
+buttons, 0 general blanks, 0 unsupported blanked slots, 0 strict quarantine
+decisions, and 0 fixed-width/live-object residuals. Inventory Feature-25
+evidence in this shorter fresh capture showed 13 typed Feature-25 claims, 6/6
+first-list refs materialized, 1/11 second-list refs materialized, 10/11
+second-list refs not yet materialized at reference time, 33 second-list BOOL
+bits, and 0 legacy-tail refs. Quickbar rewrite logs now mark stream-splitter
+probes separately from committed translation with `trace_role` and `committed`;
+the replay summary intentionally aggregates only committed quickbar rewrites.
+The current production rule keeps Feature-25 refs as deferred item-context
+proof, clears GUI-materialized and Feature-25 quickbar item proof when an exact
+`D/06` live-object delete is observed, and reports true type-0 blank quickbar
+slots separately from item/spell/general slot buckets.
 
 ## Successful live HG capture contract
 
