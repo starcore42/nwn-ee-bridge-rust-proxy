@@ -411,6 +411,17 @@ fn summarize_quickbar_rewrite(
         ) {
             Ok(proofs) => proofs,
             Err(reason) => {
+                if reason
+                    == super::writer::QuickbarItemMaterializationRejectReason::MissingStateProof
+                {
+                    rejection_counts.observe_missing_state_status(
+                        super::writer::quickbar_item_button_missing_state_status(
+                            primary,
+                            secondary,
+                            materialization,
+                        ),
+                    );
+                }
                 rejection_counts.observe(reason);
                 continue;
             }
@@ -498,6 +509,11 @@ fn summarize_quickbar_rewrite(
             .unsupported_appearance_type,
         item_buttons_rejected_appearance_shape: rejection_counts.appearance_shape,
         item_buttons_rejected_missing_state_proof: rejection_counts.missing_state_proof,
+        item_buttons_rejected_missing_state_unknown: rejection_counts.missing_state_unknown,
+        item_buttons_rejected_missing_state_cleared_delete: rejection_counts
+            .missing_state_cleared_delete,
+        item_buttons_rejected_missing_state_cleared_area_reset: rejection_counts
+            .missing_state_cleared_area_reset,
         item_objects_preserved_by_explicit_self_materialization: materialization_counts
             .explicit_self_materialization,
         item_objects_preserved_by_active_state: materialization_counts.active_state,
@@ -518,6 +534,9 @@ struct QuickbarItemRejectionCounts {
     unsupported_appearance_type: u32,
     appearance_shape: u32,
     missing_state_proof: u32,
+    missing_state_unknown: u32,
+    missing_state_cleared_delete: u32,
+    missing_state_cleared_area_reset: u32,
 }
 
 impl QuickbarItemRejectionCounts {
@@ -547,6 +566,23 @@ impl QuickbarItemRejectionCounts {
             }
             super::writer::QuickbarItemMaterializationRejectReason::MissingStateProof => {
                 self.missing_state_proof = self.missing_state_proof.saturating_add(1);
+            }
+        }
+    }
+
+    fn observe_missing_state_status(&mut self, status: QuickbarItemMaterializationStatus) {
+        match status {
+            QuickbarItemMaterializationStatus::Proven(_) => {}
+            QuickbarItemMaterializationStatus::ClearedByItemDelete => {
+                self.missing_state_cleared_delete =
+                    self.missing_state_cleared_delete.saturating_add(1);
+            }
+            QuickbarItemMaterializationStatus::ClearedByAreaReset => {
+                self.missing_state_cleared_area_reset =
+                    self.missing_state_cleared_area_reset.saturating_add(1);
+            }
+            QuickbarItemMaterializationStatus::Unknown => {
+                self.missing_state_unknown = self.missing_state_unknown.saturating_add(1);
             }
         }
     }
@@ -656,6 +692,12 @@ fn trace_quickbar_rewrite_summary(
         item_buttons_rejected_appearance_shape = summary.item_buttons_rejected_appearance_shape,
         item_buttons_rejected_missing_state_proof =
             summary.item_buttons_rejected_missing_state_proof,
+        item_buttons_rejected_missing_state_unknown =
+            summary.item_buttons_rejected_missing_state_unknown,
+        item_buttons_rejected_missing_state_cleared_delete =
+            summary.item_buttons_rejected_missing_state_cleared_delete,
+        item_buttons_rejected_missing_state_cleared_area_reset =
+            summary.item_buttons_rejected_missing_state_cleared_area_reset,
         item_objects_preserved_by_explicit_self_materialization =
             summary.item_objects_preserved_by_explicit_self_materialization,
         item_objects_preserved_by_active_state = summary.item_objects_preserved_by_active_state,

@@ -61,13 +61,13 @@ fn rewrite_quickbar_payload_for_stream(
     object_registry: Option<&semantic::ObjectRegistry>,
 ) -> Option<quickbar::QuickbarRewriteSummary> {
     if let Some(registry) = object_registry {
-        let item_object_proof = |object_id| {
-            registry
-                .inventory_item_object_proof(object_id)
-                .map(quickbar_materialization_proof_from_registry)
+        let item_object_status = |object_id| {
+            quickbar_materialization_status_from_registry(
+                registry.inventory_item_object_status(object_id),
+            )
         };
         let materialization =
-            quickbar::QuickbarMaterializationContext::new_with_proof(&item_object_proof);
+            quickbar::QuickbarMaterializationContext::new_with_status(&item_object_status);
         if let Some((_, summary)) =
             quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
                 payload,
@@ -87,6 +87,27 @@ fn rewrite_quickbar_payload_for_stream(
         return Some(summary);
     }
     quickbar::rewrite_simple_quickbar_payload_if_possible(payload)
+}
+
+fn quickbar_materialization_status_from_registry(
+    status: semantic::InventoryItemObjectStatus,
+) -> quickbar::QuickbarItemMaterializationStatus {
+    match status {
+        semantic::InventoryItemObjectStatus::Proven(proof) => {
+            quickbar::QuickbarItemMaterializationStatus::Proven(
+                quickbar_materialization_proof_from_registry(proof),
+            )
+        }
+        semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
+            quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
+        }
+        semantic::InventoryItemObjectStatus::ClearedByAreaReset => {
+            quickbar::QuickbarItemMaterializationStatus::ClearedByAreaReset
+        }
+        semantic::InventoryItemObjectStatus::Unknown => {
+            quickbar::QuickbarItemMaterializationStatus::Unknown
+        }
+    }
 }
 
 fn quickbar_materialization_proof_from_registry(
@@ -151,6 +172,12 @@ pub(super) fn maybe_buffer_or_flush_server_quickbar_stream(
                             summary.item_objects_preserved_by_feature25_second,
                         item_objects_preserved_by_feature25_legacy_tail =
                             summary.item_objects_preserved_by_feature25_legacy_tail,
+                        item_buttons_rejected_missing_state_unknown =
+                            summary.item_buttons_rejected_missing_state_unknown,
+                        item_buttons_rejected_missing_state_cleared_delete =
+                            summary.item_buttons_rejected_missing_state_cleared_delete,
+                        item_buttons_rejected_missing_state_cleared_area_reset =
+                            summary.item_buttons_rejected_missing_state_cleared_area_reset,
                         unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
                         buffered = bytes.len(),
                         "server GuiQuickbar_SetAllButtons continuation buffering started"
@@ -495,6 +522,12 @@ fn flush_pending_server_quickbar_stream(
                 summary.item_objects_preserved_by_feature25_second,
             item_objects_preserved_by_feature25_legacy_tail =
                 summary.item_objects_preserved_by_feature25_legacy_tail,
+            item_buttons_rejected_missing_state_unknown =
+                summary.item_buttons_rejected_missing_state_unknown,
+            item_buttons_rejected_missing_state_cleared_delete =
+                summary.item_buttons_rejected_missing_state_cleared_delete,
+            item_buttons_rejected_missing_state_cleared_area_reset =
+                summary.item_buttons_rejected_missing_state_cleared_area_reset,
             unsupported_buttons_blanked = summary.unsupported_buttons_blanked,
             old_payload_length = summary.old_payload_length,
             new_payload_length = summary.new_payload_length,

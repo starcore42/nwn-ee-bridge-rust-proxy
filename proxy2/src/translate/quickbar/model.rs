@@ -16,6 +16,14 @@ pub(crate) enum QuickbarItemMaterializationProof {
     InventoryFeature25LegacyTail,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuickbarItemMaterializationStatus {
+    Proven(QuickbarItemMaterializationProof),
+    ClearedByItemDelete,
+    ClearedByAreaReset,
+    Unknown,
+}
+
 /// Session-state proof used by the EE quickbar writer when deciding whether a
 /// parsed legacy item button may be emitted as an EE item button.
 ///
@@ -30,21 +38,52 @@ pub(crate) enum QuickbarItemMaterializationProof {
 /// `CGameObjectArray::AddExternalObject` before applying the quickbar slot.
 /// Missing-source-type recovered item bodies still remain blanked by policy.
 pub struct QuickbarMaterializationContext<'a> {
-    item_object_proof: &'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>,
+    item_object_proof: Option<&'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>>,
+    item_object_status: Option<&'a dyn Fn(u32) -> QuickbarItemMaterializationStatus>,
 }
 
 impl<'a> QuickbarMaterializationContext<'a> {
     pub fn new_with_proof(
         item_object_proof: &'a dyn Fn(u32) -> Option<QuickbarItemMaterializationProof>,
     ) -> Self {
-        Self { item_object_proof }
+        Self {
+            item_object_proof: Some(item_object_proof),
+            item_object_status: None,
+        }
+    }
+
+    pub fn new_with_status(
+        item_object_status: &'a dyn Fn(u32) -> QuickbarItemMaterializationStatus,
+    ) -> Self {
+        Self {
+            item_object_proof: None,
+            item_object_status: Some(item_object_status),
+        }
     }
 
     pub(in crate::translate::quickbar) fn item_object_materialization_proof(
         &self,
         object_id: u32,
     ) -> Option<QuickbarItemMaterializationProof> {
-        (self.item_object_proof)(object_id)
+        match self.item_object_materialization_status(object_id) {
+            QuickbarItemMaterializationStatus::Proven(proof) => Some(proof),
+            QuickbarItemMaterializationStatus::ClearedByItemDelete
+            | QuickbarItemMaterializationStatus::ClearedByAreaReset
+            | QuickbarItemMaterializationStatus::Unknown => None,
+        }
+    }
+
+    pub(in crate::translate::quickbar) fn item_object_materialization_status(
+        &self,
+        object_id: u32,
+    ) -> QuickbarItemMaterializationStatus {
+        if let Some(item_object_status) = self.item_object_status {
+            return item_object_status(object_id);
+        }
+        self.item_object_proof
+            .and_then(|item_object_proof| item_object_proof(object_id))
+            .map(QuickbarItemMaterializationStatus::Proven)
+            .unwrap_or(QuickbarItemMaterializationStatus::Unknown)
     }
 }
 
@@ -79,6 +118,9 @@ pub struct QuickbarRewriteSummary {
     pub item_buttons_rejected_unsupported_appearance_type: u32,
     pub item_buttons_rejected_appearance_shape: u32,
     pub item_buttons_rejected_missing_state_proof: u32,
+    pub item_buttons_rejected_missing_state_unknown: u32,
+    pub item_buttons_rejected_missing_state_cleared_delete: u32,
+    pub item_buttons_rejected_missing_state_cleared_area_reset: u32,
     pub item_objects_preserved_by_explicit_self_materialization: u32,
     pub item_objects_preserved_by_active_state: u32,
     pub item_objects_preserved_by_feature25_first: u32,

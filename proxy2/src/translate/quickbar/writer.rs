@@ -370,6 +370,42 @@ fn quickbar_item_object_verified_materialization_proof(
     }
 }
 
+pub(super) fn quickbar_item_button_missing_state_status(
+    primary: &QuickbarItemObject,
+    secondary: &QuickbarItemObject,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> QuickbarItemMaterializationStatus {
+    [primary, secondary]
+        .into_iter()
+        .filter_map(|item| quickbar_item_missing_state_status(item, materialization))
+        .find(|status| *status != QuickbarItemMaterializationStatus::Unknown)
+        .unwrap_or(QuickbarItemMaterializationStatus::Unknown)
+}
+
+fn quickbar_item_missing_state_status(
+    item: &QuickbarItemObject,
+    materialization: Option<&QuickbarMaterializationContext<'_>>,
+) -> Option<QuickbarItemMaterializationStatus> {
+    if !item.present
+        || item.object_id == NWN_OBJECT_INVALID
+        || item.active_props.is_none()
+        || legacy_item_appearance_read_size(item.appearance_type).is_none()
+        || item.appearance_bytes.len() != legacy_item_appearance_read_size(item.appearance_type)?
+        || read_u32_le(&item.appearance_bytes, 0) != Some(item.base_item)
+    {
+        return None;
+    }
+    let status = materialization
+        .map(|materialization| materialization.item_object_materialization_status(item.object_id))
+        .unwrap_or(QuickbarItemMaterializationStatus::Unknown);
+    match status {
+        QuickbarItemMaterializationStatus::Proven(_) => None,
+        QuickbarItemMaterializationStatus::ClearedByItemDelete
+        | QuickbarItemMaterializationStatus::ClearedByAreaReset
+        | QuickbarItemMaterializationStatus::Unknown => Some(status),
+    }
+}
+
 fn write_quickbar_item_object(
     writer: &mut QuickbarPacketWriter,
     item: &QuickbarItemObject,
@@ -728,6 +764,41 @@ mod tests {
             )
             .is_none(),
             "byte-owned compact item bodies need session-state proof"
+        );
+    }
+
+    #[test]
+    fn compact_item_missing_state_reports_verified_clear_status() {
+        let item = quickbar_item_with_appearance(LEGACY_SHIELD_BASE_ITEM, 0, &[0x34]);
+        let item_object_id = item.object_id;
+        let item_object_status = |object_id| {
+            if object_id == item_object_id {
+                QuickbarItemMaterializationStatus::ClearedByItemDelete
+            } else {
+                QuickbarItemMaterializationStatus::Unknown
+            }
+        };
+        let materialization = QuickbarMaterializationContext::new_with_status(&item_object_status);
+
+        assert_eq!(
+            quickbar_item_button_materialization_decision(
+                &item,
+                &QuickbarItemObject::default(),
+                QuickbarItemSource::CompactByteOwnedWithSourceType,
+                false,
+                Some(&materialization),
+            ),
+            Err(QuickbarItemMaterializationRejectReason::MissingStateProof),
+            "a cleared proof remains a missing proof for emission"
+        );
+        assert_eq!(
+            quickbar_item_button_missing_state_status(
+                &item,
+                &QuickbarItemObject::default(),
+                Some(&materialization),
+            ),
+            QuickbarItemMaterializationStatus::ClearedByItemDelete,
+            "diagnostics should preserve the verified lifecycle clear reason"
         );
     }
 

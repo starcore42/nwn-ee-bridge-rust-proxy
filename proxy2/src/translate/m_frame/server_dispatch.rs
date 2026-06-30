@@ -3319,13 +3319,13 @@ fn translate_quickbar_with_registry(
     let Some(registry) = object_registry else {
         return translate_quickbar(payload, None, SemanticScope::DeflatedReassembly, None);
     };
-    let item_object_proof = |object_id| {
-        registry
-            .inventory_item_object_proof(object_id)
-            .map(quickbar_materialization_proof_from_registry)
+    let item_object_status = |object_id| {
+        quickbar_materialization_status_from_registry(
+            registry.inventory_item_object_status(object_id),
+        )
     };
     let materialization =
-        quickbar::QuickbarMaterializationContext::new_with_proof(&item_object_proof);
+        quickbar::QuickbarMaterializationContext::new_with_status(&item_object_status);
     if quickbar::normalize_and_rewrite_quickbar_payload_with_context_if_possible(
         payload,
         Some(&materialization),
@@ -3340,6 +3340,27 @@ fn translate_quickbar_with_registry(
         claimed()
     } else {
         ServerTranslatorOutcome::None
+    }
+}
+
+fn quickbar_materialization_status_from_registry(
+    status: semantic::InventoryItemObjectStatus,
+) -> quickbar::QuickbarItemMaterializationStatus {
+    match status {
+        semantic::InventoryItemObjectStatus::Proven(proof) => {
+            quickbar::QuickbarItemMaterializationStatus::Proven(
+                quickbar_materialization_proof_from_registry(proof),
+            )
+        }
+        semantic::InventoryItemObjectStatus::ClearedByItemDelete => {
+            quickbar::QuickbarItemMaterializationStatus::ClearedByItemDelete
+        }
+        semantic::InventoryItemObjectStatus::ClearedByAreaReset => {
+            quickbar::QuickbarItemMaterializationStatus::ClearedByAreaReset
+        }
+        semantic::InventoryItemObjectStatus::Unknown => {
+            quickbar::QuickbarItemMaterializationStatus::Unknown
+        }
     }
 }
 

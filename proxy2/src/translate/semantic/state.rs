@@ -102,6 +102,20 @@ pub(crate) enum InventoryItemObjectProof {
     Feature25LegacyTail,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InventoryItemObjectStatus {
+    Proven(InventoryItemObjectProof),
+    ClearedByItemDelete,
+    ClearedByAreaReset,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InventoryItemObjectClearReason {
+    ItemDelete,
+    AreaReset,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ObjectRegistry {
     pub(crate) live_object_packets: u64,
@@ -111,6 +125,7 @@ pub(crate) struct ObjectRegistry {
     inventory_feature25_first_item_refs: BTreeSet<u32>,
     inventory_feature25_second_item_refs: BTreeSet<u32>,
     inventory_feature25_legacy_tail_item_refs: BTreeSet<u32>,
+    cleared_inventory_item_object_ids: BTreeMap<u32, InventoryItemObjectClearReason>,
     pub(crate) inventory_feature25_reference_records: u64,
     pub(crate) inventory_feature25_first_item_ref_mentions: u64,
     pub(crate) inventory_feature25_second_item_ref_mentions: u64,
@@ -134,10 +149,12 @@ impl ObjectRegistry {
                     self.inventory_feature25_second_item_refs.len(),
                 inventory_feature25_legacy_tail_item_refs =
                     self.inventory_feature25_legacy_tail_item_refs.len(),
+                cleared_inventory_item_object_ids = self.cleared_inventory_item_object_ids.len(),
                 session_creature_aliases = self.session_creature_ids_by_compact.len(),
                 "semantic object registry reset for new Area_ClientArea"
             );
         }
+        self.remember_inventory_item_proofs_cleared_by_area_reset();
         self.known.clear();
         self.materialized_item_object_ids.clear();
         self.inventory_feature25_first_item_refs.clear();
@@ -650,10 +667,11 @@ impl ObjectRegistry {
 
     pub(crate) fn observe_materialized_item_object_ids(&mut self, object_ids: &[u32]) {
         for object_id in object_ids.iter().copied() {
-            if object_id == 0 || object_id == 0x7F00_0000 || object_id == u32::MAX {
+            if !valid_inventory_item_context_id(object_id) {
                 continue;
             }
             self.materialized_item_object_ids.insert(object_id);
+            self.cleared_inventory_item_object_ids.remove(&object_id);
         }
     }
 
@@ -664,6 +682,10 @@ impl ObjectRegistry {
         let removed_legacy_tail = self
             .inventory_feature25_legacy_tail_item_refs
             .remove(&object_id);
+        self.remember_inventory_item_object_clear(
+            object_id,
+            InventoryItemObjectClearReason::ItemDelete,
+        );
         if removed_materialized || removed_first || removed_second || removed_legacy_tail {
             tracing::debug!(
                 object_id = format_args!("0x{object_id:08X}"),
@@ -676,6 +698,43 @@ impl ObjectRegistry {
         }
     }
 
+    fn remember_inventory_item_proofs_cleared_by_area_reset(&mut self) {
+        self.cleared_inventory_item_object_ids.clear();
+        let mut cleared_ids: Vec<u32> = self
+            .materialized_item_object_ids
+            .iter()
+            .chain(self.inventory_feature25_first_item_refs.iter())
+            .chain(self.inventory_feature25_second_item_refs.iter())
+            .chain(self.inventory_feature25_legacy_tail_item_refs.iter())
+            .copied()
+            .collect();
+        cleared_ids.extend(
+            self.known
+                .values()
+                .filter(|object| object.active && object.object_type == ITEM_OBJECT_TYPE)
+                .map(|object| object.object_id),
+        );
+        cleared_ids.sort_unstable();
+        cleared_ids.dedup();
+        for object_id in cleared_ids {
+            self.remember_inventory_item_object_clear(
+                object_id,
+                InventoryItemObjectClearReason::AreaReset,
+            );
+        }
+    }
+
+    fn remember_inventory_item_object_clear(
+        &mut self,
+        object_id: u32,
+        reason: InventoryItemObjectClearReason,
+    ) {
+        if valid_inventory_item_context_id(object_id) {
+            self.cleared_inventory_item_object_ids
+                .insert(object_id, reason);
+        }
+    }
+
     pub(crate) fn observe_inventory_feature25_references(
         &mut self,
         references: &[LiveObjectInventoryFeature25Reference],
@@ -685,14 +744,17 @@ impl ObjectRegistry {
                 self.inventory_feature25_reference_records.saturating_add(1);
             let first_refs = observe_inventory_feature25_item_refs(
                 &mut self.inventory_feature25_first_item_refs,
+                &mut self.cleared_inventory_item_object_ids,
                 &reference.first_object_ids,
             );
             let second_refs = observe_inventory_feature25_item_refs(
                 &mut self.inventory_feature25_second_item_refs,
+                &mut self.cleared_inventory_item_object_ids,
                 &reference.second_object_ids,
             );
             let legacy_tail_refs = observe_inventory_feature25_item_refs(
                 &mut self.inventory_feature25_legacy_tail_item_refs,
+                &mut self.cleared_inventory_item_object_ids,
                 &reference.legacy_tail_object_ids,
             );
             self.inventory_feature25_first_item_ref_mentions = self
@@ -721,28 +783,49 @@ impl ObjectRegistry {
         &self,
         object_id: u32,
     ) -> Option<InventoryItemObjectProof> {
+        match self.inventory_item_object_status(object_id) {
+            InventoryItemObjectStatus::Proven(proof) => Some(proof),
+            InventoryItemObjectStatus::ClearedByItemDelete
+            | InventoryItemObjectStatus::ClearedByAreaReset
+            | InventoryItemObjectStatus::Unknown => None,
+        }
+    }
+
+    pub(crate) fn inventory_item_object_status(&self, object_id: u32) -> InventoryItemObjectStatus {
         if self.has_known_inventory_item_object_id(object_id) {
-            return Some(InventoryItemObjectProof::ActiveObject);
+            return InventoryItemObjectStatus::Proven(InventoryItemObjectProof::ActiveObject);
         }
         if self
             .inventory_feature25_first_item_refs
             .contains(&object_id)
         {
-            return Some(InventoryItemObjectProof::Feature25FirstList);
+            return InventoryItemObjectStatus::Proven(InventoryItemObjectProof::Feature25FirstList);
         }
         if self
             .inventory_feature25_second_item_refs
             .contains(&object_id)
         {
-            return Some(InventoryItemObjectProof::Feature25SecondList);
+            return InventoryItemObjectStatus::Proven(
+                InventoryItemObjectProof::Feature25SecondList,
+            );
         }
         if self
             .inventory_feature25_legacy_tail_item_refs
             .contains(&object_id)
         {
-            return Some(InventoryItemObjectProof::Feature25LegacyTail);
+            return InventoryItemObjectStatus::Proven(
+                InventoryItemObjectProof::Feature25LegacyTail,
+            );
         }
-        None
+        match self.cleared_inventory_item_object_ids.get(&object_id) {
+            Some(InventoryItemObjectClearReason::ItemDelete) => {
+                InventoryItemObjectStatus::ClearedByItemDelete
+            }
+            Some(InventoryItemObjectClearReason::AreaReset) => {
+                InventoryItemObjectStatus::ClearedByAreaReset
+            }
+            None => InventoryItemObjectStatus::Unknown,
+        }
     }
 
     pub(crate) fn has_known_inventory_item_object_id(&self, object_id: u32) -> bool {
@@ -1108,19 +1191,28 @@ fn compact_session_alias_from_player_list(object_id: u32) -> Option<u32> {
     (compact_id != 0).then_some(compact_id)
 }
 
-fn observe_inventory_feature25_item_refs(target: &mut BTreeSet<u32>, object_ids: &[u32]) -> u64 {
+fn observe_inventory_feature25_item_refs(
+    target: &mut BTreeSet<u32>,
+    cleared: &mut BTreeMap<u32, InventoryItemObjectClearReason>,
+    object_ids: &[u32],
+) -> u64 {
     let mut accepted = 0_u64;
     for object_id in object_ids.iter().copied() {
         if !valid_inventory_feature25_item_ref(object_id) {
             continue;
         }
         target.insert(object_id);
+        cleared.remove(&object_id);
         accepted = accepted.saturating_add(1);
     }
     accepted
 }
 
 fn valid_inventory_feature25_item_ref(object_id: u32) -> bool {
+    valid_inventory_item_context_id(object_id)
+}
+
+fn valid_inventory_item_context_id(object_id: u32) -> bool {
     object_id != 0 && object_id != 0x7F00_0000 && object_id != u32::MAX
 }
 
@@ -1763,9 +1855,9 @@ mod tests {
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
         AreaStaticPlaceableConflictRecordProgressSummary, AreaStaticPlaceableConflictRecordSummary,
-        ITEM_OBJECT_TYPE, InventoryItemObjectProof, LiveObjectBounds, LiveObjectMention,
-        LiveObjectOrientation, LiveObjectPlaceableAppearance, LiveObjectPlaceableState,
-        LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
+        ITEM_OBJECT_TYPE, InventoryItemObjectProof, InventoryItemObjectStatus, LiveObjectBounds,
+        LiveObjectMention, LiveObjectOrientation, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableState, LiveObjectPosition, ObjectRegistry, PlayerListObjectIds,
     };
 
     #[test]
@@ -3574,6 +3666,11 @@ mod tests {
         registry.reset_for_area();
 
         assert!(!registry.has_active_object_id(item_object_id));
+        assert_eq!(
+            registry.inventory_item_object_status(item_object_id),
+            InventoryItemObjectStatus::ClearedByAreaReset,
+            "area reset should explain why the prior item proof is no longer usable"
+        );
     }
 
     #[test]
@@ -3673,6 +3770,11 @@ mod tests {
             None,
             "D/06 must clear GUI-materialized item proof before quickbar can reuse it"
         );
+        assert_eq!(
+            registry.inventory_item_object_status(item_id),
+            InventoryItemObjectStatus::ClearedByItemDelete,
+            "diagnostics should retain that the missing proof was cleared by D/06"
+        );
         assert!(
             !registry.has_active_object_id(item_id),
             "deleted item id must no longer satisfy untyped active-object checks"
@@ -3723,6 +3825,11 @@ mod tests {
             registry.inventory_item_object_proof(second_item_id),
             None,
             "D/06 must clear stale second-list Feature-25 item proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_status(second_item_id),
+            InventoryItemObjectStatus::ClearedByItemDelete,
+            "D/06-cleared Feature-25 proof should remain visible as a diagnostic status"
         );
         assert_eq!(
             registry.inventory_item_object_proof(first_item_id),

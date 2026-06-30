@@ -58,6 +58,9 @@ pub(crate) use facade::{
     normalize_and_rewrite_quickbar_payload_for_stream_probe_if_possible,
     rewrite_simple_quickbar_payload_for_stream_probe_if_possible,
 };
-pub(crate) use model::{QuickbarItemMaterializationProof, QuickbarMaterializationContext};
+pub(crate) use model::{
+    QuickbarItemMaterializationProof, QuickbarItemMaterializationStatus,
+    QuickbarMaterializationContext,
+};
 pub(crate) use validator::ee_set_all_buttons_payload_shape_valid;
 pub use writer::build_blank_set_all_buttons_payload;
