@@ -146,6 +146,10 @@ struct LiveObjectExactClaimTraceSummary {
     creature_update_mentions: u32,
     creature_position_mentions: u32,
     creature_orientation_mentions: u32,
+    creature_update_claim_mentions: u32,
+    creature_update_claim_position_mentions: u32,
+    creature_update_claim_scalar_orientation_mentions: u32,
+    creature_update_claim_vector_orientation_mentions: u32,
     item_mentions: u32,
     trigger_mentions: u32,
     placeable_mentions: u32,
@@ -250,6 +254,21 @@ impl LiveObjectExactClaimTraceSummary {
                     }
                     if mention.orientation.is_some() {
                         trace.creature_orientation_mentions += 1;
+                    }
+                    if let Some(claim) = mention.creature_update {
+                        trace.creature_update_claim_mentions += 1;
+                        if claim.has_position {
+                            trace.creature_update_claim_position_mentions += 1;
+                        }
+                        match claim.orientation_source {
+                            Some(crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar) => {
+                                trace.creature_update_claim_scalar_orientation_mentions += 1;
+                            }
+                            Some(crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector) => {
+                                trace.creature_update_claim_vector_orientation_mentions += 1;
+                            }
+                            None => {}
+                        }
                     }
                 }
                 LIVE_OBJECT_ITEM_TYPE => trace.item_mentions += 1,
@@ -1087,6 +1106,12 @@ fn trace_live_object_exact_claim_summary(
         creature_update_mentions = trace.creature_update_mentions,
         creature_position_mentions = trace.creature_position_mentions,
         creature_orientation_mentions = trace.creature_orientation_mentions,
+        creature_update_claim_mentions = trace.creature_update_claim_mentions,
+        creature_update_claim_position_mentions = trace.creature_update_claim_position_mentions,
+        creature_update_claim_scalar_orientation_mentions =
+            trace.creature_update_claim_scalar_orientation_mentions,
+        creature_update_claim_vector_orientation_mentions =
+            trace.creature_update_claim_vector_orientation_mentions,
         item_mentions = trace.item_mentions,
         trigger_mentions = trace.trigger_mentions,
         placeable_mentions = trace.placeable_mentions,
@@ -4424,10 +4449,10 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
-        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
-        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
-        LiveObjectRecordPosition,
+        LiveObjectCreatureUpdateClaim, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
+        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
+        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -4443,6 +4468,7 @@ mod exact_claim_trace_tests {
             name: None,
             position: None,
             orientation: None,
+            creature_update: None,
             bounds: None,
             placeable_appearance: None,
             placeable_appearance_claim: None,
@@ -4504,6 +4530,13 @@ mod exact_claim_trace_tests {
                 z: 0.0,
             }),
         });
+        creature_update.creature_update = Some(LiveObjectCreatureUpdateClaim {
+            raw_mask: 0x0000_0003,
+            has_position: true,
+            position_bit_cursor: Some(3),
+            orientation_source: Some(LiveObjectRecordOrientationSource::Vector),
+            orientation_bit_cursor: Some(5),
+        });
         let item = mention(b'I', 0x06, 0x8000_0100);
 
         let claim = live_update::ClaimSummary {
@@ -4559,6 +4592,10 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.creature_update_mentions, 1);
         assert_eq!(trace.creature_position_mentions, 1);
         assert_eq!(trace.creature_orientation_mentions, 1);
+        assert_eq!(trace.creature_update_claim_mentions, 1);
+        assert_eq!(trace.creature_update_claim_position_mentions, 1);
+        assert_eq!(trace.creature_update_claim_scalar_orientation_mentions, 0);
+        assert_eq!(trace.creature_update_claim_vector_orientation_mentions, 1);
         assert_eq!(trace.item_mentions, 1);
         assert_eq!(trace.trigger_mentions, 0);
         assert_eq!(trace.door_mentions, 0);

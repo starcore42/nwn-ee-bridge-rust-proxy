@@ -4869,6 +4869,68 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn exact_creature_update_mentions_expose_verified_mask_and_orientation_cursor() {
+        let object_id = 0x8000_0020u32;
+        let raw_mask = LEGACY_UPDATE_POSITION_MASK | LEGACY_UPDATE_ORIENTATION_MASK;
+        let mut live = vec![b'U', CREATURE_OBJECT_TYPE];
+        live.extend_from_slice(&object_id.to_le_bytes());
+        live.extend_from_slice(&raw_mask.to_le_bytes());
+        live.extend_from_slice(&0x1111u16.to_le_bytes());
+        live.extend_from_slice(&0x2222u16.to_le_bytes());
+        live.extend_from_slice(&0x3333u16.to_le_bytes());
+        live.push(0x44);
+
+        let mut fragment_bits = vec![false; CNW_FRAGMENT_HEADER_BITS];
+        fragment_bits.extend([
+            true, false, // position Z low bits.
+            false, // scalar orientation branch.
+            true, false, true, false, // scalar orientation low bits.
+        ]);
+        let payload =
+            live_object_payload_from_parts(&live, &fragment_bits).expect("creature U/5 payload");
+
+        let claim = claim_payload_if_verified(&payload).expect("exact creature U/5 claim");
+        assert_eq!(claim.creature_update_records, 1);
+        assert_eq!(claim.mentions.len(), 1);
+        let mention = &claim.mentions[0];
+        assert_eq!(mention.opcode, b'U');
+        assert_eq!(mention.object_type, CREATURE_OBJECT_TYPE);
+        assert_eq!(mention.object_id, object_id);
+        assert_eq!(
+            mention.creature_update,
+            Some(LiveObjectCreatureUpdateClaim {
+                raw_mask,
+                has_position: true,
+                position_bit_cursor: Some(CNW_FRAGMENT_HEADER_BITS),
+                orientation_source: Some(LiveObjectRecordOrientationSource::Scalar),
+                orientation_bit_cursor: Some(
+                    CNW_FRAGMENT_HEADER_BITS + LEGACY_UPDATE_POSITION_FRAGMENT_BITS
+                ),
+            })
+        );
+        assert_eq!(
+            mention
+                .position
+                .expect("mask 0x1 should expose parser-owned position")
+                .z_raw,
+            (0x3333u32 << 2) | 0b10
+        );
+        assert_eq!(
+            mention.orientation, None,
+            "creature orientation stays in the creature-update claim, not the door/placeable orientation registry field"
+        );
+
+        let mut shifted_bits = fragment_bits.clone();
+        shifted_bits.remove(CNW_FRAGMENT_HEADER_BITS);
+        let shifted_payload = live_object_payload_from_parts(&live, &shifted_bits)
+            .expect("shifted creature U/5 payload");
+        assert!(
+            claim_payload_if_verified(&shifted_payload).is_none(),
+            "removing the first position bit must prevent the exact U/5 cursor claim"
+        );
+    }
+
+    #[test]
     fn exact_placeable_add_and_update_mentions_expose_state_bits() {
         let object_id = 0x8000_34D8u32;
         let mut live = vec![b'A', PLACEABLE_OBJECT_TYPE];
@@ -19893,6 +19955,15 @@ pub struct LiveObjectRecordOrientationVector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveObjectCreatureUpdateClaim {
+    pub raw_mask: u32,
+    pub has_position: bool,
+    pub position_bit_cursor: Option<usize>,
+    pub orientation_source: Option<LiveObjectRecordOrientationSource>,
+    pub orientation_bit_cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveObjectPlaceableAppearance {
     pub appearance: u16,
     pub resref: Option<[u8; 16]>,
@@ -19948,6 +20019,7 @@ pub struct LiveObjectRecordMention {
     pub name: Option<String>,
     pub position: Option<LiveObjectRecordPosition>,
     pub orientation: Option<LiveObjectRecordOrientation>,
+    pub creature_update: Option<LiveObjectCreatureUpdateClaim>,
     pub bounds: Option<LiveObjectRecordBounds>,
     pub placeable_appearance: Option<LiveObjectPlaceableAppearance>,
     pub placeable_appearance_claim: Option<LiveObjectPlaceableAppearanceClaim>,
@@ -21674,6 +21746,16 @@ fn verified_record_mention(
         opcode,
         object_type,
     );
+    let creature_update_claim = verified_creature_update_mention_claim(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        next_bit_cursor,
+        opcode,
+        object_type,
+    );
     let placeable_appearance_claim = verified_record_placeable_appearance_claim(
         live_bytes,
         record_end,
@@ -21703,6 +21785,7 @@ fn verified_record_mention(
             door_placeable_update_claim,
         ),
         orientation: verified_record_orientation(opcode, object_type, door_placeable_update_claim),
+        creature_update: creature_update_claim,
         bounds: verified_record_bounds(live_bytes, offset, record_end, opcode, object_type),
         placeable_appearance: verified_record_placeable_appearance(
             live_bytes,
@@ -21765,6 +21848,29 @@ fn verified_door_placeable_update_mention_claim(
         bit_cursor,
     )?;
     (claim.read_end == record_end).then_some(claim)
+}
+
+fn verified_creature_update_mention_claim(
+    live_bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    next_bit_cursor: usize,
+    opcode: u8,
+    object_type: u8,
+) -> Option<LiveObjectCreatureUpdateClaim> {
+    if opcode != b'U' || object_type != CREATURE_OBJECT_TYPE {
+        return None;
+    }
+    creature::verified_creature_update_claim_for_ee(
+        live_bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        bit_cursor,
+        next_bit_cursor,
+    )
 }
 
 fn push_verified_record_mention(

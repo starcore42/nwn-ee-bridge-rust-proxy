@@ -129,6 +129,66 @@ pub(super) fn advance_verified_noop_creature_update_record(
     )
 }
 
+pub(super) fn verified_creature_update_claim_for_ee(
+    bytes: &[u8],
+    offset: usize,
+    record_end: usize,
+    fragment_bits: &[bool],
+    bit_cursor: usize,
+    expected_next_bit_cursor: usize,
+) -> Option<super::LiveObjectCreatureUpdateClaim> {
+    if offset + 10 > record_end
+        || record_end > bytes.len()
+        || bytes.get(offset).copied()? != b'U'
+        || bytes.get(offset + 1).copied()? != super::CREATURE_OBJECT_TYPE
+    {
+        return None;
+    }
+
+    let raw_mask = read_u32_le(bytes, offset + 6)?;
+    let mut proof_cursor = bit_cursor;
+    if !advance_verified_noop_creature_update_record_exact_cursor(
+        bytes,
+        offset,
+        record_end,
+        fragment_bits,
+        &mut proof_cursor,
+    ) || proof_cursor != expected_next_bit_cursor
+    {
+        return None;
+    }
+
+    // Diamond and EE read the creature-update mask before the ordered optional
+    // body. The `0x0001` position branch consumes six read-buffer bytes plus
+    // two fragment bits; the `0x0002` orientation branch then reads one
+    // scalar/vector selector BOOL. Reuse the exact validator above for the
+    // complete record, then expose only these decompile-fixed cursor facts.
+    let has_position = (raw_mask & 0x0000_0001) != 0;
+    let position_bit_cursor = has_position.then_some(bit_cursor);
+    let orientation_bit_cursor = if (raw_mask & 0x0000_0002) != 0 {
+        Some(bit_cursor + if has_position { 2 } else { 0 })
+    } else {
+        None
+    };
+    let orientation_source = if let Some(cursor) = orientation_bit_cursor {
+        Some(if fragment_bits.get(cursor).copied()? {
+            super::LiveObjectRecordOrientationSource::Vector
+        } else {
+            super::LiveObjectRecordOrientationSource::Scalar
+        })
+    } else {
+        None
+    };
+
+    Some(super::LiveObjectCreatureUpdateClaim {
+        raw_mask,
+        has_position,
+        position_bit_cursor,
+        orientation_source,
+        orientation_bit_cursor,
+    })
+}
+
 pub(super) fn advance_verified_noop_creature_update_record_exact_cursor(
     bytes: &[u8],
     offset: usize,

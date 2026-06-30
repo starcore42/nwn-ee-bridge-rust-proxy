@@ -603,6 +603,26 @@ not as standalone workaround targets.
   update/position exact rows and untyped inventory-owner rows into bounded
   parser/validator invariants before widening any lower-volume placeable
   repair.
+- 2026-06-30 parser-owned `U/05` creature update claim model: live-data gate
+  used the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 14h51m old at
+  verification time, with gameplay reached. Exact live-object mentions now
+  carry a `U/05` creature-update claim only after the existing decompile-backed
+  final cursor walk succeeds and its bit cursor matches the accepted record.
+  The claim records the raw update mask plus parser-owned position and
+  scalar/vector orientation selector cursors, separating creature orientation
+  proof from the door/placeable orientation registry field. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-creature-update-claim-automation-20260630-204326`
+  completed with 0 quarantines, 3,547 strict allows, 445 exact rewrite
+  matches, 3,226 exact lifecycle claim summaries, 2,781 captured direct
+  live-object frames, 10 area rewrites, and 0 fixed-width or live-object
+  terminal residuals. Aggregated exact claims showed 2,861 creature update
+  claim mentions, including 2,840 parser-owned position claims, 2,840 scalar
+  orientation selector claims, and 0 vector selector claims. Next production
+  path: reduce the remaining 875 untyped inventory-owner rows into a bounded
+  owner/opcode parser invariant, then use the typed creature claim mask counts
+  to choose any remaining `U/05` branch-specific model work.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 
