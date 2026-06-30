@@ -331,6 +331,9 @@ impl ObjectRegistry {
                 }
                 _ => {}
             }
+            if mention.opcode == b'D' && mention.object_type == ITEM_OBJECT_TYPE {
+                self.forget_inventory_item_object_id(registry_object_id);
+            }
         }
     }
 
@@ -651,6 +654,25 @@ impl ObjectRegistry {
                 continue;
             }
             self.materialized_item_object_ids.insert(object_id);
+        }
+    }
+
+    fn forget_inventory_item_object_id(&mut self, object_id: u32) {
+        let removed_materialized = self.materialized_item_object_ids.remove(&object_id);
+        let removed_first = self.inventory_feature25_first_item_refs.remove(&object_id);
+        let removed_second = self.inventory_feature25_second_item_refs.remove(&object_id);
+        let removed_legacy_tail = self
+            .inventory_feature25_legacy_tail_item_refs
+            .remove(&object_id);
+        if removed_materialized || removed_first || removed_second || removed_legacy_tail {
+            tracing::debug!(
+                object_id = format_args!("0x{object_id:08X}"),
+                removed_materialized,
+                removed_feature25_first = removed_first,
+                removed_feature25_second = removed_second,
+                removed_feature25_legacy_tail = removed_legacy_tail,
+                "live-object item delete cleared deferred inventory item proof"
+            );
         }
     }
 
@@ -1733,7 +1755,10 @@ mod tests {
         AreaPlaceableContextRow, AreaPlaceableContextState, AreaPlaceableContextStateConflict,
         AreaPlaceableObservedOrientationSource,
     };
-    use crate::translate::semantic::{LiveObjectOrientationSource, LiveObjectOrientationVector};
+    use crate::translate::semantic::{
+        LiveObjectInventoryFeature25Reference, LiveObjectOrientationSource,
+        LiveObjectOrientationVector,
+    };
 
     use super::{
         AreaStaticPlaceableConflictRecordObservation,
@@ -3617,6 +3642,102 @@ mod tests {
             registry.inventory_item_object_proof(gui_materialized_item_id),
             Some(InventoryItemObjectProof::ActiveObject),
             "GUI item-create materialization remains valid quickbar item proof"
+        );
+    }
+
+    #[test]
+    fn item_delete_clears_materialized_quickbar_item_proof() {
+        let mut registry = ObjectRegistry::default();
+        let item_id = 0x8000_0106;
+
+        registry.observe_materialized_item_object_ids(&[item_id]);
+        assert_eq!(
+            registry.inventory_item_object_proof(item_id),
+            Some(InventoryItemObjectProof::ActiveObject)
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: ITEM_OBJECT_TYPE,
+            object_id: item_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert_eq!(
+            registry.inventory_item_object_proof(item_id),
+            None,
+            "D/06 must clear GUI-materialized item proof before quickbar can reuse it"
+        );
+        assert!(
+            !registry.has_active_object_id(item_id),
+            "deleted item id must no longer satisfy untyped active-object checks"
+        );
+    }
+
+    #[test]
+    fn item_delete_clears_only_matching_feature25_quickbar_item_ref() {
+        let mut registry = ObjectRegistry::default();
+        let first_item_id = 0x8000_0101;
+        let second_item_id = 0x8000_0102;
+        let legacy_tail_item_id = 0x8000_0103;
+        let survivor_item_id = 0x8000_0104;
+
+        registry.observe_inventory_feature25_references(&[LiveObjectInventoryFeature25Reference {
+            owner_id: 0x8000_0005,
+            mask: 0x2000,
+            first_object_ids: vec![first_item_id, survivor_item_id],
+            second_object_ids: vec![second_item_id],
+            legacy_tail_object_ids: vec![legacy_tail_item_id],
+        }]);
+        assert_eq!(
+            registry.inventory_item_object_proof(first_item_id),
+            Some(InventoryItemObjectProof::Feature25FirstList)
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(second_item_id),
+            Some(InventoryItemObjectProof::Feature25SecondList)
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(legacy_tail_item_id),
+            Some(InventoryItemObjectProof::Feature25LegacyTail)
+        );
+
+        registry.observe_mentions(&[LiveObjectMention {
+            opcode: b'D',
+            object_type: ITEM_OBJECT_TYPE,
+            object_id: second_item_id,
+            name: None,
+            position: None,
+            orientation: None,
+            bounds: None,
+            placeable_appearance: None,
+            placeable_state: None,
+        }]);
+
+        assert_eq!(
+            registry.inventory_item_object_proof(second_item_id),
+            None,
+            "D/06 must clear stale second-list Feature-25 item proof"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(first_item_id),
+            Some(InventoryItemObjectProof::Feature25FirstList),
+            "deleting one item must not clear unrelated first-list refs"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(legacy_tail_item_id),
+            Some(InventoryItemObjectProof::Feature25LegacyTail),
+            "deleting one item must not clear unrelated legacy-tail refs"
+        );
+        assert_eq!(
+            registry.inventory_item_object_proof(survivor_item_id),
+            Some(InventoryItemObjectProof::Feature25FirstList),
+            "other refs in the same Feature-25 claim remain usable evidence"
         );
     }
 

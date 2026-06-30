@@ -808,6 +808,25 @@ not as standalone workaround targets.
   or replayed `SetAllButtons` stream with real item slots after verified
   Feature-25 refs, then use the existing source/proof/rejection buckets to
   choose any bounded compact-item rule.
+- 2026-07-01 item-delete quickbar proof lifecycle: live-data gate found the
+  previous gameplay-reaching HG capture stale by about 18 minutes, so a fresh
+  live HG Diamond capture was run:
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`; packet window
+  `2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`, 165 packet files, with
+  gameplay reached through character/module entry and in-area HG messages. The
+  fresh strict replay
+  `C:\nwnbridge\codex-proxy2-replay-item-delete-proof-lifecycle-automation-20260701-0644`
+  stayed at 0 quarantines, 217 strict allows, 79 direct live-object frames, 13
+  exact live-object rewrites, 54 exact lifecycle claim summaries, 10 area
+  rewrites, 40 quickbar rewrite summaries, 0 quickbar item buttons, and 0
+  fixed-width/live-object residuals. Production slice: exact `D/06`
+  live-object deletes now clear GUI-materialized and Feature-25 deferred
+  quickbar item proof for the deleted object id, while leaving unrelated
+  Feature-25 item refs intact. Focused regressions prove both materialized GUI
+  item proof and second-list Feature-25 proof are removed on delete. Next
+  production path remains obtaining or replaying a `SetAllButtons` stream with
+  real item slots after verified Feature-25 refs; the stale-proof lifecycle
+  guard should stay in place before accepting compact item-slot emission.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

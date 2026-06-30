@@ -33,50 +33,29 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-01 05:52 +10: the current
+Latest known live HG status, as of 2026-07-01 06:46 +10: the current
 gameplay-reaching capture is
-`C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`, with packet dumps
-under `diamond-client-packets`, probe log `diamond-client-probe.log`, 3,294
+`C:\nwnbridge\codex-diamond-fresh-autoplay-20260701-0632`, with packet dumps
+under `diamond-client-packets`, probe log `diamond-client-probe.log`, 165
 packet files, and packet window
-`2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`. Gameplay was reached through
-module/resource load, area/gameplay traffic, and repeated live-object frames.
-At the latest live-data gate the newest packet was about 23h16m old. The
-strict proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-item-proof-specific-automation-20260701-0558`
-reported 0 quarantines, 3,547 strict allows, 2,781 captured direct live-object
-frames, 445 exact live-object rewrite matches, 3,226 exact lifecycle claim
-summaries, 10 area rewrites, 0 strict quarantine decisions, and 0
-fixed-width/live-object residuals. The exact-claim type aggregate showed 4,186
-creature mentions, 2,862 creature update mentions, 2,840 creature position
-mentions, 2,861 parser-owned creature update claim mentions, 2,840 scalar
-creature orientation selector claims, 30 placeable mentions, 10 door mentions,
-875 inventory-owner claim mentions, 1 `0xD5FF` inventory mask mention, and 874
-other inventory mask mentions. Inventory-owner Feature-25 claims showed all
-870 `0x2000` branch mentions typed into list/cursor claims; owner/mask
-classification found 870 external, materialized owners, 869 exact-mask
-`0x2000` claims, and 1 other-mask claim. Feature-25 refs showed 437/437
-first-list refs materialized, 1/442 second-list refs materialized, 441/442
-second-list refs not yet materialized at reference time, 1,326 second-list
-BOOL bits, and 0 legacy-tail refs. The current production rule stores those
-second-list refs as deferred inventory item context without treating them as
-active lifecycle materialization, and the quickbar writer now records which
-proof source allowed each emitted item object: explicit EE self-materialization,
-item-specific active registry state, Feature-25 first-list refs, Feature-25
-second-list refs, or legacy-tail refs, and also records item-source/rejection
-buckets: explicit/compact/recovered sources plus recovered-type,
-missing-source-type, no-present-item, invalid-object-id,
-missing-active-property, unsupported-appearance, appearance-shape, and
-missing-state-proof rejects. Active registry state now means a materialized GUI
-item id or an active typed `0x06` item live-object; active creature/placeable
-lifecycle ids and placeable aliases still support inventory owner checks but do
-not satisfy quickbar item emission. The item-proof replay saw 40 quickbar
-rewrite summaries but 0 item buttons, so every quickbar item provenance and
-rejection counter stayed at 0 while spell/general quickbar traffic continued to
-rewrite cleanly. Missing-source-type recovered item bodies remain blanked. The
-replay used
-alternate local ports and
-`-DrainReceiveTimeoutMilliseconds 5` because the default empty-UDP-receive
-timeout can make long captures exceed automation limits.
+`2026-07-01 06:32:44.905 -> 06:35:53.325 +10:00`. Gameplay was reached through
+character/module entry and in-area HG gameplay messages including "You are now
+in a No PVP area" and "You are now in Docks of Ascension (No PVP)." At the
+latest live-data gate the newest packet was about 11 minutes old. The strict
+proxy2 replay
+`C:\nwnbridge\codex-proxy2-replay-item-delete-proof-lifecycle-automation-20260701-0644`
+reported 0 quarantines, 217 strict allows, 79 captured direct live-object
+frames, 13 exact live-object rewrite matches, 54 exact lifecycle claim
+summaries, 10 area rewrites, 40 quickbar rewrite summaries, 0 quickbar item
+buttons, 0 strict quarantine decisions, and 0 fixed-width/live-object
+residuals. Inventory Feature-25 evidence in this shorter fresh capture showed
+11 typed Feature-25 claims, 5/5 first-list refs materialized, 1/10 second-list
+refs materialized, 9/10 second-list refs not yet materialized at reference
+time, 30 second-list BOOL bits, and 0 legacy-tail refs. The current production
+rule keeps Feature-25 refs as deferred item-context proof but now clears
+GUI-materialized and Feature-25 quickbar item proof when an exact `D/06`
+live-object delete is observed, preventing stale deleted item ids from later
+satisfying compact quickbar item emission.
 
 ## Successful live HG capture contract
 
