@@ -724,6 +724,30 @@ not as standalone workaround targets.
   context to narrow quickbar/inventory item writer decisions, while keeping
   compact or recovered quickbar item bodies blanked until their own
   decompile-backed EE materialization proof exists.
+- 2026-07-01 state-backed compact quickbar item emission: live-data gate used
+  the same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 20h17m old at gate
+  time, with gameplay reached. The quickbar writer now distinguishes explicit
+  type-1 item bodies, compact byte-owned bodies with a source type, and
+  missing-source-type recovered bodies. Explicit type-1 bodies keep the EE
+  `sub_14079DB00` self-materialization allowance; compact byte-owned bodies
+  require registry proof from verified live-object, GUI item-create, or
+  Feature-25 inventory refs before emission; missing-source-type recovery stays
+  boundary-only and blanks. Focused tests prove unproven compact byte-owned
+  items still blank, while state-proven compact byte-owned item ids emit typed
+  EE quickbar item slots with exact validation. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-quickbar-compact-state-automation-20260701-0245`
+  completed all 3,294 packets with 0 quarantines, 3,547 strict allows, 445
+  exact live-object rewrites, 3,226 exact lifecycle claim summaries, 2,781
+  direct live-object frames, 10 area rewrites, and 0 fixed-width/live-object
+  terminal residuals. Feature-25 evidence stayed stable: 870 claims, 437/437
+  first-list refs materialized, 1/442 second-list refs materialized, 441/442
+  deferred second-list refs, 1,326 second-list BOOL bits, and 0 legacy-tail
+  refs. Next production path: use a live or replayed quickbar stream that
+  follows verified Feature-25 refs to confirm whether real HG compact
+  byte-owned item slots now stay visible, then continue bounded inventory/GUI
+  item writer work from any remaining blanked state-proven slots.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

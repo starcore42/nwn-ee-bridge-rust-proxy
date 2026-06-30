@@ -242,30 +242,48 @@ pub(super) fn quickbar_item_button_has_verified_ee_materialization(
     //   4. the appearance body length matches the baseitems.2da appearance
     //      family and begins with the same base item DWORD.
     //
-    // If the object registry already knows the id, that is a state proof. If it
-    // does not, EE `sub_14079DB00` still has a verified self-materialization
-    // path: after `sub_14079FAC0` succeeds it calls `sub_140769130`, assigns the
-    // quickbar item id, and registers the new client item with
-    // `CGameObjectArray::AddExternalObject` before applying the slot. Therefore
-    // a complete explicit item body is also a valid proof. Anything less remains
-    // a deliberate blank rather than a raw passthrough.
-    if recovered_type_tag || source != QuickbarItemSource::ExplicitTypeAndFragmentBits {
-        // Compact/recovered item bodies prove the 36-slot read boundary, but
-        // not the decompile-owned CNW fragment cursor path that EE uses before
-        // client item construction. Keep those as blanks until a focused
-        // compact-slot fixture proves an exact opposite-dialect writer.
+    // If the object registry already knows the id, that is a state proof. For
+    // explicit source type-1 slots, EE `sub_14079DB00` also has a verified
+    // self-materialization path: after `sub_14079FAC0` succeeds it calls
+    // `sub_140769130`, assigns the quickbar item id, and registers the new
+    // client item with `CGameObjectArray::AddExternalObject` before applying the
+    // slot. Compact byte-owned HG slots do not prove the same source fragment
+    // cursor, so they need registry proof from verified live-object, GUI
+    // item-create, or inventory Feature-25 refs before being emitted. Missing
+    // source type recovery remains boundary-only.
+    if recovered_type_tag {
         return false;
     }
     if !primary.present && !secondary.present {
         return false;
     }
-    quickbar_item_object_has_verified_ee_materialization(primary, materialization)
-        && quickbar_item_object_has_verified_ee_materialization(secondary, materialization)
+    let requirement = match source {
+        QuickbarItemSource::ExplicitTypeAndFragmentBits => {
+            QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization
+        }
+        QuickbarItemSource::CompactByteOwnedWithSourceType => {
+            QuickbarItemMaterializationRequirement::RequireKnownState
+        }
+        QuickbarItemSource::RecoveredMissingType => return false,
+    };
+    quickbar_item_object_has_verified_ee_materialization(primary, materialization, requirement)
+        && quickbar_item_object_has_verified_ee_materialization(
+            secondary,
+            materialization,
+            requirement,
+        )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QuickbarItemMaterializationRequirement {
+    AllowExplicitSelfMaterialization,
+    RequireKnownState,
 }
 
 fn quickbar_item_object_has_verified_ee_materialization(
     item: &QuickbarItemObject,
     materialization: Option<&QuickbarMaterializationContext<'_>>,
+    requirement: QuickbarItemMaterializationRequirement,
 ) -> bool {
     if !item.present {
         return true;
@@ -284,13 +302,11 @@ fn quickbar_item_object_has_verified_ee_materialization(
     {
         return false;
     }
-    let Some(materialization) = materialization else {
-        return true;
-    };
-    if materialization.item_object_is_known(item.object_id) {
-        return true;
+    match requirement {
+        QuickbarItemMaterializationRequirement::AllowExplicitSelfMaterialization => true,
+        QuickbarItemMaterializationRequirement::RequireKnownState => materialization
+            .is_some_and(|materialization| materialization.item_object_is_known(item.object_id)),
     }
-    true
 }
 
 fn write_quickbar_item_object(

@@ -33,16 +33,16 @@ The 2026-06-25 manual review run
 capture path still records real HG traffic, but also showed the auto-character
 step can fire while the PRE_PLAYMOD list is still empty.
 
-Latest known live HG status, as of 2026-07-01 02:01 +10: the current
+Latest known live HG status, as of 2026-07-01 02:52 +10: the current
 gameplay-reaching capture is
 `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`, with packet dumps
 under `diamond-client-packets`, probe log `diamond-client-probe.log`, 3,294
 packet files, and packet window
 `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`. Gameplay was reached through
 module/resource load, area/gameplay traffic, and repeated live-object frames.
-At the latest live-data gate the newest packet was about 19h14m old. The
+At the latest live-data gate the newest packet was about 20h17m old. The
 strict proxy2 replay
-`C:\nwnbridge\codex-proxy2-replay-feature25-deferred-state-automation-20260701-0154`
+`C:\nwnbridge\codex-proxy2-replay-quickbar-compact-state-automation-20260701-0245`
 reported 0 quarantines, 3,547 strict allows, 2,781 captured direct live-object
 frames, 445 exact live-object rewrite matches, 3,226 exact lifecycle claim
 summaries, 10 area rewrites, 0 strict quarantine decisions, and 0
@@ -59,7 +59,10 @@ first-list refs materialized, 1/442 second-list refs materialized, 441/442
 second-list refs not yet materialized at reference time, 1,326 second-list
 BOOL bits, and 0 legacy-tail refs. The current production rule stores those
 second-list refs as deferred inventory item context without treating them as
-active lifecycle materialization. The replay used alternate local ports and
+active lifecycle materialization, and the quickbar writer now uses that known
+inventory item context to emit compact byte-owned item slots only when every
+present item id is state-proven; missing-source-type recovered item bodies
+remain blanked. The replay used alternate local ports and
 `-DrainReceiveTimeoutMilliseconds 5` because the default empty-UDP-receive
 timeout can make long captures exceed automation limits.
 

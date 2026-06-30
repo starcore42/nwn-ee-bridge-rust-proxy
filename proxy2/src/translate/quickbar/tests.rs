@@ -763,3 +763,76 @@ fn starcore5_live_absent_fragment_presence_bits_recover_only_exact_byte_owned_it
     assert_eq!(summary.spells_preserved, 15);
     assert!(ee_set_all_buttons_payload_shape_valid(&payload));
 }
+
+#[test]
+fn state_proven_compact_byte_owned_quickbar_items_emit_typed_ee_slots() {
+    let mut payload =
+        include_bytes!("../../../fixtures/quickbar/starcore5_live_20260510_set_all_buttons.bin")
+            .to_vec();
+    let declared = read_u32_le(&payload, 3).expect("quickbar declared length") as usize;
+    let fragments = payload
+        .get_mut(declared..)
+        .expect("fixture has quickbar fragment tail");
+    let final_bits = fragments[0] & 0xE0;
+    fragments[0] = final_bits;
+    for byte in fragments.iter_mut().skip(1) {
+        *byte = 0;
+    }
+
+    let parsed = parse_cnw_quickbar_payload(&payload)
+        .expect("byte-owned item bodies should prove exact quickbar shape");
+    let mut known_item_objects = std::collections::BTreeSet::new();
+    let compact_item_slots = parsed
+        .buttons
+        .iter()
+        .filter_map(|button| match &button.kind {
+            QuickbarButtonKind::Item {
+                primary,
+                secondary,
+                source: QuickbarItemSource::CompactByteOwnedWithSourceType,
+                recovered_type_tag: false,
+            } => {
+                if primary.present {
+                    known_item_objects.insert(primary.object_id);
+                }
+                if secondary.present {
+                    known_item_objects.insert(secondary.object_id);
+                }
+                Some(())
+            }
+            _ => None,
+        })
+        .count() as u32;
+    assert!(
+        compact_item_slots > 0,
+        "fixture mutation must recover compact byte-owned item bodies"
+    );
+    assert!(
+        !known_item_objects.is_empty(),
+        "state-backed compact item proof needs concrete object ids"
+    );
+
+    let item_object_is_known = |object_id| known_item_objects.contains(&object_id);
+    let materialization = QuickbarMaterializationContext::new(&item_object_is_known);
+    let summary = rewrite_simple_quickbar_payload_with_context_if_possible(
+        &mut payload,
+        Some(&materialization),
+    )
+    .expect("state-backed compact quickbar capture should be semantically owned");
+
+    assert_eq!(
+        summary.item_buttons_preserved, compact_item_slots,
+        "known inventory object ids should promote only compact byte-owned item slots"
+    );
+    assert_eq!(summary.spells_preserved, 15);
+    assert!(ee_set_all_buttons_payload_shape_valid(&payload));
+    let slot_types = super::validator::ee_set_all_buttons_slot_types_if_valid(&payload)
+        .expect("rewritten quickbar should expose validated EE slot types");
+    assert_eq!(
+        slot_types
+            .iter()
+            .filter(|slot_type| **slot_type == 1)
+            .count() as u32,
+        compact_item_slots
+    );
+}
