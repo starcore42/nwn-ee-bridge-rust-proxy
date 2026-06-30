@@ -19967,9 +19967,53 @@ pub struct LiveObjectCreatureUpdateClaim {
 pub struct LiveObjectInventoryOwnerClaim {
     pub owner_id: u32,
     pub mask: u16,
+    pub mask_branches: LiveObjectInventoryMaskBranches,
     pub fragment_bits: usize,
     pub bit_cursor: usize,
     pub next_bit_cursor: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveObjectInventoryMaskBranches {
+    pub bit_0001: bool,
+    pub bit_0002: bool,
+    pub bit_0004_icon_list: bool,
+    pub bit_0008: bool,
+    pub bit_0010_simple_category: bool,
+    pub bit_0020_rich_category: bool,
+    pub bit_0040_ten_bit_group: bool,
+    pub bit_0080_ten_bit_group: bool,
+    pub bit_0100_opcode_stream: bool,
+    pub bit_0200_branch: bool,
+    pub bit_0400_equipment_delta: bool,
+    pub bit_0800_tail_selector: bool,
+    pub bit_1000_ui_clear: bool,
+    pub bit_2000_feature25: bool,
+    pub bit_4000_state_stream: bool,
+    pub bit_8000_fixed_scalars: bool,
+}
+
+impl LiveObjectInventoryMaskBranches {
+    pub fn from_mask(mask: u16) -> Self {
+        Self {
+            bit_0001: (mask & 0x0001) != 0,
+            bit_0002: (mask & 0x0002) != 0,
+            bit_0004_icon_list: (mask & 0x0004) != 0,
+            bit_0008: (mask & 0x0008) != 0,
+            bit_0010_simple_category: (mask & 0x0010) != 0,
+            bit_0020_rich_category: (mask & 0x0020) != 0,
+            bit_0040_ten_bit_group: (mask & 0x0040) != 0,
+            bit_0080_ten_bit_group: (mask & 0x0080) != 0,
+            bit_0100_opcode_stream: (mask & 0x0100) != 0,
+            bit_0200_branch: (mask & 0x0200) != 0,
+            bit_0400_equipment_delta: (mask & 0x0400) != 0,
+            bit_0800_tail_selector: (mask & 0x0800) != 0,
+            bit_1000_ui_clear: (mask & 0x1000) != 0,
+            bit_2000_feature25: (mask & 0x2000) != 0,
+            bit_4000_state_stream: (mask & 0x4000) != 0,
+            bit_8000_fixed_scalars: (mask & 0x8000) != 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

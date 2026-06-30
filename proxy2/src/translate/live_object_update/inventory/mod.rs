@@ -296,6 +296,7 @@ pub(super) fn verified_inventory_owner_claim_for_ee(
     Some(super::LiveObjectInventoryOwnerClaim {
         owner_id: claim.owner_id,
         mask: claim.mask,
+        mask_branches: super::LiveObjectInventoryMaskBranches::from_mask(claim.mask),
         fragment_bits: claim.fragment_bits,
         bit_cursor,
         next_bit_cursor: proof_cursor,

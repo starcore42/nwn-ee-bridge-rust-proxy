@@ -641,6 +641,21 @@ not as standalone workaround targets.
   Next production path: break down the 874 non-`0xD5FF` inventory masks into
   bounded branch counters, then choose the next exact writer/parser slice from
   those mask families or the remaining `U/05` update-mask counts.
+- 2026-06-30 inventory owner branch counters: live-data gate used the same
+  gameplay-reaching HG capture, about 17h07m old at verification time. Exact
+  `I` owner claims now carry a typed mask-branch set only after the inventory
+  validator replays the accepted cursor, and replay aggregation reports each
+  decompile-owned mask branch. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-inventory-branch-counters-automation-20260630-2311`
+  completed with 0 quarantines, 3,547 strict allows, 445 exact rewrite
+  matches, 3,226 exact lifecycle claim summaries, 2,781 captured direct
+  live-object frames, 10 area rewrites, and 0 fixed-width/live-object terminal
+  residuals. The 875 inventory-owner claims still had 1 `0xD5FF` mask and 874
+  other masks; branch counters showed 870 Feature-25 `0x2000` mentions, with
+  only low single-digit mentions for every other inventory branch. Next
+  production path: reduce the dominant `0x2000` Feature-25 owner rows into a
+  typed list-count/object-reference claim so the following writer/parser work
+  can target the actual inventory pressure.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

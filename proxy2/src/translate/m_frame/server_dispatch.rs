@@ -129,6 +129,22 @@ struct LiveObjectExactClaimTraceSummary {
     inventory_owner_mask_2e01_mentions: u32,
     inventory_owner_mask_d5ff_mentions: u32,
     inventory_owner_mask_other_mentions: u32,
+    inventory_owner_branch_0001_mentions: u32,
+    inventory_owner_branch_0002_mentions: u32,
+    inventory_owner_branch_0004_icon_list_mentions: u32,
+    inventory_owner_branch_0008_mentions: u32,
+    inventory_owner_branch_0010_simple_category_mentions: u32,
+    inventory_owner_branch_0020_rich_category_mentions: u32,
+    inventory_owner_branch_0040_ten_bit_group_mentions: u32,
+    inventory_owner_branch_0080_ten_bit_group_mentions: u32,
+    inventory_owner_branch_0100_opcode_stream_mentions: u32,
+    inventory_owner_branch_0200_mentions: u32,
+    inventory_owner_branch_0400_equipment_delta_mentions: u32,
+    inventory_owner_branch_0800_tail_selector_mentions: u32,
+    inventory_owner_branch_1000_ui_clear_mentions: u32,
+    inventory_owner_branch_2000_feature25_mentions: u32,
+    inventory_owner_branch_4000_state_stream_mentions: u32,
+    inventory_owner_branch_8000_fixed_scalar_mentions: u32,
     live_gui_records: u32,
     live_gui_fragment_bits: u32,
     creature_appearance_records: u32,
@@ -243,6 +259,83 @@ impl LiveObjectExactClaimTraceSummary {
                         trace.inventory_owner_mask_other_mentions =
                             trace.inventory_owner_mask_other_mentions.saturating_add(1);
                     }
+                }
+                let branches = inventory.mask_branches;
+                if branches.bit_0001 {
+                    trace.inventory_owner_branch_0001_mentions =
+                        trace.inventory_owner_branch_0001_mentions.saturating_add(1);
+                }
+                if branches.bit_0002 {
+                    trace.inventory_owner_branch_0002_mentions =
+                        trace.inventory_owner_branch_0002_mentions.saturating_add(1);
+                }
+                if branches.bit_0004_icon_list {
+                    trace.inventory_owner_branch_0004_icon_list_mentions = trace
+                        .inventory_owner_branch_0004_icon_list_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0008 {
+                    trace.inventory_owner_branch_0008_mentions =
+                        trace.inventory_owner_branch_0008_mentions.saturating_add(1);
+                }
+                if branches.bit_0010_simple_category {
+                    trace.inventory_owner_branch_0010_simple_category_mentions = trace
+                        .inventory_owner_branch_0010_simple_category_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0020_rich_category {
+                    trace.inventory_owner_branch_0020_rich_category_mentions = trace
+                        .inventory_owner_branch_0020_rich_category_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0040_ten_bit_group {
+                    trace.inventory_owner_branch_0040_ten_bit_group_mentions = trace
+                        .inventory_owner_branch_0040_ten_bit_group_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0080_ten_bit_group {
+                    trace.inventory_owner_branch_0080_ten_bit_group_mentions = trace
+                        .inventory_owner_branch_0080_ten_bit_group_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0100_opcode_stream {
+                    trace.inventory_owner_branch_0100_opcode_stream_mentions = trace
+                        .inventory_owner_branch_0100_opcode_stream_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0200_branch {
+                    trace.inventory_owner_branch_0200_mentions =
+                        trace.inventory_owner_branch_0200_mentions.saturating_add(1);
+                }
+                if branches.bit_0400_equipment_delta {
+                    trace.inventory_owner_branch_0400_equipment_delta_mentions = trace
+                        .inventory_owner_branch_0400_equipment_delta_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_0800_tail_selector {
+                    trace.inventory_owner_branch_0800_tail_selector_mentions = trace
+                        .inventory_owner_branch_0800_tail_selector_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_1000_ui_clear {
+                    trace.inventory_owner_branch_1000_ui_clear_mentions = trace
+                        .inventory_owner_branch_1000_ui_clear_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_2000_feature25 {
+                    trace.inventory_owner_branch_2000_feature25_mentions = trace
+                        .inventory_owner_branch_2000_feature25_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_4000_state_stream {
+                    trace.inventory_owner_branch_4000_state_stream_mentions = trace
+                        .inventory_owner_branch_4000_state_stream_mentions
+                        .saturating_add(1);
+                }
+                if branches.bit_8000_fixed_scalars {
+                    trace.inventory_owner_branch_8000_fixed_scalar_mentions = trace
+                        .inventory_owner_branch_8000_fixed_scalar_mentions
+                        .saturating_add(1);
                 }
             }
             match mention.opcode {
@@ -1143,6 +1236,34 @@ fn trace_live_object_exact_claim_summary(
         inventory_owner_mask_2e01_mentions = trace.inventory_owner_mask_2e01_mentions,
         inventory_owner_mask_d5ff_mentions = trace.inventory_owner_mask_d5ff_mentions,
         inventory_owner_mask_other_mentions = trace.inventory_owner_mask_other_mentions,
+        inventory_owner_branch_0001_mentions = trace.inventory_owner_branch_0001_mentions,
+        inventory_owner_branch_0002_mentions = trace.inventory_owner_branch_0002_mentions,
+        inventory_owner_branch_0004_icon_list_mentions =
+            trace.inventory_owner_branch_0004_icon_list_mentions,
+        inventory_owner_branch_0008_mentions = trace.inventory_owner_branch_0008_mentions,
+        inventory_owner_branch_0010_simple_category_mentions =
+            trace.inventory_owner_branch_0010_simple_category_mentions,
+        inventory_owner_branch_0020_rich_category_mentions =
+            trace.inventory_owner_branch_0020_rich_category_mentions,
+        inventory_owner_branch_0040_ten_bit_group_mentions =
+            trace.inventory_owner_branch_0040_ten_bit_group_mentions,
+        inventory_owner_branch_0080_ten_bit_group_mentions =
+            trace.inventory_owner_branch_0080_ten_bit_group_mentions,
+        inventory_owner_branch_0100_opcode_stream_mentions =
+            trace.inventory_owner_branch_0100_opcode_stream_mentions,
+        inventory_owner_branch_0200_mentions = trace.inventory_owner_branch_0200_mentions,
+        inventory_owner_branch_0400_equipment_delta_mentions =
+            trace.inventory_owner_branch_0400_equipment_delta_mentions,
+        inventory_owner_branch_0800_tail_selector_mentions =
+            trace.inventory_owner_branch_0800_tail_selector_mentions,
+        inventory_owner_branch_1000_ui_clear_mentions =
+            trace.inventory_owner_branch_1000_ui_clear_mentions,
+        inventory_owner_branch_2000_feature25_mentions =
+            trace.inventory_owner_branch_2000_feature25_mentions,
+        inventory_owner_branch_4000_state_stream_mentions =
+            trace.inventory_owner_branch_4000_state_stream_mentions,
+        inventory_owner_branch_8000_fixed_scalar_mentions =
+            trace.inventory_owner_branch_8000_fixed_scalar_mentions,
         live_gui_records = trace.live_gui_records,
         live_gui_fragment_bits = trace.live_gui_fragment_bits,
         creature_appearance_records = trace.creature_appearance_records,
@@ -4513,11 +4634,11 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectCreatureUpdateClaim, LiveObjectInventoryOwnerClaim,
-        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
-        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
-        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
-        LiveObjectRecordPosition,
+        LiveObjectCreatureUpdateClaim, LiveObjectInventoryMaskBranches,
+        LiveObjectInventoryOwnerClaim, LiveObjectPlaceableAppearance,
+        LiveObjectPlaceableAppearanceClaim, LiveObjectPlaceableState, LiveObjectRecordMention,
+        LiveObjectRecordOrientation, LiveObjectRecordOrientationSource,
+        LiveObjectRecordOrientationVector, LiveObjectRecordPosition,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -4609,6 +4730,7 @@ mod exact_claim_trace_tests {
         inventory.inventory_owner = Some(LiveObjectInventoryOwnerClaim {
             owner_id: 0xFFFF_FFEC,
             mask: 0x2E00,
+            mask_branches: LiveObjectInventoryMaskBranches::from_mask(0x2E00),
             fragment_bits: 6,
             bit_cursor: 3,
             next_bit_cursor: 9,
@@ -4647,6 +4769,28 @@ mod exact_claim_trace_tests {
         assert_eq!(trace.inventory_owner_mask_2e01_mentions, 0);
         assert_eq!(trace.inventory_owner_mask_d5ff_mentions, 0);
         assert_eq!(trace.inventory_owner_mask_other_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0001_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0002_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0004_icon_list_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0008_mentions, 0);
+        assert_eq!(
+            trace.inventory_owner_branch_0010_simple_category_mentions,
+            0
+        );
+        assert_eq!(trace.inventory_owner_branch_0020_rich_category_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0040_ten_bit_group_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0080_ten_bit_group_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0100_opcode_stream_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_0200_mentions, 1);
+        assert_eq!(
+            trace.inventory_owner_branch_0400_equipment_delta_mentions,
+            1
+        );
+        assert_eq!(trace.inventory_owner_branch_0800_tail_selector_mentions, 1);
+        assert_eq!(trace.inventory_owner_branch_1000_ui_clear_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_2000_feature25_mentions, 1);
+        assert_eq!(trace.inventory_owner_branch_4000_state_stream_mentions, 0);
+        assert_eq!(trace.inventory_owner_branch_8000_fixed_scalar_mentions, 0);
         assert_eq!(trace.live_gui_records, 2);
         assert_eq!(trace.live_gui_fragment_bits, 5);
         assert_eq!(trace.mentions, 6);
