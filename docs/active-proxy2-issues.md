@@ -583,6 +583,26 @@ not as standalone workaround targets.
   Next production path: use these exact-claim counters to target the still
   rewrite-dependent placeable add/update clusters and inventory/creature update
   families, rather than broadening validators without a typed counter.
+- 2026-06-30 live-object exact-claim type classifier: live-data gate used the
+  same gameplay-reaching HG capture
+  `C:\nwnbridge\codex-diamond-fresh-autoplay-20260630-041346`; packet window
+  `2026-06-30 04:13:58.302 -> 06:13:42.862 +10:00`, about 13h12m old at gate
+  time, with gameplay reached. Production `proxy2` exact-claim traces now
+  classify object type, opcode/type, orientation source, and placeable
+  appearance/state shape; the replay harness aggregates those fields into
+  `replay-summary.json`. Strict replay
+  `C:\nwnbridge\codex-proxy2-replay-exact-claim-types-automation-20260630-193913`
+  completed with 0 quarantines, 3,547 strict allows, 445 exact rewrite
+  matches, 3,226 exact lifecycle claim summaries, 2,781 captured direct
+  live-object frames, 10 area rewrites, and 0 fixed-width or live-object
+  terminal residuals. Aggregated exact claims showed 4,186 creature mentions,
+  2,862 creature update mentions, 2,840 creature position mentions, 0 creature
+  orientation mentions, 30 placeable mentions (15 add/15 update, all scalar
+  orientation and normal appearance), 10 door mentions, and 875 untyped
+  inventory-owner mentions. Next production path: reduce the dominant creature
+  update/position exact rows and untyped inventory-owner rows into bounded
+  parser/validator invariants before widening any lower-volume placeable
+  repair.
 
 ## Cross-cutting audit: Diamond/EE bit-order and cursor-shift correctness
 

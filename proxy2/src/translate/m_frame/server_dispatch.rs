@@ -105,6 +105,12 @@ struct LiveObjectExactRewriteClaim {
     summary: live_update::ExactLiveObjectRewriteSummary,
 }
 
+const LIVE_OBJECT_CREATURE_TYPE: u8 = 0x05;
+const LIVE_OBJECT_ITEM_TYPE: u8 = 0x06;
+const LIVE_OBJECT_TRIGGER_TYPE: u8 = 0x07;
+const LIVE_OBJECT_PLACEABLE_TYPE: u8 = 0x09;
+const LIVE_OBJECT_DOOR_TYPE: u8 = 0x0A;
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 struct LiveObjectExactClaimTraceSummary {
     records_examined: u32,
@@ -128,7 +134,31 @@ struct LiveObjectExactClaimTraceSummary {
     orientation_mentions: u32,
     bounds_mentions: u32,
     placeable_appearance_mentions: u32,
+    placeable_normal_appearance_mentions: u32,
+    placeable_custom_appearance_mentions: u32,
+    placeable_appearance_claim_mentions: u32,
     placeable_state_mentions: u32,
+    placeable_full_state_mentions: u32,
+    placeable_partial_state_mentions: u32,
+    scalar_orientation_mentions: u32,
+    vector_orientation_mentions: u32,
+    creature_mentions: u32,
+    creature_update_mentions: u32,
+    creature_position_mentions: u32,
+    creature_orientation_mentions: u32,
+    item_mentions: u32,
+    trigger_mentions: u32,
+    placeable_mentions: u32,
+    placeable_add_mentions: u32,
+    placeable_update_mentions: u32,
+    placeable_delete_mentions: u32,
+    placeable_position_mentions: u32,
+    placeable_orientation_mentions: u32,
+    placeable_scalar_orientation_mentions: u32,
+    placeable_vector_orientation_mentions: u32,
+    door_mentions: u32,
+    untyped_mentions: u32,
+    other_object_type_mentions: u32,
     materialized_item_object_ids: u32,
 }
 
@@ -166,17 +196,90 @@ impl LiveObjectExactClaimTraceSummary {
             if mention.position.is_some() {
                 trace.position_mentions += 1;
             }
-            if mention.orientation.is_some() {
+            if let Some(orientation) = mention.orientation {
                 trace.orientation_mentions += 1;
+                match orientation.source {
+                    crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                        trace.scalar_orientation_mentions += 1;
+                    }
+                    crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                        trace.vector_orientation_mentions += 1;
+                    }
+                }
             }
             if mention.bounds.is_some() {
                 trace.bounds_mentions += 1;
             }
-            if mention.placeable_appearance.is_some() {
+            if let Some(appearance) = mention.placeable_appearance {
                 trace.placeable_appearance_mentions += 1;
+                if appearance.appearance >= 0xFFFE || appearance.resref.is_some() {
+                    trace.placeable_custom_appearance_mentions += 1;
+                } else {
+                    trace.placeable_normal_appearance_mentions += 1;
+                }
             }
-            if mention.placeable_state.is_some() {
+            if mention.placeable_appearance_claim.is_some() {
+                trace.placeable_appearance_claim_mentions += 1;
+            }
+            if let Some(state) = mention.placeable_state {
                 trace.placeable_state_mentions += 1;
+                let state_fields = [
+                    state.useable,
+                    state.trap_disarmable,
+                    state.lockable,
+                    state.locked,
+                ]
+                .into_iter()
+                .filter(Option::is_some)
+                .count();
+                if state_fields == 4 {
+                    trace.placeable_full_state_mentions += 1;
+                } else if state_fields > 0 {
+                    trace.placeable_partial_state_mentions += 1;
+                }
+            }
+
+            match mention.object_type {
+                LIVE_OBJECT_CREATURE_TYPE => {
+                    trace.creature_mentions += 1;
+                    if mention.opcode == b'U' {
+                        trace.creature_update_mentions += 1;
+                    }
+                    if mention.position.is_some() {
+                        trace.creature_position_mentions += 1;
+                    }
+                    if mention.orientation.is_some() {
+                        trace.creature_orientation_mentions += 1;
+                    }
+                }
+                LIVE_OBJECT_ITEM_TYPE => trace.item_mentions += 1,
+                LIVE_OBJECT_TRIGGER_TYPE => trace.trigger_mentions += 1,
+                LIVE_OBJECT_PLACEABLE_TYPE => {
+                    trace.placeable_mentions += 1;
+                    match mention.opcode {
+                        b'A' => trace.placeable_add_mentions += 1,
+                        b'U' => trace.placeable_update_mentions += 1,
+                        b'D' => trace.placeable_delete_mentions += 1,
+                        _ => {}
+                    }
+                    if mention.position.is_some() {
+                        trace.placeable_position_mentions += 1;
+                    }
+                    if let Some(orientation) = mention.orientation {
+                        trace.placeable_orientation_mentions += 1;
+                        match orientation.source {
+                            crate::translate::live_object_update::LiveObjectRecordOrientationSource::Scalar => {
+                                trace.placeable_scalar_orientation_mentions += 1;
+                            }
+                            crate::translate::live_object_update::LiveObjectRecordOrientationSource::Vector => {
+                                trace.placeable_vector_orientation_mentions += 1;
+                            }
+                        }
+                    }
+                }
+                LIVE_OBJECT_DOOR_TYPE => trace.door_mentions += 1,
+                0 => trace.untyped_mentions += 1,
+                _ => trace.other_object_type_mentions += 1,
             }
         }
 
@@ -972,7 +1075,31 @@ fn trace_live_object_exact_claim_summary(
         orientation_mentions = trace.orientation_mentions,
         bounds_mentions = trace.bounds_mentions,
         placeable_appearance_mentions = trace.placeable_appearance_mentions,
+        placeable_normal_appearance_mentions = trace.placeable_normal_appearance_mentions,
+        placeable_custom_appearance_mentions = trace.placeable_custom_appearance_mentions,
+        placeable_appearance_claim_mentions = trace.placeable_appearance_claim_mentions,
         placeable_state_mentions = trace.placeable_state_mentions,
+        placeable_full_state_mentions = trace.placeable_full_state_mentions,
+        placeable_partial_state_mentions = trace.placeable_partial_state_mentions,
+        scalar_orientation_mentions = trace.scalar_orientation_mentions,
+        vector_orientation_mentions = trace.vector_orientation_mentions,
+        creature_mentions = trace.creature_mentions,
+        creature_update_mentions = trace.creature_update_mentions,
+        creature_position_mentions = trace.creature_position_mentions,
+        creature_orientation_mentions = trace.creature_orientation_mentions,
+        item_mentions = trace.item_mentions,
+        trigger_mentions = trace.trigger_mentions,
+        placeable_mentions = trace.placeable_mentions,
+        placeable_add_mentions = trace.placeable_add_mentions,
+        placeable_update_mentions = trace.placeable_update_mentions,
+        placeable_delete_mentions = trace.placeable_delete_mentions,
+        placeable_position_mentions = trace.placeable_position_mentions,
+        placeable_orientation_mentions = trace.placeable_orientation_mentions,
+        placeable_scalar_orientation_mentions = trace.placeable_scalar_orientation_mentions,
+        placeable_vector_orientation_mentions = trace.placeable_vector_orientation_mentions,
+        door_mentions = trace.door_mentions,
+        untyped_mentions = trace.untyped_mentions,
+        other_object_type_mentions = trace.other_object_type_mentions,
         materialized_item_object_ids = trace.materialized_item_object_ids,
         "server live-object payload accepted exact EE shape with lifecycle proof"
     );
@@ -4297,7 +4424,10 @@ mod live_object_dispatch_tests {
 mod exact_claim_trace_tests {
     use super::*;
     use crate::translate::live_object_update::{
-        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordPosition,
+        LiveObjectPlaceableAppearance, LiveObjectPlaceableAppearanceClaim,
+        LiveObjectPlaceableState, LiveObjectRecordMention, LiveObjectRecordOrientation,
+        LiveObjectRecordOrientationSource, LiveObjectRecordOrientationVector,
+        LiveObjectRecordPosition,
     };
 
     fn mention(opcode: u8, object_type: u8, object_id: u32) -> LiveObjectRecordMention {
@@ -4329,6 +4459,10 @@ mod exact_claim_trace_tests {
             lockable: Some(true),
             locked: Some(false),
         });
+        add.placeable_appearance = Some(LiveObjectPlaceableAppearance {
+            appearance: 0xFFFF,
+            resref: Some(*b"customplc0000000"),
+        });
         let mut update = mention(b'U', 0x09, 0x8000_0001);
         update.position = Some(LiveObjectRecordPosition {
             x_raw: 1,
@@ -4338,12 +4472,44 @@ mod exact_claim_trace_tests {
             y: 2.0,
             z: 3.0,
         });
+        update.orientation = Some(LiveObjectRecordOrientation {
+            source: LiveObjectRecordOrientationSource::Scalar,
+            scalar_tenths_degrees: 900,
+            vector: None,
+        });
+        update.placeable_appearance = Some(LiveObjectPlaceableAppearance {
+            appearance: 123,
+            resref: None,
+        });
+        update.placeable_appearance_claim = Some(LiveObjectPlaceableAppearanceClaim {
+            appearance_offset: 8,
+            resref_offset: None,
+        });
         let delete = mention(b'D', 0x09, 0x8000_0001);
+        let mut creature_update = mention(b'U', 0x05, 0x8000_0020);
+        creature_update.position = Some(LiveObjectRecordPosition {
+            x_raw: 4,
+            y_raw: 5,
+            z_raw: 6,
+            x: 4.0,
+            y: 5.0,
+            z: 6.0,
+        });
+        creature_update.orientation = Some(LiveObjectRecordOrientation {
+            source: LiveObjectRecordOrientationSource::Vector,
+            scalar_tenths_degrees: 1800,
+            vector: Some(LiveObjectRecordOrientationVector {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            }),
+        });
+        let item = mention(b'I', 0x06, 0x8000_0100);
 
         let claim = live_update::ClaimSummary {
-            records_examined: 3,
+            records_examined: 5,
             add_records: 1,
-            update_records: 1,
+            update_records: 2,
             delete_records: 1,
             inventory_records: 2,
             inventory_fragment_bits: 6,
@@ -4351,27 +4517,53 @@ mod exact_claim_trace_tests {
             live_gui_item_create_records: 1,
             live_gui_fragment_bits: 5,
             materialized_item_object_ids: vec![0x8000_0100, 0x8000_0101],
-            mentions: vec![add, update, delete],
+            mentions: vec![add, update, delete, creature_update, item],
             ..Default::default()
         };
 
         let trace = LiveObjectExactClaimTraceSummary::from_claim(&claim);
 
-        assert_eq!(trace.records_examined, 3);
+        assert_eq!(trace.records_examined, 5);
         assert_eq!(trace.add_records, 1);
-        assert_eq!(trace.update_records, 1);
+        assert_eq!(trace.update_records, 2);
         assert_eq!(trace.delete_records, 1);
         assert_eq!(trace.inventory_records, 2);
         assert_eq!(trace.inventory_fragment_bits, 6);
         assert_eq!(trace.live_gui_records, 2);
         assert_eq!(trace.live_gui_fragment_bits, 5);
-        assert_eq!(trace.mentions, 3);
-        assert_eq!(trace.materialized_mentions, 1);
+        assert_eq!(trace.mentions, 5);
+        assert_eq!(trace.materialized_mentions, 3);
         assert_eq!(trace.add_mentions, 1);
-        assert_eq!(trace.update_mentions, 1);
+        assert_eq!(trace.update_mentions, 2);
         assert_eq!(trace.delete_mentions, 1);
-        assert_eq!(trace.position_mentions, 1);
+        assert_eq!(trace.position_mentions, 2);
+        assert_eq!(trace.orientation_mentions, 2);
+        assert_eq!(trace.scalar_orientation_mentions, 1);
+        assert_eq!(trace.vector_orientation_mentions, 1);
+        assert_eq!(trace.placeable_mentions, 3);
+        assert_eq!(trace.placeable_add_mentions, 1);
+        assert_eq!(trace.placeable_update_mentions, 1);
+        assert_eq!(trace.placeable_delete_mentions, 1);
+        assert_eq!(trace.placeable_position_mentions, 1);
+        assert_eq!(trace.placeable_orientation_mentions, 1);
+        assert_eq!(trace.placeable_scalar_orientation_mentions, 1);
+        assert_eq!(trace.placeable_vector_orientation_mentions, 0);
+        assert_eq!(trace.placeable_appearance_mentions, 2);
+        assert_eq!(trace.placeable_normal_appearance_mentions, 1);
+        assert_eq!(trace.placeable_custom_appearance_mentions, 1);
+        assert_eq!(trace.placeable_appearance_claim_mentions, 1);
         assert_eq!(trace.placeable_state_mentions, 1);
+        assert_eq!(trace.placeable_full_state_mentions, 1);
+        assert_eq!(trace.placeable_partial_state_mentions, 0);
+        assert_eq!(trace.creature_mentions, 1);
+        assert_eq!(trace.creature_update_mentions, 1);
+        assert_eq!(trace.creature_position_mentions, 1);
+        assert_eq!(trace.creature_orientation_mentions, 1);
+        assert_eq!(trace.item_mentions, 1);
+        assert_eq!(trace.trigger_mentions, 0);
+        assert_eq!(trace.door_mentions, 0);
+        assert_eq!(trace.untyped_mentions, 0);
+        assert_eq!(trace.other_object_type_mentions, 0);
         assert_eq!(trace.materialized_item_object_ids, 2);
     }
 }
